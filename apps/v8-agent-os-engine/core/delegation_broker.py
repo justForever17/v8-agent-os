@@ -62,6 +62,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "dependency": [],
         "parallelGroup": "",
         "executionLaneHint": "auto",
+        "familyHint": "",
         "preferredAgentId": "",
         "preferredWorkerType": "",
     }
@@ -83,6 +84,7 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "dependency": _normalize_scope_values(payload.get("dependency")),
         "parallelGroup": str(payload.get("parallelGroup") or payload.get("parallel_group") or "").strip(),
         "executionLaneHint": str(payload.get("executionLaneHint") or payload.get("execution_lane_hint") or "auto").strip().lower() or "auto",
+        "familyHint": str(payload.get("familyHint") or payload.get("family_hint") or payload.get("specialistFamily") or "").strip(),
         "preferredAgentId": str(payload.get("preferredAgentId") or payload.get("preferred_agent_id") or "").strip(),
         "preferredWorkerType": str(payload.get("preferredWorkerType") or payload.get("preferred_worker_type") or "").strip(),
     }
@@ -123,6 +125,7 @@ def build_minimal_task_brief(
             "dependency": [],
             "parallelGroup": "",
             "executionLaneHint": execution_lane_hint,
+            "familyHint": "",
             "preferredAgentId": preferred_agent_id or "",
         }
     )
@@ -157,6 +160,9 @@ def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     behavior_scope = [str(item).strip() for item in list(task_brief.get("behaviorScope") or []) if str(item).strip()]
     if behavior_scope:
         parts.append(f"Behavior scope: {', '.join(behavior_scope)}")
+    family_hint = str(task_brief.get("familyHint") or "").strip()
+    if family_hint:
+        parts.append(f"Family hint: {family_hint}")
     acceptance = _stringify_context(task_brief.get("acceptanceContract"))
     if acceptance:
         parts.append(f"Acceptance contract: {acceptance}")
@@ -820,6 +826,70 @@ def summarize_capability_snapshot(snapshot: dict[str, Any] | None) -> str:
     return " | ".join(parts)
 
 
+def _candidate_specialist_family(agent: dict[str, Any] | None) -> str:
+    if not isinstance(agent, dict):
+        return ""
+    snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+    return str(
+        snapshot.get("specialistFamily")
+        or snapshot.get("family")
+        or agent.get("specialistFamily")
+        or agent.get("family")
+        or ""
+    ).strip()
+
+
+def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, limit: int = 50) -> dict[str, Any]:
+    target_family = str(family or "").strip()
+    normalized_agents = [
+        agent for agent in list(agents or [])
+        if isinstance(agent, dict)
+        and str(agent.get("id") or "").strip()
+        and str(agent.get("id") or "").strip() != "supervisor"
+        and agent.get("isEnabled") is not False
+    ]
+    family_agents = [
+        agent for agent in normalized_agents
+        if _candidate_specialist_family(agent).lower() == target_family.lower()
+    ] if target_family else []
+    members: list[dict[str, Any]] = []
+    for agent in family_agents[: max(1, min(int(limit or 50), 100))]:
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        members.append(
+            {
+                "agentId": str(agent.get("id") or "").strip(),
+                "name": str(agent.get("name") or agent.get("id") or "").strip(),
+                "description": str(agent.get("description") or "").strip()[:240],
+                "family": _candidate_specialist_family(agent),
+                "globalExposure": bool(agent.get("globalExposure")),
+                "capabilitySnapshot": {
+                    "agentClass": snapshot.get("agentClass"),
+                    "domainTags": _normalize_scope_values(snapshot.get("domainTags"))[:8],
+                    "artifactCapabilities": _normalize_scope_values(snapshot.get("artifactCapabilities"))[:8],
+                    "operationCapabilities": _normalize_scope_values(snapshot.get("operationCapabilities"))[:8],
+                    "runtimeAffinities": _normalize_scope_values(snapshot.get("runtimeAffinities"))[:8],
+                    "plannerSuitability": snapshot.get("plannerSuitability"),
+                },
+                "capabilitySummary": summarize_capability_snapshot(snapshot),
+            }
+        )
+    suggested_capabilities: list[str] = []
+    for member in members:
+        snapshot = member.get("capabilitySnapshot") if isinstance(member.get("capabilitySnapshot"), dict) else {}
+        for key in ("domainTags", "artifactCapabilities", "operationCapabilities"):
+            for value in _normalize_scope_values(snapshot.get(key)):
+                if value not in suggested_capabilities:
+                    suggested_capabilities.append(value)
+    return {
+        "family": target_family,
+        "found": bool(members),
+        "memberCount": len(family_agents),
+        "members": members,
+        "suggestedRequiredCapabilities": suggested_capabilities[:12],
+        "selectionRule": "Dispatch with familyHint plus requiredCapabilities; runtimeAccess remains a separate taskBrief field.",
+    }
+
+
 def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     preferred_id = str(task_brief.get("preferredAgentId") or "").strip()
     normalized_agents = [agent for agent in list(agents or []) if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"]
@@ -839,6 +909,21 @@ def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents:
             "targetId": preferred_id,
         }
 
+    family_hint = str(task_brief.get("familyHint") or "").strip()
+    if family_hint:
+        filtered_agents = [
+            agent for agent in normalized_agents
+            if _candidate_specialist_family(agent).lower() == family_hint.lower()
+        ]
+        if not filtered_agents:
+            return None, {
+                "selectionReason": "familyHint_no_matching_subagent",
+                "selectionConfidence": 0.0,
+                "matchSignals": [f"familyHint:{family_hint}"],
+                "targetFamily": family_hint,
+            }
+        normalized_agents = filtered_agents
+
     best_agent: dict[str, Any] | None = None
     best_diagnostics: dict[str, Any] = {}
     for agent in normalized_agents:
@@ -857,16 +942,22 @@ def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents:
             best_agent = agent
             best_diagnostics = diagnostics
     if int(best_diagnostics.get("score") or 0) < 4:
-        return None, best_diagnostics or {
+        diagnostics = best_diagnostics or {
             "selectionReason": "no_matching_subagent",
             "selectionConfidence": 0.0,
             "matchSignals": [],
         }
+        if family_hint:
+            diagnostics = dict(diagnostics)
+            diagnostics["targetFamily"] = family_hint
+            diagnostics["matchSignals"] = [f"familyHint:{family_hint}", *list(diagnostics.get("matchSignals") or [])]
+        return None, diagnostics
     return best_agent, {
         "selectionReason": best_diagnostics.get("reason") or "capability_match",
         "selectionConfidence": best_diagnostics.get("confidence") or 0.0,
-        "matchSignals": list(best_diagnostics.get("matchSignals") or []),
+        "matchSignals": ([f"familyHint:{family_hint}"] if family_hint else []) + list(best_diagnostics.get("matchSignals") or []),
         "targetId": best_diagnostics.get("candidateId"),
+        **({"targetFamily": family_hint} if family_hint else {}),
     }
 
 

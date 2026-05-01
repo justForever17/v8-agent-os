@@ -8,6 +8,7 @@ import type {
     ChatSubmitResponse,
     CommandPresetSummary,
     ConnectionSummary,
+    ContextMentionSummary,
     ConversationDetail,
     ConversationSummary,
     DesktopLiveOfferPayload,
@@ -24,6 +25,7 @@ import type {
     RPAAvailability,
     RPADraftSummary,
     SkillReferenceSummary,
+    SubagentFamilySummary,
     AdminProcessRef,
     MusicTrack,
     UploadedWorkspaceFile,
@@ -418,6 +420,28 @@ export async function listSkills(authorizedFetch: AuthorizedFetch) {
     return normalizeArray<SkillReferenceSummary>(payload.skills);
 }
 
+export async function listSkillsAndSubagentFamilies(authorizedFetch: AuthorizedFetch) {
+    const payload = await authorizedJson<{ skills?: SkillReferenceSummary[]; subagentFamilies?: SubagentFamilySummary[] }>(
+        authorizedFetch,
+        "/api/client/skills/list",
+        translateCurrent("src.lib.phone_api.text_20"),
+        { cache: "no-store" },
+    );
+    return {
+        skills: normalizeArray<SkillReferenceSummary>(payload.skills),
+        subagentFamilies: normalizeArray<SubagentFamilySummary>(payload.subagentFamilies)
+            .map((family) => ({
+                ...family,
+                familyId: String(family.familyId || "").trim(),
+                displayName: String(family.displayName || family.familyId || "").trim(),
+                aliases: Array.isArray(family.aliases) ? family.aliases : [],
+                description: String(family.description || "").trim(),
+                memberCount: Number(family.memberCount || 0) || 0,
+            }))
+            .filter((family) => family.familyId),
+    };
+}
+
 export async function listArtifacts(authorizedFetch: AuthorizedFetch, conversationId?: string | null) {
     const search = conversationId ? `?sessionId=${encodeURIComponent(conversationId)}` : "";
     const payload = await authorizedJson<{ artifacts?: ArtifactDetail[] }>(
@@ -607,6 +631,9 @@ export async function submitChatMessage(
                         path: skill.path,
                     }))
                     : undefined,
+                contextMentions: Array.isArray(options.contextMentions) && options.contextMentions.length > 0
+                    ? options.contextMentions
+                    : undefined,
             },
         }),
     });
@@ -770,6 +797,7 @@ type SendChatOptions = {
     clientMessageId?: string | null;
     commandPresetName?: string | null;
     skillReferences?: SkillReferenceSummary[];
+    contextMentions?: ContextMentionSummary[];
     fileUrls?: string[];
     attachments?: Array<Record<string, unknown>>;
     taskPlanningMode?: boolean;
@@ -804,6 +832,9 @@ export async function sendChatMessageStream(
                         description: skill.description,
                         path: skill.path,
                     }))
+                    : undefined,
+                contextMentions: Array.isArray(options.contextMentions) && options.contextMentions.length > 0
+                    ? options.contextMentions
                     : undefined,
             },
         }),

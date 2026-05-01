@@ -108,8 +108,17 @@ type SupervisorConfigRegistryPayload = {
         specialistRegistry?: {
             familyModeEnabled?: boolean;
             maxMembersPerFamily?: number;
+            families?: SubagentFamilySummary[];
         } | null;
     } | null;
+};
+
+type SubagentFamilySummary = {
+    familyId?: string;
+    displayName?: string;
+    aliases?: string[];
+    description?: string;
+    memberCount?: number;
 };
 
 type ExtensionsCatalogPayload = {
@@ -268,6 +277,11 @@ const CLAUDE_CODE_COMMAND_TEMPLATE = 'claude -p --permission-mode acceptEdits --
 const TEMPERATURE_PRESET = 0.7;
 const MIN_CONFIG_TEMPERATURE = 0.05;
 const MAX_SPECIALIST_FAMILY_MEMBERS = 50;
+const DEFAULT_SPECIALIST_FAMILIES: SubagentFamilySummary[] = [
+    { familyId: "engineering", displayName: "Engineering", aliases: ["工程", "coding", "project_coding"], description: "Code, architecture, tests, migration, debugging, and repository implementation work." },
+    { familyId: "creative_media", displayName: "Creative Media", aliases: ["创意媒体", "media", "multimedia"], description: "Image, video, voice, music brief, recipe, asset, and post-production specialist work." },
+    { familyId: "writing", displayName: "Writing", aliases: ["写作", "docs", "documentation"], description: "Documentation, research synthesis, handoff, proposals, and narrative delivery." },
+];
 const FAMILY_AVATAR_COLORS = [
     { backgroundColor: "#E0F2FE", borderColor: "#38BDF8", color: "#075985" },
     { backgroundColor: "#DCFCE7", borderColor: "#4ADE80", color: "#166534" },
@@ -278,6 +292,38 @@ const FAMILY_AVATAR_COLORS = [
     { backgroundColor: "#FFE4E6", borderColor: "#FB7185", color: "#9F1239" },
     { backgroundColor: "#DBEAFE", borderColor: "#60A5FA", color: "#1E3A8A" },
 ];
+
+function normalizeFamilyId(value: unknown) {
+    const normalized = String(value || "").trim().toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^\p{L}\p{N}_.+-]+/gu, "_")
+        .replace(/_+/g, "_")
+        .replace(/^[._-]+|[._-]+$/g, "");
+    return normalized || "engineering";
+}
+
+function normalizeFamilyEntry(value: unknown): SubagentFamilySummary | null {
+    if (typeof value === "string") {
+        const familyId = normalizeFamilyId(value);
+        return { familyId, displayName: value.trim() || familyId, aliases: [], description: "" };
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+    const raw = value as Record<string, unknown>;
+    const familyId = normalizeFamilyId(raw.familyId || raw.id || raw.name || raw.displayName);
+    const displayName = String(raw.displayName || raw.name || raw.familyId || familyId).trim() || familyId;
+    const aliases = Array.isArray(raw.aliases)
+        ? raw.aliases.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+    return {
+        familyId,
+        displayName,
+        aliases: Array.from(new Set(aliases)),
+        description: String(raw.description || "").trim(),
+        memberCount: Number(raw.memberCount || 0) || 0,
+    };
+}
 const GLOBAL_AVATAR_STYLE: CSSProperties = {
     backgroundColor: "#059669",
     borderColor: "#047857",
@@ -576,17 +622,35 @@ export default function SubagentsPage() {
         () => baselineSystemTools.map((item) => String(item.name || "").trim()).filter(Boolean),
         [baselineSystemTools],
     );
+    const familyOptions = useMemo(() => {
+        const merged = new Map<string, SubagentFamilySummary>();
+        const addFamily = (entry: unknown, memberCountDelta = 0) => {
+            const normalized = normalizeFamilyEntry(entry);
+            if (!normalized?.familyId) return;
+            const existing = merged.get(normalized.familyId) || {};
+            merged.set(normalized.familyId, {
+                ...existing,
+                ...normalized,
+                aliases: Array.from(new Set([
+                    ...((existing.aliases || []).map((item) => String(item || "").trim()).filter(Boolean)),
+                    ...((normalized.aliases || []).map((item) => String(item || "").trim()).filter(Boolean)),
+                ])),
+                memberCount: Math.max(0, Number(existing.memberCount || 0)) + Math.max(0, Number(normalized.memberCount || 0)) + memberCountDelta,
+            });
+        };
+        DEFAULT_SPECIALIST_FAMILIES.forEach((family) => addFamily(family));
+        (supervisorDomainData?.data?.specialistRegistry?.families || []).forEach((family) => addFamily(family));
+        agents.forEach((agent) => {
+            const snapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot)
+                ? agent.capabilitySnapshot
+                : {};
+            const familyId = normalizeFamilyId(snapshot.specialistFamily || "engineering");
+            addFamily({ familyId, displayName: String(snapshot.specialistFamily || familyId) }, 1);
+        });
+        return Array.from(merged.values()).sort((left, right) => String(left.displayName || left.familyId).localeCompare(String(right.displayName || right.familyId)));
+    }, [agents, supervisorDomainData]);
     const familyColorMap = useMemo(() => {
-        const families = Array.from(new Set(
-            agents
-                .map((agent) => {
-                    const snapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot)
-                        ? agent.capabilitySnapshot
-                        : {};
-                    return String(snapshot.specialistFamily || "engineering").trim().toLowerCase() || "engineering";
-                })
-                .filter(Boolean),
-        )).sort();
+        const families = familyOptions.map((family) => normalizeFamilyId(family.familyId || family.displayName || "engineering"));
         return families.reduce<Record<string, CSSProperties>>((acc, family, index) => {
             const base = FAMILY_AVATAR_COLORS[index % FAMILY_AVATAR_COLORS.length];
             const cycle = Math.floor(index / FAMILY_AVATAR_COLORS.length);
@@ -596,10 +660,10 @@ export default function SubagentsPage() {
                     backgroundColor: `hsl(${(index * 47) % 360} 82% 92%)`,
                     borderColor: `hsl(${(index * 47) % 360} 72% 48%)`,
                     color: `hsl(${(index * 47) % 360} 82% 24%)`,
-                };
+            };
             return acc;
         }, {});
-    }, [agents]);
+    }, [familyOptions]);
 
     const groupedMcpTools = useMemo(() => {
         return mcpTools.reduce<Record<string, MCPTool[]>>((acc, tool) => {
@@ -821,6 +885,44 @@ export default function SubagentsPage() {
         }
     }, [defaultModelId, editingAgent, isDialogOpen, resetForm]);
 
+    const ensureSpecialistFamilyRegistered = useCallback(async (familyId: string, displayName?: string) => {
+        const normalizedFamilyId = normalizeFamilyId(familyId);
+        const registry = (supervisorDomainData?.data?.specialistRegistry || {}) as Record<string, unknown>;
+        const existingFamilies = Array.isArray(registry.families)
+            ? registry.families.map((item) => normalizeFamilyEntry(item)).filter((item): item is SubagentFamilySummary => Boolean(item?.familyId))
+            : [];
+        if (existingFamilies.some((family) => normalizeFamilyId(family.familyId || family.displayName) === normalizedFamilyId)) {
+            return;
+        }
+        const nextFamilies = [
+            ...existingFamilies,
+            {
+                familyId: normalizedFamilyId,
+                displayName: String(displayName || familyId || normalizedFamilyId).trim() || normalizedFamilyId,
+                aliases: [],
+                description: "",
+            },
+        ];
+        const response = await fetch("/api/config-registry/supervisor", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                data: {
+                    ...(supervisorDomainData?.data || {}),
+                    specialistRegistry: {
+                        ...registry,
+                        families: nextFamilies,
+                    },
+                },
+            }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(String(data?.detail || data?.error || response.status));
+        }
+        setSupervisorDomainData(data);
+    }, [supervisorDomainData]);
+
     const handleSave = useCallback(async () => {
         if (!form.name.trim()) {
             toast({ title: t("app.admin.dashboard.subagents.page.k2ba9f8cf"), description: t("app.admin.dashboard.subagents.page.kda9e4fc0"), variant: "destructive" });
@@ -845,7 +947,8 @@ export default function SubagentsPage() {
             });
             return;
         }
-        const specialistFamily = form.specialistFamily.trim() || "engineering";
+        const specialistFamilyLabel = form.specialistFamily.trim() || "engineering";
+        const specialistFamily = normalizeFamilyId(specialistFamilyLabel);
         capabilitySnapshot = {
             ...capabilitySnapshot,
             specialistFamily,
@@ -885,6 +988,7 @@ export default function SubagentsPage() {
             if (!response.ok) {
                 throw new Error(String(data?.detail || data?.error || response.status));
             }
+            await ensureSpecialistFamilyRegistered(specialistFamily, specialistFamilyLabel);
             toast({
                 title: editingAgent ? t("app.admin.dashboard.subagents.page.kfeb7fab7") : t("app.admin.dashboard.subagents.page.kbd2c49ab"),
                 description: form.toolMode === "contextual_auto"
@@ -904,7 +1008,7 @@ export default function SubagentsPage() {
         } finally {
             setIsSaving(false);
         }
-    }, [editingAgent, fetchData, form, t, toast]);
+    }, [editingAgent, ensureSpecialistFamilyRegistered, fetchData, form, t, toast]);
 
     const handleSelectExternalWorker = useCallback((workerId: string) => {
         const worker = externalWorkers.find((item) => item.id === workerId);
@@ -1352,7 +1456,7 @@ export default function SubagentsPage() {
                     const domainTags = Array.isArray(capabilitySnapshot.domainTags)
                         ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3)
                         : [];
-                    const familyKey = (specialistFamily || "engineering").trim().toLowerCase() || "engineering";
+                    const familyKey = normalizeFamilyId(specialistFamily || "engineering");
                     const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : (familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0]);
                     const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "engineering", "E");
                     return (
@@ -1833,18 +1937,28 @@ export default function SubagentsPage() {
 
                         <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(200px,240px)] md:items-start">
                             <div className="space-y-2">
-                                <Label>{locale === "en" ? "Specialist family" : "专家族"}</Label>
+                                <HoverHelpLabel
+                                    label={locale === "en" ? "Specialist family" : "专家族"}
+                                    tooltip={locale === "en"
+                                        ? "Choose an existing family or type a new one. Concrete members stay hidden by default; users can reveal a family with @family in chat."
+                                        : "选择已有专家族或直接输入新专家族。具体成员默认隐藏；用户在聊天里 @family 才会显式展开该族。"}
+                                />
                                 <Input
+                                    list="subagent-family-options"
                                     className="h-10"
                                     value={form.specialistFamily}
                                     onChange={(event) => setForm((current) => ({ ...current, specialistFamily: event.target.value }))}
                                     placeholder="engineering"
                                 />
-                                <p className="min-h-10 text-xs leading-5 text-slate-500">
-                                    {locale === "en"
-                                        ? "The supervisor exposes matched families each turn. Defaults: engineering / writing."
-                                        : "Supervisor 每轮只暴露命中的专家族；默认演示族为 engineering / writing。"}
-                                </p>
+                                <datalist id="subagent-family-options">
+                                    {familyOptions.map((family) => (
+                                        <option
+                                            key={family.familyId || family.displayName}
+                                            value={family.familyId || family.displayName || ""}
+                                            label={`${family.displayName || family.familyId || ""}${family.memberCount ? ` (${family.memberCount})` : ""}`}
+                                        />
+                                    ))}
+                                </datalist>
                             </div>
                             <div className="space-y-2">
                                 <HoverHelpLabel

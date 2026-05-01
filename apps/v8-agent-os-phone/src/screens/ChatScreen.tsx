@@ -88,7 +88,7 @@ import {
     getSessionScope,
     listCommandPresets,
     listConversations,
-    listSkills,
+    listSkillsAndSubagentFamilies,
     requestTextToSpeech,
     respondAskUser,
     releaseDesktopLiveSession,
@@ -116,6 +116,8 @@ import type {
     ScopeBindingView,
     SessionTodoItem,
     SkillReferenceSummary,
+    ContextMentionSummary,
+    SubagentFamilySummary,
     UploadedWorkspaceFile,
     DesktopLiveSessionPayload,
 } from "@/src/types/admin";
@@ -141,6 +143,10 @@ type RuntimeSummary = {
     runId?: string;
     label?: string;
 };
+
+type ComposerMentionItem =
+    | { kind: "skill"; key: string; skill: SkillReferenceSummary }
+    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary };
 
 type WorkspaceBindingDraft =
     | { kind: "main" }
@@ -213,6 +219,7 @@ function buildUserMessage(
     options: {
         command: CommandPresetSummary | null;
         skills: SkillReferenceSummary[];
+        subagentFamilies: SubagentFamilySummary[];
         taskPlanningMode: boolean;
         files: UploadedWorkspaceFile[];
     },
@@ -226,6 +233,28 @@ function buildUserMessage(
     }
     if (options.skills.length > 0) {
         metadata.skillReferences = options.skills.map((skill) => ({ ...skill }));
+    }
+    if (options.skills.length > 0 || options.subagentFamilies.length > 0) {
+        metadata.contextMentions = [
+            ...options.skills.map((skill) => ({
+                kind: "skill" as const,
+                name: skill.name,
+                label: skill.name,
+                description: skill.description,
+                path: skill.path,
+                sourceType: "explicit_mention",
+            })),
+            ...options.subagentFamilies.map((family) => ({
+                kind: "subagent_family" as const,
+                id: family.familyId,
+                familyId: family.familyId,
+                name: family.displayName || family.familyId,
+                label: family.displayName || family.familyId,
+                description: family.description,
+                sourceType: "explicit_mention",
+            })),
+        ];
+        metadata.explicitSubagentFamilies = options.subagentFamilies.map((family) => family.familyId);
     }
     if (options.taskPlanningMode) {
         metadata.taskPlanningMode = true;
@@ -1069,6 +1098,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
         + ((message.images || []).length * 80)
         + (metadata.commandPreset ? 40 : 0)
         + (Array.isArray(metadata.skillReferences) ? metadata.skillReferences.length * 40 : 0)
+        + (Array.isArray(metadata.contextMentions) ? metadata.contextMentions.length * 40 : 0)
         + (Array.isArray(metadata.attachments) ? metadata.attachments.length * 80 : 0)
         + (metadata.taskPlanningMode === true ? 30 : 0)
     );
@@ -1104,6 +1134,20 @@ function mergeUserStructuredMetadata(
         && localMetadata.skillReferences.length > 0
     ) {
         preservedMetadata.skillReferences = localMetadata.skillReferences;
+    }
+    if (
+        (!Array.isArray(snapshotMetadata.contextMentions) || snapshotMetadata.contextMentions.length === 0)
+        && Array.isArray(localMetadata.contextMentions)
+        && localMetadata.contextMentions.length > 0
+    ) {
+        preservedMetadata.contextMentions = localMetadata.contextMentions;
+    }
+    if (
+        (!Array.isArray(snapshotMetadata.explicitSubagentFamilies) || snapshotMetadata.explicitSubagentFamilies.length === 0)
+        && Array.isArray(localMetadata.explicitSubagentFamilies)
+        && localMetadata.explicitSubagentFamilies.length > 0
+    ) {
+        preservedMetadata.explicitSubagentFamilies = localMetadata.explicitSubagentFamilies;
     }
     if (snapshotMetadata.taskPlanningMode !== true && localMetadata.taskPlanningMode === true) {
         preservedMetadata.taskPlanningMode = true;
@@ -1683,9 +1727,11 @@ export default function ChatScreen() {
     const [contextGovernanceHistory, setContextGovernanceHistory] = useState<ContextGovernanceView[]>([]);
     const [commands, setCommands] = useState<CommandPresetSummary[]>([]);
     const [skills, setSkills] = useState<SkillReferenceSummary[]>([]);
+    const [subagentFamilies, setSubagentFamilies] = useState<SubagentFamilySummary[]>([]);
     const [uploadedFiles, setUploadedFiles] = useState<UploadedWorkspaceFile[]>([]);
     const [selectedCommand, setSelectedCommand] = useState<CommandPresetSummary | null>(null);
     const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
+    const [selectedSubagentFamilies, setSelectedSubagentFamilies] = useState<SubagentFamilySummary[]>([]);
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
@@ -1719,18 +1765,35 @@ export default function ChatScreen() {
             || String(item.summary || "").toLowerCase().includes(queryTerm),
         );
     }, [commands, queryTerm]);
-    const filteredSkills = useMemo(() => {
+    const filteredMentionItems = useMemo<ComposerMentionItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}:${skill.path || ""}`));
-        const base = skills.filter((item) => !selectedKeys.has(`${item.name}:${item.path || ""}`));
+        const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
+        const base: ComposerMentionItem[] = [
+            ...skills
+                .filter((item) => !selectedKeys.has(`${item.name}:${item.path || ""}`))
+                .map((skill) => ({ kind: "skill" as const, key: `skill:${skill.name}:${skill.path || ""}`, skill })),
+            ...subagentFamilies
+                .filter((family) => family.familyId && !selectedFamilyIds.has(family.familyId))
+                .map((family) => ({ kind: "subagent_family" as const, key: `family:${family.familyId}`, family })),
+        ];
         if (!queryTerm) {
             return base;
         }
         return base.filter((item) =>
-            item.name.toLowerCase().includes(queryTerm)
-            || String(item.description || "").toLowerCase().includes(queryTerm)
-            || String(item.path || "").toLowerCase().includes(queryTerm),
+            item.kind === "skill"
+                ? (
+                    item.skill.name.toLowerCase().includes(queryTerm)
+                    || String(item.skill.description || "").toLowerCase().includes(queryTerm)
+                    || String(item.skill.path || "").toLowerCase().includes(queryTerm)
+                )
+                : (
+                    item.family.familyId.toLowerCase().includes(queryTerm)
+                    || String(item.family.displayName || "").toLowerCase().includes(queryTerm)
+                    || String(item.family.description || "").toLowerCase().includes(queryTerm)
+                    || (item.family.aliases || []).some((alias) => String(alias || "").toLowerCase().includes(queryTerm))
+                ),
         );
-    }, [queryTerm, selectedSkills, skills]);
+    }, [queryTerm, selectedSkills, selectedSubagentFamilies, skills, subagentFamilies]);
     const boundProject = useMemo(
         () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
         [projects, scopeBinding?.projectId],
@@ -2488,15 +2551,16 @@ export default function ChatScreen() {
     }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectPath, setActiveConversationId, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
-        const [nextConversations, nextCommands, nextSkills] = await Promise.all([
+        const [nextConversations, nextCommands, nextReferences] = await Promise.all([
             listConversations(authorizedFetch),
             listCommandPresets(authorizedFetch).catch(() => []),
-            listSkills(authorizedFetch).catch(() => []),
+            listSkillsAndSubagentFamilies(authorizedFetch).catch(() => ({ skills: [], subagentFamilies: [] })),
         ]);
 
         setConversations(nextConversations);
         setCommands(nextCommands);
-        setSkills(nextSkills);
+        setSkills(nextReferences.skills);
+        setSubagentFamilies(nextReferences.subagentFamilies);
         await loadProjects();
 
         if (
@@ -4062,8 +4126,12 @@ export default function ChatScreen() {
             setSelectedSkills((current) => current.slice(0, -1));
             return;
         }
+        if (selectedSubagentFamilies.length > 0) {
+            setSelectedSubagentFamilies((current) => current.slice(0, -1));
+            return;
+        }
         setSelectedCommand((current) => (current ? null : current));
-    }, [input, selectedSkills.length]);
+    }, [input, selectedSkills.length, selectedSubagentFamilies.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
         const voiceText = text.trim();
@@ -4414,7 +4482,7 @@ export default function ChatScreen() {
 
     const handleSend = useCallback(async () => {
         const text = input.trim();
-        if (!text && !selectedCommand && selectedSkills.length === 0 && uploadedFiles.length === 0) {
+        if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && uploadedFiles.length === 0) {
             return;
         }
         const currentConversationId = activeConversationIdRef.current;
@@ -4426,6 +4494,7 @@ export default function ChatScreen() {
 
         const pendingCommand = selectedCommand;
         const pendingSkills = [...selectedSkills];
+        const pendingSubagentFamilies = [...selectedSubagentFamilies];
         const pendingFiles = [...uploadedFiles];
         const effectiveText = text || (
             pendingFiles.length === 1
@@ -4456,6 +4525,7 @@ export default function ChatScreen() {
             const userMessage = buildUserMessage(effectiveText, {
                 command: pendingCommand,
                 skills: pendingSkills,
+                subagentFamilies: pendingSubagentFamilies,
                 taskPlanningMode,
                 files: pendingFiles,
             }, engineNowMs);
@@ -4503,6 +4573,7 @@ export default function ChatScreen() {
             setActiveQueryText("");
             setSelectedCommand(null);
             setSelectedSkills([]);
+            setSelectedSubagentFamilies([]);
             setUploadedFiles([]);
 
             if (effectiveText) {
@@ -4530,6 +4601,25 @@ export default function ChatScreen() {
                     clientMessageId,
                     commandPresetName: pendingCommand?.name || null,
                     skillReferences: pendingSkills,
+                    contextMentions: [
+                        ...pendingSkills.map((skill): ContextMentionSummary => ({
+                            kind: "skill",
+                            name: skill.name,
+                            label: skill.name,
+                            description: skill.description,
+                            path: skill.path,
+                            sourceType: "explicit_mention",
+                        })),
+                        ...pendingSubagentFamilies.map((family): ContextMentionSummary => ({
+                            kind: "subagent_family",
+                            id: family.familyId,
+                            familyId: family.familyId,
+                            name: family.displayName || family.familyId,
+                            label: family.displayName || family.familyId,
+                            description: family.description,
+                            sourceType: "explicit_mention",
+                        })),
+                    ],
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
                     taskPlanningMode,
@@ -4557,6 +4647,7 @@ export default function ChatScreen() {
             }
             setSelectedCommand(null);
             setSelectedSkills([]);
+            setSelectedSubagentFamilies([]);
             setUploadedFiles([]);
             setActiveQueryMode(null);
             setActiveQueryText("");
@@ -4602,6 +4693,7 @@ export default function ChatScreen() {
             if (!submissionAccepted) {
                 setSelectedCommand(pendingCommand);
                 setSelectedSkills(pendingSkills);
+                setSelectedSubagentFamilies(pendingSubagentFamilies);
                 setUploadedFiles(pendingFiles);
                 setMessages((current) => {
                     const next = normalizeMessagesForState(current.filter((message) =>
@@ -4627,6 +4719,7 @@ export default function ChatScreen() {
         input,
         selectedCommand,
         selectedSkills,
+        selectedSubagentFamilies,
         taskPlanningMode,
         t,
         uploadedFiles,
@@ -4709,6 +4802,15 @@ export default function ChatScreen() {
         setActiveQueryText("");
     };
 
+    const handleSelectSubagentFamilyFromPicker = (family: SubagentFamilySummary) => {
+        setSelectedSubagentFamilies((current) => {
+            const exists = current.some((item) => item.familyId === family.familyId);
+            return exists ? current : [...current, family];
+        });
+        setActiveQueryMode(null);
+        setActiveQueryText("");
+    };
+
     const overlayDockContent = hasOverlayLayer ? (
         <View pointerEvents="box-none" style={styles.keyboardOverlayHost}>
             {pickerOverlayVisible ? (
@@ -4720,9 +4822,10 @@ export default function ChatScreen() {
                     bottom={pickerBottomOffset}
                     position="absolute"
                     commands={filteredCommands}
-                    skills={filteredSkills}
+                    mentions={filteredMentionItems}
                     onSelectCommand={handleSelectCommandFromPicker}
                     onSelectSkill={handleSelectSkillFromPicker}
+                    onSelectSubagentFamily={handleSelectSubagentFamilyFromPicker}
                 />
             ) : null}
             <View
@@ -4783,6 +4886,7 @@ export default function ChatScreen() {
                     onStop={() => void handleRunCommand("interrupt")}
                     selectedCommand={selectedCommand}
                     selectedSkills={selectedSkills}
+                    selectedSubagentFamilies={selectedSubagentFamilies}
                     taskPlanningMode={taskPlanningMode}
                     onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
                     uploadedFiles={uploadedFiles}

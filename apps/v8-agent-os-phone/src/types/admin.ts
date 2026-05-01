@@ -100,6 +100,25 @@ export type SkillReferenceSummary = {
     path?: string;
 };
 
+export type SubagentFamilySummary = {
+    familyId: string;
+    displayName?: string;
+    aliases?: string[];
+    description?: string;
+    memberCount?: number;
+};
+
+export type ContextMentionSummary = {
+    kind: "skill" | "subagent_family";
+    id?: string;
+    name?: string;
+    label?: string;
+    description?: string;
+    path?: string;
+    familyId?: string;
+    sourceType?: string;
+};
+
 export type ChatArtifact = {
     id?: string;
     artifactId?: string;
@@ -257,6 +276,8 @@ export type ChatMessage = {
     metadata?: {
         commandPreset?: { name?: string };
         skillReferences?: SkillReferenceSummary[];
+        contextMentions?: ContextMentionSummary[];
+        explicitSubagentFamilies?: string[];
         taskPlanningMode?: boolean;
         assistantTaskProgress?: {
             phase?:

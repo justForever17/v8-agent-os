@@ -11,7 +11,7 @@ import { FlatList as GestureFlatList } from "react-native-gesture-handler";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
-import type { CommandPresetSummary, SkillReferenceSummary } from "@/src/types/admin";
+import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary } from "@/src/types/admin";
 
 const PICKER_MIN_VIEWPORT_HEIGHT = 248;
 const PICKER_MAX_VIEWPORT_HEIGHT = 372;
@@ -24,10 +24,15 @@ type ComposerPickerOverlayProps = {
     bottom: number;
     position?: "absolute" | "inline";
     commands: CommandPresetSummary[];
-    skills: SkillReferenceSummary[];
+    mentions: ComposerMentionItem[];
     onSelectCommand: (command: CommandPresetSummary) => void;
     onSelectSkill: (skill: SkillReferenceSummary) => void;
+    onSelectSubagentFamily: (family: SubagentFamilySummary) => void;
 };
+
+type ComposerMentionItem =
+    | { kind: "skill"; key: string; skill: SkillReferenceSummary }
+    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary };
 
 export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     visible,
@@ -37,9 +42,10 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     bottom,
     position = "absolute",
     commands,
-    skills,
+    mentions,
     onSelectCommand,
     onSelectSkill,
+    onSelectSubagentFamily,
 }: ComposerPickerOverlayProps) {
     const { colors, t, themeMode } = useUiPrefs();
     const { height: windowHeight } = useWindowDimensions();
@@ -53,7 +59,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     }
 
     const isCommand = mode === "command";
-    const data = isCommand ? commands : skills;
+    const data: Array<CommandPresetSummary | ComposerMentionItem> = isCommand ? commands : mentions;
     const renderCommandItem = ({ item }: { item: CommandPresetSummary }) => (
         <Pressable onPress={() => onSelectCommand(item)} style={styles.row}>
             <MaterialCommunityIcons name="slash-forward" size={16} color={colors.accent} />
@@ -84,6 +90,29 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                 ) : null}
             </View>
         </Pressable>
+    );
+    const renderMentionItem = ({ item }: { item: ComposerMentionItem }) => (
+        item.kind === "skill" ? renderSkillItem({ item: item.skill }) : (
+            <Pressable onPress={() => onSelectSubagentFamily(item.family)} style={styles.row}>
+                <MaterialCommunityIcons name="account-group-outline" size={16} color={colors.accent} />
+                <View style={styles.body}>
+                    <Text style={[styles.title, { color: colors.text }]}>{item.family.displayName || item.family.familyId}</Text>
+                    {item.family.description ? (
+                        <Text style={[styles.summary, { color: colors.textMuted }]} numberOfLines={2}>
+                            {item.family.description}
+                        </Text>
+                    ) : null}
+                    <Text style={[styles.pathText, { color: colors.textSoft }]} numberOfLines={1}>
+                        {item.family.memberCount ? `${item.family.memberCount} members` : item.family.familyId}
+                    </Text>
+                </View>
+            </Pressable>
+        )
+    );
+    const renderPickerItem = ({ item }: { item: CommandPresetSummary | ComposerMentionItem }) => (
+        isCommand
+            ? renderCommandItem({ item: item as CommandPresetSummary })
+            : renderMentionItem({ item: item as ComposerMentionItem })
     );
 
     return (
@@ -133,8 +162,8 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                     <View style={[styles.viewport, { height: viewportHeight }]}>
                         <GestureFlatList
                             data={data}
-                            keyExtractor={(item) => isCommand ? item.name : `${item.name}:${item.path || ""}`}
-                            renderItem={isCommand ? renderCommandItem : renderSkillItem}
+                            keyExtractor={(item) => isCommand ? (item as CommandPresetSummary).name : (item as ComposerMentionItem).key}
+                            renderItem={renderPickerItem}
                             scrollEnabled
                             nestedScrollEnabled
                             persistentScrollbar

@@ -116,6 +116,7 @@ from core.delegation_broker import (
     parse_delegation_id,
     parse_external_worker_result_block,
     render_external_worker_command,
+    reveal_subagent_family,
     task_brief_query_text,
     task_brief_summary,
 )
@@ -7066,6 +7067,7 @@ def _delegation_broker_payload(
     recommended_next_action: str = "none",
     ok: bool = True,
     error: str | None = None,
+    **extra: Any,
 ) -> str:
     payload: dict[str, Any] = {
         "ok": ok,
@@ -7074,6 +7076,7 @@ def _delegation_broker_payload(
         "items": list(items or []),
         "recommendedNextAction": recommended_next_action,
     }
+    payload.update(extra)
     if error:
         payload["error"] = error
     return json.dumps(
@@ -7661,15 +7664,16 @@ def command_session_broker(
 @tool
 def delegation_broker(
     mode: str = "observe",
+    family: str = "",
     tasks: list[dict[str, Any]] | None = None,
     delegation_id: str = "",
     followup: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Unified delegation broker for local subagents and external workers: dispatch, observe, resume, or interrupt delegated work."""
+    """Unified delegation broker for local subagents and external workers: reveal, dispatch, observe, resume, or interrupt delegated work."""
     normalized_mode = str(mode or "observe").strip().lower()
-    if normalized_mode not in {"dispatch", "observe", "resume", "interrupt"}:
+    if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:
         return Command(
             goto="supervisor",
             update={
@@ -7696,6 +7700,34 @@ def delegation_broker(
     inherited_context = dict(base_state.get("current_route_context") or {})
     if not inherited_context:
         inherited_context = latest_delegation_context(base_contexts, agent_id=None)
+
+    if normalized_mode == "reveal":
+        loaded_agents = storage.get_all_agents()
+        reveal_payload = reveal_subagent_family(family, loaded_agents)
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode=normalized_mode,
+                            ok=bool(reveal_payload.get("found")),
+                            summary=(
+                                f"Family '{str(family or '').strip()}' has {int(reveal_payload.get('memberCount') or 0)} enabled member(s)."
+                                if reveal_payload.get("found")
+                                else f"No enabled subagents found for family '{str(family or '').strip()}'."
+                            ),
+                            items=list(reveal_payload.get("members") or []),
+                            recommended_next_action="dispatch" if reveal_payload.get("found") else "none",
+                            family=str(reveal_payload.get("family") or "").strip(),
+                            suggestedRequiredCapabilities=list(reveal_payload.get("suggestedRequiredCapabilities") or []),
+                            selectionRule=str(reveal_payload.get("selectionRule") or ""),
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            },
+        )
 
     if normalized_mode == "dispatch":
         normalized_tasks = normalize_task_briefs(tasks or [])

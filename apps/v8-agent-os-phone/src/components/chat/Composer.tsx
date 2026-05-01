@@ -23,7 +23,7 @@ import Animated, {
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
-import type { CommandPresetSummary, SkillReferenceSummary, UploadedWorkspaceFile } from "@/src/types/admin";
+import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
 
 function fileExtension(name?: string) {
     const ext = String(name || "").split(".").pop()?.trim();
@@ -176,6 +176,7 @@ export const Composer = memo(function Composer({
     onStop,
     selectedCommand,
     selectedSkills,
+    selectedSubagentFamilies,
     taskPlanningMode,
     onToggleTaskPlanningMode,
     uploadedFiles,
@@ -201,6 +202,7 @@ export const Composer = memo(function Composer({
     onStop?: () => void;
     selectedCommand: CommandPresetSummary | null;
     selectedSkills: SkillReferenceSummary[];
+    selectedSubagentFamilies: SubagentFamilySummary[];
     taskPlanningMode: boolean;
     onToggleTaskPlanningMode: () => void;
     uploadedFiles: UploadedWorkspaceFile[];
@@ -216,11 +218,11 @@ export const Composer = memo(function Composer({
     const [isFocused, setIsFocused] = useState(false);
     const bodyInputRef = useRef<TextInput | null>(null);
     const queryInputRef = useRef<TextInput | null>(null);
-    const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || uploadedFiles.length > 0);
+    const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
     const canSend = hasPayload && !busy && !isRunning;
     const canAct = stopAvailable || canSend;
-    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || activeQueryMode);
+    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || activeQueryMode);
     const actionMode: "send" | "stop" | "busy" = stopAvailable
         ? "stop"
         : (busy || isRunning)
@@ -319,6 +321,23 @@ export const Composer = memo(function Composer({
                                     <MaterialCommunityIcons name="at" size={12} color={colors.warning} />
                                     <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
                                         {skill.name}
+                                    </Text>
+                                </View>
+                            ))}
+                            {selectedSubagentFamilies.map((family) => (
+                                <View
+                                    key={family.familyId}
+                                    style={[
+                                        styles.tokenChip,
+                                        {
+                                            backgroundColor: themeMode === "dark" ? "rgba(14,165,233,0.16)" : "rgba(14,165,233,0.12)",
+                                            borderColor: themeMode === "dark" ? "rgba(14,165,233,0.24)" : "rgba(14,165,233,0.22)",
+                                        },
+                                    ]}
+                                >
+                                    <MaterialCommunityIcons name="account-group-outline" size={12} color={colors.accent} />
+                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                        {family.displayName || family.familyId}
                                     </Text>
                                 </View>
                             ))}

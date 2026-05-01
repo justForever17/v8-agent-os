@@ -1,3 +1,4 @@
+import re
 import yaml
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
@@ -23,6 +24,116 @@ DEPRECATED_DEFAULT_SUBAGENT_IDS = {
     "creative-editor",
     "life-ops-coach",
 }
+DEFAULT_SPECIALIST_FAMILIES = [
+    {
+        "familyId": "engineering",
+        "displayName": "Engineering",
+        "aliases": ["工程", "coding", "project_coding"],
+        "description": "Code, architecture, tests, migration, debugging, and repository implementation work.",
+    },
+    {
+        "familyId": "creative_media",
+        "displayName": "Creative Media",
+        "aliases": ["创意媒体", "media", "multimedia"],
+        "description": "Image, video, voice, music brief, recipe, asset, and post-production specialist work.",
+    },
+    {
+        "familyId": "writing",
+        "displayName": "Writing",
+        "aliases": ["写作", "docs", "documentation"],
+        "description": "Documentation, research synthesis, handoff, proposals, and narrative delivery.",
+    },
+]
+
+
+def normalize_specialist_family_id(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    normalized = re.sub(r"\s+", "_", normalized)
+    normalized = re.sub(r"[^\w.+-]+", "_", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"_+", "_", normalized).strip("._-")
+    return normalized or "engineering"
+
+
+def normalize_specialist_family_entry(value: Any) -> Dict[str, Any] | None:
+    if isinstance(value, str):
+        family_id = normalize_specialist_family_id(value)
+        return {
+            "familyId": family_id,
+            "displayName": value.strip() or family_id,
+            "aliases": [],
+            "description": "",
+        }
+    if not isinstance(value, dict):
+        return None
+    raw_id = value.get("familyId") or value.get("id") or value.get("name") or value.get("displayName")
+    family_id = normalize_specialist_family_id(raw_id)
+    display_name = str(value.get("displayName") or value.get("name") or raw_id or family_id).strip() or family_id
+    aliases = []
+    for item in list(value.get("aliases") or []):
+        text = str(item or "").strip()
+        if text and text not in aliases:
+            aliases.append(text)
+    return {
+        "familyId": family_id,
+        "displayName": display_name,
+        "aliases": aliases,
+        "description": str(value.get("description") or "").strip(),
+    }
+
+
+def normalize_specialist_families_config(value: Any) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*DEFAULT_SPECIALIST_FAMILIES, *list(value or [])]:
+        entry = normalize_specialist_family_entry(item)
+        if not entry:
+            continue
+        family_id = str(entry.get("familyId") or "").strip()
+        if not family_id:
+            continue
+        if family_id in seen:
+            existing = next((candidate for candidate in entries if candidate.get("familyId") == family_id), None)
+            if existing is not None:
+                existing_aliases = list(existing.get("aliases") or [])
+                for alias in list(entry.get("aliases") or []):
+                    if alias not in existing_aliases:
+                        existing_aliases.append(alias)
+                existing["aliases"] = existing_aliases
+                if entry.get("description") and not existing.get("description"):
+                    existing["description"] = entry.get("description")
+                if entry.get("displayName") and existing.get("displayName") == family_id:
+                    existing["displayName"] = entry.get("displayName")
+            continue
+        seen.add(family_id)
+        entries.append(entry)
+    return entries
+
+
+def build_specialist_family_registry(agents: List[Dict[str, Any]] | None, specialist_registry: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+    configured = normalize_specialist_families_config((specialist_registry or {}).get("families") if isinstance(specialist_registry, dict) else None)
+    by_id: Dict[str, Dict[str, Any]] = {str(item["familyId"]): dict(item) for item in configured}
+    member_counts: Dict[str, int] = {}
+    for agent in list(agents or []):
+        if not isinstance(agent, dict):
+            continue
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        family_id = normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family") or "engineering")
+        member_counts[family_id] = member_counts.get(family_id, 0) + 1
+        by_id.setdefault(
+            family_id,
+            {
+                "familyId": family_id,
+                "displayName": family_id.replace("_", " ").title(),
+                "aliases": [],
+                "description": "",
+            },
+        )
+    result = []
+    for family_id in sorted(by_id, key=lambda key: (0 if key in {"engineering", "creative_media", "writing"} else 1, key)):
+        entry = dict(by_id[family_id])
+        entry["memberCount"] = member_counts.get(family_id, 0)
+        result.append(entry)
+    return result
 
 def ensure_specialist_family(snapshot: Dict[str, Any] | None) -> Dict[str, Any]:
     """Backfill compact supervisor routing metadata for legacy agent files."""

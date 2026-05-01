@@ -46,6 +46,8 @@ from core.scoped_workspace_resource import (
 )
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
+from core.agents import build_specialist_family_registry, normalize_specialist_family_id
+from core.task_shape_classifier import classify_task_shape
 from core.context.workspace import workspace_resolution_service
 from erc.chat_canonical_transcript import (
     CanonicalTranscriptBuilder,
@@ -143,7 +145,10 @@ class ChatPreparedRequest:
     engineering_mode: str = "auto"
     engineering_trigger_decision: dict[str, Any] = field(default_factory=dict)
     engineering_context_pack: dict[str, Any] | None = None
+    task_shape_hint: dict[str, Any] = field(default_factory=dict)
     skill_references: list[dict[str, str]] = field(default_factory=list)
+    context_mentions: list[dict[str, str]] = field(default_factory=list)
+    explicit_subagent_families: list[str] = field(default_factory=list)
     planner_plan: dict[str, Any] | None = None
 
 
@@ -222,6 +227,7 @@ class PlannerTaskBriefPayload(BaseModel):
     dependency: list[str] = Field(default_factory=list)
     parallelGroup: str = ""
     executionLaneHint: Literal["subagent", "external_worker", "auto"] = "auto"
+    familyHint: str = ""
     preferredAgentId: str = ""
     preferredWorkerType: str = ""
 
@@ -737,10 +743,119 @@ class ChatRuntime:
             )
         return normalized
 
+    def _normalize_context_mentions(self, request: ChatRequest, *, skill_references: list[dict[str, str]]) -> list[dict[str, str]]:
+        request_data = request.data
+        selected = getattr(request_data, "context_mentions", None) if request_data else None
+        normalized: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def add_mention(payload: dict[str, Any]) -> None:
+            kind = str(payload.get("kind") or "").strip().lower()
+            mention_id = str(payload.get("id") or payload.get("familyId") or "").strip()
+            name = str(payload.get("name") or payload.get("label") or "").strip()
+            path = str(payload.get("path") or "").strip()
+            if not kind or (not mention_id and not name and not path):
+                return
+            if kind in {"subagent-family", "subagentfamily", "family"}:
+                kind = "subagent_family"
+            dedupe_key = (kind, mention_id.lower() or name.lower(), path.lower())
+            if dedupe_key in seen:
+                return
+            seen.add(dedupe_key)
+            current = {
+                "kind": kind,
+                "id": mention_id,
+                "name": name,
+                "label": str(payload.get("label") or name or mention_id).strip(),
+                "description": str(payload.get("description") or "").strip(),
+                "path": path,
+                "familyId": normalize_specialist_family_id(payload.get("familyId") or mention_id or name) if kind == "subagent_family" else "",
+                "sourceType": str(payload.get("sourceType") or payload.get("source_type") or "explicit_mention").strip(),
+            }
+            normalized.append(current)
+
+        for item in list(selected or []):
+            if not item:
+                continue
+            add_mention(
+                {
+                    "kind": getattr(item, "kind", ""),
+                    "id": getattr(item, "id", ""),
+                    "name": getattr(item, "name", ""),
+                    "label": getattr(item, "label", ""),
+                    "description": getattr(item, "description", ""),
+                    "path": getattr(item, "path", ""),
+                    "familyId": getattr(item, "family_id", ""),
+                    "sourceType": getattr(item, "source_type", ""),
+                }
+            )
+        for skill in list(skill_references or []):
+            add_mention(
+                {
+                    "kind": "skill",
+                    "id": skill.get("id") or "",
+                    "name": skill.get("name") or "",
+                    "label": skill.get("name") or "",
+                    "description": skill.get("description") or "",
+                    "path": skill.get("path") or "",
+                    "sourceType": skill.get("sourceType") or "",
+                }
+            )
+        return normalized
+
+    def _registered_subagent_family_lookup(self) -> dict[str, str]:
+        supervisor_config = storage.get_supervisor_config() or {}
+        registry = build_specialist_family_registry(
+            storage.get_all_agents(),
+            supervisor_config.get("specialistRegistry") if isinstance(supervisor_config.get("specialistRegistry"), dict) else {},
+        )
+        lookup: dict[str, str] = {}
+        for entry in registry:
+            family_id = normalize_specialist_family_id(entry.get("familyId"))
+            candidates = [
+                family_id,
+                str(entry.get("displayName") or "").strip(),
+                str(entry.get("name") or "").strip(),
+                *[str(item or "").strip() for item in list(entry.get("aliases") or [])],
+            ]
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                lookup[normalize_specialist_family_id(candidate)] = family_id
+                lookup[candidate.strip().lower()] = family_id
+        return lookup
+
+    def _resolve_explicit_subagent_families(self, request: ChatRequest, context_mentions: list[dict[str, str]]) -> list[str]:
+        lookup = self._registered_subagent_family_lookup()
+        resolved: list[str] = []
+
+        def add_candidate(value: Any) -> None:
+            if value is None:
+                return
+            raw = str(value or "").strip()
+            if not raw:
+                return
+            family_id = lookup.get(normalize_specialist_family_id(raw)) or lookup.get(raw.lower())
+            if family_id and family_id not in resolved:
+                resolved.append(family_id)
+
+        for mention in list(context_mentions or []):
+            if str(mention.get("kind") or "").strip().lower() != "subagent_family":
+                continue
+            add_candidate(mention.get("familyId") or mention.get("id") or mention.get("name") or mention.get("label"))
+
+        latest_user = self._latest_user_content(request)
+        for match in re.finditer(r"@family:([^\s,，。;；]+)", latest_user, flags=re.IGNORECASE):
+            add_candidate(match.group(1))
+        for match in re.finditer(r"@([^\s,，。;；:：]+)", latest_user):
+            add_candidate(match.group(1))
+
+        return resolved
+
     def _resolve_request_context(
         self,
         request: ChatRequest,
-    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, list[dict[str, str]]]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, list[dict[str, str]], list[dict[str, str]], list[str]]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
@@ -762,7 +877,10 @@ class ChatRuntime:
             if not command_preset:
                 raise RuntimeError(f"Command preset '{command_selection.name}' does not exist.")
 
-        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, self._normalize_skill_references(request)
+        skill_references = self._normalize_skill_references(request)
+        context_mentions = self._normalize_context_mentions(request, skill_references=skill_references)
+        explicit_subagent_families = self._resolve_explicit_subagent_families(request, context_mentions)
+        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, skill_references, context_mentions, explicit_subagent_families
 
     def _inject_structured_request_context(
         self,
@@ -773,9 +891,10 @@ class ChatRuntime:
         planner_mode: str,
         planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
+        context_mentions: list[dict[str, str]],
         planner_dispatch_mode: str = "suggest",
     ) -> None:
-        if not command_preset and not skill_references:
+        if not command_preset and not skill_references and not context_mentions:
             return
 
         for message in reversed(lc_messages):
@@ -815,6 +934,22 @@ class ChatRuntime:
                         skill_lines.append(f"  projectId: {skill['projectId']}")
                 skill_lines.append("[/SKILL REFERENCES]")
                 wrapped_sections.append("\n".join(skill_lines))
+            subagent_family_mentions = [
+                mention for mention in list(context_mentions or [])
+                if str(mention.get("kind") or "").strip().lower() == "subagent_family"
+            ]
+            if subagent_family_mentions:
+                mention_lines = ["[SUBAGENT FAMILY MENTIONS]"]
+                for mention in subagent_family_mentions:
+                    mention_lines.append(
+                        f"- familyId: {mention.get('familyId') or mention.get('id') or mention.get('name') or 'unknown'}"
+                    )
+                    if mention.get("label"):
+                        mention_lines.append(f"  label: {mention['label']}")
+                    if mention.get("description"):
+                        mention_lines.append(f"  description: {mention['description']}")
+                mention_lines.append("[/SUBAGENT FAMILY MENTIONS]")
+                wrapped_sections.append("\n".join(mention_lines))
             user_content = str(message.content or "").strip()
             wrapped_sections.append(
                 "\n".join(
@@ -895,6 +1030,7 @@ class ChatRuntime:
             "- taskBriefs must align with executionStrategy.\n"
             "- direct may still include one compact task brief for governance and verification.\n"
             "- preferredAgentId and preferredWorkerType are optional hints, not guesses.\n"
+            "- familyHint may name a specialist family such as engineering or creative_media; it guides delegation_broker selection but does not reveal members or grant runtime tools.\n"
             "- executionLaneHint must be one of: subagent, external_worker, auto.\n"
             "- Keep riskFlags short and concrete.\n"
             "Engineering lane discipline when EngineeringEvidenceGraph is provided:\n"
@@ -914,7 +1050,13 @@ class ChatRuntime:
             "reason": reason,
             "plannerMode": chat_run.prepared.planner_mode,
             "intentSignals": signals,
+            "taskShapeHint": dict(chat_run.prepared.task_shape_hint or {}),
         }
+        suggested_families = [
+            str(item or "").strip()
+            for item in list((chat_run.prepared.task_shape_hint or {}).get("suggestedFamilies") or [])
+            if str(item or "").strip()
+        ]
         brief = normalize_task_brief(
             {
                 "taskBriefId": "task-1",
@@ -927,6 +1069,7 @@ class ChatRuntime:
                 "dependency": [],
                 "parallelGroup": "main" if should_delegate else "",
                 "executionLaneHint": "auto" if should_delegate else "subagent",
+                "familyHint": suggested_families[0] if suggested_families else "",
             }
         )
         briefs = [brief]
@@ -1449,7 +1592,17 @@ class ChatRuntime:
         self._ensure_latest_user_content_for_attachments(request, attachments)
         lc_messages = self._to_langchain_messages(request)
         self._inject_uploaded_file_notices(request, lc_messages)
-        command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_intent_diagnostics, engineering_mode, skill_references = self._resolve_request_context(request)
+        (
+            command_preset,
+            task_planning_mode,
+            planner_mode,
+            planner_dispatch_mode,
+            planner_intent_diagnostics,
+            engineering_mode,
+            skill_references,
+            context_mentions,
+            explicit_subagent_families,
+        ) = self._resolve_request_context(request)
         self._inject_structured_request_context(
             lc_messages,
             command_preset=command_preset,
@@ -1458,6 +1611,7 @@ class ChatRuntime:
             planner_dispatch_mode=planner_dispatch_mode,
             planner_intent_diagnostics=planner_intent_diagnostics,
             skill_references=skill_references,
+            context_mentions=context_mentions,
         )
 
         request.session_id = session_id
@@ -1481,6 +1635,8 @@ class ChatRuntime:
             task_planning_mode=task_planning_mode,
             engineering_mode=engineering_mode,
             skill_references=skill_references,
+            context_mentions=context_mentions,
+            explicit_subagent_families=explicit_subagent_families,
         )
 
     def begin_run(
@@ -1601,6 +1757,30 @@ class ChatRuntime:
             user_id=prepared.user_id,
             scope_result=scope_result,
         )
+        try:
+            prepared.task_shape_hint = classify_task_shape(
+                prepared.latest_user_content,
+                workspace_descriptor={
+                    "projectId": scope_result.binding.project_id,
+                    "workspaceId": scope_result.binding.workspace_id,
+                    "workspacePath": scope_result.binding.workspace_path,
+                    "resolvedScope": scope_result.binding.resolved_scope,
+                },
+            )
+            run_service.update_metadata(
+                run_handle.run_id,
+                {"taskShapeHint": dict(prepared.task_shape_hint or {})},
+            )
+        except Exception as exc:
+            prepared.task_shape_hint = {
+                "primaryTaskShape": "unknown",
+                "secondaryTaskShapes": [],
+                "confidence": 0.0,
+                "reason": "task_shape_classifier_failed",
+                "error": str(exc),
+                "policy": "hint_only_non_authoritative_no_reveal_no_grant",
+            }
+            run_service.update_metadata(run_handle.run_id, {"taskShapeHint": dict(prepared.task_shape_hint or {})})
         try:
             engineering_pack = engineering_lane_service.build_context_pack(
                 user_query=prepared.latest_user_content,
@@ -1750,6 +1930,8 @@ class ChatRuntime:
             metadata["plannerDispatchMode"] = chat_run.prepared.planner_dispatch_mode
         if chat_run.prepared.task_planning_mode:
             metadata["taskPlanningMode"] = True
+        if isinstance(getattr(chat_run.prepared, "task_shape_hint", None), dict) and chat_run.prepared.task_shape_hint:
+            metadata["taskShapeHint"] = dict(chat_run.prepared.task_shape_hint)
         engineering_mode = getattr(chat_run.prepared, "engineering_mode", "auto")
         engineering_trigger_decision = getattr(chat_run.prepared, "engineering_trigger_decision", None)
         if engineering_mode != "auto" or engineering_trigger_decision:
@@ -1760,6 +1942,10 @@ class ChatRuntime:
                 metadata["engineeringContextPack"] = dict(engineering_context_pack)
         if chat_run.prepared.skill_references:
             metadata["skillReferences"] = list(chat_run.prepared.skill_references)
+        if chat_run.prepared.context_mentions:
+            metadata["contextMentions"] = list(chat_run.prepared.context_mentions)
+        if chat_run.prepared.explicit_subagent_families:
+            metadata["explicitSubagentFamilies"] = list(chat_run.prepared.explicit_subagent_families)
 
         user_input_already_recorded: dict[str, Any] | None = None
         if not chat_run.is_resume_request and request.messages and request.messages[-1].role == "user":
@@ -1791,9 +1977,12 @@ class ChatRuntime:
                 **({"plannerDispatchMode": metadata.get("plannerDispatchMode")} if metadata.get("plannerDispatchMode") else {}),
                 **({"plannerIntentDiagnostics": dict(metadata["plannerIntentDiagnostics"])} if isinstance(metadata.get("plannerIntentDiagnostics"), dict) else {}),
                 **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
+                **({"taskShapeHint": dict(metadata["taskShapeHint"])} if isinstance(metadata.get("taskShapeHint"), dict) else {}),
                 **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
+                **({"contextMentions": list(metadata.get("contextMentions") or [])} if isinstance(metadata.get("contextMentions"), list) and metadata.get("contextMentions") else {}),
+                **({"explicitSubagentFamilies": list(metadata.get("explicitSubagentFamilies") or [])} if isinstance(metadata.get("explicitSubagentFamilies"), list) and metadata.get("explicitSubagentFamilies") else {}),
                 **({"attachments": attachments} if attachments else {}),
             }
             attachment_nodes = [
@@ -1916,6 +2105,16 @@ class ChatRuntime:
                     agent_id=None,
                     node="input_recorder",
                 )
+            if chat_run.prepared.explicit_subagent_families:
+                chat_run.emit_runtime_event(
+                    "chat.subagent_family_mentions.applied",
+                    {
+                        "messageId": user_message_id,
+                        "families": list(chat_run.prepared.explicit_subagent_families),
+                    },
+                    agent_id=None,
+                    node="input_recorder",
+                )
             workflow_ledger_service.record_step_inputs(
                 chat_run.active_run_id,
                 inputs={
@@ -1931,6 +2130,8 @@ class ChatRuntime:
                     "planner_intent_diagnostics": dict(prepared_planner_diagnostics),
                     "task_planning_mode": chat_run.prepared.task_planning_mode,
                     "skill_references": list(chat_run.prepared.skill_references),
+                    "context_mentions": list(chat_run.prepared.context_mentions),
+                    "explicit_subagent_families": list(chat_run.prepared.explicit_subagent_families),
                 },
             )
             chat_run.run_handle.refresh_chat_snapshot()
@@ -2019,6 +2220,9 @@ class ChatRuntime:
             session_id=chat_run.session_id,
             planner_plan=chat_run.prepared.planner_plan,
             engineering_context=chat_run.prepared.engineering_context_pack,
+            task_shape_hint=chat_run.prepared.task_shape_hint,
+            explicit_subagent_families=chat_run.prepared.explicit_subagent_families,
+            context_mentions=chat_run.prepared.context_mentions,
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
@@ -2071,6 +2275,9 @@ class ChatRuntime:
             session_id=chat_run.session_id,
             planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
             engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
+            task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
+            explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
+            context_mentions=snapshot.get("context_mentions") if isinstance(snapshot.get("context_mentions"), list) else chat_run.prepared.context_mentions,
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )

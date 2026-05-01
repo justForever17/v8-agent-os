@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from core.context_policy import DEFAULT_CONTEXT_POLICY, normalize_context_policy
 from core.delegation_broker import default_external_worker_descriptors, normalize_external_worker_descriptors
+from core.agents import DEFAULT_SPECIALIST_FAMILIES, normalize_specialist_families_config
 from core.runtime.supervisor_tool_policy import sanitize_supervisor_allowed_tools
 from core.v8_agent_os_identity import default_system_identity, normalize_system_identity
 from core.v8_agent_os_paths import (
@@ -469,6 +470,8 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "specialistRegistry": {
             "familyModeEnabled": True,
             "maxMembersPerFamily": 10,
+            "exposureMode": "family_cards",
+            "families": DEFAULT_SPECIALIST_FAMILIES,
         },
     },
     "workspace": {"agent_workspace_path": _default_workspace_path()},
@@ -2194,6 +2197,11 @@ class StorageManager:
         except (TypeError, ValueError):
             max_members = 10
         raw["maxMembersPerFamily"] = max(1, min(max_members, 50))
+        exposure_mode = str(raw.get("exposureMode") or "family_cards").strip().lower()
+        if exposure_mode not in {"family_cards", "legacy_matched_members"}:
+            exposure_mode = "family_cards"
+        raw["exposureMode"] = exposure_mode
+        raw["families"] = normalize_specialist_families_config(raw.get("families"))
         return raw
 
     def get_supervisor_config(self) -> Dict[str, Any]:

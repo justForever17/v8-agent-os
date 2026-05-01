@@ -32,6 +32,9 @@ class AgentState(TypedDict):
     planner_plan: NotRequired[dict]
     planner_dispatch_status: NotRequired[dict]
     engineering_context: NotRequired[dict]
+    task_shape_hint: NotRequired[dict]
+    explicit_subagent_families: NotRequired[list]
+    context_mentions: NotRequired[list]
 
 from core.context_orchestrator import context_orchestrator
 

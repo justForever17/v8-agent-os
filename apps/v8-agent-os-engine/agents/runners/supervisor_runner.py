@@ -62,6 +62,9 @@ class SupervisorAgentRunner:
         *,
         planner_plan: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
+        task_shape_hint: dict[str, Any] | None = None,
+        explicit_subagent_families: list[str] | None = None,
+        context_mentions: list[dict[str, Any]] | None = None,
         transport: str | None = None,
     ):
         state = AgentState(messages=messages)
@@ -71,6 +74,12 @@ class SupervisorAgentRunner:
             state["planner_plan"] = planner_plan
         if isinstance(engineering_context, dict) and engineering_context:
             state["engineering_context"] = engineering_context
+        if isinstance(task_shape_hint, dict) and task_shape_hint:
+            state["task_shape_hint"] = task_shape_hint
+        if explicit_subagent_families:
+            state["explicit_subagent_families"] = list(explicit_subagent_families)
+        if context_mentions:
+            state["context_mentions"] = list(context_mentions)
         return state
 
     def build_graph_config(self, session_id: str, *, recursion_limit: int) -> dict:
@@ -84,6 +93,9 @@ class SupervisorAgentRunner:
         session_id: str,
         planner_plan: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
+        task_shape_hint: dict[str, Any] | None = None,
+        explicit_subagent_families: list[str] | None = None,
+        context_mentions: list[dict[str, Any]] | None = None,
         recursion_limit: int,
         transport: str | None = None,
     ):
@@ -94,6 +106,9 @@ class SupervisorAgentRunner:
                 messages,
                 planner_plan=planner_plan,
                 engineering_context=engineering_context,
+                task_shape_hint=task_shape_hint,
+                explicit_subagent_families=explicit_subagent_families,
+                context_mentions=context_mentions,
                 transport=transport,
             ),
             graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),

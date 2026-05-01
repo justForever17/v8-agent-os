@@ -184,7 +184,23 @@ interface SkillReferenceSummary {
     path?: string;
 }
 
+interface SubagentFamilySummary {
+    familyId: string;
+    displayName?: string;
+    aliases?: string[];
+    description?: string;
+    memberCount?: number;
+}
+
+type MentionPickerItem =
+    | { kind: "skill"; key: string; skill: SkillReferenceSummary }
+    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary };
+
 function isSkillReferenceSummaryCandidate(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSubagentFamilyCandidate(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -204,9 +220,11 @@ export function InputArea({
     const [commandsLoading, setCommandsLoading] = React.useState(false);
     const [selectedCommandPreset, setSelectedCommandPreset] = React.useState<CommandPresetSummary | null>(null);
     const [skills, setSkills] = React.useState<SkillReferenceSummary[]>([]);
+    const [subagentFamilies, setSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
     const [skillsLoaded, setSkillsLoaded] = React.useState(false);
     const [skillsLoading, setSkillsLoading] = React.useState(false);
     const [selectedSkills, setSelectedSkills] = React.useState<SkillReferenceSummary[]>([]);
+    const [selectedSubagentFamilies, setSelectedSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = React.useState(false);
     const [files, setFiles] = React.useState<File[]>([]);
     const [uploadedUrls, setUploadedUrls] = React.useState<string[]>([]);
@@ -254,19 +272,36 @@ export function InputArea({
             || String(preset.filename || "").toLowerCase().includes(keyword)
         );
     }, [commandPresets, slashQuery]);
-    const filteredSkills = React.useMemo(() => {
+    const filteredMentionItems = React.useMemo<MentionPickerItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
-        const base = skills.filter((skill) => !selectedKeys.has(`${skill.name}::${skill.path || ""}`));
+        const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
+        const base: MentionPickerItem[] = [
+            ...skills
+                .filter((skill) => !selectedKeys.has(`${skill.name}::${skill.path || ""}`))
+                .map((skill) => ({ kind: "skill" as const, key: `skill:${skill.name}:${skill.path || ""}`, skill })),
+            ...subagentFamilies
+                .filter((family) => family.familyId && !selectedFamilyIds.has(family.familyId))
+                .map((family) => ({ kind: "subagent_family" as const, key: `family:${family.familyId}`, family })),
+        ];
         if (!skillQuery) {
             return base;
         }
         const keyword = skillQuery.toLowerCase();
-        return base.filter((skill) =>
-            skill.name.toLowerCase().includes(keyword)
-            || String(skill.description || "").toLowerCase().includes(keyword)
-            || String(skill.path || "").toLowerCase().includes(keyword)
+        return base.filter((item) =>
+            item.kind === "skill"
+                ? (
+                    item.skill.name.toLowerCase().includes(keyword)
+                    || String(item.skill.description || "").toLowerCase().includes(keyword)
+                    || String(item.skill.path || "").toLowerCase().includes(keyword)
+                )
+                : (
+                    item.family.familyId.toLowerCase().includes(keyword)
+                    || String(item.family.displayName || "").toLowerCase().includes(keyword)
+                    || String(item.family.description || "").toLowerCase().includes(keyword)
+                    || (item.family.aliases || []).some((alias) => String(alias || "").toLowerCase().includes(keyword))
+                )
         );
-    }, [selectedSkills, skillQuery, skills]);
+    }, [selectedSkills, selectedSubagentFamilies, skillQuery, skills, subagentFamilies]);
 
     const updateInputValue = React.useCallback((nextValue: string) => {
         handleInputChange({
@@ -337,6 +372,7 @@ export function InputArea({
                 );
             }
             const nextSkills: unknown[] = Array.isArray(payload?.skills) ? payload.skills : [];
+            const nextFamilies: unknown[] = Array.isArray(payload?.subagentFamilies) ? payload.subagentFamilies : [];
             setSkills(
                 nextSkills
                     .filter(isSkillReferenceSummaryCandidate)
@@ -346,6 +382,18 @@ export function InputArea({
                         path: String(item.path || "").trim(),
                     }))
                     .filter((item: SkillReferenceSummary) => item.name || item.path)
+            );
+            setSubagentFamilies(
+                nextFamilies
+                    .filter(isSubagentFamilyCandidate)
+                    .map((item): SubagentFamilySummary => ({
+                        familyId: String(item.familyId || item.id || item.name || "").trim(),
+                        displayName: String(item.displayName || item.name || item.familyId || "").trim(),
+                        aliases: Array.isArray(item.aliases) ? item.aliases.map((alias) => String(alias || "").trim()).filter(Boolean) : [],
+                        description: String(item.description || "").trim(),
+                        memberCount: Number(item.memberCount || 0) || 0,
+                    }))
+                    .filter((item) => item.familyId)
             );
             setSkillsLoaded(true);
         } catch (error) {
@@ -386,6 +434,26 @@ export function InputArea({
         dismissInlineNotice();
     }, [dismissInlineNotice, updateInputValue]);
 
+    const selectSubagentFamilyReference = React.useCallback((family: SubagentFamilySummary) => {
+        setSelectedSubagentFamilies((current) => {
+            const alreadySelected = current.some((item) => item.familyId === family.familyId);
+            if (alreadySelected) {
+                return current;
+            }
+            return [...current, family];
+        });
+        updateInputValue("");
+        dismissInlineNotice();
+    }, [dismissInlineNotice, updateInputValue]);
+
+    const selectMentionItem = React.useCallback((item: MentionPickerItem) => {
+        if (item.kind === "skill") {
+            selectSkillReference(item.skill);
+            return;
+        }
+        selectSubagentFamilyReference(item.family);
+    }, [selectSkillReference, selectSubagentFamilyReference]);
+
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -396,8 +464,8 @@ export function InputArea({
                 return;
             }
             if (isSkillPickerOpen) {
-                if (filteredSkills.length > 0) {
-                    selectSkillReference(filteredSkills[0]);
+                if (filteredMentionItems.length > 0) {
+                    selectMentionItem(filteredMentionItems[0]);
                 }
                 return;
             }
@@ -594,7 +662,8 @@ export function InputArea({
     const canSubmit = (!isCommandPickerOpen && !isSkillPickerOpen && hasTypedMessage)
         || files.length > 0
         || Boolean(selectedCommandPreset)
-        || selectedSkills.length > 0;
+        || selectedSkills.length > 0
+        || selectedSubagentFamilies.length > 0;
 
     // Convert attached files to MediaItems for Lightbox
     const mediaItems: MediaItem[] = files.map((f) => {
@@ -633,6 +702,28 @@ export function InputArea({
                         path: skill.path || "",
                     }));
                 }
+                const contextMentions = [
+                    ...selectedSkills.map((skill) => ({
+                        kind: "skill",
+                        name: skill.name,
+                        label: skill.name,
+                        description: skill.description || "",
+                        path: skill.path || "",
+                        sourceType: "explicit_mention",
+                    })),
+                    ...selectedSubagentFamilies.map((family) => ({
+                        kind: "subagent_family",
+                        id: family.familyId,
+                        familyId: family.familyId,
+                        name: family.displayName || family.familyId,
+                        label: family.displayName || family.familyId,
+                        description: family.description || "",
+                        sourceType: "explicit_mention",
+                    })),
+                ];
+                if (contextMentions.length > 0) {
+                    nextData.contextMentions = contextMentions;
+                }
                 if (taskPlanningMode) {
                     nextData.plannerMode = "force";
                     nextData.taskPlanningMode = true;
@@ -643,6 +734,7 @@ export function InputArea({
                 setUploadedUrls([]);
                 setSelectedCommandPreset(null);
                 setSelectedSkills([]);
+                setSelectedSubagentFamilies([]);
             }}
             className={cn(
                 "relative mx-auto flex w-full flex-col overflow-hidden rounded-[1.25rem] border shadow-sm transition-all duration-500",
@@ -717,7 +809,7 @@ export function InputArea({
             )}
 
             <div className="flex flex-col relative">
-                {(selectedCommandPreset || selectedSkills.length > 0) && (
+                {(selectedCommandPreset || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0) && (
                     <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
                         {selectedCommandPreset && (
                             <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
@@ -746,6 +838,24 @@ export function InputArea({
                                     onClick={() => setSelectedSkills((current) => current.filter((item) => !(item.name === skill.name && (item.path || "") === (skill.path || ""))))}
                                     className="rounded-full text-current/70 transition hover:text-current"
                                     aria-label={t(lt("移除技能引用", "Remove skill reference"))}
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
+                        {selectedSubagentFamilies.map((family) => (
+                            <div
+                                key={family.familyId}
+                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200 sm:text-[11px]"
+                                title={family.description || family.familyId}
+                            >
+                                <AtSign className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
+                                <span className="truncate">{family.displayName || family.familyId}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedSubagentFamilies((current) => current.filter((item) => item.familyId !== family.familyId))}
+                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    aria-label={t(lt("移除专家族引用", "Remove subagent family reference"))}
                                 >
                                     <X className="h-3 w-3" />
                                 </button>
@@ -808,42 +918,61 @@ export function InputArea({
                 {isSkillPickerOpen && (
                     <div className="mx-3 mb-2 rounded-2xl border border-fuchsia-200/60 bg-background/95 shadow-lg backdrop-blur-xl dark:border-fuchsia-500/20">
                         <div className="border-b border-fuchsia-200/40 px-3 py-2 text-[11px] text-muted-foreground dark:border-fuchsia-500/10">
-                            {t(lt("输入 ", "Type "))}<span className="font-medium text-fuchsia-600">@</span>{t(lt(" 后选择一个或多个 Skill，发送时会把名称、说明和真实路径作为结构化上下文交给 Supervisor。", " to pick one or more skills. Their name, description, and real path will be sent to Supervisor as structured context."))}
+                            {t(lt("输入 ", "Type "))}<span className="font-medium text-fuchsia-600">@</span>{t(lt(" 后选择 Skill 或 Subagent 家族；家族只会显式展开本轮 Supervisor 可见成员。", " to pick Skills or Subagent Families. Families reveal members only for this supervisor turn."))}
                         </div>
                         <div className="max-h-32 overflow-y-auto px-1 py-1 sm:max-h-40">
                             {skillsLoading ? (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">{t(lt("正在读取技能列表...", "Loading skills..."))}</div>
-                            ) : filteredSkills.length > 0 ? (
-                                filteredSkills.map((skill) => (
+                            ) : filteredMentionItems.length > 0 ? (
+                                filteredMentionItems.map((item, index) => (
                                     <button
-                                        key={`${skill.name}:${skill.path || ""}`}
+                                        key={item.key}
                                         type="button"
-                                        onClick={() => selectSkillReference(skill)}
-                                        className="flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-fuchsia-50/70 dark:hover:bg-fuchsia-500/10"
+                                        onClick={() => selectMentionItem(item)}
+                                        className={cn(
+                                            "flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition",
+                                            item.kind === "skill"
+                                                ? "hover:bg-fuchsia-50/70 dark:hover:bg-fuchsia-500/10"
+                                                : "hover:bg-sky-50/70 dark:hover:bg-sky-500/10",
+                                            index > 0 && filteredMentionItems[index - 1]?.kind !== item.kind ? "mt-1 border-t border-border/50 pt-3" : ""
+                                        )}
                                     >
-                                        <AtSign className="mt-0.5 h-4 w-4 shrink-0 text-fuchsia-500" />
+                                        <AtSign className={cn(
+                                            "mt-0.5 h-4 w-4 shrink-0",
+                                            item.kind === "skill" ? "text-fuchsia-500" : "text-sky-500"
+                                        )} />
                                         <div className="min-w-0 flex-1">
-                                            <div className="truncate text-sm font-medium text-foreground">
-                                                {skill.name}
+                                            <div className="flex items-center gap-2">
+                                                <span className="truncate text-sm font-medium text-foreground">
+                                                    {item.kind === "skill" ? item.skill.name : (item.family.displayName || item.family.familyId)}
+                                                </span>
+                                                <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                                    {item.kind === "skill" ? "Skill" : "Family"}
+                                                </span>
                                             </div>
-                                            {skill.description && (
+                                            {(item.kind === "skill" ? item.skill.description : item.family.description) && (
                                                 <div className="line-clamp-1 text-[11px] leading-4.5 text-muted-foreground sm:line-clamp-2">
-                                                    {skill.description}
+                                                    {item.kind === "skill" ? item.skill.description : item.family.description}
                                                 </div>
                                             )}
-                                            {skill.path && (
+                                            {item.kind === "skill" && item.skill.path && (
                                                 <div className="truncate text-[10px] text-fuchsia-700/80 dark:text-fuchsia-300/80">
-                                                    {skill.path}
+                                                    {item.skill.path}
                                                 </div>
                                             )}
+                                            {item.kind === "subagent_family" && item.family.memberCount ? (
+                                                <div className="truncate text-[10px] text-sky-700/80 dark:text-sky-300/80">
+                                                    {t(lt(`${item.family.memberCount} 个成员`, `${item.family.memberCount} members`))}
+                                                </div>
+                                            ) : null}
                                         </div>
                                     </button>
                                 ))
                             ) : (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">
                                     {skillsLoaded
-                                        ? t(lt("当前没有匹配的 Skill。", "No matching skills were found."))
-                                        : t(lt("技能列表暂时不可用。", "The skill list is currently unavailable."))}
+                                        ? t(lt("当前没有匹配的 Skill 或 Subagent 家族。", "No matching Skills or Subagent Families were found."))
+                                        : t(lt("Skill 与 Subagent 家族列表暂时不可用。", "The Skill and Subagent Family list is currently unavailable."))}
                                 </div>
                             )}
                         </div>

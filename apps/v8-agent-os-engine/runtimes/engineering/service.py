@@ -23,6 +23,7 @@ CODE_SIGNAL_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
     ("verification", ("test", "pytest", "typecheck", "tsc", "build", "lint", "验证", "测试", "构建", "编译", "回归")),
     ("repo_terms", ("repo", "repository", "workspace", "file", "directory", "git", "仓库", "工作区", "文件", "目录")),
     ("frontend_terms", ("component", "page", "route", "api", "tsx", "react", "next", "组件", "页面", "接口")),
+    ("code_media_frameworks", ("remotion", "manim", "ffmpeg", "ffprobe", "three.js", "threejs", "p5.js", "p5js", "processing", "webgl", "canvas")),
 ]
 
 NON_ENGINEERING_PATTERNS = (
@@ -1837,7 +1838,8 @@ class EngineeringLaneService:
         raw = str(text or "").strip().lower()
         if not raw:
             return []
-        if any(pattern in raw for pattern in NON_ENGINEERING_PATTERNS) and not any(marker in raw for marker in ("代码", "code", "repo", "仓库", "组件", "接口")):
+        code_media_markers = ("remotion", "manim", "ffmpeg", "ffprobe", "three.js", "threejs", "p5.js", "p5js", "processing", "webgl", "canvas")
+        if any(pattern in raw for pattern in NON_ENGINEERING_PATTERNS) and not any(marker in raw for marker in ("代码", "code", "repo", "仓库", "组件", "接口", *code_media_markers)):
             return []
         signals: list[str] = []
         for name, patterns in CODE_SIGNAL_PATTERNS:

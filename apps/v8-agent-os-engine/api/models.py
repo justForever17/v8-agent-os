@@ -81,6 +81,19 @@ class SkillReferenceSelection(BaseModel):
     project_id: Optional[str] = Field(default=None, alias="projectId")
 
 
+class ContextMentionSelection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    kind: str = Field(default="", description="Mention kind, e.g. skill or subagent_family")
+    id: Optional[str] = Field(default=None)
+    name: Optional[str] = Field(default=None)
+    label: Optional[str] = Field(default=None)
+    description: Optional[str] = None
+    path: Optional[str] = None
+    family_id: Optional[str] = Field(default=None, alias="familyId")
+    source_type: Optional[str] = Field(default=None, alias="sourceType")
+
+
 class ChatAttachment(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -104,6 +117,7 @@ class ChatRequestData(BaseModel):
     planner_dispatch_mode: Optional[str] = Field(default=None, alias="plannerDispatchMode")
     engineering_mode: Optional[str] = Field(default=None, alias="engineeringMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
+    context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
 

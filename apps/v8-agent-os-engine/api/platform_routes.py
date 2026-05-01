@@ -4,6 +4,7 @@ from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 
 from .models import ModelConnectionTestPayload
 from core.extensions_runtime import extensions_runtime_service
+from core.agents import build_specialist_family_registry
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
 from core.model_provider_catalog import model_provider_catalog
@@ -230,7 +231,14 @@ async def reload_system():
 @router.get("/skills/list")
 async def get_skills_list():
     try:
-        return {"skills": list(extensions_runtime_service.list_skills(force_refresh=False))}
+        supervisor_config = storage.get_supervisor_config() or {}
+        return {
+            "skills": list(extensions_runtime_service.list_skills(force_refresh=False)),
+            "subagentFamilies": build_specialist_family_registry(
+                storage.get_all_agents(),
+                supervisor_config.get("specialistRegistry") if isinstance(supervisor_config.get("specialistRegistry"), dict) else {},
+            ),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

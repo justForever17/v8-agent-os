@@ -8,6 +8,7 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage
 
 from core.delegation_broker import compact_external_worker_registry_entry
+from core.agents import normalize_specialist_family_id
 from core.prompt_budget import (
     DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
     DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
@@ -15,6 +16,7 @@ from core.prompt_budget import (
 )
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.storage import storage
+from core.task_shape_classifier import classify_task_shape, render_task_shape_hint
 from core.host_load import render_host_load_line
 from core.safety_active_defense import render_host_alerts_line
 from core.system_base import get_engine_origin
@@ -739,6 +741,7 @@ def build_supervisor_system_content(
             "build", "typecheck", "api", "runtime", "repo", "project", "frontend", "backend",
             "migration", "refactor", "代码", "实现", "修复", "测试", "构建", "仓库", "项目",
             "接口", "运行时", "迁移", "重构",
+            "remotion", "manim", "ffmpeg", "three.js", "threejs", "p5.js", "p5js", "webgl",
         )
         creative_media_tokens = (
             "image", "video", "audio", "media", "multimedia", "creative", "storyboard", "shot",
@@ -764,13 +767,42 @@ def build_supervisor_system_content(
             prefix += f" | family={_agent_family(agent)}"
         return f"- {prefix} | class={_agent_class(agent)} | ops={_agent_ops(agent)}"
 
-    def _render_specialist_agents_context(*, plan: dict | None) -> str:
+    def _family_summary(family: str, members: list[dict]) -> str:
+        snapshots = [agent.get("capabilitySnapshot") for agent in members if isinstance(agent.get("capabilitySnapshot"), dict)]
+        domain_tags: list[str] = []
+        ops: list[str] = []
+        classes: list[str] = []
+        def _snapshot_values(snapshot: dict, key: str) -> list[str]:
+            value = snapshot.get(key)
+            if isinstance(value, (list, tuple, set)):
+                return [str(item or "").strip() for item in value if str(item or "").strip()]
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+        for agent in members:
+            agent_class = _agent_class(agent)
+            if agent_class and agent_class not in classes:
+                classes.append(agent_class)
+        for snapshot in snapshots:
+            for text in _snapshot_values(snapshot, "domainTags")[:6]:
+                if text not in domain_tags:
+                    domain_tags.append(text)
+            for text in _snapshot_values(snapshot, "operationCapabilities")[:6]:
+                if text not in ops:
+                    ops.append(text)
+        return (
+            f"- {family} | members={len(members)} | classes={','.join(classes[:4]) or 'specialist'} "
+            f"| ops={','.join(ops[:6]) or 'task_brief_driven'} | domains={','.join(domain_tags[:6]) or 'general'}"
+        )
+
+    def _render_specialist_agents_context(*, plan: dict | None, task_shape_hint: dict | None) -> str:
         agents = [
             agent for agent in list(loaded_agents or [])
             if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"
         ]
         specialist_registry = dict((supervisor_config or {}).get("specialistRegistry") or {})
         family_mode_enabled = bool(specialist_registry.get("familyModeEnabled", True))
+        exposure_mode = str(specialist_registry.get("exposureMode") or "family_cards").strip().lower() or "family_cards"
         try:
             family_limit = int(specialist_registry.get("maxMembersPerFamily") or 10)
         except (TypeError, ValueError):
@@ -780,17 +812,31 @@ def build_supervisor_system_content(
             return (
                 "--- SPECIALIST FAMILIES ---\n"
                 "taskFamily=none\n"
-                f"familyMode={'on' if family_mode_enabled else 'off'}; familyLimit={family_limit}\n"
+                f"familyMode={'on' if family_mode_enabled else 'off'}; exposureMode={exposure_mode}; familyLimit={family_limit}\n"
                 "No registered subagents. Configure Admin/Subagents before using delegation_broker.\n"
                 "--------------------------------\n"
             )
 
         matched_families = _predict_specialist_families(query=user_query, plan=plan)
+        hinted_families = [
+            str(item or "").strip()
+            for item in list((task_shape_hint or {}).get("suggestedFamilies") or [])
+            if str(item or "").strip()
+        ]
+        recommended_families = []
+        for family in [*hinted_families, *matched_families]:
+            if family and family not in recommended_families:
+                recommended_families.append(family)
+        explicit_reveal_families = []
+        for item in list((state or {}).get("explicit_subagent_families") or []):
+            family = normalize_specialist_family_id(item)
+            if family and family not in explicit_reveal_families:
+                explicit_reveal_families.append(family)
         global_agents = [agent for agent in agents if bool(agent.get("globalExposure"))]
         if not family_mode_enabled:
             lines = [
                 "--- SPECIALIST FAMILIES ---",
-                f"taskFamily={'+'.join(matched_families) if matched_families else 'none'}",
+                f"taskFamilyHint={'+'.join(recommended_families) if recommended_families else 'none'}",
                 "familyMode=off; all registered subagents are visible in compact form.",
                 "selectionRule=Use delegation_broker; globalExposure only affects prompt highlighting, not tool authority.",
                 "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",
@@ -813,12 +859,54 @@ def build_supervisor_system_content(
                 continue
             family_map.setdefault(_agent_family(agent), []).append(agent)
 
+        if exposure_mode in {"family_cards", "cards", "default", ""}:
+            ordered_families = sorted(family_map)
+            ordered_families.sort(key=lambda family: (0 if family in recommended_families else 1, family))
+            visible_family_set = {family for family in explicit_reveal_families if family in family_map}
+            hidden_member_count = sum(len(items) for family, items in family_map.items() if family not in visible_family_set)
+            lines = [
+                "--- SPECIALIST FAMILIES ---",
+                f"taskFamilyHint={'+'.join(recommended_families) if recommended_families else 'none'}",
+                f"explicitFamilyMentions={'+'.join(explicit_reveal_families) if explicit_reveal_families else 'none'}",
+                f"taskShapePrimary={str((task_shape_hint or {}).get('primaryTaskShape') or 'unknown')}; confidence={str((task_shape_hint or {}).get('confidence') or 'n/a')}",
+                "familyMode=family_cards; concrete non-global family members are hidden by default.",
+                "selectionRule=Use delegation_broker(mode=\"reveal\", family=\"...\") to inspect members, or dispatch with familyHint + requiredCapabilities and let the broker choose.",
+                "toolPolicy=contextual_auto; runtime direct tools still require runtime_broker grants and are separate from family reveal.",
+            ]
+            if global_agents:
+                lines.append("[globalExposure]")
+                for agent in global_agents:
+                    lines.append(_render_specialist_line(agent, include_family=True))
+            if ordered_families:
+                lines.append("[familyCapabilityCards]")
+                for family in ordered_families:
+                    marker = " recommended=true" if family in recommended_families else ""
+                    lines.append(_family_summary(family, family_map.get(family, [])) + marker)
+            if visible_family_set:
+                lines.append("[revealedFamilyMembers]")
+                for family in [item for item in explicit_reveal_families if item in visible_family_set]:
+                    lines.append(f"[{family}] revealSource=user_explicit_mention")
+                    for agent in family_map.get(family, [])[:family_limit]:
+                        lines.append(_render_specialist_line(agent))
+                    overflow = max(0, len(family_map.get(family, [])) - family_limit)
+                    if overflow:
+                        lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
+            unknown_explicit_families = [family for family in explicit_reveal_families if family not in family_map]
+            if unknown_explicit_families:
+                lines.append(f"unknownExplicitFamilies={','.join(unknown_explicit_families)}; revealSkipped=true")
+            if hidden_member_count:
+                lines.append(f"hiddenMembers={hidden_member_count}; revealRequired=true")
+            if not global_agents and not ordered_families:
+                lines.append("No non-global specialist families are registered.")
+            lines.append("--------------------------------")
+            return "\n".join(lines) + "\n"
+
         visible_families = [family for family in matched_families if family in family_map]
         hidden_families = sorted(family for family in family_map if family not in visible_families)
         lines = [
             "--- SPECIALIST FAMILIES ---",
             f"taskFamily={'+'.join(matched_families) if matched_families else 'none'}",
-            f"familyMode=on; familyLimit={family_limit}; globalExposure bypasses the familyLimit but does not grant tools.",
+            f"familyMode=legacy_matched_members; familyLimit={family_limit}; globalExposure bypasses the familyLimit but does not grant tools.",
             "selectionRule=Use delegation_broker; only delegate inside globalExposure or matched families unless the task family changes.",
             "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",
         ]
@@ -979,7 +1067,11 @@ def build_supervisor_system_content(
 
     available_tools_context = cached_stable["availableToolsContext"]
     planner_context = _planner_context(state.get("planner_plan"))
-    specialist_agents_context = _render_specialist_agents_context(plan=state.get("planner_plan"))
+    task_shape_hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
+    if not task_shape_hint:
+        task_shape_hint = classify_task_shape(user_query, planner_plan=state.get("planner_plan") if isinstance(state.get("planner_plan"), dict) else None)
+    task_shape_context = render_task_shape_hint(task_shape_hint)
+    specialist_agents_context = _render_specialist_agents_context(plan=state.get("planner_plan"), task_shape_hint=task_shape_hint)
     artifact_awareness_context, artifact_awareness_diagnostics = _build_artifact_awareness_context(
         memory_runtime=memory_runtime,
         session_id=session_id,
@@ -1062,6 +1154,7 @@ def build_supervisor_system_content(
         _prompt_part("v8_agent_os.base_prompt", "stable_static", f"{base_prompt}\n\n", scope="base_prompt"),
         *_split_runtime_registry_prompt_parts(runtime_registry_context),
         _prompt_part("capability_registry.separator", "scoped_static", "\n\n", scope="capability_registry"),
+        _prompt_part("task_shape.hint", "dynamic", task_shape_context, scope="task_shape"),
         _prompt_part("specialist_registry.visible_family", "dynamic", specialist_agents_context, scope="specialist_registry"),
         _prompt_part("direct_tool_registry", "scoped_static", f"{available_tools_context}\n", scope="tool_registry"),
         _prompt_part("network_supervisor.context", "dynamic", network_supervisor_context, scope="route_context"),
@@ -1085,6 +1178,8 @@ def build_supervisor_system_content(
         "v8_prompt_segments": build_prompt_segments_from_parts(prompt_parts),
         "memory_context": memory_context,
         "runtime_registry_context": runtime_registry_context,
+        "task_shape_hint": task_shape_hint,
+        "task_shape_context": task_shape_context,
         "specialist_agents_context": specialist_agents_context,
         "available_tools_context": available_tools_context,
         "network_supervisor_context": network_supervisor_context,

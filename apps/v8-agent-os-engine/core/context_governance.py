@@ -9,6 +9,12 @@ CONTEXT_AUDIT_FIELDS = (
     "target_role",
     "resolved_model_id",
     "context_window_tokens",
+    "effective_context_window_tokens",
+    "summary_input_budget_tokens",
+    "context_window_participants",
+    "context_window_warnings",
+    "context_governance_reason",
+    "provider_error",
     "original_message_count",
     "estimated_input_tokens",
     "trigger_reason",
@@ -132,6 +138,10 @@ def normalize_context_audit(audit: Dict[str, Any] | None) -> Dict[str, Any]:
         value = payload.get(key)
         if key in {"block_types", "scope_chain"}:
             normalized[key] = [str(item).strip() for item in (value or []) if str(item).strip()]
+        elif key in {"context_window_participants", "context_window_warnings"}:
+            normalized[key] = [dict(item) for item in (value or []) if isinstance(item, dict)]
+        elif key == "provider_error":
+            normalized[key] = dict(value) if isinstance(value, dict) else {}
         elif key == "block_summaries":
             normalized[key] = _normalize_block_summaries(value)
         elif key == "durable_flush":
@@ -141,6 +151,8 @@ def normalize_context_audit(audit: Dict[str, Any] | None) -> Dict[str, Any]:
         elif key in {
             "context_policy_version",
             "context_window_tokens",
+            "effective_context_window_tokens",
+            "summary_input_budget_tokens",
             "original_message_count",
             "estimated_input_tokens",
             "block_count",

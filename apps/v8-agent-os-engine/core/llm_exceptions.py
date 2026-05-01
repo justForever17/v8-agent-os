@@ -51,6 +51,10 @@ class V8LLMInvalidRequestError(V8LLMError):
     pass
 
 
+class V8LLMContextWindowOverflowError(V8LLMError):
+    pass
+
+
 class V8LLMContentPolicyError(V8LLMError):
     pass
 
@@ -66,6 +70,7 @@ _ERROR_CLASS_MAP: dict[str, Type[V8LLMError]] = {
     "provider_unavailable": V8LLMProviderUnavailableError,
     "capability_mismatch": V8LLMCapabilityMismatchError,
     "invalid_request": V8LLMInvalidRequestError,
+    "context_window_overflow": V8LLMContextWindowOverflowError,
     "content_policy_block": V8LLMContentPolicyError,
     "structured_output_invalid": V8LLMStructuredOutputError,
 }
@@ -89,4 +94,3 @@ def raise_as_v8_llm_error(exc: Exception, *, provider: str | None = None, model:
         raise exc
     normalized = normalize_provider_error(exc, provider=provider, model=model)
     raise build_llm_error_from_normalized(normalized, details=details) from exc
-

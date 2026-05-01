@@ -72,6 +72,25 @@ def normalize_provider_error(exc: Exception, *, provider: str | None = None, mod
     if any(token in lower for token in ("401", "unauthorized", "invalid api key", "authentication", "auth", "invalid access token", "token expired", "oauth 凭据已过期", "oauth credential expired")):
         code = "auth_error"
         user_action = "请检查供应商 API Key / OAuth 凭据。"
+    elif any(
+        token in lower
+        for token in (
+            "context_length_exceeded",
+            "context length exceeded",
+            "maximum context",
+            "context window",
+            "too many tokens",
+            "token limit",
+            "maximum token",
+            "prompt is too long",
+            "input is too long",
+            "exceeds the context",
+            "exceed context",
+            "reduce the length",
+        )
+    ):
+        code = "context_window_overflow"
+        user_action = "当前上下文超过模型窗口，请检查模型 context window 配置或启用/调整上下文压缩。"
     elif any(token in lower for token in ("429", "rate limit", "too many requests")):
         code = "rate_limit"
         retryable = True

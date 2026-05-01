@@ -9,12 +9,47 @@ export type AdminModelSelectOption = {
     modelId?: string;
     name?: string;
     type?: string;
+    capabilityClass?: string | null;
+    contextWindow?: number | null;
+    capabilities?: Record<string, boolean> | string[] | null;
     provider?: {
         id?: string;
         name?: string | null;
     } | null;
     providerName?: string | null;
 };
+
+const MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262144;
+const NON_TEXT_TYPES = new Set(["IMAGE", "VIDEO", "VOICE", "MUSIC", "MODEL3D", "WORKFLOW", "EMBEDDING", "RERANK", "VECTOR"]);
+const NON_TEXT_CAPABILITY_CLASSES = new Set(["media_generation", "embedding", "reranker", "rerank", "workflow", "model3d"]);
+
+function hasCapability(model: AdminModelSelectOption, key: string): boolean {
+    const caps = model.capabilities;
+    if (Array.isArray(caps)) return caps.map((item) => String(item).toLowerCase()).includes(key.toLowerCase());
+    if (caps && typeof caps === "object") return Boolean(caps[key]);
+    return false;
+}
+
+function isTextGenerationOption(model: AdminModelSelectOption): boolean {
+    const type = String(model.type || "").toUpperCase();
+    if (NON_TEXT_TYPES.has(type)) return false;
+    const capabilityClass = String(model.capabilityClass || "").toLowerCase();
+    if (NON_TEXT_CAPABILITY_CLASSES.has(capabilityClass)) return false;
+    const nonTextCaps = ["image", "video", "voice", "music", "embedding", "rerank", "workflow", "model3d"];
+    const textCaps = ["chat", "text", "reasoning", "toolCalling", "vision", "multimodal"];
+    if (nonTextCaps.some((key) => hasCapability(model, key)) && !textCaps.some((key) => hasCapability(model, key))) {
+        return false;
+    }
+    return true;
+}
+
+function contextWindowInvalidReason(model: AdminModelSelectOption, minimum: number): string {
+    if (!isTextGenerationOption(model)) return "";
+    const contextWindow = typeof model.contextWindow === "number" ? model.contextWindow : null;
+    if (!contextWindow) return `未配置 context window，不能用于长上下文文本角色`;
+    if (contextWindow < minimum) return `context window ${contextWindow} < ${minimum}`;
+    return "";
+}
 
 type ResolvedModelValue = {
     selectValue: string;
@@ -81,6 +116,8 @@ export function ModelSelect({
     emptyLabel,
     emptyOutputValue = "",
     showCompatibilityHint = true,
+    enforceTextContextWindow = true,
+    minimumContextWindow = MIN_TEXT_CONTEXT_WINDOW_TOKENS,
     className,
 }: {
     models: AdminModelSelectOption[];
@@ -91,18 +128,27 @@ export function ModelSelect({
     emptyLabel?: string;
     emptyOutputValue?: string;
     showCompatibilityHint?: boolean;
+    enforceTextContextWindow?: boolean;
+    minimumContextWindow?: number;
     className?: string;
 }) {
     const resolved = resolveModelSelectValue(value, models, emptyValue);
     const seen = new Set<string>();
     const options = models
-        .map((model) => ({ model, value: modelOptionValue(model), label: modelOptionLabel(model) }))
+        .map((model) => ({
+            model,
+            value: modelOptionValue(model),
+            label: modelOptionLabel(model),
+            invalidReason: enforceTextContextWindow ? contextWindowInvalidReason(model, minimumContextWindow) : "",
+        }))
         .filter((item) => {
             if (!item.value || seen.has(item.value)) return false;
             seen.add(item.value);
             return true;
         });
     const hasStaleItem = resolved.status === "stale" && resolved.selectValue && !seen.has(resolved.selectValue);
+    const resolvedModel = options.find((item) => item.value === resolved.selectValue);
+    const resolvedInvalidReason = resolvedModel?.invalidReason || "";
 
     return (
         <div className={className || "space-y-2"}>
@@ -121,12 +167,18 @@ export function ModelSelect({
                         </SelectItem>
                     ) : null}
                     {options.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>
+                        <SelectItem key={item.value} value={item.value} disabled={Boolean(item.invalidReason)}>
                             {item.label}
+                            {item.invalidReason ? <span className="ml-2 text-xs text-amber-600">({item.invalidReason})</span> : null}
                         </SelectItem>
                     ))}
                 </SelectContent>
             </Select>
+            {resolvedInvalidReason ? (
+                <p className="text-xs leading-5 text-amber-700">
+                    当前模型 {resolved.selectValue} {resolvedInvalidReason}；请在 Model Hub 补齐真实窗口，或选择窗口不低于 {minimumContextWindow} tokens 的文本模型。
+                </p>
+            ) : null}
             {showCompatibilityHint && resolved.message ? (
                 <p className="text-xs leading-5 text-amber-700">{resolved.message}</p>
             ) : null}

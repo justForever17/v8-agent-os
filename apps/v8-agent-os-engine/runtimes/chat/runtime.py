@@ -46,6 +46,7 @@ from core.scoped_workspace_resource import (
 )
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
+from core.context_window_guard import context_window_guard
 from core.agents import build_specialist_family_registry, normalize_specialist_family_id
 from core.task_shape_classifier import classify_task_shape
 from core.context.workspace import workspace_resolution_service
@@ -4905,6 +4906,53 @@ class ChatRuntime:
             if str(approval.get("status") or "").strip().lower() == "pending":
                 return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
         normalized = normalize_provider_error(exc)
+        if chat_run and normalized.get("code") == "context_window_overflow":
+            try:
+                context_config = storage.get_context_config() or {}
+                guard = context_window_guard.resolve(
+                    target_role="supervisor",
+                    runtime_kind="chat",
+                    model_ref=str(chat_run.request.config.model_name or "").strip(),
+                    compression=dict(context_config.get("compression") or {}),
+                )
+                chat_run.emit_runtime_event(
+                    "context.prepared",
+                    {
+                        "context_policy_version": context_config.get("schema_version", 1),
+                        "runtime_kind": "chat",
+                        "target_role": "supervisor",
+                        "resolved_model_id": str(chat_run.request.config.model_name or "").strip(),
+                        "context_governance_reason": "context_window_overflow",
+                        "trigger_reason": "context_window_overflow",
+                        "context_window_tokens": guard.get("effectiveContextWindowTokens"),
+                        "effective_context_window_tokens": guard.get("effectiveContextWindowTokens"),
+                        "summary_input_budget_tokens": guard.get("summaryInputBudgetTokens"),
+                        "context_window_participants": guard.get("participants") or [],
+                        "context_window_warnings": guard.get("warnings") or [],
+                        "original_message_count": len(chat_run.lc_messages or []),
+                        "estimated_input_tokens": 0,
+                        "compaction_applied": False,
+                        "compaction_method": "none",
+                        "compaction_mode": "overflow_absorbed",
+                        "durable_flush": {"ok": False, "skipped": True, "reason": "provider_context_window_overflow"},
+                        "block_types": [],
+                        "block_count": 0,
+                        "estimated_saved_tokens": 0,
+                        "provider_error": {
+                            "code": normalized.get("code"),
+                            "provider": normalized.get("provider"),
+                            "model": normalized.get("model"),
+                            "message": normalized.get("message"),
+                            "userAction": normalized.get("userAction"),
+                        },
+                    },
+                    node="context_window_guard",
+                )
+            except Exception:
+                logging.getLogger("v8chat.chat_runtime").exception(
+                    "Failed to emit context governance overflow event for run '%s'",
+                    chat_run.active_run_id,
+                )
         if chat_run:
             try:
                 from core.system_tools.native import _terminate_run_background_commands

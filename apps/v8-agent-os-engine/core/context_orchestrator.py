@@ -16,6 +16,7 @@ from core.context_compaction_baseline import (
     persist_compaction_baseline,
 )
 from core.context_durable_flush import flush_before_context_compaction
+from core.context_window_guard import context_window_guard
 from core.llm_factory import llm_factory
 from core.observability_db import observability_db
 from core.storage import storage
@@ -124,10 +125,13 @@ class ContextOrchestrator:
     ) -> PreparedContext:
         policy = storage.get_context_config() or {}
         compression = dict(policy.get("compression") or {})
-        context_window = (
-            llm_factory.get_model_context_window(str(resolved_model_id or "").strip())
-            or int(compression.get("default_context_window_tokens") or 32000)
+        window_guard = context_window_guard.resolve(
+            target_role=target_role,
+            runtime_kind=runtime_kind,
+            model_ref=str(resolved_model_id or "").strip(),
+            compression=compression,
         )
+        context_window = int(window_guard.get("effectiveContextWindowTokens") or compression.get("default_context_window_tokens") or 32000)
 
         cleaned_messages, adapter_blocks = self._extract_adapter_blocks(messages)
         if extra_blocks:
@@ -151,7 +155,7 @@ class ContextOrchestrator:
         durable_flush: Dict[str, Any] | None = None
         compaction_mode = str(compression.get("mode") or "persistent_baseline").strip() or "persistent_baseline"
         trigger_ratio = float(compression.get("trigger_ratio") or compression.get("hard_trigger_ratio") or 0.94)
-        trigger_limit = max(1, int(context_window * trigger_ratio))
+        trigger_limit = int(window_guard.get("triggerLimitTokens") or max(1, int(context_window * trigger_ratio)))
         compaction_latency_ms = 0
         recent_raw_count = len(non_system_messages)
         recent_raw_turn_count = 0
@@ -238,6 +242,7 @@ class ContextOrchestrator:
                             target_role=target_role,
                             resolved_model_id=resolved_model_id,
                             summary_mode=summary_mode,
+                            effective_context_window_tokens=context_window,
                         )
                         compaction_latency_ms = int((time.perf_counter() - compaction_started) * 1000)
                         compaction_applied = history_block is not None
@@ -301,6 +306,10 @@ class ContextOrchestrator:
             "target_role": target_role,
             "resolved_model_id": str(resolved_model_id or "").strip(),
             "context_window_tokens": context_window,
+            "effective_context_window_tokens": context_window,
+            "context_window_participants": window_guard.get("participants") or [],
+            "context_window_warnings": window_guard.get("warnings") or [],
+            "summary_input_budget_tokens": window_guard.get("summaryInputBudgetTokens"),
             "original_message_count": len(messages),
             "estimated_input_tokens": estimated_input_tokens,
             "trigger_reason": trigger_reason,
@@ -357,6 +366,9 @@ class ContextOrchestrator:
                             "recentRawMessageCount": recent_raw_count,
                             "recentRawTurnCount": recent_raw_turn_count,
                             "noticeableLatency": audit["noticeable_latency"],
+                            "contextWindowParticipants": audit["context_window_participants"],
+                            "effectiveContextWindowTokens": audit["effective_context_window_tokens"],
+                            "contextWindowWarnings": audit["context_window_warnings"],
                         },
                     }
                 )
@@ -381,6 +393,7 @@ class ContextOrchestrator:
         target_role: str,
         resolved_model_id: str | None,
         summary_mode: str,
+        effective_context_window_tokens: int | None = None,
     ) -> tuple[List[BaseMessage], ContextBlock | None, str]:
         if len(messages) <= keep_recent_messages:
             return messages, None, "none"
@@ -408,6 +421,7 @@ class ContextOrchestrator:
             target_role=target_role,
             resolved_model_id=resolved_model_id,
             summary_mode=summary_mode,
+            effective_context_window_tokens=effective_context_window_tokens,
         )
         return to_keep, summary_block, method
 
@@ -457,6 +471,7 @@ class ContextOrchestrator:
         target_role: str,
         resolved_model_id: str | None,
         summary_mode: str,
+        effective_context_window_tokens: int | None = None,
     ) -> tuple[ContextBlock, str]:
         cache_key = self._build_summary_cache_key(
             to_compress=to_compress,
@@ -487,10 +502,14 @@ class ContextOrchestrator:
             summary_text, chunked = self._build_llm_summary(
                 to_compress=summary_source_messages,
                 model_id=summary_model,
-                max_input_tokens=int(compression.get("max_summary_input_tokens") or 5000),
+                max_input_tokens=min(
+                    int(compression.get("max_summary_input_tokens") or 5000),
+                    int(effective_context_window_tokens or compression.get("default_context_window_tokens") or 32000),
+                ),
                 max_input_messages=int(compression.get("max_summary_input_messages") or 60),
                 max_output_tokens=int(compression.get("max_summary_output_tokens") or 800),
                 compression_model_safety_ratio=float(compression.get("compression_model_safety_ratio") or 0.90),
+                effective_context_window_tokens=effective_context_window_tokens,
             )
             if summary_text:
                 method = "llm_summary"
@@ -523,11 +542,16 @@ class ContextOrchestrator:
         max_input_messages: int,
         max_output_tokens: int,
         compression_model_safety_ratio: float,
+        effective_context_window_tokens: int | None = None,
     ) -> tuple[str | None, bool]:
         try:
             llm = llm_factory.create_chat_model(model_id, temperature=0, max_tokens=max_output_tokens, _role="summary")
             model_window = llm_factory.get_model_context_window(str(model_id or "").strip()) or max_input_tokens
-            safe_chunk_budget = max(256, min(max_input_tokens, int(model_window * max(0.5, min(compression_model_safety_ratio, 0.95)))))
+            effective_window = min(
+                int(model_window or max_input_tokens),
+                int(effective_context_window_tokens or model_window or max_input_tokens),
+            )
+            safe_chunk_budget = max(256, min(max_input_tokens, int(effective_window * max(0.5, min(compression_model_safety_ratio, 0.95)))))
             clipped_messages = list(to_compress)
             if not clipped_messages:
                 return "", False

@@ -14,6 +14,7 @@ from core.audit_logger import audit_logger
 from core.model_control_plane import normalize_config_temperature
 from core.models.control_plane import model_control_plane
 from core.dependency_registry import build_dependency_status
+from core.context_window_guard import validate_text_role_model_window
 from core.prompt_budget import (
     DEFAULT_SUPERVISOR_PROMPT_BUDGET_TOKENS,
     DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
@@ -66,7 +67,22 @@ def _update_role_bindings(updates: dict[str, Any]) -> dict[str, str]:
     config = model_control_plane.get_config()
     roles = dict(config.get("roles") or {})
     for key, value in dict(updates or {}).items():
-        roles[str(key)] = str(value or "").strip()
+        role_key = str(key)
+        model_ref = str(value or "").strip()
+        validation = validate_text_role_model_window(role_key, model_ref)
+        if not validation.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": validation.get("reason") or "invalid_context_window",
+                    "message": validation.get("message") or "该文本模型上下文窗口不满足长上下文运行时要求。",
+                    "role": role_key,
+                    "modelRef": model_ref,
+                    "minimumRequiredContextWindowTokens": validation.get("minimumRequiredContextWindowTokens"),
+                    "participant": validation.get("participant"),
+                },
+            )
+        roles[role_key] = model_ref
     config["roles"] = roles
     model_control_plane.save_config(config)
     return {key: str(roles.get(key) or "").strip() for key in updates.keys()}
@@ -102,6 +118,29 @@ def _build_models_domain() -> dict[str, Any]:
 
 def _save_models_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
+    current = model_control_plane.get_config()
+    current_roles = dict(current.get("roles") or {})
+    incoming_roles = dict(data.get("roles") or {})
+    changed_roles = {
+        str(key): str(value or "").strip()
+        for key, value in incoming_roles.items()
+        if str(current_roles.get(str(key)) or "").strip() != str(value or "").strip()
+    }
+    if changed_roles:
+        for role_key, model_ref in changed_roles.items():
+            validation = validate_text_role_model_window(role_key, model_ref)
+            if not validation.get("ok"):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": validation.get("reason") or "invalid_context_window",
+                        "message": validation.get("message") or "该文本模型上下文窗口不满足长上下文运行时要求。",
+                        "role": role_key,
+                        "modelRef": model_ref,
+                        "minimumRequiredContextWindowTokens": validation.get("minimumRequiredContextWindowTokens"),
+                        "participant": validation.get("participant"),
+                    },
+                )
     config = model_control_plane.save_config(data)
     return _build_models_domain() | {
         "data": model_control_plane.build_payload(config),

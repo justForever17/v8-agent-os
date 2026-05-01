@@ -118,6 +118,15 @@ type RuntimeStatus = {
         allowRawWorkspacePath: boolean;
         defaultScopeMode: string;
     };
+    anthropicCompat?: {
+        enabled: boolean;
+        available: boolean;
+        tokenCount: number;
+        modelAliases: string[];
+        baseUrlHint: string;
+        messagesPath: string;
+        modelsPath: string;
+    };
     delegationAvailability: Availability;
     toolAvailability?: {
         delegate_network_task?: Availability;
@@ -175,7 +184,7 @@ const DEFAULT_CONFIG: RuntimeConfig = {
         adminRelayOnly: true,
         allowWorkspaceHeaders: true,
         allowRawWorkspacePath: false,
-        maxExternalTools: 8,
+        maxExternalTools: 256,
         defaultScopeMode: "explicit",
     },
 };
@@ -201,10 +210,19 @@ const EMPTY_STATUS: RuntimeStatus = {
         baseUrlHint: "http://localhost:9528/api/network-supervisor/openai/v1",
         chatCompletionsPath: "/chat/completions",
         modelsPath: "/models",
-        maxExternalTools: 8,
+        maxExternalTools: 256,
         allowWorkspaceHeaders: true,
         allowRawWorkspacePath: false,
         defaultScopeMode: "explicit",
+    },
+    anthropicCompat: {
+        enabled: false,
+        available: false,
+        tokenCount: 0,
+        modelAliases: ["v8os"],
+        baseUrlHint: "http://localhost:9528/api/network-supervisor/anthropic",
+        messagesPath: "/v1/messages",
+        modelsPath: "/v1/models",
     },
     delegationAvailability: { available: false, reasons: [] },
     toolAvailability: {},
@@ -250,6 +268,7 @@ function mergeConfig(value?: Partial<RuntimeConfig>): RuntimeConfig {
 function normalizeStatus(value: unknown): RuntimeStatus {
     const payload = (value && typeof value === "object") ? value as Partial<RuntimeStatus> : {};
     const openaiCompat = (payload.openaiCompat || {}) as NonNullable<RuntimeStatus["openaiCompat"]>;
+    const anthropicCompat = (payload.anthropicCompat || {}) as NonNullable<RuntimeStatus["anthropicCompat"]>;
     return {
         ...EMPTY_STATUS,
         ...payload,
@@ -269,6 +288,15 @@ function normalizeStatus(value: unknown): RuntimeStatus {
             allowWorkspaceHeaders: openaiCompat.allowWorkspaceHeaders !== false,
             allowRawWorkspacePath: Boolean(openaiCompat.allowRawWorkspacePath),
             defaultScopeMode: String(openaiCompat.defaultScopeMode || EMPTY_STATUS.openaiCompat?.defaultScopeMode || "explicit"),
+        },
+        anthropicCompat: {
+            enabled: Boolean(anthropicCompat.enabled),
+            available: Boolean(anthropicCompat.available),
+            tokenCount: Number(anthropicCompat.tokenCount || 0),
+            modelAliases: Array.isArray(anthropicCompat.modelAliases) && anthropicCompat.modelAliases.length ? anthropicCompat.modelAliases.map((item) => String(item)).filter(Boolean) : ["v8os"],
+            baseUrlHint: String(anthropicCompat.baseUrlHint || EMPTY_STATUS.anthropicCompat?.baseUrlHint || ""),
+            messagesPath: String(anthropicCompat.messagesPath || EMPTY_STATUS.anthropicCompat?.messagesPath || "/v1/messages"),
+            modelsPath: String(anthropicCompat.modelsPath || EMPTY_STATUS.anthropicCompat?.modelsPath || "/v1/models"),
         },
         delegationAvailability: {
             ...EMPTY_STATUS.delegationAvailability,
@@ -311,6 +339,9 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const compatBaseUrl = `${adminOrigin}/api/network-supervisor/openai/v1`;
     const compatChatUrl = `${compatBaseUrl}/chat/completions`;
     const compatModelsUrl = `${compatBaseUrl}/models`;
+    const anthropicCompatBaseUrl = `${adminOrigin}/api/network-supervisor/anthropic`;
+    const anthropicCompatMessagesUrl = `${anthropicCompatBaseUrl}/v1/messages`;
+    const anthropicCompatModelsUrl = `${anthropicCompatBaseUrl}/v1/models`;
     const primaryModelAlias = (config.openaiCompat.modelAliases || ["v8os"]).find((item) => String(item || "").trim()) || "v8os";
     const primaryToken = tokens[0]?.token || "";
     const curlExample = `curl ${compatChatUrl} \\
@@ -328,6 +359,14 @@ response = client.chat.completions.create(
     model="${primaryModelAlias}",
     messages=[{"role": "user", "content": "ping"}],
 )`;
+    const anthropicCurlExample = `curl ${anthropicCompatMessagesUrl} \\
+  -H "x-api-key: ${primaryToken || "<API_KEY>"}" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"model\\":\\"${primaryModelAlias}\\",\\"max_tokens\\":256,\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
+    const claudeCodeExample = `ANTHROPIC_BASE_URL=${anthropicCompatBaseUrl}
+ANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}
+ANTHROPIC_MODEL=${primaryModelAlias}`;
     const portNotices = bridgeDiagnostics?.notices || [];
     const availabilityReason = React.useCallback((reason: string) => {
         switch (reason) {
@@ -741,6 +780,32 @@ response = client.chat.completions.create(
                                     <Button type="button" variant="outline" onClick={() => void copyText(compatModelsUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelsUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
                                 </div>
                             </div>
+                            <div className="mt-2 border-t border-slate-200 pt-4">
+                                <div className="mb-3 text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatTitle")}</div>
+                                <div className="grid gap-3">
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="anthropic-compat-base-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatBaseUrl")}</Label>
+                                        <div className="flex gap-2">
+                                            <Input id="anthropic-compat-base-url" readOnly value={anthropicCompatBaseUrl}/>
+                                            <Button type="button" variant="outline" onClick={() => void copyText(anthropicCompatBaseUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatBaseUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
+                                        </div>
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="anthropic-compat-messages-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatMessagesUrl")}</Label>
+                                        <div className="flex gap-2">
+                                            <Input id="anthropic-compat-messages-url" readOnly value={anthropicCompatMessagesUrl}/>
+                                            <Button type="button" variant="outline" onClick={() => void copyText(anthropicCompatMessagesUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatMessagesUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
+                                        </div>
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="anthropic-compat-models-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatModelsUrl")}</Label>
+                                        <div className="flex gap-2">
+                                            <Input id="anthropic-compat-models-url" readOnly value={anthropicCompatModelsUrl}/>
+                                            <Button type="button" variant="outline" onClick={() => void copyText(anthropicCompatModelsUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatModelsUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="openai-compat-model-aliases">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelAliases")}</Label>
                                 <Input
@@ -839,6 +904,14 @@ response = client.chat.completions.create(
                         <div className="space-y-2">
                             <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatSdkExample")}</Label>
                             <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{sdkExample}</pre>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatCurlExample")}</Label>
+                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{anthropicCurlExample}</pre>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatClaudeCodeExample")}</Label>
+                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{claudeCodeExample}</pre>
                         </div>
                         <div className="flex justify-end">
                             <Button onClick={() => void saveConfig()} disabled={savingConfig}>

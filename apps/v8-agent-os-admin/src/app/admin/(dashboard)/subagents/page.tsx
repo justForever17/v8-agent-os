@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ModelSelect } from "@/components/models/ModelSelect";
+import { ModelSelect, modelOptionLabel, modelOptionValue } from "@/components/models/ModelSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -682,6 +682,20 @@ export default function SubagentsPage() {
             return acc;
         }, {});
     }, [pluginHostTools]);
+    const resolveAgentModelDisplay = useCallback((agent: Agent) => {
+        const explicitModelRef = String(agent.modelId || "").trim();
+        const effectiveModelRef = explicitModelRef || String(defaultModelId || "").trim();
+        if (!effectiveModelRef) {
+            return t("app.admin.dashboard.subagents.page.kb1fcabf9");
+        }
+        const exact = models.find((model) => modelOptionValue(model) === effectiveModelRef || String(model.id || "").trim() === effectiveModelRef);
+        const legacyMatches = exact ? [] : models.filter((model) => String(model.modelId || model.name || "").trim() === effectiveModelRef);
+        const resolvedModel = exact || (legacyMatches.length === 1 ? legacyMatches[0] : null);
+        const label = resolvedModel ? modelOptionLabel(resolvedModel) : agent.model?.name || effectiveModelRef;
+        return explicitModelRef
+            ? label
+            : t("app.admin.dashboard.subagents.page.defaultInheritedModel", { model: label });
+    }, [defaultModelId, models, t]);
 
     const resolveToolModeLabel = useCallback((value?: string | null) => {
         const normalized = String(value || "").trim().toLowerCase();
@@ -1473,7 +1487,7 @@ export default function SubagentsPage() {
                                         </div>
                                             <div className="min-w-0">
                                                 <CardTitle className="truncate text-lg">{agent.name}</CardTitle>
-                                                <CardDescription className="truncate">{agent.model?.name || agent.modelId || t("app.admin.dashboard.subagents.page.kb1fcabf9")}</CardDescription>
+                                                <CardDescription className="truncate">{resolveAgentModelDisplay(agent)}</CardDescription>
                                             </div>
                                         </div>
                                         <div className="flex gap-1">

@@ -279,6 +279,7 @@ class ChatStreamState:
     valid_agent_node_names: list[str] = field(default_factory=list)
     text_filter: StreamFilter = field(default_factory=lambda: StreamFilter(["NONE", "None", "null", "```json", "```"]))
     text_aggregator: TextChunkAggregator = field(default_factory=TextChunkAggregator)
+    preserve_stream_timeline: bool = False
     pending_stream_event_task: asyncio.Task[Any] | None = None
     assistant_message_id: str | None = None
     assistant_transcript_version: int = 0
@@ -521,7 +522,10 @@ class ChatRuntime:
                             "type": str(item.type or "tool_call").strip() or "tool_call",
                         }
                     )
-                lc_messages.append(AIMessage(content=message.content, tool_calls=tool_calls_payload or None))
+                if tool_calls_payload:
+                    lc_messages.append(AIMessage(content=message.content, tool_calls=tool_calls_payload))
+                else:
+                    lc_messages.append(AIMessage(content=message.content))
             elif message.role == "system":
                 lc_messages.append(SystemMessage(content=message.content))
             elif message.role == "tool":
@@ -2299,10 +2303,11 @@ class ChatRuntime:
         async for event in supervisor_runner.stream_events(bundle.runner_bundle):
             yield event
 
-    def create_stream_state(self) -> ChatStreamState:
+    def create_stream_state(self, *, transport: str = "http") -> ChatStreamState:
         loaded_agents = storage.get_all_agents()
         valid_nodes = [item.get("id") for item in loaded_agents if item.get("id")] + ["supervisor", "reviewer"]
-        return ChatStreamState(valid_agent_node_names=valid_nodes)
+        preserve_timeline = str(transport or "").strip() in {"network_supervisor_openai", "network_supervisor_anthropic"}
+        return ChatStreamState(valid_agent_node_names=valid_nodes, preserve_stream_timeline=preserve_timeline)
 
     @staticmethod
     def _now_timestamp_ms() -> int:
@@ -2786,6 +2791,16 @@ class ChatRuntime:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
             return emitted_events
+        if stream_state.preserve_stream_timeline:
+            self._clear_text_flush_deadline(stream_state)
+            text_event = await self._emit_stable_text_chunk(
+                chat_run,
+                stream_state,
+                delta,
+                model_run_id=model_run_id,
+                snapshot=snapshot or self._current_canonical_text(stream_state),
+            )
+            return [text_event] if text_event is not None else []
         for stable_chunk in stream_state.text_aggregator.push(delta):
             if not stable_chunk:
                 continue
@@ -5173,7 +5188,7 @@ class ChatRuntime:
         self.emit_lifecycle_start_events(chat_run)
         self.record_request_inputs(chat_run)
 
-        stream_state = self.create_stream_state()
+        stream_state = self.create_stream_state(transport=chat_run.transport)
 
         try:
             for startup_event in self.emit_stream_start_events(chat_run, stream_state):

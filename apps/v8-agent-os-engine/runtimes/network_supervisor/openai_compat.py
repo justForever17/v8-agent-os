@@ -13,12 +13,19 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, ChatToolCall, ChatToolFunction, EngineConfig, ExternalToolSpec
 from core.prompt_budget import estimate_prompt_tokens
+from runtimes.network_supervisor.compat_ingress_filter import filter_openai_payload
 
 _ALIAS_SANITIZE_RE = re.compile(r"[^a-z0-9_]+")
 _TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _MAX_ALIAS_STEM = 36
 _MAX_SCHEMA_DEPTH = 12
 DEFAULT_COMPAT_MODEL_ALIASES = ["v8os"]
+COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS = 1_000_000
+COMPAT_MAX_EXTERNAL_TOOLS = 256
+COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS = 64_000
+COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS = 1_000_000
+COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS = 32_000
+COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES = 2_000_000
 
 
 class _CompatToolEmptyArgs(BaseModel):
@@ -212,10 +219,10 @@ def select_external_tools_for_request(
     raw_tools: list[dict[str, Any]] | None,
     *,
     tool_choice: Any = None,
-    max_external_tools: int = 8,
-    max_tool_description_tokens: int = 800,
-    max_tool_schema_bytes: int = 32768,
-    max_tools_payload_tokens: int = 6000,
+    max_external_tools: int = COMPAT_MAX_EXTERNAL_TOOLS,
+    max_tool_description_tokens: int = COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
+    max_tool_schema_bytes: int = COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
+    max_tools_payload_tokens: int = COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
 ) -> list[ExternalToolSpec]:
     tools = [dict(item) for item in list(raw_tools or []) if isinstance(item, dict)]
     if not tools:
@@ -297,8 +304,8 @@ def normalize_openai_messages_to_chat_messages(
     raw_messages: list[dict[str, Any]] | None,
     *,
     external_tools: list[ExternalToolSpec] | None = None,
-    max_external_system_tokens: int = 1200,
-    max_external_message_tokens: int = 16000,
+    max_external_system_tokens: int = COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS,
+    max_external_message_tokens: int = COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
 ) -> list[ChatMessage]:
     wire_to_internal, _ = build_external_tool_alias_maps(external_tools)
     normalized: list[ChatMessage] = []
@@ -435,13 +442,15 @@ def build_engine_chat_request_from_openai(
     scope_hint: str | None = None,
     scope_mode: str = "explicit",
     model_name_override: str | None = None,
-    max_external_tools: int = 8,
-    max_external_system_tokens: int = 1200,
-    max_external_message_tokens: int = 16000,
-    max_external_tool_description_tokens: int = 800,
-    max_external_tool_schema_bytes: int = 32768,
-    max_external_tools_payload_tokens: int = 6000,
+    max_external_tools: int = COMPAT_MAX_EXTERNAL_TOOLS,
+    max_external_system_tokens: int = COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS,
+    max_external_message_tokens: int = COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
+    max_external_tool_description_tokens: int = COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
+    max_external_tool_schema_bytes: int = COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
+    max_external_tools_payload_tokens: int = COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
 ) -> ChatRequest:
+    ingress = filter_openai_payload(payload, max_payload_tokens=COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS)
+    payload = ingress.payload
     raw_tools = [dict(item) for item in list(payload.get("tools") or []) if isinstance(item, dict)]
     external_tools = select_external_tools_for_request(
         raw_tools,
@@ -537,6 +546,19 @@ def extract_text_from_events(events: list[dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def extract_reasoning_from_events(events: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for event in list(events or []):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or "").strip() != "reasoning_chunk":
+            continue
+        content = str(event.get("content") or "")
+        if content:
+            parts.append(content)
+    return "".join(parts)
+
+
 def openai_finish_reason_from_events(
     events: list[dict[str, Any]],
     *,
@@ -564,11 +586,14 @@ def build_openai_completion_response(
 ) -> dict[str, Any]:
     tool_calls = extract_external_tool_calls_from_events(events, external_tools=external_tools)
     text = extract_text_from_events(events)
+    reasoning = extract_reasoning_from_events(events)
     finish_reason = openai_finish_reason_from_events(events, tool_calls=tool_calls)
     assistant_message: dict[str, Any] = {
         "role": "assistant",
         "content": text if text else None,
     }
+    if reasoning:
+        assistant_message["reasoning_content"] = reasoning
     if tool_calls:
         assistant_message["tool_calls"] = tool_calls
     created = int(time.time())

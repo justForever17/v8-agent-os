@@ -30,6 +30,7 @@ from erc.run_service import run_service
 from erc.runtime_context import get_runtime_context
 from erc.workflow_ledger import workflow_ledger_service
 from runtimes.chat.runtime import chat_runtime
+from runtimes.network_supervisor.compat_ingress_filter import get_recent_compat_ingress_events
 from runtimes.network_supervisor.models import (
     NetworkEnvelope,
     NetworkSupervisorRuntimeConfig,
@@ -814,6 +815,21 @@ class NetworkSupervisorService:
                     for item in list(state.get("openaiCompatMemoryAdapterRecent") or [])[:5]
                     if isinstance(item, dict)
                 ],
+            },
+            "anthropicCompat": {
+                "enabled": bool(config.openai_compat.enabled),
+                "adminRelayOnly": bool(config.openai_compat.admin_relay_only),
+                "available": bool(config.enabled and config.openai_compat.enabled and openai_compat_tokens),
+                "tokenCount": len(openai_compat_tokens),
+                "modelAliases": list(config.openai_compat.model_aliases or ["v8os"]),
+                "baseUrlHint": "http://localhost:9528/api/network-supervisor/anthropic",
+                "messagesPath": "/v1/messages",
+                "modelsPath": "/v1/models",
+                "authSchemes": ["x-api-key", "Authorization: Bearer"],
+            },
+            "compatIngress": {
+                "maxExternalPayloadTokens": int(config.openai_compat.max_external_tools_payload_tokens or 0),
+                "recent": get_recent_compat_ingress_events(limit=5),
             },
             "delegationAvailability": self._delegation_availability_payload(),
             "toolAvailability": {

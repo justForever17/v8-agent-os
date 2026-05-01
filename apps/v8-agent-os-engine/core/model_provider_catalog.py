@@ -231,13 +231,37 @@ class ModelProviderCatalog:
             return ["model3d.generate"]
         return []
 
+    def _media_model_operation_kinds(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> List[str]:
+        provider_id = str(provider_entry.get("id") or "").strip()
+        registry_entry = media_model_capability_registry.find(provider_id, model_id)
+        registry_operations = registry_entry.get("operationKinds") if registry_entry else None
+        if isinstance(registry_operations, list) and registry_operations:
+            normalized_modality = _normalized_modality(modality)
+            prefixes = {
+                "image": "image.",
+                "video": "video.",
+                "voice": "voice.",
+                "music": "music.",
+                "workflow": "workflow.",
+                "model3d": "model3d.",
+            }
+            prefix = prefixes.get(normalized_modality)
+            exact_operations = [
+                str(item).strip()
+                for item in registry_operations
+                if str(item).strip() and (not prefix or str(item).strip().startswith(prefix))
+            ]
+            if exact_operations:
+                return exact_operations
+        return self._media_operation_kinds(provider_entry, modality)
+
     def _media_catalog_model(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> Dict[str, Any]:
         provider_id = str(provider_entry.get("id") or "")
         registry_entry = media_model_capability_registry.find(provider_id, model_id)
         request = dict(provider_entry.get("request") or {})
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
-        operation_kinds = self._media_operation_kinds(provider_entry, modality)
+        operation_kinds = self._media_model_operation_kinds(provider_entry, modality, model_id)
         operation_capability_profiles = {
             operation_kind: _media_capability_profile(provider_id, model_id, operation_kind)
             for operation_kind in operation_kinds

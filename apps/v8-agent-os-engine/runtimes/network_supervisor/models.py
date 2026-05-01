@@ -4,6 +4,15 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from runtimes.network_supervisor.openai_compat import (
+    COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
+    COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
+    COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS,
+    COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
+    COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
+    COMPAT_MAX_EXTERNAL_TOOLS,
+)
+
 
 class NetworkTraceContext(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -96,13 +105,19 @@ class NetworkOpenAICompatConfig(BaseModel):
     admin_relay_only: bool = Field(default=True, alias="adminRelayOnly")
     allow_workspace_headers: bool = Field(default=True, alias="allowWorkspaceHeaders")
     allow_raw_workspace_path: bool = Field(default=False, alias="allowRawWorkspacePath")
-    max_external_tools: int = Field(default=8, alias="maxExternalTools")
+    max_external_tools: int = Field(default=COMPAT_MAX_EXTERNAL_TOOLS, alias="maxExternalTools")
     default_scope_mode: str = Field(default="explicit", alias="defaultScopeMode")
-    max_external_system_tokens: int = Field(default=1200, alias="maxExternalSystemTokens")
-    max_external_message_tokens: int = Field(default=16000, alias="maxExternalMessageTokens")
-    max_external_tool_description_tokens: int = Field(default=800, alias="maxExternalToolDescriptionTokens")
-    max_external_tool_schema_bytes: int = Field(default=32768, alias="maxExternalToolSchemaBytes")
-    max_external_tools_payload_tokens: int = Field(default=6000, alias="maxExternalToolsPayloadTokens")
+    max_external_system_tokens: int = Field(default=COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS, alias="maxExternalSystemTokens")
+    max_external_message_tokens: int = Field(default=COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS, alias="maxExternalMessageTokens")
+    max_external_tool_description_tokens: int = Field(
+        default=COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
+        alias="maxExternalToolDescriptionTokens",
+    )
+    max_external_tool_schema_bytes: int = Field(
+        default=COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
+        alias="maxExternalToolSchemaBytes",
+    )
+    max_external_tools_payload_tokens: int = Field(default=COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS, alias="maxExternalToolsPayloadTokens")
     max_memory_hint_tokens: int = Field(default=1200, alias="maxMemoryHintTokens")
     max_workflow_hint_tokens: int = Field(default=600, alias="maxWorkflowHintTokens")
 

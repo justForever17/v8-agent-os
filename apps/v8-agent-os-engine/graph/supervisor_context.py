@@ -817,14 +817,14 @@ def build_supervisor_system_content(
                 "--------------------------------\n"
             )
 
-        matched_families = _predict_specialist_families(query=user_query, plan=plan)
+        legacy_matched_families = _predict_specialist_families(query=user_query, plan=plan)
         hinted_families = [
             str(item or "").strip()
             for item in list((task_shape_hint or {}).get("suggestedFamilies") or [])
             if str(item or "").strip()
         ]
         recommended_families = []
-        for family in [*hinted_families, *matched_families]:
+        for family in hinted_families:
             if family and family not in recommended_families:
                 recommended_families.append(family)
         explicit_reveal_families = []
@@ -862,14 +862,68 @@ def build_supervisor_system_content(
         if exposure_mode in {"family_cards", "cards", "default", ""}:
             ordered_families = sorted(family_map)
             ordered_families.sort(key=lambda family: (0 if family in recommended_families else 1, family))
-            visible_family_set = {family for family in explicit_reveal_families if family in family_map}
+            auto_reveal_config = specialist_registry.get("autoReveal") if isinstance(specialist_registry.get("autoReveal"), dict) else {}
+            auto_reveal_recommendation = (
+                task_shape_hint.get("autoRevealRecommendation")
+                if isinstance(task_shape_hint, dict) and isinstance(task_shape_hint.get("autoRevealRecommendation"), dict)
+                else {}
+            )
+            try:
+                auto_min_confidence = float(auto_reveal_config.get("minConfidence", 0.9))
+            except (TypeError, ValueError):
+                auto_min_confidence = 0.9
+            try:
+                auto_min_margin = float(auto_reveal_config.get("minScoreMargin", 0.15))
+            except (TypeError, ValueError):
+                auto_min_margin = 0.15
+            try:
+                auto_max_families = int(auto_reveal_config.get("maxFamilies", 1))
+            except (TypeError, ValueError):
+                auto_max_families = 1
+            auto_max_families = max(0, min(auto_max_families, 3))
+            try:
+                hint_confidence = float((task_shape_hint or {}).get("confidence") or 0)
+            except (TypeError, ValueError):
+                hint_confidence = 0.0
+            try:
+                hint_margin = float((task_shape_hint or {}).get("scoreMargin") or 0)
+            except (TypeError, ValueError):
+                hint_margin = 0.0
+            hint_ambiguity_flags = [
+                str(item or "").strip()
+                for item in list((task_shape_hint or {}).get("ambiguityFlags") or [])
+                if str(item or "").strip()
+            ]
+            require_no_ambiguity = bool(auto_reveal_config.get("requireNoAmbiguity", True))
+            auto_reveal_enabled = bool(auto_reveal_config.get("enabled", True))
+            auto_reveal_families: list[str] = []
+            if (
+                auto_reveal_enabled
+                and bool(auto_reveal_recommendation.get("eligible"))
+                and hint_confidence >= auto_min_confidence
+                and hint_margin >= auto_min_margin
+                and (not require_no_ambiguity or not hint_ambiguity_flags)
+            ):
+                for item in list(auto_reveal_recommendation.get("families") or []):
+                    family = normalize_specialist_family_id(item)
+                    if family in family_map and family not in explicit_reveal_families and family not in auto_reveal_families:
+                        auto_reveal_families.append(family)
+                    if len(auto_reveal_families) >= auto_max_families:
+                        break
+            visible_family_set = {
+                family
+                for family in [*explicit_reveal_families, *auto_reveal_families]
+                if family in family_map
+            }
             hidden_member_count = sum(len(items) for family, items in family_map.items() if family not in visible_family_set)
             lines = [
                 "--- SPECIALIST FAMILIES ---",
                 f"taskFamilyHint={'+'.join(recommended_families) if recommended_families else 'none'}",
                 f"explicitFamilyMentions={'+'.join(explicit_reveal_families) if explicit_reveal_families else 'none'}",
+                f"autoRevealFamilies={'+'.join(auto_reveal_families) if auto_reveal_families else 'none'}",
                 f"taskShapePrimary={str((task_shape_hint or {}).get('primaryTaskShape') or 'unknown')}; confidence={str((task_shape_hint or {}).get('confidence') or 'n/a')}",
-                "familyMode=family_cards; concrete non-global family members are hidden by default.",
+                f"autoRevealPolicy=enabled:{str(auto_reveal_enabled).lower()} minConfidence={auto_min_confidence:.2f} minScoreMargin={auto_min_margin:.2f} maxFamilies={auto_max_families} requireNoAmbiguity={str(require_no_ambiguity).lower()}",
+                "familyMode=family_cards; concrete non-global family members are hidden unless explicitly mentioned or task_shape reaches high-confidence auto reveal.",
                 "selectionRule=Use delegation_broker(mode=\"reveal\", family=\"...\") to inspect members, or dispatch with familyHint + requiredCapabilities and let the broker choose.",
                 "toolPolicy=contextual_auto; runtime direct tools still require runtime_broker grants and are separate from family reveal.",
             ]
@@ -891,6 +945,13 @@ def build_supervisor_system_content(
                     overflow = max(0, len(family_map.get(family, [])) - family_limit)
                     if overflow:
                         lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
+                for family in [item for item in auto_reveal_families if item in visible_family_set]:
+                    lines.append(f"[{family}] revealSource=task_shape_high_confidence")
+                    for agent in family_map.get(family, [])[:family_limit]:
+                        lines.append(_render_specialist_line(agent))
+                    overflow = max(0, len(family_map.get(family, [])) - family_limit)
+                    if overflow:
+                        lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
             unknown_explicit_families = [family for family in explicit_reveal_families if family not in family_map]
             if unknown_explicit_families:
                 lines.append(f"unknownExplicitFamilies={','.join(unknown_explicit_families)}; revealSkipped=true")
@@ -901,11 +962,11 @@ def build_supervisor_system_content(
             lines.append("--------------------------------")
             return "\n".join(lines) + "\n"
 
-        visible_families = [family for family in matched_families if family in family_map]
+        visible_families = [family for family in legacy_matched_families if family in family_map]
         hidden_families = sorted(family for family in family_map if family not in visible_families)
         lines = [
             "--- SPECIALIST FAMILIES ---",
-            f"taskFamily={'+'.join(matched_families) if matched_families else 'none'}",
+            f"taskFamily={'+'.join(legacy_matched_families) if legacy_matched_families else 'none'}",
             f"familyMode=legacy_matched_members; familyLimit={family_limit}; globalExposure bypasses the familyLimit but does not grant tools.",
             "selectionRule=Use delegation_broker; only delegate inside globalExposure or matched families unless the task family changes.",
             "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",

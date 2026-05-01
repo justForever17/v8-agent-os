@@ -2201,6 +2201,26 @@ class StorageManager:
         if exposure_mode not in {"family_cards", "legacy_matched_members"}:
             exposure_mode = "family_cards"
         raw["exposureMode"] = exposure_mode
+        auto_reveal_raw = raw.get("autoReveal") if isinstance(raw.get("autoReveal"), dict) else {}
+        try:
+            min_confidence = float(auto_reveal_raw.get("minConfidence", 0.9))
+        except (TypeError, ValueError):
+            min_confidence = 0.9
+        try:
+            min_margin = float(auto_reveal_raw.get("minScoreMargin", 0.15))
+        except (TypeError, ValueError):
+            min_margin = 0.15
+        try:
+            max_families = int(auto_reveal_raw.get("maxFamilies", 1))
+        except (TypeError, ValueError):
+            max_families = 1
+        raw["autoReveal"] = {
+            "enabled": _as_bool(auto_reveal_raw.get("enabled"), True),
+            "minConfidence": max(0.0, min(min_confidence, 1.0)),
+            "minScoreMargin": max(0.0, min(min_margin, 1.0)),
+            "maxFamilies": max(0, min(max_families, 3)),
+            "requireNoAmbiguity": _as_bool(auto_reveal_raw.get("requireNoAmbiguity"), True),
+        }
         raw["families"] = normalize_specialist_families_config(raw.get("families"))
         return raw
 

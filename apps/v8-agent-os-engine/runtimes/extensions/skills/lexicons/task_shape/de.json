@@ -1,0 +1,11 @@
+{
+  "locale": "de",
+  "version": 1,
+  "taskShapeAliases": {
+    "code_media_framework": ["remotion", "manim", "ffmpeg", "ffprobe", "three.js", "threejs", "p5.js", "p5js", "processing", "webgl", "react", "tsx", "typescript", "next.js", "vue", "svelte"],
+    "code_action": ["implementieren", "implementierung", "code", "programmieren", "bauen", "skript", "repository", "projekt", "reparieren", "testen", "debuggen", "refactoring"],
+    "media_output": ["bild", "foto", "video", "audio", "stimme", "musik", "poster", "aufnahme", "storyboard", "untertitel", "rendern"],
+    "media_provider": ["seedance", "seedream", "sora", "veo", "kling", "runway", "luma", "comfyui", "mureka", "suno", "tts"],
+    "writing_action": ["dokument", "dokumentation", "artikel", "zusammenfassung", "vorschlag", "bericht"]
+  }
+}

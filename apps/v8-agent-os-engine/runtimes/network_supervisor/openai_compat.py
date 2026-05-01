@@ -184,6 +184,80 @@ def _validate_external_tool_budget(
         )
 
 
+def _infer_external_tool_semantics(wire_name: str, description: str, parameters: dict[str, Any] | None) -> dict[str, Any]:
+    name = str(wire_name or "").strip()
+    lowered = name.lower()
+    desc_lower = str(description or "").lower()
+    schema_blob = json.dumps(parameters or {}, ensure_ascii=False, sort_keys=True).lower()
+    haystack = f"{lowered} {desc_lower} {schema_blob}"
+    tool_kind = "other"
+    side_effect = "none"
+    preconditions: list[str] = []
+    recovery_hints: list[str] = []
+
+    if lowered in {"read"} or lowered.endswith("_read") or "read a file" in haystack:
+        tool_kind = "read"
+    elif lowered in {"write"} or lowered.endswith("_write") or "write" in lowered:
+        tool_kind = "write"
+        side_effect = "filesystem_write"
+    elif lowered in {"edit", "multiedit", "multi_edit"} or "edit" in lowered:
+        tool_kind = "edit"
+        side_effect = "filesystem_write"
+    elif lowered in {"bash", "shell", "run_command"} or "bash" in lowered or "shell" in haystack:
+        tool_kind = "shell"
+        side_effect = "process_or_shell"
+    elif lowered in {"grep", "glob", "ls", "search"} or any(token in lowered for token in ("grep", "glob", "search", "list")):
+        tool_kind = "search"
+    elif any(token in lowered for token in ("fetch", "web", "url", "http")):
+        tool_kind = "network_read"
+
+    if tool_kind in {"write", "edit"}:
+        preconditions.append(
+            "Claude Code-style mutation tools may require the target file to be read in the external client before writing or editing it."
+        )
+        recovery_hints.append(
+            "If the external client reports 'File has not been read yet', request the external Read tool for that path first, then retry Write/Edit/MultiEdit."
+        )
+        recovery_hints.append(
+            "For new files inside the V8 workspace, prefer V8 internal write_native_file unless the user explicitly wants the external client to perform the write."
+        )
+    elif tool_kind == "shell":
+        preconditions.append(
+            "Shell commands are executed by the external client, not by V8OS; destructive or ambiguous commands still require safety review."
+        )
+    elif tool_kind == "search":
+        preconditions.append("Use this for external-client workspace discovery; it is not a V8 filesystem tool.")
+
+    return {
+        "toolKind": tool_kind,
+        "sideEffect": side_effect,
+        "preconditions": preconditions,
+        "recoveryHints": recovery_hints,
+        "clientOwnedWorkspace": True,
+    }
+
+
+def _render_external_tool_description_for_internal_model(original_description: str, function_payload: Any) -> str:
+    # The external wire description is preserved on the spec. This internal-facing
+    # description appends V8 interoperability notes without mutating wire metadata.
+    lines: list[str] = []
+    original = str(original_description or "").strip()
+    if original:
+        lines.append(original)
+    kind = str(getattr(function_payload, "tool_kind", "") or "other")
+    side_effect = str(getattr(function_payload, "side_effect", "") or "none")
+    lines.append(
+        f"[V8OS external client tool notes] kind={kind}; sideEffect={side_effect}; executor=external_client; V8OS returns this tool call to the client and does not execute it internally."
+    )
+    preconditions = [str(item).strip() for item in list(getattr(function_payload, "preconditions", None) or []) if str(item).strip()]
+    if preconditions:
+        lines.append("Preconditions: " + " ".join(preconditions))
+    recovery_hints = [str(item).strip() for item in list(getattr(function_payload, "recovery_hints", None) or []) if str(item).strip()]
+    if recovery_hints:
+        lines.append("Recovery: " + " ".join(recovery_hints))
+    return "\n".join(lines).strip()
+
+
 def _build_args_schema(internal_alias_name: str, parameters: dict[str, Any] | None) -> type[BaseModel]:
     payload = dict(parameters or {})
     properties = payload.get("properties") if isinstance(payload.get("properties"), dict) else {}
@@ -263,6 +337,7 @@ def select_external_tools_for_request(
             max_description_tokens=max_tool_description_tokens,
             max_schema_bytes=max_tool_schema_bytes,
         )
+        semantics = _infer_external_tool_semantics(wire_name, description, parameters)
         seen_wire_names.add(wire_name)
         normalized.append(
             ExternalToolSpec.model_validate(
@@ -273,6 +348,7 @@ def select_external_tools_for_request(
                         "description": description or None,
                         "parameters": parameters,
                         "internalAliasName": _unique_internal_alias_name(wire_name, seen_aliases),
+                        **semantics,
                     },
                 }
             )
@@ -388,7 +464,8 @@ def build_external_langchain_tools(external_tools: list[ExternalToolSpec] | None
         if not wire_name or not internal_alias_name:
             continue
         args_schema = _build_args_schema(internal_alias_name, function_payload.parameters)
-        description = str(function_payload.description or "").strip()
+        original_description = str(function_payload.description or "").strip()
+        description = _render_external_tool_description_for_internal_model(original_description, function_payload)
         if not description:
             description = f"External network tool mapped from '{wire_name}'."
 

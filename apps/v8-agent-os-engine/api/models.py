@@ -24,6 +24,11 @@ class ExternalToolFunctionSpec(BaseModel):
     description: Optional[str] = Field(default=None, description="External function description")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="JSON schema parameters")
     internal_alias_name: Optional[str] = Field(default=None, alias="internalAliasName")
+    tool_kind: Optional[str] = Field(default=None, alias="toolKind", description="Inferred external tool kind")
+    side_effect: Optional[str] = Field(default=None, alias="sideEffect", description="Inferred side-effect class")
+    preconditions: List[str] = Field(default_factory=list, description="Important client-owned tool preconditions")
+    recovery_hints: List[str] = Field(default_factory=list, alias="recoveryHints", description="Failure recovery hints for the supervisor")
+    client_owned_workspace: bool = Field(default=False, alias="clientOwnedWorkspace", description="Whether the tool operates in the external client's workspace")
 
 
 class ExternalToolSpec(BaseModel):

@@ -24,6 +24,7 @@ from runtimes.network_supervisor.anthropic_compat import (
     build_anthropic_compat_models_response,
     build_anthropic_message_response,
     build_engine_chat_request_from_anthropic,
+    extract_anthropic_tool_use_blocks_from_events,
     extract_anthropic_api_key,
     wants_anthropic_thinking,
 )
@@ -39,6 +40,7 @@ from runtimes.network_supervisor.openai_compat import (
     build_external_tool_alias_maps,
     build_openai_completion_response,
     extract_bearer_token,
+    extract_external_tool_calls_from_events,
     normalize_openai_compat_model_aliases,
     resolve_openai_compat_model_alias,
     wire_tool_call_id,
@@ -97,6 +99,36 @@ def _sse_frame(payload: dict[str, object] | str) -> bytes:
 def _anthropic_sse_frame(event: str, payload: dict[str, object]) -> bytes:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+
+
+def _openai_tool_result_ids(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for item in list(payload.get("messages") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() != "tool":
+            continue
+        wire_id = str(item.get("tool_call_id") or item.get("toolCallId") or "").strip()
+        if wire_id:
+            ids.append(wire_id)
+    return ids
+
+
+def _anthropic_tool_result_ids(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for message in list(payload.get("messages") or []):
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() != "tool_result":
+                continue
+            wire_id = str(block.get("tool_use_id") or "").strip()
+            if wire_id:
+                ids.append(wire_id)
+    return ids
 
 
 async def _stream_openai_chat_completion(
@@ -189,6 +221,13 @@ async def _stream_openai_chat_completion(
                     wire_id = wire_tool_call_id(internal_tool_call_id, wire_name=wire_name)
                     if wire_id in emitted_tool_call_ids:
                         continue
+                    network_supervisor_service.record_pending_external_tool(
+                        protocol="openai",
+                        run_id=run_id,
+                        wire_tool_call_id=wire_id,
+                        internal_alias_name=internal_name,
+                        external_wire_name=wire_name,
+                    )
                     tool_index = len(emitted_tool_call_ids)
                     emitted_tool_call_ids.add(wire_id)
                     tool_calls_seen = True
@@ -416,6 +455,13 @@ async def _stream_anthropic_message(
                     else:
                         parsed_args = {}
                     wire_id = anthropic_wire_tool_use_id(str(tool_payload.get("toolCallId") or "").strip(), wire_name=wire_name)
+                    network_supervisor_service.record_pending_external_tool(
+                        protocol="anthropic",
+                        run_id=run_id,
+                        wire_tool_call_id=wire_id,
+                        internal_alias_name=internal_name,
+                        external_wire_name=wire_name,
+                    )
                     yield _anthropic_sse_frame(
                         "content_block_start",
                         {
@@ -640,6 +686,10 @@ async def post_network_supervisor_openai_chat_completions(
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    network_supervisor_service.mark_external_tool_results_seen(
+        protocol="openai",
+        wire_tool_call_ids=_openai_tool_result_ids(payload),
+    )
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
     compat_config = network_supervisor_service.get_config_model().openai_compat
@@ -698,6 +748,17 @@ async def post_network_supervisor_openai_chat_completions(
             raise HTTPException(status_code=500, detail=str(event.get("error") or "OpenAI compat execution failed"))
         if isinstance(event, dict):
             events.append(event)
+    wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
+    for tool_call in extract_external_tool_calls_from_events(events, external_tools=chat_request.config.external_tools):
+        function_payload = dict(tool_call.get("function") or {})
+        external_wire_name = str(function_payload.get("name") or "").strip()
+        network_supervisor_service.record_pending_external_tool(
+            protocol="openai",
+            run_id=run_id,
+            wire_tool_call_id=str(tool_call.get("id") or "").strip(),
+            internal_alias_name=wire_to_internal.get(external_wire_name, external_wire_name),
+            external_wire_name=external_wire_name,
+        )
     response_payload = build_openai_completion_response(
         response_id=f"chatcmpl-{uuid.uuid4().hex}",
         model_name=response_model_name,
@@ -733,6 +794,10 @@ async def post_network_supervisor_anthropic_messages(
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    network_supervisor_service.mark_external_tool_results_seen(
+        protocol="anthropic",
+        wire_tool_call_ids=_anthropic_tool_result_ids(payload),
+    )
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
@@ -790,6 +855,16 @@ async def post_network_supervisor_anthropic_messages(
             raise HTTPException(status_code=500, detail=str(event.get("error") or "Anthropic compat execution failed"))
         if isinstance(event, dict):
             events.append(event)
+    wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
+    for tool_use in extract_anthropic_tool_use_blocks_from_events(events, external_tools=chat_request.config.external_tools):
+        external_wire_name = str(tool_use.get("name") or "").strip()
+        network_supervisor_service.record_pending_external_tool(
+            protocol="anthropic",
+            run_id=run_id,
+            wire_tool_call_id=str(tool_use.get("id") or "").strip(),
+            internal_alias_name=wire_to_internal.get(external_wire_name, external_wire_name),
+            external_wire_name=external_wire_name,
+        )
     return JSONResponse(
         build_anthropic_message_response(
             response_id=f"msg_{uuid.uuid4().hex}",

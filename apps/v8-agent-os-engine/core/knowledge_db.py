@@ -57,6 +57,27 @@ def tokenize_for_fts(text: str) -> str:
     return " ".join(w.strip() for w in words if w.strip())
 
 
+_FTS_RESERVED_WORDS = {"AND", "OR", "NOT", "NEAR"}
+
+
+def sanitize_fts_query_tokens(tokenized_query: str, *, max_terms: int = 32) -> List[str]:
+    """Return safe FTS5 prefix-query tokens without quotes/operators."""
+    tokens: List[str] = []
+    for raw in str(tokenized_query or "").split():
+        cleaned = re.sub(r"[\"'`‘’“”\(\)\[\]\{\}:;,+*/\\|&!<>~=^$?#]+", " ", raw)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        for part in cleaned.split():
+            term = part.strip().strip("-_.")
+            if not term or term.upper() in _FTS_RESERVED_WORDS:
+                continue
+            if len(term) > 64:
+                term = term[:64]
+            tokens.append(term)
+            if len(tokens) >= max_terms:
+                return tokens
+    return tokens
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -259,7 +280,7 @@ class KnowledgeDB:
         tokenized_query = tokenize_for_fts(query)
         
         # 构建 FTS5 查询（每个词加通配符支持前缀匹配）
-        words = [w for w in tokenized_query.split() if w and len(w) > 0]
+        words = sanitize_fts_query_tokens(tokenized_query)
         if not words:
             return []
         fts_query = " OR ".join([f'"{w}"*' for w in words])

@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional, Type, List
 import time
+import re
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -33,6 +34,17 @@ from core.oauth_credentials import resolve_oauth_reference, resolve_provider_oau
 from core.provider_compatibility import normalize_provider_error
 from erc.runtime_context import get_runtime_context
 from langchain_core.embeddings import Embeddings
+
+_EMBEDDING_OBSERVED_LIMITS: Dict[str, int] = {}
+_TOKEN_LIMIT_RE = re.compile(r"(?:maximum token length|max(?:imum)?(?: input)? tokens?|token limit)[^\d]{0,40}(\d{3,7})", re.IGNORECASE)
+
+
+def _extract_observed_token_limit(error_text: str) -> int | None:
+    text = str(error_text or "")
+    matches = [int(match.group(1)) for match in _TOKEN_LIMIT_RE.finditer(text) if match.group(1).isdigit()]
+    if not matches:
+        return None
+    return min(matches)
 
 # Re-implementing the embedding and reranker wrappers cleanly
 try:
@@ -143,14 +155,26 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         self.provider_name = provider_name or provider_id
         self.role = role
         self.capability_class = capability_class
+
+    def _observed_limit_key(self) -> str:
+        return "|".join([str(self.provider_id or ""), str(self.endpoint or ""), str(self.model_name or ""), str(self.role or "embedding")])
+
+    def _effective_max_tokens(self) -> int | None:
+        observed = _EMBEDDING_OBSERVED_LIMITS.get(self._observed_limit_key())
+        if observed and observed > 0:
+            if self.max_tokens:
+                return min(int(self.max_tokens), int(observed))
+            return int(observed)
+        return int(self.max_tokens) if self.max_tokens else None
     
-    def _truncate_text(self, text: str) -> str:
+    def _truncate_text(self, text: str, *, token_limit: int | None = None) -> str:
         """Truncate text to stay within model's context window. Rough estimate: 1 token ≈ 3 chars for CJK."""
-        if not self.max_tokens or not text:
+        limit = int(token_limit or self._effective_max_tokens() or 0)
+        if not limit or not text:
             return text
-        max_chars = int(self.max_tokens * 2.5 * 0.9)
+        max_chars = int(limit * 2.5 * 0.9)
         if len(text) > max_chars:
-            print(f"[Embedding] ⚠️ Truncating text from {len(text)} to {max_chars} chars (model limit: {self.max_tokens} tokens)")
+            print(f"[Embedding] ⚠️ Truncating text from {len(text)} to {max_chars} chars (model limit: {limit} tokens)")
             return text[:max_chars]
         return text
         
@@ -168,7 +192,8 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             capability_class=self.capability_class,
             model_id=self.model_name,
         )
-        texts = [self._truncate_text(t) for t in texts]
+        original_texts = list(texts)
+        texts = [self._truncate_text(t) for t in original_texts]
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -182,21 +207,44 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         # But for Langchain compatibility, standard embed_documents often remains sync.
         res = requests.post(self.endpoint, json=payload, headers=headers)
         if res.status_code != 200:
-            print(f"[Embedding Error] {res.status_code}: {res.text}")
-            model_telemetry_service.record_aux_model_invocation(
-                model_id=self.model_name,
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                role=self.role,
-                capability_class=self.capability_class,
-                request_kind="embedding",
-                latency_ms=(time.perf_counter() - started) * 1000,
-                status="failed",
-                error_code=str(res.status_code),
-                error_message=res.text,
-                metadata={"documents": len(texts)},
-            )
-        res.raise_for_status()
+            observed_limit = _extract_observed_token_limit(res.text)
+            current_limit = self._effective_max_tokens()
+            if observed_limit and observed_limit > 0 and (not current_limit or observed_limit < int(current_limit)):
+                _EMBEDDING_OBSERVED_LIMITS[self._observed_limit_key()] = int(observed_limit)
+                print(f"[Embedding] ℹ️ Observed provider input token limit {observed_limit}; retrying with smaller truncation.")
+                retry_texts = [self._truncate_text(t, token_limit=int(observed_limit)) for t in original_texts]
+                retry_payload = dict(payload)
+                retry_payload["input"] = retry_texts
+                retry_started = time.perf_counter()
+                retry_res = requests.post(self.endpoint, json=retry_payload, headers=headers)
+                if retry_res.status_code == 200:
+                    res = retry_res
+                    texts = retry_texts
+                else:
+                    res = retry_res
+                    started = retry_started
+            if res.status_code == 200:
+                pass
+            else:
+                print(f"[Embedding Error] {res.status_code}: {res.text}")
+                model_telemetry_service.record_aux_model_invocation(
+                    model_id=self.model_name,
+                    provider_id=self.provider_id,
+                    provider_name=self.provider_name,
+                    role=self.role,
+                    capability_class=self.capability_class,
+                    request_kind="embedding",
+                    latency_ms=(time.perf_counter() - started) * 1000,
+                    status="failed",
+                    error_code=str(res.status_code),
+                    error_message=res.text,
+                    metadata={
+                        "documents": len(texts),
+                        "observedInputTokenLimit": observed_limit,
+                    },
+                )
+        if res.status_code != 200:
+            res.raise_for_status()
         
         data = res.json().get("data", [])
         data = sorted(data, key=lambda x: x.get("index", 0))
@@ -209,7 +257,11 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             request_kind="embedding",
             latency_ms=(time.perf_counter() - started) * 1000,
             status="completed",
-            metadata={"documents": len(texts), "dimensions": len(data[0]["embedding"]) if data else 0},
+            metadata={
+                "documents": len(texts),
+                "dimensions": len(data[0]["embedding"]) if data else 0,
+                "observedInputTokenLimit": _EMBEDDING_OBSERVED_LIMITS.get(self._observed_limit_key()),
+            },
         )
         return [item["embedding"] for item in data]
         

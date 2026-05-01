@@ -138,6 +138,98 @@ class NetworkSupervisorService:
             encoding="utf-8",
         )
 
+    def _external_tool_pending_key(self, protocol: str, wire_tool_call_id: str) -> str:
+        return f"{str(protocol or '').strip().lower()}:{str(wire_tool_call_id or '').strip()}"
+
+    def _prune_pending_external_tools(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+        target_state = state if isinstance(state, dict) else self.read_state()
+        pending = {
+            str(key): dict(value)
+            for key, value in dict(target_state.get("pendingExternalTools") or {}).items()
+            if isinstance(value, dict)
+        }
+        now_ts = time.time()
+        changed = False
+        for key, item in list(pending.items()):
+            status = str(item.get("status") or "waiting_external_tool")
+            expires_at = float(item.get("expiresAtTs") or 0)
+            if status == "waiting_external_tool" and expires_at and expires_at < now_ts:
+                item["status"] = "external_tool_abandoned"
+                item["abandonedAt"] = _utc_iso()
+                item["lastReason"] = "expired_waiting_for_client_tool_result"
+                pending[key] = item
+                changed = True
+        target_state["pendingExternalTools"] = pending
+        if changed and state is None:
+            self.write_state(target_state)
+        return pending
+
+    def record_pending_external_tool(
+        self,
+        *,
+        protocol: str,
+        run_id: str,
+        wire_tool_call_id: str,
+        internal_alias_name: str,
+        external_wire_name: str,
+        ttl_seconds: int = 900,
+    ) -> None:
+        wire_id = str(wire_tool_call_id or "").strip()
+        if not wire_id:
+            return
+        state = self.read_state()
+        pending = self._prune_pending_external_tools(state)
+        key = self._external_tool_pending_key(protocol, wire_id)
+        now = _utc_now()
+        pending[key] = {
+            "protocol": str(protocol or "").strip().lower(),
+            "runId": str(run_id or "").strip(),
+            "wireToolCallId": wire_id,
+            "internalAliasName": str(internal_alias_name or "").strip(),
+            "externalWireName": str(external_wire_name or "").strip(),
+            "status": "waiting_external_tool",
+            "createdAt": _utc_iso(now),
+            "expiresAt": _utc_iso(now + timedelta(seconds=max(30, int(ttl_seconds or 900)))),
+            "expiresAtTs": time.time() + max(30, int(ttl_seconds or 900)),
+        }
+        state["pendingExternalTools"] = pending
+        self.write_state(state)
+
+    def mark_external_tool_results_seen(self, *, protocol: str, wire_tool_call_ids: list[str]) -> None:
+        ids = [str(item or "").strip() for item in list(wire_tool_call_ids or []) if str(item or "").strip()]
+        if not ids:
+            return
+        state = self.read_state()
+        pending = self._prune_pending_external_tools(state)
+        changed = False
+        for wire_id in ids:
+            key = self._external_tool_pending_key(protocol, wire_id)
+            item = dict(pending.get(key) or {})
+            if not item:
+                continue
+            item["status"] = "external_tool_result_received"
+            item["resolvedAt"] = _utc_iso()
+            pending[key] = item
+            changed = True
+        if changed:
+            state["pendingExternalTools"] = pending
+            self.write_state(state)
+
+    def pending_external_tools_summary(self, limit: int = 10) -> dict[str, Any]:
+        state = self.read_state()
+        pending = self._prune_pending_external_tools(state)
+        waiting = [
+            dict(item)
+            for item in pending.values()
+            if str(item.get("status") or "") == "waiting_external_tool"
+        ]
+        waiting.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        recent = sorted(pending.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)[: max(1, min(int(limit or 10), 50))]
+        return {
+            "waitingCount": len(waiting),
+            "recent": [dict(item) for item in recent],
+        }
+
     def read_secrets(self) -> dict[str, Any]:
         self._ensure_runtime_dir()
         if not NETWORK_SUPERVISOR_SECRETS_PATH.exists():
@@ -831,6 +923,7 @@ class NetworkSupervisorService:
                 "maxExternalPayloadTokens": int(config.openai_compat.max_external_tools_payload_tokens or 0),
                 "recent": get_recent_compat_ingress_events(limit=5),
             },
+            "pendingExternalTools": self.pending_external_tools_summary(limit=8),
             "delegationAvailability": self._delegation_availability_payload(),
             "toolAvailability": {
                 "delegate_network_task": self._delegation_availability_payload(),

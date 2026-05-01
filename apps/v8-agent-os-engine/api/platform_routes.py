@@ -575,10 +575,11 @@ async def connect_model_provider(data: dict = Body(...)):
         else:
             normalized_model_type = requested_model_type if requested_model_type in media_model_types | {"TEXT", "MULTIMODAL", "EMBEDDING", "RERANK"} else catalog_model_type
         is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or normalized_model_type in media_model_types
+        is_retrieval_model = normalized_model_type in {"EMBEDDING", "RERANK", "RERANKER"} or str(model.get("capabilityClass") or "").lower() in {"embedding", "reranker", "rerank"}
         registry_known_chat_model = bool(model.get("capabilityRegistryMatched")) and not is_media_provider
-        clear_runtime_budget = is_media_provider or is_oauth_provider or (is_custom_provider and not registry_known_chat_model)
+        clear_runtime_budget = is_media_provider or is_oauth_provider or (is_custom_provider and not registry_known_chat_model and not is_retrieval_model)
         managed_context_window = None if clear_runtime_budget else model.get("contextWindow")
-        managed_max_tokens = None if clear_runtime_budget else model.get("maxTokens")
+        managed_max_tokens = None if clear_runtime_budget or is_retrieval_model else model.get("maxTokens")
         next_model = {
             "type": normalized_model_type or "TEXT",
             "contextWindow": managed_context_window,

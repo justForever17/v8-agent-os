@@ -1002,6 +1002,8 @@ class MemoryStore:
                         },
                     )
             except Exception as exc:
+                diagnostics["vector_error"] = str(exc)
+                diagnostics["vector_degraded"] = True
                 logger.warning(f"[MemoryStore] Vector search error in unified_recall: {exc}")
 
         if use_fts:
@@ -1046,6 +1048,8 @@ class MemoryStore:
                         },
                     )
             except Exception as exc:
+                diagnostics["fts5_error"] = str(exc)
+                diagnostics["fts5_degraded"] = True
                 logger.warning(f"[MemoryStore] FTS5 search error in unified_recall: {exc}")
 
         seed_items = sorted(

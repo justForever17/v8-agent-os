@@ -368,7 +368,7 @@ def _build_engineering_lane_domain() -> dict[str, Any]:
     config = storage.get_engineering_lane_config() or {}
     return {
         "domain": "engineering-lane",
-        "title": "Engineering Lane",
+        "title": "Engineering Runtime",
         "summary": "工程专用 ContextPack、Proof Ledger 与行为链提示治理。",
         "data": config,
         "source": _config_source("engineeringLane"),

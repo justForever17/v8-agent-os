@@ -13,6 +13,7 @@ from core.delegation_broker import build_workset_dispatch_decisions, normalize_t
 from core.prompt_budget import enforce_prompt_budget, estimate_prompt_tokens, truncate_to_estimated_tokens
 from core.storage import storage
 from core.workspace_resolution import workspace_resolution_service
+from erc.runtime_registry import runtime_registry
 from runtimes.memory.workflow_service import workflow_memory_service
 
 
@@ -164,7 +165,58 @@ VALIDATION_COMMAND_PATTERNS = (
 
 
 class EngineeringLaneService:
-    """Engineering Lane Phase 1: dry-run evidence capsule and proof ledger."""
+    """Engineering Runtime: ContextPack, proof ledger and workset governance."""
+
+    kind = "engineering"
+
+    def runtime_descriptor(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "displayName": "EngineeringRuntime",
+            "summary": "负责工程任务的 ContextPack、写集治理、Proof Ledger、工作区观测与 workflow hints；内部计划保留在工程账本，不展开成 Supervisor todos。",
+            "responsibilities": [
+                "识别 project_coding / 工程任务形态并准备轻量 ContextPack",
+                "维护 Proof Ledger、Workset Observation 与工程行为链证据",
+                "为 Planner / Delegation Broker 提供工程约束和验收线索",
+            ],
+            "routingKeywords": ["project_coding", "代码", "实现", "修复", "测试", "工程", "ContextPack", "Proof Ledger"],
+            "acceptedInputs": ["user_query", "workspace_descriptor", "task_brief", "git_status"],
+            "producedOutputs": ["context_pack", "proof_entry", "workset_observation", "workflow_hints"],
+            "ownedSteps": [
+                "engineering.context_pack",
+                "engineering.proof_ledger",
+                "engineering.workset_observation",
+            ],
+            "supportsPause": False,
+            "supportsResume": True,
+            "supportsApproval": False,
+            "supportsRepair": False,
+            "visibility": "secondary",
+            "promptHints": [
+                "project_coding 任务优先参考 Engineering Runtime 的 ContextPack / Proof Ledger；不要把内部工程步骤展开成 Supervisor todos。",
+                "Remotion、Manim、ffmpeg、Three.js、p5.js 等用代码生成媒体的任务优先视为工程实现，Creative Media 只作为素材或 provider 子能力参与。",
+            ],
+            "capabilities": [
+                {
+                    "key": "engineering.context_pack",
+                    "label": "工程上下文胶囊",
+                    "summary": "压缩仓库、git、规则、关键文件和 workflow hints，给工程任务提供轻量事实层。",
+                    "accepts": ["用户请求", "工作区", "task brief"],
+                    "outputs": ["ContextPack", "关键文件候选", "验证建议"],
+                    "examples": ["修复测试失败", "实现新功能", "用 Remotion 做视频代码"],
+                    "risk_level": "medium",
+                },
+                {
+                    "key": "engineering.proof_ledger",
+                    "label": "Proof Ledger",
+                    "summary": "记录工程动作证据、验证状态、残余风险和写集观测。",
+                    "accepts": ["命令结果", "git diff", "验证摘要"],
+                    "outputs": ["proofEntryId", "verificationStatus", "residualRisks"],
+                    "examples": ["记录 typecheck 结果", "收集变更文件证据"],
+                    "risk_level": "low",
+                },
+            ],
+        }
 
     def get_config(self) -> dict[str, Any]:
         return storage.get_engineering_lane_config()
@@ -505,7 +557,7 @@ class EngineeringLaneService:
                     "phases": sorted(phase for phase in persisted_phases if phase),
                 },
                 "runtimeLaneProjection": {
-                    "runtimeId": "engineering_lane",
+                    "runtimeId": "engineering",
                     "messageLifecycleExcluded": True,
                     "separateFrom": ["planner_lane", "subagent_swarm", "chat"],
                 },
@@ -551,7 +603,7 @@ class EngineeringLaneService:
                     check(
                         "media_request_inactive",
                         "pass" if not bool(non_engineering_guard.get("active")) else "fail",
-                        "Image/video style request must not activate Engineering Lane in auto mode.",
+                        "Image/video style request must not activate Engineering Runtime in auto mode.",
                         non_engineering_guard,
                     )
                 ],
@@ -718,18 +770,18 @@ class EngineeringLaneService:
             scenario(
                 "engineering_runtime_lane_projection",
                 "runtime_lane",
-                "engineering_lane 独立投影",
+                "Engineering Runtime 独立投影",
                 [
                     check(
                         "lane_id_declared",
                         "pass",
-                        "Engineering evidence should project to engineering_lane, not chat/planner/subagent cards.",
-                        {"runtimeId": "engineering_lane"},
+                        "Engineering evidence should project to Engineering Runtime, not chat/planner/subagent cards.",
+                        {"runtimeId": "engineering"},
                     ),
                     check(
                         "message_lifecycle_excluded",
                         "pass",
-                        "engineering_lane events are expected to be excluded from normal chat narrative/tool nodes.",
+                        "Engineering Runtime events are expected to be excluded from normal chat narrative/tool nodes.",
                     ),
                 ],
             ),
@@ -2596,7 +2648,7 @@ class EngineeringLaneService:
             "runId": run_id,
             "taskBriefId": (task_brief or {}).get("taskBriefId") if isinstance(task_brief, dict) else None,
             "mode": "dry_run",
-            "patchIntent": "Engineering Lane dry-run context pack only; no code was changed.",
+            "patchIntent": "Engineering Runtime dry-run context pack only; no code was changed.",
             "readSet": [item.get("path") for item in context_pack.get("criticalFiles", []) if isinstance(item, dict)],
             "writeSet": write_set,
             "changedFiles": changed_files,
@@ -2641,4 +2693,4 @@ class EngineeringLaneService:
         return next_pack
 
 
-engineering_lane_service = EngineeringLaneService()
+engineering_lane_service = runtime_registry.register(EngineeringLaneService())

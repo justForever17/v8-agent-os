@@ -1152,7 +1152,10 @@ def build_supervisor_system_content(
 
         if resolved:
             icon_map = {"done": "✓", "in_progress": "→", "pending": " ", "skipped": "⊘"}
-            lines = ["--- TASK PLAN ---"]
+            lines = [
+                "--- TASK PLAN ---",
+                "Scope: Supervisor todos are cross-runtime orchestration milestones. Runtime-internal plans stay in their runtime status card, trace, ledger, job, or artifact.",
+            ]
             if task_info.get("name"):
                 lines.append(f"Task Name: {task_info['name']}")
             for i, item in enumerate(resolved):

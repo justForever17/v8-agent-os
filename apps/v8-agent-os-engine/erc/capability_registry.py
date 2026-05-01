@@ -8,6 +8,7 @@ from core.system_tools.baseline import is_baseline_system_tool_name
 _SNAPSHOT_RUNTIME_ORDER = (
     "chat",
     "memory",
+    "engineering",
     "creative_media",
     "automation",
     "extensions",
@@ -62,6 +63,11 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "displayName": "NetworkSupervisorRuntime",
         "summary": "负责节点发现、信任、定向唤醒与显式远程任务委派。",
         "visibility": "primary",
+    },
+    "engineering": {
+        "displayName": "EngineeringRuntime",
+        "summary": "负责工程任务的 ContextPack、写集治理、Proof Ledger、工作区观测与 workflow hints；它提供执行账本，不替代 Supervisor 编排。",
+        "visibility": "secondary",
     },
 }
 
@@ -427,6 +433,8 @@ class CapabilityRegistry:
                     return bool(storage.get_plugin_host_config().get("enabled", True))
                 if kind == "network_supervisor":
                     return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
+                if kind == "engineering":
+                    return bool(storage.get_engineering_lane_config().get("enabled", True))
             except Exception:
                 return True
             return True

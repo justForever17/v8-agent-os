@@ -80,7 +80,7 @@ class TerminalPostRunService:
             if not bool(engineering_config.get("autoProofCollectionEnabled", True)):
                 return False
         except Exception as exc:
-            logger.warning("Failed to read Engineering Lane config for run %s: %s", run_id, exc)
+            logger.warning("Failed to read Engineering Runtime config for run %s: %s", run_id, exc)
             return False
 
         with self._lock:

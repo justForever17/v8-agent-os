@@ -31,6 +31,7 @@ type RuntimeSnapshot = {
 
 const CORE_SORT_ORDER = new Map<string, number>(CORE_RUNTIME_KINDS.map((kind, index) => [kind, index]));
 const CANONICAL_SORT_ORDER = new Map<string, number>(CANONICAL_RUNTIME_KINDS.map((kind, index) => [kind, index]));
+const HIDDEN_DASHBOARD_RUNTIME_KINDS = new Set<string>(["desktop_live"]);
 
 function sortRuntimes(items: RuntimeDescriptor[]) {
     return [...items].sort((left, right) => {
@@ -87,7 +88,7 @@ function mergeRuntimeSnapshot(items: RuntimeDescriptor[]) {
     for (const runtime of byKind.values()) {
         merged.push(runtime);
     }
-    return sortRuntimes(merged);
+    return sortRuntimes(merged).filter((runtime) => !HIDDEN_DASHBOARD_RUNTIME_KINDS.has(runtime.kind));
 }
 
 function StatusDot({ enabled }: { enabled: boolean }) {

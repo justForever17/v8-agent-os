@@ -4956,12 +4956,17 @@ def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotat
 
 @tool
 def write_todos(task_name: str, plan_markdown: str, todos: list[str], tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Create a structured task plan ONLY after user requirements are fully clarified.
+    """Create a high-level orchestration todo plan ONLY after user requirements are fully clarified.
+
+    Supervisor todos are cross-runtime orchestration milestones, not runtime execution ledgers.
+    Keep Engineering / Creative Media / Computer Use internal steps inside their runtime plans,
+    traces, ledgers, jobs and artifacts. A todo may reference runId/jobId/proofEntryId/artifactId,
+    but must not expand every runtime-internal step into the supervisor checklist.
     
     ⚠️ MANDATORY PRE-CONDITIONS — You MUST meet ALL of these before calling this tool:
     1. You have asked the user clarifying questions about ambiguous requirements
     2. The user has explicitly confirmed or given a clear execution instruction
-    3. Each todo item maps to a concrete, actionable step (not "research X" vaguely)
+    3. Each todo item maps to a cross-runtime milestone (not a runtime-internal micro-step)
     
     ❌ DO NOT call this tool if:
     - The user's request is vague or open-ended (ask follow-up questions first)
@@ -4974,9 +4979,9 @@ def write_todos(task_name: str, plan_markdown: str, todos: list[str], tool_call_
     
     Arguments:
         task_name: A short, english, dash-separated folder name for the task (e.g. 'crawler-feature')
-        plan_markdown: A comprehensive markdown document outlining the architectural decisions and strategy details.
-        todos: List of specific, actionable task descriptions.
-              Example: ["搜索5条AI领域最新新闻", "为每条新闻生成配图", "创建飞书文档并上传"]
+        plan_markdown: A concise markdown document outlining cross-runtime orchestration decisions and acceptance.
+        todos: List of high-level orchestration milestone descriptions.
+              Example: ["准备工程上下文", "派发工程任务", "等待用户确认", "验收最终结果"]
     """
     from langchain_core.messages import ToolMessage
     from langgraph.types import Command
@@ -5041,7 +5046,10 @@ def write_todos(task_name: str, plan_markdown: str, todos: list[str], tool_call_
 
 @tool
 def update_todo(index: int, status: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Mark a todo item's status to track progress.
+    """Mark a supervisor orchestration todo item's status.
+
+    Only update cross-runtime milestones here. Runtime-internal progress belongs to the
+    corresponding runtime status card, trace, ledger, job or artifact record.
     
     Arguments:
         index: 0-based index of the todo item to update.
@@ -7797,7 +7805,7 @@ def delegation_broker(
                                 mode=normalized_mode,
                                 ok=False,
                                 summary=(
-                                    "delegation_broker blocked planner auto-dispatch because Engineering Lane "
+                                    "delegation_broker blocked planner auto-dispatch because Engineering Runtime "
                                     "work-set governance found missing or conflicting write sets."
                                 ),
                                 items=blocked_items,

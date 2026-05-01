@@ -89,6 +89,7 @@ def _derive_runtime_family(event: Dict[str, Any], payload: Dict[str, Any]) -> st
         "memory",
         "automation",
         "extensions",
+        "engineering",
         "network_supervisor",
         "computer_use",
         "rpa",
@@ -97,6 +98,10 @@ def _derive_runtime_family(event: Dict[str, Any], payload: Dict[str, Any]) -> st
         "desktop_live",
     }:
         return normalized
+    if normalized in {"engineering_lane", "project_coding", "proof_ledger", "workset"}:
+        return "engineering"
+    if topic.startswith("engineering.") or topic.startswith("engineering_lane."):
+        return "engineering"
     if topic.startswith("plugin_host.") or topic.startswith("channel."):
         return "plugin_host_channel"
     if topic.startswith("extension."):

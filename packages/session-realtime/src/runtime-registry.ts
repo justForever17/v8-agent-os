@@ -28,13 +28,22 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Carries structured planning, task briefs, dependencies, and acceptance contracts.",
     },
   },
-  engineering_lane: {
-    id: "engineering_lane",
-    label: { zh: "工程治理", en: "Engineering lane" },
+  engineering: {
+    id: "engineering",
+    label: { zh: "工程运行", en: "Engineering runtime" },
     shortLabel: { zh: "工程", en: "Eng" },
     description: {
-      zh: "承接工程上下文胶囊、写集治理、证明账本与诊断摘要。",
-      en: "Carries engineering capsules, workset governance, proof ledgers, and diagnostics digests.",
+      zh: "承接工程 ContextPack、写集治理、Proof Ledger、工作区观测与代码任务诊断。",
+      en: "Carries engineering ContextPacks, workset governance, Proof Ledger, workspace observation, and code-task diagnostics.",
+    },
+  },
+  engineering_lane: {
+    id: "engineering_lane",
+    label: { zh: "工程运行（兼容）", en: "Engineering runtime (legacy)" },
+    shortLabel: { zh: "工程", en: "Eng" },
+    description: {
+      zh: "兼容旧 engineering_lane 事件；运行时归入 Engineering Runtime。",
+      en: "Compatibility entry for legacy engineering_lane events; projected into Engineering Runtime.",
     },
   },
   memory: {
@@ -141,7 +150,7 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
 export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "chat",
   "planner_lane",
-  "engineering_lane",
+  "engineering",
   "extensions",
   "creative_media",
   "computer_use",
@@ -191,13 +200,15 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
   }
   if (
     normalized === "engineering_lane"
+    || normalized === "engineering"
+    || normalized.includes("project_coding")
     || normalized.includes("engineering")
     || normalized.includes("workset")
     || normalized.includes("proof_ledger")
     || normalized.includes("proofledger")
     || normalized.includes("coding_planner")
   ) {
-    return "engineering_lane";
+    return "engineering";
   }
   if (
     normalized === "subagent_swarm"

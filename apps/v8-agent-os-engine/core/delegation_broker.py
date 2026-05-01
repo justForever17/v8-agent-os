@@ -525,7 +525,7 @@ def build_workset_dispatch_decisions(
     auto_dispatch: bool = False,
     decision_source: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Evaluate Engineering Lane write-set safety before broker dispatch."""
+    """Evaluate Engineering Runtime write-set safety before broker dispatch."""
     normalized_tasks = [normalize_task_brief(item, index=index) for index, item in enumerate(list(task_briefs or []))]
     decisions: list[dict[str, Any]] = []
     write_owners: list[tuple[int, str, str]] = []

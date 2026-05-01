@@ -148,7 +148,7 @@ const PRESET_LABELS: Record<RuntimePresetId, { title: string; description: strin
     debug: { title:"components.runtime.RuntimeGovernanceWorkbench.ka3d1efbb", description:"components.runtime.RuntimeGovernanceWorkbench.kcd231fad" },
 };
 
-const NONCORE_RUNTIME_KINDS = ["plugin_host", "computer_use", "rpa", "desktop_live"] as const;
+const NONCORE_RUNTIME_KINDS = ["plugin_host", "computer_use", "rpa"] as const;
 
 function normalizePolicy(policy?: RuntimePolicy): Required<RuntimePolicy> {
     return {

@@ -2080,7 +2080,7 @@ class StorageManager:
         payload["extensions"] = next_extensions
         self._write_config_payload(payload)
 
-    # --- Engineering Lane Config Accessors ---
+    # --- Engineering Runtime Config Accessors (legacy key: engineeringLane) ---
     def get_engineering_lane_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("engineeringLane") or {}
         merged = self._deep_merge(

@@ -628,6 +628,7 @@ export function shouldApplyRuntimeEventToMessage(
   if (
     event.runtimeId === "subagent_swarm"
     || event.runtimeId === "planner_lane"
+    || event.runtimeId === "engineering"
     || event.runtimeId === "engineering_lane"
     || String(event.topic || "").startsWith("subagent.")
     || String(event.topic || "").startsWith("planner.")

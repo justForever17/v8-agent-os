@@ -85,6 +85,13 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: "lib.admin.navigation.k3eb7c0bc",
             },
             {
+                title: "lib.admin.navigation.engineeringLaneTitle",
+                href: "/admin/engineering-lane",
+                icon: Code2,
+                description: "lib.admin.navigation.engineeringLaneDescription",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
+            },
+            {
                 title: "lib.admin.navigation.k4a6c7a20",
                 href: "/admin/extensions",
                 icon: Blocks,
@@ -138,13 +145,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: "lib.admin.navigation.runtimeGovernanceDescription",
             },
             {
-                title: "lib.admin.navigation.engineeringLaneTitle",
-                href: "/admin/engineering-lane",
-                icon: Code2,
-                description: "lib.admin.navigation.engineeringLaneDescription",
-                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
-            },
-            {
                 title: "lib.admin.navigation.k4f3e92b5",
                 href: "/admin/operations-center",
                 icon: Gauge,
@@ -192,6 +192,7 @@ export const ADMIN_REDIRECT_MAP: Record<string, string> = {
     "/admin/projects": "/admin/projects-workspaces",
     "/admin/system-misc": "/admin/system-base",
     "/admin/agents": "/admin/subagents",
+    "/admin/engineering-runtime": "/admin/engineering-lane",
 };
 
 const ALL_ITEMS = ADMIN_NAV_GROUPS.flatMap((group) => group.items);

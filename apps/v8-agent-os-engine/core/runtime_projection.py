@@ -1088,7 +1088,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 summary = "工程模式未命中"
             entry = _runtime_timeline_entry(
                 event,
-                runtime_id="engineering_lane",
+                runtime_id="engineering",
                 kind="progress",
                 summary=_truncate_runtime_summary(summary, 120),
                 status="active" if active else "idle",
@@ -1106,7 +1106,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 status = "projected"
             entry = _runtime_timeline_entry(
                 event,
-                runtime_id="engineering_lane",
+                runtime_id="engineering",
                 kind="progress",
                 summary=_truncate_runtime_summary(summary, 120),
                 status=status,
@@ -1117,7 +1117,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
             status = str(payload.get("verificationStatus") or payload.get("status") or "planned").strip() or "planned"
             entry = _runtime_timeline_entry(
                 event,
-                runtime_id="engineering_lane",
+                runtime_id="engineering",
                 kind="progress",
                 summary=_truncate_runtime_summary(summary, 120),
                 status=status,

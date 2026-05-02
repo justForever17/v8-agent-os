@@ -430,11 +430,45 @@ class NetworkSupervisorService:
             for item in pending.values()
             if str(item.get("status") or "") == "waiting_external_tool"
         ]
+        abandoned = [
+            dict(item)
+            for item in pending.values()
+            if str(item.get("status") or "") == "external_tool_abandoned"
+        ]
+        resolved = [
+            dict(item)
+            for item in pending.values()
+            if str(item.get("status") or "") == "resumed_from_external_tool_result"
+        ]
         waiting.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         recent = sorted(pending.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)[: max(1, min(int(limit or 10), 50))]
+        recent_ingress = get_recent_compat_ingress_events(limit=max(1, min(int(limit or 10), 25)))
+        recent_recovery_hints: list[dict[str, Any]] = []
+        for event in recent_ingress:
+            diagnostics = dict((event or {}).get("diagnostics") or {})
+            for hint in diagnostics.get("recoveryHints") or []:
+                if isinstance(hint, dict):
+                    recent_recovery_hints.append(
+                        {
+                            "protocol": event.get("protocol"),
+                            "code": hint.get("code"),
+                            "toolName": hint.get("toolName"),
+                            "message": hint.get("message"),
+                            "observedAt": event.get("observedAt"),
+                        }
+                    )
+        recent_failures = [
+            dict(item)
+            for item in recent
+            if str(item.get("status") or "") in {"external_tool_abandoned", "failed", "error"}
+        ]
         return {
             "waitingCount": len(waiting),
+            "abandonedCount": len(abandoned),
+            "resolvedCount": len(resolved),
             "recent": [dict(item) for item in recent],
+            "recentFailures": recent_failures[: max(1, min(int(limit or 10), 10))],
+            "recoveryHints": recent_recovery_hints[: max(1, min(int(limit or 10), 10))],
         }
 
     def read_secrets(self) -> dict[str, Any]:

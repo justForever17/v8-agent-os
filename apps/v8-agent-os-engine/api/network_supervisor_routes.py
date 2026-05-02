@@ -43,7 +43,11 @@ from runtimes.network_supervisor.openai_compat import (
     resolve_openai_compat_model_alias,
     wire_tool_call_id,
 )
-from runtimes.network_supervisor.compat_wire_emitter import compat_wire_emitter
+from runtimes.network_supervisor.compat_wire_emitter import (
+    AnthropicStreamTimelineEmitter,
+    OpenAIStreamTimelineEmitter,
+    compat_wire_emitter,
+)
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
 
@@ -85,19 +89,6 @@ def _record_openai_memory_adapter_status(result: dict[str, Any]) -> None:
     except Exception:
         # Diagnostics must never break the OpenAI-compatible wire path.
         pass
-
-
-def _sse_frame(payload: dict[str, object] | str) -> bytes:
-    if isinstance(payload, str):
-        data = payload
-    else:
-        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"data: {data}\n\n".encode("utf-8")
-
-
-def _anthropic_sse_frame(event: str, payload: dict[str, object]) -> bytes:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
 
 
 def _event_status(event: dict[str, Any]) -> str:
@@ -239,7 +230,7 @@ async def _stream_openai_chat_completion(
     async def _generator():
         run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
         events: list[dict[str, Any]] = []
-        emitted_role = False
+        emitter = OpenAIStreamTimelineEmitter(response_id=response_id, model_name=response_model_name, created=created)
         emitted_tool_call_ids: set[str] = set()
         tool_calls_seen = False
         try:
@@ -264,42 +255,15 @@ async def _stream_openai_chat_completion(
                     }
                     _record_openai_memory_adapter_status(failed)
                     raise RuntimeError(message)
-                if not emitted_role:
-                    yield _sse_frame(
-                        {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": response_model_name,
-                            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-                        }
-                    )
-                    emitted_role = True
                 if event_type == "text_chunk":
                     content = str(event.get("content") or "")
-                    if content:
-                        yield _sse_frame(
-                            {
-                                "id": response_id,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": response_model_name,
-                                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
-                            }
-                        )
+                    for frame in emitter.text_delta(content):
+                        yield frame
                     continue
                 if event_type == "reasoning_chunk":
                     content = str(event.get("content") or "")
-                    if content:
-                        yield _sse_frame(
-                            {
-                                "id": response_id,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": response_model_name,
-                                "choices": [{"index": 0, "delta": {"reasoning_content": content}, "finish_reason": None}],
-                            }
-                        )
+                    for frame in emitter.reasoning_delta(content):
+                        yield frame
                     continue
                 if event_type == "tool_start":
                     tool_payload = dict(event.get("tool") or {})
@@ -329,54 +293,19 @@ async def _stream_openai_chat_completion(
                         arguments = args_payload
                     else:
                         arguments = json.dumps(args_payload or {}, ensure_ascii=False)
-                    yield _sse_frame(
-                        {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": response_model_name,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {
-                                        "tool_calls": [
-                                            {
-                                                "index": tool_index,
-                                                "id": wire_id,
-                                                "type": "function",
-                                                "function": {"name": wire_name, "arguments": arguments},
-                                            }
-                                        ]
-                                    },
-                                    "finish_reason": None,
-                                }
-                            ],
-                        }
-                    )
+                    for frame in emitter.tool_call_delta(
+                        index=tool_index,
+                        wire_id=wire_id,
+                        wire_name=wire_name,
+                        arguments=arguments,
+                    ):
+                        yield frame
                     continue
                 if event_type == "done":
                     if _is_waiting_approval_event(event):
                         notice = _approval_notice_text(event, run_id=run_id)
-                        if not emitted_role:
-                            yield _sse_frame(
-                                {
-                                    "id": response_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": response_model_name,
-                                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-                                }
-                            )
-                            emitted_role = True
-                        yield _sse_frame(
-                            {
-                                "id": response_id,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": response_model_name,
-                                "choices": [{"index": 0, "delta": {"content": notice}, "finish_reason": None}],
-                            }
-                        )
+                        for frame in emitter.approval_notice(notice):
+                            yield frame
                         response_payload = {"choices": [{"finish_reason": "stop"}], "v8os_status": "waiting_approval"}
                         result = network_supervisor_memory_adapter.record_openai_compat_delta(
                             payload=request_payload,
@@ -391,16 +320,8 @@ async def _stream_openai_chat_completion(
                             external_user_id=external_user_id,
                         )
                         _record_openai_memory_adapter_status(result)
-                        yield _sse_frame(
-                            {
-                                "id": response_id,
-                                "object": "chat.completion.chunk",
-                                "created": created,
-                                "model": response_model_name,
-                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                            }
-                        )
-                        yield _sse_frame("[DONE]")
+                        for frame in emitter.finish("stop"):
+                            yield frame
                         return
                     finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "stop"
                     response_payload = {"choices": [{"finish_reason": finish_reason}]}
@@ -417,16 +338,8 @@ async def _stream_openai_chat_completion(
                         external_user_id=external_user_id,
                     )
                     _record_openai_memory_adapter_status(result)
-                    yield _sse_frame(
-                        {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": response_model_name,
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        }
-                    )
-                    yield _sse_frame("[DONE]")
+                    for frame in emitter.finish(finish_reason):
+                        yield frame
                     return
             finish_reason = "tool_calls" if tool_calls_seen else "stop"
             response_payload = {"choices": [{"finish_reason": finish_reason}]}
@@ -443,16 +356,8 @@ async def _stream_openai_chat_completion(
                 external_user_id=external_user_id,
             )
             _record_openai_memory_adapter_status(result)
-            yield _sse_frame(
-                {
-                "id": response_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": response_model_name,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-            }
-            )
-            yield _sse_frame("[DONE]")
+            for frame in emitter.finish(finish_reason):
+                yield frame
         except Exception as exc:
             failed = {
                 "adapterStatus": "failed",
@@ -486,61 +391,9 @@ async def _stream_anthropic_message(
 
     async def _generator():
         run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
-        next_block_index = 0
-        open_blocks: set[int] = set()
-        active_block_index: int | None = None
-        active_block_type = ""
+        emitter = AnthropicStreamTimelineEmitter(response_id=response_id, model_name=response_model_name)
         tool_uses_seen = False
-
-        def _close_active_block_frames() -> list[str]:
-            nonlocal active_block_index, active_block_type
-            if active_block_index is None:
-                return []
-            block_index = active_block_index
-            active_block_index = None
-            active_block_type = ""
-            open_blocks.discard(block_index)
-            return [_anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})]
-
-        def _ensure_active_block_frames(block_type: str, content_block: dict[str, Any]) -> tuple[list[str], int]:
-            nonlocal next_block_index, active_block_index, active_block_type
-            frames: list[str] = []
-            if active_block_index is not None and active_block_type == block_type:
-                return frames, active_block_index
-            frames.extend(_close_active_block_frames())
-            block_index = next_block_index
-            next_block_index += 1
-            active_block_index = block_index
-            active_block_type = block_type
-            open_blocks.add(block_index)
-            frames.append(
-                _anthropic_sse_frame(
-                    "content_block_start",
-                    {
-                        "type": "content_block_start",
-                        "index": block_index,
-                        "content_block": content_block,
-                    },
-                )
-            )
-            return frames, block_index
-
-        yield _anthropic_sse_frame(
-            "message_start",
-            {
-                "type": "message_start",
-                "message": {
-                    "id": response_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "model": response_model_name,
-                    "content": [],
-                    "stop_reason": None,
-                    "stop_sequence": None,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
-                },
-            },
-        )
+        yield emitter.message_start()
         try:
             async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_anthropic", run_id=run_id):
                 if not isinstance(event, dict):
@@ -550,42 +403,21 @@ async def _stream_anthropic_message(
                     raise RuntimeError(str(event.get("error") or "Anthropic compat execution failed"))
                 if event_type == "reasoning_chunk" and include_thinking:
                     content = str(event.get("content") or "")
-                    if not content:
-                        continue
-                    frames, block_index = _ensure_active_block_frames(
-                        "thinking",
-                        {"type": "thinking", "thinking": "", "signature": ""},
-                    )
-                    for frame in frames:
+                    for frame in emitter.thinking_delta(content):
                         yield frame
-                    yield _anthropic_sse_frame(
-                        "content_block_delta",
-                        {"type": "content_block_delta", "index": block_index, "delta": {"type": "thinking_delta", "thinking": content}},
-                    )
                     continue
                 if event_type == "text_chunk":
                     content = str(event.get("content") or "")
-                    if not content:
-                        continue
-                    frames, block_index = _ensure_active_block_frames("text", {"type": "text", "text": ""})
-                    for frame in frames:
+                    for frame in emitter.text_delta(content):
                         yield frame
-                    yield _anthropic_sse_frame(
-                        "content_block_delta",
-                        {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": content}},
-                    )
                     continue
                 if event_type == "tool_start":
-                    for frame in _close_active_block_frames():
-                        yield frame
                     tool_payload = dict(event.get("tool") or {})
                     internal_name = str(tool_payload.get("toolName") or "").strip()
                     wire_name = internal_to_wire.get(internal_name)
                     if not wire_name:
                         continue
                     tool_uses_seen = True
-                    block_index = next_block_index
-                    next_block_index += 1
                     args_payload = tool_payload.get("args")
                     if isinstance(args_payload, str):
                         try:
@@ -607,87 +439,26 @@ async def _stream_anthropic_message(
                         external_thread_id=external_thread_id,
                         external_user_id=external_user_id,
                     )
-                    yield _anthropic_sse_frame(
-                        "content_block_start",
-                        {
-                            "type": "content_block_start",
-                            "index": block_index,
-                            "content_block": {"type": "tool_use", "id": wire_id, "name": wire_name, "input": {}},
-                        },
-                    )
-                    yield _anthropic_sse_frame(
-                        "content_block_delta",
-                        {
-                            "type": "content_block_delta",
-                            "index": block_index,
-                            "delta": {"type": "input_json_delta", "partial_json": json.dumps(parsed_args or {}, ensure_ascii=False)},
-                        },
-                    )
-                    yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
+                    for frame in emitter.tool_use(wire_id=wire_id, wire_name=wire_name, input_payload=parsed_args):
+                        yield frame
                     continue
                 if event_type == "done":
-                    for frame in _close_active_block_frames():
-                        yield frame
-                    for block_index in sorted(open_blocks):
-                        yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
-                    open_blocks.clear()
                     if _is_waiting_approval_event(event):
                         notice = _approval_notice_text(event, run_id=run_id)
-                        block_index = next_block_index
-                        next_block_index += 1
-                        yield _anthropic_sse_frame(
-                            "content_block_start",
-                            {
-                                "type": "content_block_start",
-                                "index": block_index,
-                                "content_block": {"type": "text", "text": ""},
-                            },
-                        )
-                        yield _anthropic_sse_frame(
-                            "content_block_delta",
-                            {
-                                "type": "content_block_delta",
-                                "index": block_index,
-                                "delta": {"type": "text_delta", "text": notice},
-                            },
-                        )
-                        yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
-                        yield _anthropic_sse_frame(
-                            "message_delta",
-                            {
-                                "type": "message_delta",
-                                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                                "usage": {"output_tokens": 0},
-                            },
-                        )
-                        yield _anthropic_sse_frame("message_stop", {"type": "message_stop"})
+                        for frame in emitter.approval_notice(notice):
+                            yield frame
+                        for frame in emitter.finish("end_turn"):
+                            yield frame
                         return
                     stop_reason = "tool_use" if tool_uses_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "end_turn"
-                    yield _anthropic_sse_frame(
-                        "message_delta",
-                        {
-                            "type": "message_delta",
-                            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                            "usage": {"output_tokens": 0},
-                        },
-                    )
-                    yield _anthropic_sse_frame("message_stop", {"type": "message_stop"})
+                    for frame in emitter.finish(stop_reason):
+                        yield frame
                     return
-            for frame in _close_active_block_frames():
-                yield frame
-            for block_index in sorted(open_blocks):
-                yield _anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})
             stop_reason = "tool_use" if tool_uses_seen else "end_turn"
-            yield _anthropic_sse_frame(
-                "message_delta",
-                {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": 0}},
-            )
-            yield _anthropic_sse_frame("message_stop", {"type": "message_stop"})
+            for frame in emitter.finish(stop_reason):
+                yield frame
         except Exception as exc:
-            yield _anthropic_sse_frame(
-                "error",
-                {"type": "error", "error": {"type": "api_error", "message": str(exc)}},
-            )
+            yield emitter.error(str(exc))
 
     return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
 

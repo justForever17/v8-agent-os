@@ -316,7 +316,7 @@ class EngineeringLaneService:
         )
         root = Path(str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())).expanduser()
         cfg = self.get_config()
-        budget = _safe_int(cfg.get("contextPackBudget"), 2400, 800, 12000)
+        budget = _safe_int(cfg.get("contextPackBudget"), 48000, 800, 128000)
         trigger = self.trigger_decision(user_query=user_query, mode=mode, workspace_descriptor=descriptor)
         source_diags: list[dict[str, Any]] = []
         repo_brief = self._repo_brief(root)
@@ -2072,7 +2072,7 @@ class EngineeringLaneService:
     ) -> dict[str, Any]:
         if not bool(cfg.get("evidenceGraphEnabled", True)):
             return {"enabled": False, "repoDetected": bool(repo_brief.get("repoDetected"))}
-        budget = _safe_int(cfg.get("evidenceGraphBudget"), 1800, 600, 10000)
+        budget = _safe_int(cfg.get("evidenceGraphBudget"), 16000, 600, 48000)
         inventory = self._file_inventory_digest(root)
         changed_files = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
         test_candidates = self._test_candidates(manifest_summary)

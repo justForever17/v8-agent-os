@@ -105,6 +105,19 @@ const SCHEDULE_MODE_OPTIONS: Array<{ key: ScheduleMode; title: string; descripti
     { key: "custom", title:"app.admin.dashboard.automation.cron.page.k96aba461", description:"app.admin.dashboard.automation.cron.page.k9d25db3f" },
 ];
 
+const TRIGGER_KIND_OPTIONS = [
+    { value: "nudge", label: "app.admin.dashboard.automation.wakeIngress.triggerKind.nudge" },
+    { value: "wake", label: "app.admin.dashboard.automation.wakeIngress.triggerKind.wake" },
+    { value: "recovery_wake", label: "app.admin.dashboard.automation.wakeIngress.triggerKind.recoveryWake" },
+] as const;
+
+const ATTACH_POLICY_OPTIONS = [
+    { value: "new_session", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.newSession" },
+    { value: "attach_session", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.attachSession" },
+    { value: "attach_run", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.attachRun" },
+    { value: "resume_run", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.resumeRun" },
+] as const;
+
 function normalizeWeekday(value: string) {
     return value === "7" ? "0" : value;
 }
@@ -646,9 +659,9 @@ export default function ScheduledTasksPage() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="nudge">nudge</SelectItem>
-                                        <SelectItem value="wake">wake</SelectItem>
-                                        <SelectItem value="recovery_wake">recovery_wake</SelectItem>
+                                        {TRIGGER_KIND_OPTIONS.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
+                                        ))}
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -659,10 +672,9 @@ export default function ScheduledTasksPage() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="new_session">new_session</SelectItem>
-                                        <SelectItem value="attach_session">attach_session</SelectItem>
-                                        <SelectItem value="attach_run">attach_run</SelectItem>
-                                        <SelectItem value="resume_run">resume_run</SelectItem>
+                                        {ATTACH_POLICY_OPTIONS.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
+                                        ))}
                                     </SelectContent>
                                 </Select>
                             </div>

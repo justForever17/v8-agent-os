@@ -18,6 +18,7 @@ from fastapi import HTTPException, WebSocket
 
 from api.models import ChatRequest
 from core.database import db
+from core.run_ledger import run_ledger_service
 from core.storage import storage
 from core.v8_agent_os_paths import (
     NETWORK_SUPERVISOR_SECRETS_PATH,
@@ -179,6 +180,24 @@ class NetworkSupervisorService:
                 reason="external_tool_abandoned",
                 metadata={"externalToolStatus": "external_tool_abandoned"},
             )
+            run_ledger_service.record_event(
+                event_type="external_tool.abandoned",
+                run_id=run_id,
+                session_id=run_record.get("session_id"),
+                runtime_kind=run_record.get("run_type"),
+                source="network_supervisor",
+                summary=f"External tool abandoned: {item.get('externalWireName') or item.get('wireToolCallId')}",
+                refs={
+                    "runId": run_id,
+                    "sessionId": run_record.get("session_id"),
+                    "wireToolCallId": item.get("wireToolCallId"),
+                },
+                payload={
+                    "protocol": item.get("protocol"),
+                    "externalWireName": item.get("externalWireName"),
+                    "reason": "expired_waiting_for_client_tool_result",
+                },
+            )
         except Exception:
             # Network Supervisor diagnostics must not break request handling.
             return
@@ -243,6 +262,25 @@ class NetworkSupervisorService:
         }
         state["pendingExternalTools"] = pending
         self.write_state(state)
+        run_ledger_service.record_event(
+            event_type="external_tool.waiting",
+            run_id=str(run_id or "").strip(),
+            session_id=str(compat_session_id or "").strip() or None,
+            runtime_kind="network_supervisor",
+            source="network_supervisor",
+            summary=f"Waiting for external tool result: {external_wire_name or wire_id}",
+            refs={
+                "runId": str(run_id or "").strip(),
+                "wireToolCallId": wire_id,
+                "compatSessionId": str(compat_session_id or "").strip(),
+            },
+            payload={
+                "protocol": str(protocol or "").strip().lower(),
+                "internalAliasName": str(internal_alias_name or "").strip(),
+                "externalWireName": str(external_wire_name or "").strip(),
+                "expiresAt": pending[key].get("expiresAt"),
+            },
+        )
 
     @staticmethod
     def _compact_tool_result_preview(value: Any, limit: int = 4000) -> str:
@@ -355,6 +393,24 @@ class NetworkSupervisorService:
                 ],
                 "pendingIds": [f"{item.get('protocol')}:{item.get('wireToolCallId')}" for item in matched],
             }
+            first_item = matched[0] if matched else {}
+            run_ledger_service.record_event(
+                event_type="external_tool.resumed",
+                run_id=resume_run_id,
+                session_id=str(first_item.get("compatSessionId") or "").strip() or None,
+                runtime_kind="network_supervisor",
+                source="network_supervisor",
+                summary=f"External tool result received: {first_item.get('externalWireName') or first_item.get('wireToolCallId')}",
+                refs={
+                    "runId": resume_run_id,
+                    "wireToolCallIds": [item.get("wireToolCallId") for item in matched],
+                },
+                payload={
+                    "protocol": str(protocol or "").strip().lower(),
+                    "matchedCount": len(matched),
+                    "unmatchedIds": unmatched,
+                },
+            )
         return {
             "matched": matched,
             "unmatchedIds": unmatched,

@@ -8,6 +8,7 @@ from core.agents import build_specialist_family_registry
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
 from core.model_provider_catalog import model_provider_catalog
+from core.model_role_doctor import diagnose_models
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
@@ -395,6 +396,19 @@ async def get_model_control_plane():
     try:
         config = model_control_plane.get_config()
         return model_control_plane.build_payload(config)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models/role-doctor")
+async def get_model_role_doctor(role: str | None = None):
+    try:
+        config = model_control_plane.get_config()
+        models = model_control_plane.list_models(config)
+        return {
+            "role": role or None,
+            "diagnostics": diagnose_models(models, role=role),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

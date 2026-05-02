@@ -19,6 +19,12 @@ const DEFAULT_CONFIG: WakeIngressPolicies = {
     defaultAttachPolicy: "new_session",
     enabledSourceRuntimes: ["cron", "hook", "plugin_host", "network_supervisor", "chat", "computer_use"],
 };
+const ATTACH_POLICY_OPTIONS = [
+    { value: "new_session", labelKey: "components.automation.WakeIngressPolicyCard.attachPolicy.newSession" },
+    { value: "attach_session", labelKey: "components.automation.WakeIngressPolicyCard.attachPolicy.attachSession" },
+    { value: "attach_run", labelKey: "components.automation.WakeIngressPolicyCard.attachPolicy.attachRun" },
+    { value: "resume_run", labelKey: "components.automation.WakeIngressPolicyCard.attachPolicy.resumeRun" },
+] as const;
 export function WakeIngressPolicyCard() {
     const t = useT();
     const { toast } = useToast();
@@ -116,10 +122,9 @@ export function WakeIngressPolicyCard() {
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="new_session">new_session</SelectItem>
-                                <SelectItem value="attach_session">attach_session</SelectItem>
-                                <SelectItem value="attach_run">attach_run</SelectItem>
-                                <SelectItem value="resume_run">resume_run</SelectItem>
+                                {ATTACH_POLICY_OPTIONS.map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                                ))}
                             </SelectContent>
                         </Select>
                     </div>

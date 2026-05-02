@@ -2285,6 +2285,7 @@ class SkillLoader:
         if not content.strip():
             try:
                 from core.audit_logger import audit_logger
+                from core.run_ledger import run_ledger_service
 
                 audit_logger.log(
                     source_type="SAFETY",
@@ -2298,6 +2299,21 @@ class SkillLoader:
                         },
                         ensure_ascii=False,
                     ),
+                )
+                run_ledger_service.record_event(
+                    event_type="skill.integrity.empty_instruction",
+                    runtime_kind="extensions",
+                    source="extensions.skill_loader",
+                    summary=f"SKILL.md is empty: {instruction_path.parent.name}",
+                    refs={
+                        "instructionPath": cls._normalize_path(instruction_path),
+                        "skillRoot": cls._normalize_path(instruction_path.parent),
+                    },
+                    payload={
+                        "reason": "empty_instruction_during_read_only_refresh",
+                        "sourceType": manifest_item.get("sourceType"),
+                        "visibility": manifest_item.get("visibility"),
+                    },
                 )
             except Exception:
                 pass
@@ -3236,6 +3252,7 @@ class SkillLoader:
         shutil.rmtree(skill_root)
         try:
             from core.audit_logger import audit_logger
+            from core.run_ledger import run_ledger_service
 
             audit_logger.log(
                 source_type="EXTENSIONS",
@@ -3249,6 +3266,22 @@ class SkillLoader:
                     },
                     ensure_ascii=False,
                 ),
+            )
+            run_ledger_service.record_event(
+                event_type="skill.deleted",
+                runtime_kind="extensions",
+                source="extensions.skill_loader",
+                summary=f"Skill deleted by Admin: {removed.get('skillName') or normalized_skill_id}",
+                refs={
+                    "skillId": normalized_skill_id,
+                    "skillRoot": removed.get("skillRoot"),
+                    "backupPath": cls._normalize_path(backup_root),
+                },
+                payload={
+                    "initiatedBy": removed.get("initiatedBy"),
+                    "visibility": removed.get("visibility"),
+                    "inactiveReviewCount": inactive_review_count,
+                },
             )
         except Exception:
             pass

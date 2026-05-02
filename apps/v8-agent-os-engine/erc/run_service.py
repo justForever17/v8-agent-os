@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from core.database import db
+from core.run_ledger import run_ledger_service
 
 from erc.models import RunDescriptor
 
@@ -23,6 +24,21 @@ class RunService:
             channel_type=descriptor.channel_type,
             metadata=descriptor.metadata,
         )
+        run_ledger_service.record_event(
+            event_type="run.started",
+            run_id=descriptor.run_id,
+            session_id=descriptor.session_id,
+            runtime_kind=descriptor.runtime_kind,
+            source="erc.run_service",
+            summary=f"Run started as {descriptor.runtime_kind}",
+            refs={"runId": descriptor.run_id, "sessionId": descriptor.session_id},
+            payload={
+                "status": descriptor.status,
+                "triggerSource": descriptor.trigger_source,
+                "workflowId": descriptor.workflow_id,
+                "channelType": descriptor.channel_type,
+            },
+        )
         return descriptor
 
     def transition_run(
@@ -38,6 +54,17 @@ class RunService:
             status=status,
             error_message=error_message,
             metadata=metadata,
+        )
+        run_record = db.get_run_record(run_id) or {}
+        run_ledger_service.record_event(
+            event_type=f"run.status.{status}",
+            run_id=run_id,
+            session_id=run_record.get("session_id"),
+            runtime_kind=run_record.get("run_type"),
+            source="erc.run_service",
+            summary=error_message or f"Run status changed to {status}",
+            refs={"runId": run_id, "sessionId": run_record.get("session_id")},
+            payload={"status": status, "errorMessage": error_message, "metadata": metadata or {}},
         )
 
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:

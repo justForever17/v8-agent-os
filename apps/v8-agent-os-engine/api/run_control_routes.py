@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from .models import RunCommandPayload
 from core.database import db
+from core.run_ledger import run_ledger_service
 from erc.command_router import runtime_command_router
 from erc.models import RuntimeCommand
 
@@ -50,6 +51,32 @@ async def list_runs(
                 limit=max(1, min(limit, 100)),
             )
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/runs/ledger")
+async def list_run_ledgers(
+    session_id: str | None = None,
+    limit: int = 20,
+):
+    try:
+        return run_ledger_service.list_ledgers(
+            session_id=session_id,
+            limit=max(1, min(limit, 100)),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/runs/{run_id}/ledger")
+async def get_run_ledger(run_id: str):
+    try:
+        return run_ledger_service.get_run_ledger(run_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

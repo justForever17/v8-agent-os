@@ -150,9 +150,9 @@ type EngineeringWorkflowCandidate = {
 const DEFAULT_CONFIG: EngineeringLaneConfig = {
     enabled: true,
     triggerMode: "auto",
-    contextPackBudget: 2400,
+    contextPackBudget: 48000,
     evidenceGraphEnabled: true,
-    evidenceGraphBudget: 1800,
+    evidenceGraphBudget: 16000,
     codingPlannerContractEnabled: true,
     worksetGovernanceMode: "observe_auto_block",
     worksetObservationEnabled: true,
@@ -166,6 +166,31 @@ const DEFAULT_CONFIG: EngineeringLaneConfig = {
     suppressDailyMemory: true,
     suppressMemoryMap: true,
     rankedWorkflowPathCount: 3,
+};
+
+const TRIGGER_MODE_OPTIONS = [
+    { value: "auto", labelKey: "app.admin.dashboard.engineeringLane.triggerMode.auto" },
+    { value: "force", labelKey: "app.admin.dashboard.engineeringLane.triggerMode.force" },
+    { value: "off", labelKey: "app.admin.dashboard.engineeringLane.triggerMode.off" },
+] as const;
+
+const WORKSET_GOVERNANCE_OPTIONS = [
+    { value: "observe_auto_block", labelKey: "app.admin.dashboard.engineeringLane.worksetGovernance.observeAutoBlock" },
+    { value: "soft_gate", labelKey: "app.admin.dashboard.engineeringLane.worksetGovernance.softGate" },
+    { value: "read_only", labelKey: "app.admin.dashboard.engineeringLane.worksetGovernance.readOnly" },
+    { value: "off", labelKey: "app.admin.dashboard.engineeringLane.worksetGovernance.off" },
+] as const;
+
+const PROOF_SCOPE_OPTIONS = [
+    { value: "engineering_active", labelKey: "app.admin.dashboard.engineeringLane.proofScope.engineeringActive" },
+    { value: "force_only", labelKey: "app.admin.dashboard.engineeringLane.proofScope.forceOnly" },
+    { value: "off", labelKey: "app.admin.dashboard.engineeringLane.proofScope.off" },
+] as const;
+
+const DIAGNOSTICS_PROVIDER_LABEL_KEYS: Record<keyof DiagnosticsProviders, string> = {
+    git: "app.admin.dashboard.engineeringLane.diagnosticsProvider.git",
+    command: "app.admin.dashboard.engineeringLane.diagnosticsProvider.command",
+    lspBestEffort: "app.admin.dashboard.engineeringLane.diagnosticsProvider.lspBestEffort",
 };
 
 function asConfig(value: unknown): EngineeringLaneConfig {
@@ -192,8 +217,8 @@ function asConfig(value: unknown): EngineeringLaneConfig {
             command: providers.command ?? true,
             lspBestEffort: providers.lspBestEffort ?? true,
         },
-        contextPackBudget: Number(raw.contextPackBudget || DEFAULT_CONFIG.contextPackBudget),
-        evidenceGraphBudget: Number(raw.evidenceGraphBudget || DEFAULT_CONFIG.evidenceGraphBudget),
+        contextPackBudget: Number(!raw.contextPackBudget || Number(raw.contextPackBudget) === 2400 ? DEFAULT_CONFIG.contextPackBudget : raw.contextPackBudget),
+        evidenceGraphBudget: Number(!raw.evidenceGraphBudget || Number(raw.evidenceGraphBudget) === 1800 ? DEFAULT_CONFIG.evidenceGraphBudget : raw.evidenceGraphBudget),
         maxCriticalFiles: Number(raw.maxCriticalFiles || DEFAULT_CONFIG.maxCriticalFiles),
         rankedWorkflowPathCount: Number(raw.rankedWorkflowPathCount || DEFAULT_CONFIG.rankedWorkflowPathCount),
     };
@@ -576,9 +601,9 @@ export default function EngineeringLanePage() {
                                         <Select value={config.triggerMode} onValueChange={(value) => patchConfig({ triggerMode: value as EngineeringLaneConfig["triggerMode"] })}>
                                             <SelectTrigger><SelectValue /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="auto">auto</SelectItem>
-                                                <SelectItem value="force">force</SelectItem>
-                                                <SelectItem value="off">off</SelectItem>
+                                                {TRIGGER_MODE_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                                                ))}
                                             </SelectContent>
                                         </Select>
                                     </div>
@@ -609,10 +634,9 @@ export default function EngineeringLanePage() {
                                             <Select value={config.worksetGovernanceMode} onValueChange={(value) => patchConfig({ worksetGovernanceMode: value as EngineeringLaneConfig["worksetGovernanceMode"], worksetRiskMode: value as EngineeringLaneConfig["worksetRiskMode"] })}>
                                                 <SelectTrigger><SelectValue /></SelectTrigger>
                                                 <SelectContent>
-                                                    <SelectItem value="observe_auto_block">observe_auto_block</SelectItem>
-                                                    <SelectItem value="soft_gate">soft_gate</SelectItem>
-                                                    <SelectItem value="read_only">read_only</SelectItem>
-                                                    <SelectItem value="off">off</SelectItem>
+                                                    {WORKSET_GOVERNANCE_OPTIONS.map((option) => (
+                                                        <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                                                    ))}
                                                 </SelectContent>
                                             </Select>
                                         </div>
@@ -656,9 +680,9 @@ export default function EngineeringLanePage() {
                                         <Select value={dryRunMode} onValueChange={(value) => setDryRunMode(value as "auto" | "force" | "off")}>
                                             <SelectTrigger><SelectValue /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="auto">auto</SelectItem>
-                                                <SelectItem value="force">force</SelectItem>
-                                                <SelectItem value="off">off</SelectItem>
+                                                {TRIGGER_MODE_OPTIONS.map((option) => (
+                                                    <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                                                ))}
                                             </SelectContent>
                                         </Select>
                                         <Button className="w-full" onClick={runDryRun} disabled={running || !dryRunText.trim()}>
@@ -733,8 +757,8 @@ export default function EngineeringLanePage() {
             >
             <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
                 <ConfigCard
-                    title="app.admin.dashboard.engineeringLane.configTitle"
-                    description="app.admin.dashboard.engineeringLane.configDescription"
+                    title="app.admin.dashboard.engineeringLane.diagnosticScopeTitle"
+                    description="app.admin.dashboard.engineeringLane.diagnosticScopeDescription"
                     bodyHeight="auto"
                     footer={envelope ? <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={Boolean(envelope.reloadRequired)} /> : null}
                 >
@@ -744,102 +768,25 @@ export default function EngineeringLanePage() {
                             {t("app.admin.dashboard.engineeringLane.loading")}
                         </div>
                     ) : (
-                        <div className="space-y-5">
-                            <div className="flex items-center justify-between rounded-xl border border-slate-200 p-4">
-                                <div>
-                                    <Label>{t("app.admin.dashboard.engineeringLane.enabled")}</Label>
-                                    <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.enabledHint")}</p>
-                                </div>
-                                <Switch checked={config.enabled} onCheckedChange={(enabled) => patchConfig({ enabled })} />
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.engineeringLane.triggerMode")}</Label>
-                                <Select value={config.triggerMode} onValueChange={(value) => patchConfig({ triggerMode: value as EngineeringLaneConfig["triggerMode"] })}>
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="auto">auto</SelectItem>
-                                        <SelectItem value="force">force</SelectItem>
-                                        <SelectItem value="off">off</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.engineeringLane.contextBudget")}</Label>
-                                <Input type="number" value={config.contextPackBudget} onChange={(event) => patchConfig({ contextPackBudget: Number(event.target.value) })} />
-                            </div>
+                        <div className="space-y-4">
                             <div className="grid gap-3">
-                                {[
-                                    ["evidenceGraphEnabled", "evidenceGraphEnabled"],
-                                    ["codingPlannerContractEnabled", "codingPlannerContractEnabled"],
-                                ].map(([key, label]) => (
-                                    <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 p-3">
-                                        <Label>{t(`app.admin.dashboard.engineeringLane.${label}`)}</Label>
-                                        <Switch checked={Boolean(config[key as keyof EngineeringLaneConfig])} onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)} />
-                                    </div>
-                                ))}
+                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.contextBudget")} value={String(config.contextPackBudget)} hint={t("app.admin.dashboard.engineeringLane.diagnosticScope.readOnly")} />
+                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.evidenceGraphBudget")} value={String(config.evidenceGraphBudget)} hint={t("app.admin.dashboard.engineeringLane.diagnosticScope.readOnly")} />
+                                <SummaryCard
+                                    label={t("app.admin.dashboard.engineeringLane.worksetGovernanceMode")}
+                                    value={t(WORKSET_GOVERNANCE_OPTIONS.find((option) => option.value === config.worksetGovernanceMode)?.labelKey || "app.admin.dashboard.engineeringLane.worksetGovernance.observeAutoBlock")}
+                                    hint={t("app.admin.dashboard.engineeringLane.diagnosticScope.configLivesAbove")}
+                                />
                             </div>
-                            <div className="grid gap-3 md:grid-cols-2">
-                                <div className="space-y-2">
-                                    <Label>{t("app.admin.dashboard.engineeringLane.evidenceGraphBudget")}</Label>
-                                    <Input type="number" value={config.evidenceGraphBudget} onChange={(event) => patchConfig({ evidenceGraphBudget: Number(event.target.value) })} />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>{t("app.admin.dashboard.engineeringLane.maxCriticalFiles")}</Label>
-                                    <Input type="number" value={config.maxCriticalFiles} onChange={(event) => patchConfig({ maxCriticalFiles: Number(event.target.value) })} />
-                                </div>
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.engineeringLane.worksetGovernanceMode")}</Label>
-                                <Select value={config.worksetGovernanceMode} onValueChange={(value) => patchConfig({ worksetGovernanceMode: value as EngineeringLaneConfig["worksetGovernanceMode"], worksetRiskMode: value as EngineeringLaneConfig["worksetRiskMode"] })}>
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="observe_auto_block">observe_auto_block</SelectItem>
-                                        <SelectItem value="soft_gate">soft_gate</SelectItem>
-                                        <SelectItem value="read_only">read_only</SelectItem>
-                                        <SelectItem value="off">off</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.engineeringLane.rankedPathCount")}</Label>
-                                <Input type="number" min={1} max={5} value={config.rankedWorkflowPathCount} onChange={(event) => patchConfig({ rankedWorkflowPathCount: Number(event.target.value) })} />
-                            </div>
-                            <div className="grid gap-3">
-                                {[
-                                    ["proofLedgerEnabled", "proofLedger"],
-                                    ["autoProofCollectionEnabled", "autoProofCollection"],
-                                    ["worksetObservationEnabled", "worksetObservation"],
-                                    ["workbenchDryRunMatrixEnabled", "dryRunMatrix"],
-                                    ["suppressDailyMemory", "suppressDaily"],
-                                    ["suppressMemoryMap", "suppressMap"],
-                                ].map(([key, label]) => (
-                                    <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 p-3">
-                                        <Label>{t(`app.admin.dashboard.engineeringLane.${label}`)}</Label>
-                                        <Switch checked={Boolean(config[key as keyof EngineeringLaneConfig])} onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)} />
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.engineeringLane.proofScope")}</Label>
-                                <Select value={config.proofCollectionScope} onValueChange={(value) => patchConfig({ proofCollectionScope: value as EngineeringLaneConfig["proofCollectionScope"] })}>
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="engineering_active">engineering_active</SelectItem>
-                                        <SelectItem value="force_only">force_only</SelectItem>
-                                        <SelectItem value="off">off</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.engineeringLane.diagnosticsProviders")}</Label>
-                                <div className="grid gap-2 text-sm">
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+                                <div className="font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.diagnosticsProviders")}</div>
+                                <div className="mt-2 grid gap-2">
                                     {(["git", "command", "lspBestEffort"] as const).map((key) => (
-                                        <div key={key} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
-                                            <span>{key}</span>
-                                            <Switch
-                                                checked={config.diagnosticsProviders[key]}
-                                                onCheckedChange={(value) => patchConfig({ diagnosticsProviders: { ...config.diagnosticsProviders, [key]: value } })}
-                                            />
+                                        <div key={key} className="flex items-center justify-between gap-3">
+                                            <span>{t(DIAGNOSTICS_PROVIDER_LABEL_KEYS[key])}</span>
+                                            <span className={config.diagnosticsProviders[key] ? "text-emerald-700" : "text-slate-400"}>
+                                                {config.diagnosticsProviders[key] ? t("app.admin.dashboard.engineeringLane.enabledState") : t("app.admin.dashboard.engineeringLane.disabledState")}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -857,9 +804,9 @@ export default function EngineeringLanePage() {
                                     <Select value={dryRunMode} onValueChange={(value) => setDryRunMode(value as "auto" | "force" | "off")}>
                                         <SelectTrigger><SelectValue /></SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="auto">auto</SelectItem>
-                                            <SelectItem value="force">force</SelectItem>
-                                            <SelectItem value="off">off</SelectItem>
+                                            {TRIGGER_MODE_OPTIONS.map((option) => (
+                                                <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                                            ))}
                                         </SelectContent>
                                     </Select>
                                     <Button className="w-full" onClick={runDryRun} disabled={running || !dryRunText.trim()}>

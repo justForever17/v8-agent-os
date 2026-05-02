@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
+from core.model_role_doctor import diagnose_model_role
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
@@ -955,42 +956,42 @@ class ModelControlPlane:
             for model_id, model_meta in (provider_data.get("models") or {}).items():
                 capabilities = dict(model_meta.get("capabilities") or {})
                 model_ref = make_model_ref(provider_id, model_id)
-                models.append(
-                    {
-                        "id": model_ref,
-                        "modelRef": model_ref,
-                        "providerId": provider_id,
-                        "providerName": provider_meta.get("name") or provider_id,
-                        "providerIcon": provider_meta.get("icon"),
-                        "modelId": model_id,
-                        "type": model_meta.get("type") or "TEXT",
-                        "contextWindow": model_meta.get("contextWindow"),
-                        "maxTokens": model_meta.get("maxTokens"),
-                        "observedInputTokenLimit": model_meta.get("observedInputTokenLimit"),
-                        "observedInputTokenLimitSource": model_meta.get("observedInputTokenLimitSource"),
-                        "observedInputTokenLimitAt": model_meta.get("observedInputTokenLimitAt"),
-                        "observedInputTokenLimitEndpoint": model_meta.get("observedInputTokenLimitEndpoint"),
-                        "observedRerankQueryTokenLimit": model_meta.get("observedRerankQueryTokenLimit"),
-                        "observedRerankQueryTokenLimitSource": model_meta.get("observedRerankQueryTokenLimitSource"),
-                        "observedRerankQueryTokenLimitAt": model_meta.get("observedRerankQueryTokenLimitAt"),
-                        "observedRerankQueryTokenLimitEndpoint": model_meta.get("observedRerankQueryTokenLimitEndpoint"),
-                        "capabilitySource": model_meta.get("capabilitySource") or "manual",
-                        "parameterProfile": model_meta.get("parameterProfile") or "chat",
-                        "mediaLimits": model_meta.get("mediaLimits") or {},
-                        "promptCachingProfileId": model_meta.get("promptCachingProfileId")
-                        or provider_meta.get("promptCachingProfileId")
-                        or prompt_cache_profile_id_for_provider(str(provider_id)),
-                        "priority": model_meta.get("priority"),
-                        "stabilityTier": model_meta.get("stabilityTier"),
-                        "isEnabled": bool(model_meta.get("isEnabled", True)),
-                        "capabilities": capabilities,
-                        "capabilityClass": model_meta.get("capabilityClass") or "chat_general",
-                        "capabilityTags": [
-                            label for key, label in CAPABILITY_TAG_ORDER if capabilities.get(key)
-                        ],
-                        "assignedRoles": assigned_roles_by_model.get(model_ref, []),
-                    }
-                )
+                model_row = {
+                    "id": model_ref,
+                    "modelRef": model_ref,
+                    "providerId": provider_id,
+                    "providerName": provider_meta.get("name") or provider_id,
+                    "providerIcon": provider_meta.get("icon"),
+                    "modelId": model_id,
+                    "type": model_meta.get("type") or "TEXT",
+                    "contextWindow": model_meta.get("contextWindow"),
+                    "maxTokens": model_meta.get("maxTokens"),
+                    "observedInputTokenLimit": model_meta.get("observedInputTokenLimit"),
+                    "observedInputTokenLimitSource": model_meta.get("observedInputTokenLimitSource"),
+                    "observedInputTokenLimitAt": model_meta.get("observedInputTokenLimitAt"),
+                    "observedInputTokenLimitEndpoint": model_meta.get("observedInputTokenLimitEndpoint"),
+                    "observedRerankQueryTokenLimit": model_meta.get("observedRerankQueryTokenLimit"),
+                    "observedRerankQueryTokenLimitSource": model_meta.get("observedRerankQueryTokenLimitSource"),
+                    "observedRerankQueryTokenLimitAt": model_meta.get("observedRerankQueryTokenLimitAt"),
+                    "observedRerankQueryTokenLimitEndpoint": model_meta.get("observedRerankQueryTokenLimitEndpoint"),
+                    "capabilitySource": model_meta.get("capabilitySource") or "manual",
+                    "parameterProfile": model_meta.get("parameterProfile") or "chat",
+                    "mediaLimits": model_meta.get("mediaLimits") or {},
+                    "promptCachingProfileId": model_meta.get("promptCachingProfileId")
+                    or provider_meta.get("promptCachingProfileId")
+                    or prompt_cache_profile_id_for_provider(str(provider_id)),
+                    "priority": model_meta.get("priority"),
+                    "stabilityTier": model_meta.get("stabilityTier"),
+                    "isEnabled": bool(model_meta.get("isEnabled", True)),
+                    "capabilities": capabilities,
+                    "capabilityClass": model_meta.get("capabilityClass") or "chat_general",
+                    "capabilityTags": [
+                        label for key, label in CAPABILITY_TAG_ORDER if capabilities.get(key)
+                    ],
+                    "assignedRoles": assigned_roles_by_model.get(model_ref, []),
+                }
+                model_row["roleDoctor"] = diagnose_model_role(model_row, role="model_hub")
+                models.append(model_row)
         return sorted(models, key=lambda item: (item["providerName"].lower(), item["modelId"].lower()))
 
     def get_role_cards(self, config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:

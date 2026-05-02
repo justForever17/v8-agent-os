@@ -264,6 +264,22 @@ class ObservabilityDatabaseManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS run_ledger_events (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    session_id TEXT,
+                    event_type TEXT NOT NULL,
+                    runtime_kind TEXT,
+                    source TEXT,
+                    summary TEXT,
+                    refs_json TEXT,
+                    payload_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_run_id ON model_invocation_logs (run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_model_id ON model_invocation_logs (model_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_invocation_logs_started_at ON model_invocation_logs (started_at DESC)")
@@ -284,6 +300,9 @@ class ObservabilityDatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_compaction_records_created_at ON conversation_compaction_records (created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_compaction_records_session ON conversation_compaction_records (session_id, created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_compaction_records_run ON conversation_compaction_records (run_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_run_ledger_events_run ON run_ledger_events (run_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_run_ledger_events_session ON run_ledger_events (session_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_run_ledger_events_type ON run_ledger_events (event_type, created_at DESC)")
             conn.commit()
 
     @staticmethod
@@ -484,6 +503,92 @@ class ObservabilityDatabaseManager:
                 items.append(item)
             next_cursor = items[-1]["created_at"] if has_more and items else None
             return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
+
+    def add_run_ledger_event(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        event_id = str(record.get("id") or f"rle_{uuid.uuid4().hex}")
+        payload = {
+            "id": event_id,
+            "run_id": record.get("run_id") or record.get("runId"),
+            "session_id": record.get("session_id") or record.get("sessionId"),
+            "event_type": str(record.get("event_type") or record.get("eventType") or "").strip(),
+            "runtime_kind": record.get("runtime_kind") or record.get("runtimeKind"),
+            "source": record.get("source"),
+            "summary": redact_observability_text(str(record.get("summary") or "")),
+            "refs_json": json.dumps(record.get("refs") or {}, ensure_ascii=False),
+            "payload_json": json.dumps(record.get("payload") or {}, ensure_ascii=False),
+            "created_at": record.get("created_at") or record.get("createdAt") or utc_now_iso(),
+        }
+        if not payload["event_type"]:
+            raise ValueError("run ledger event_type is required")
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO run_ledger_events (
+                    id, run_id, session_id, event_type, runtime_kind, source,
+                    summary, refs_json, payload_json, created_at
+                ) VALUES (
+                    :id, :run_id, :session_id, :event_type, :runtime_kind, :source,
+                    :summary, :refs_json, :payload_json, :created_at
+                )
+                """,
+                payload,
+            )
+            conn.commit()
+        return self._decode_run_ledger_event(payload)
+
+    def list_run_ledger_events(self, **filters: Any) -> Dict[str, Any]:
+        limit = max(1, min(int(filters.get("limit") or 100), 500))
+        cursor = str(filters.get("cursor") or "").strip()
+        query = "SELECT * FROM run_ledger_events WHERE 1=1"
+        params: list[Any] = []
+        for key, column in (
+            ("run_id", "run_id"),
+            ("session_id", "session_id"),
+            ("event_type", "event_type"),
+            ("runtime_kind", "runtime_kind"),
+        ):
+            value = str(filters.get(key) or "").strip()
+            if value:
+                query += f" AND {column} = ?"
+                params.append(value)
+        if cursor:
+            query += " AND datetime(created_at) < datetime(?)"
+            params.append(cursor)
+        query += " ORDER BY datetime(created_at) DESC LIMIT ?"
+        params.append(limit + 1)
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            items = [self._decode_run_ledger_event(dict(row)) for row in rows]
+            next_cursor = items[-1]["createdAt"] if has_more and items else None
+            return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
+
+    @staticmethod
+    def _decode_run_ledger_event(row: Dict[str, Any]) -> Dict[str, Any]:
+        refs_raw = row.get("refs_json")
+        payload_raw = row.get("payload_json")
+        try:
+            refs = json.loads(refs_raw or "{}")
+        except Exception:
+            refs = {}
+        try:
+            payload = json.loads(payload_raw or "{}")
+        except Exception:
+            payload = {}
+        return {
+            "id": row.get("id"),
+            "runId": row.get("run_id"),
+            "sessionId": row.get("session_id"),
+            "eventType": row.get("event_type"),
+            "runtimeKind": row.get("runtime_kind"),
+            "source": row.get("source"),
+            "summary": row.get("summary") or "",
+            "refs": refs,
+            "payload": payload,
+            "createdAt": row.get("created_at"),
+            "created_at": row.get("created_at"),
+        }
 
     def add_model_invocation_log(self, record: Dict[str, Any]) -> None:
         with self.get_connection() as conn:

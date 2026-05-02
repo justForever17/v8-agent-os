@@ -436,9 +436,9 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "engineeringLane": {
         "enabled": True,
         "triggerMode": "auto",
-        "contextPackBudget": 2400,
+        "contextPackBudget": 48000,
         "evidenceGraphEnabled": True,
-        "evidenceGraphBudget": 1800,
+        "evidenceGraphBudget": 16000,
         "codingPlannerContractEnabled": True,
         "worksetGovernanceMode": "observe_auto_block",
         "worksetObservationEnabled": True,
@@ -2083,10 +2083,15 @@ class StorageManager:
     # --- Engineering Runtime Config Accessors (legacy key: engineeringLane) ---
     def get_engineering_lane_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("engineeringLane") or {}
+        raw_data = data if isinstance(data, dict) else {}
         merged = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["engineeringLane"],
-            data if isinstance(data, dict) else {},
+            raw_data,
         )
+        if raw_data.get("contextPackBudget") in (None, 2400, "2400"):
+            merged["contextPackBudget"] = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["contextPackBudget"]
+        if raw_data.get("evidenceGraphBudget") in (None, 1800, "1800"):
+            merged["evidenceGraphBudget"] = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["evidenceGraphBudget"]
         trigger_mode = str(merged.get("triggerMode") or "auto").strip().lower()
         merged["triggerMode"] = trigger_mode if trigger_mode in {"auto", "force", "off"} else "auto"
         proof_scope = str(merged.get("proofCollectionScope") or "engineering_active").strip().lower()
@@ -2103,8 +2108,8 @@ class StorageManager:
             "lspBestEffort": bool(providers.get("lspBestEffort", default_providers["lspBestEffort"])),
         }
         for key, default, minimum, maximum in (
-            ("contextPackBudget", 2400, 800, 12000),
-            ("evidenceGraphBudget", 1800, 600, 10000),
+            ("contextPackBudget", 48000, 800, 128000),
+            ("evidenceGraphBudget", 16000, 600, 48000),
             ("maxCriticalFiles", 24, 4, 120),
             ("rankedWorkflowPathCount", 3, 1, 5),
         ):
@@ -2119,7 +2124,12 @@ class StorageManager:
     def save_engineering_lane_config(self, data: Dict[str, Any]):
         payload = self._read_config_payload()
         current = self.get_engineering_lane_config()
-        next_data = self._deep_merge(current, dict(data or {}))
+        raw_data = dict(data or {})
+        next_data = self._deep_merge(current, raw_data)
+        if "contextPackBudget" in raw_data and raw_data.get("contextPackBudget") in (None, 2400, "2400"):
+            next_data["contextPackBudget"] = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["contextPackBudget"]
+        if "evidenceGraphBudget" in raw_data and raw_data.get("evidenceGraphBudget") in (None, 1800, "1800"):
+            next_data["evidenceGraphBudget"] = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["evidenceGraphBudget"]
         trigger_mode = str(next_data.get("triggerMode") or "auto").strip().lower()
         next_data["triggerMode"] = trigger_mode if trigger_mode in {"auto", "force", "off"} else "auto"
         proof_scope = str(next_data.get("proofCollectionScope") or "engineering_active").strip().lower()
@@ -2136,8 +2146,8 @@ class StorageManager:
             "lspBestEffort": bool(providers.get("lspBestEffort", default_providers["lspBestEffort"])),
         }
         for key, default, minimum, maximum in (
-            ("contextPackBudget", 2400, 800, 12000),
-            ("evidenceGraphBudget", 1800, 600, 10000),
+            ("contextPackBudget", 48000, 800, 128000),
+            ("evidenceGraphBudget", 16000, 600, 48000),
             ("maxCriticalFiles", 24, 4, 120),
             ("rankedWorkflowPathCount", 3, 1, 5),
         ):

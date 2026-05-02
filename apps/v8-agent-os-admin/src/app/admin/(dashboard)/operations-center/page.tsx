@@ -81,6 +81,37 @@ type StorageRetentionPayload = {
     }>;
 };
 const VALID_TABS = new Set(["overview", "approvals", "runs", "evidence", "advanced"]);
+const OPERATION_LOG_SOURCES = ["all", "runtime", "audit", "cron", "hook", "safety", "storage"] as const;
+type OperationLogSource = (typeof OPERATION_LOG_SOURCES)[number];
+
+type OperationLogItem = {
+    id: string;
+    timestamp: string;
+    source: string;
+    status: string;
+    action: string;
+    runId?: string;
+    sessionId?: string;
+    summary: string;
+    details?: string;
+};
+
+type RunLedgerPayload = {
+    runId?: string;
+    status?: string;
+    runtimeKind?: string;
+    nextAction?: string;
+    refs?: Record<string, string[]>;
+    timeline?: Array<{
+        id?: string;
+        type?: string;
+        source?: string;
+        runtimeKind?: string;
+        ts?: string;
+        summary?: string;
+        refs?: Record<string, unknown>;
+    }>;
+};
 
 function formatBytes(value?: number) {
     const bytes = Number(value || 0);
@@ -173,6 +204,158 @@ function StorageRetentionPanel() {
                     Result: {lastResult.status || "unknown"} · actions {actionCount} · before {formatBytes(lastResult.beforeBytes)} · after {formatBytes(lastResult.afterBytes)}
                 </div>
             ) : null}
+        </div>
+    );
+}
+
+function stringifyLogDetails(value: unknown) {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function logTimestamp(value: Record<string, any>) {
+    return String(value.createdAt || value.created_at || value.updatedAt || value.updated_at || value.timestamp || value.started_at || value.finished_at || "");
+}
+
+function OperationLogsPanel() {
+    const t = useT();
+    const [source, setSource] = useState<OperationLogSource>("all");
+    const [items, setItems] = useState<OperationLogItem[]>([]);
+    const [loading, setLoading] = useState(false);
+
+    const load = async () => {
+        setLoading(true);
+        try {
+            const requests: Array<Promise<{ kind: string; payload: any }>> = [];
+            if (source === "all" || source === "runtime") {
+                requests.push(fetch("/api/runs?limit=40", { cache: "no-store" }).then(async (response) => ({ kind: "runtime", payload: response.ok ? await response.json().catch(() => ({})) : {} })));
+            }
+            if (source === "all" || source === "audit" || source === "hook" || source === "safety" || source === "storage") {
+                const params = new URLSearchParams({ limit: "80" });
+                if (source === "hook") params.set("source_type", "HOOK");
+                if (source === "safety") params.set("source_type", "SAFETY");
+                if (source === "storage") params.set("source_type", "STORAGE_RETENTION");
+                requests.push(fetch(`/api/audit/logs?${params.toString()}`, { cache: "no-store" }).then(async (response) => ({ kind: "audit", payload: response.ok ? await response.json().catch(() => ({})) : {} })));
+            }
+            if (source === "all" || source === "cron") {
+                requests.push(fetch("/api/cron/logs?limit=80", { cache: "no-store" }).then(async (response) => ({ kind: "cron", payload: response.ok ? await response.json().catch(() => ({})) : {} })));
+            }
+            const responses = await Promise.all(requests);
+            const nextItems: OperationLogItem[] = [];
+            for (const item of responses) {
+                if (item.kind === "runtime") {
+                    for (const run of Array.isArray(item.payload?.runs) ? item.payload.runs : []) {
+                        const record = (run || {}) as Record<string, any>;
+                        nextItems.push({
+                            id: String(record.id || record.runId || `run-${nextItems.length}`),
+                            timestamp: logTimestamp(record),
+                            source: "Runtime Runs",
+                            status: String(record.status || "unknown"),
+                            action: String(record.runtimeKind || record.runtime_kind || record.kind || "run"),
+                            runId: String(record.id || record.runId || ""),
+                            sessionId: String(record.sessionId || record.session_id || ""),
+                            summary: String(record.summary || record.title || record.name || record.status || "runtime run"),
+                            details: stringifyLogDetails(record.lastEvent || record.error || record.metadata || ""),
+                        });
+                    }
+                }
+                if (item.kind === "audit") {
+                    for (const log of Array.isArray(item.payload?.logs) ? item.payload.logs : []) {
+                        const record = (log || {}) as Record<string, any>;
+                        nextItems.push({
+                            id: String(record.id || `audit-${nextItems.length}`),
+                            timestamp: logTimestamp(record),
+                            source: String(record.source_type || record.sourceType || "Audit"),
+                            status: String(record.status || "unknown"),
+                            action: String(record.action || "audit"),
+                            runId: String(record.run_id || record.runId || ""),
+                            sessionId: String(record.session_id || record.sessionId || ""),
+                            summary: String(record.summary || record.message || record.action || "audit log"),
+                            details: stringifyLogDetails(record.details),
+                        });
+                    }
+                }
+                if (item.kind === "cron") {
+                    for (const log of Array.isArray(item.payload?.logs) ? item.payload.logs : []) {
+                        const record = (log || {}) as Record<string, any>;
+                        nextItems.push({
+                            id: String(record.id || record.execution_id || `cron-${nextItems.length}`),
+                            timestamp: logTimestamp(record),
+                            source: "Cron",
+                            status: String(record.status || record.result || "unknown"),
+                            action: String(record.job_id || record.jobId || record.name || "cron job"),
+                            runId: String(record.run_id || record.runId || ""),
+                            sessionId: String(record.session_id || record.sessionId || ""),
+                            summary: String(record.summary || record.message || record.error || record.status || "cron execution"),
+                            details: stringifyLogDetails(record.details || record.payload || record.error),
+                        });
+                    }
+                }
+            }
+            nextItems.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+            setItems(nextItems.slice(0, 120));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        void load();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [source]);
+
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <AdminHoverInfo content={t("app.admin.dashboard.operations.center.logs.description")}>
+                    <h2 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.logs.title")}</h2>
+                </AdminHoverInfo>
+                <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+                    {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                    {t("app.admin.dashboard.operations.center.page.kd4db8d84")}
+                </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {OPERATION_LOG_SOURCES.map((item) => (
+                    <button
+                        key={item}
+                        type="button"
+                        onClick={() => setSource(item)}
+                        className={`rounded-full px-3 py-1 text-xs font-medium transition ${source === item ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                    >
+                        {t(`app.admin.dashboard.operations.center.logs.source.${item}`)}
+                    </button>
+                ))}
+            </div>
+            <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-white p-3">
+                {items.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">
+                        {t("app.admin.dashboard.operations.center.logs.empty")}
+                    </div>
+                ) : items.map((item) => (
+                    <div key={`${item.source}-${item.id}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="font-semibold text-slate-900">{item.action}</div>
+                            <div className="flex flex-wrap items-center gap-2 text-slate-500">
+                                <span>{item.source}</span>
+                                <span>{item.status}</span>
+                                <span>{item.timestamp || "-"}</span>
+                            </div>
+                        </div>
+                        <div className="mt-1 text-slate-700">{item.summary}</div>
+                        <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-slate-500">
+                            {item.runId ? <span>run {compactId(item.runId)}</span> : null}
+                            {item.sessionId ? <span>session {compactId(item.sessionId)}</span> : null}
+                        </div>
+                        {item.details ? <div className="mt-2 line-clamp-3 break-all text-slate-500">{item.details}</div> : null}
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
@@ -417,6 +600,95 @@ function EvidencePanel() {
         </div>
     );
 }
+
+function RunLedgerPanel({ runId }: { runId: string | null }) {
+    const [ledger, setLedger] = useState<RunLedgerPayload | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const load = async () => {
+        if (!runId) return;
+        setLoading(true);
+        setError(null);
+        try {
+            const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/ledger`, { cache: "no-store" });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) {
+                setError(String(payload?.detail || payload?.error || "Run ledger unavailable"));
+                setLedger(null);
+                return;
+            }
+            setLedger(payload || null);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Run ledger unavailable");
+            setLedger(null);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        void load();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runId]);
+
+    if (!runId) {
+        return null;
+    }
+
+    const timeline = Array.isArray(ledger?.timeline) ? ledger.timeline : [];
+    const refs = ledger?.refs || {};
+    return (
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <AdminHoverInfo content="Run Ledger 聚合 runtime events、raw evidence、approval、artifact、compaction 与 compat lifecycle，便于从 runId 追踪发生了什么。">
+                    <div>
+                        <h2 className="text-lg font-semibold text-slate-950">Run Ledger</h2>
+                        <p className="mt-1 font-mono text-xs text-slate-500">{runId}</p>
+                    </div>
+                </AdminHoverInfo>
+                <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+                    {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                    刷新
+                </Button>
+            </div>
+            {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
+            {ledger ? (
+                <div className="mt-4 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
+                    <div className="space-y-2 rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600">
+                        <div>状态：<span className="font-medium text-slate-950">{ledger.status || "-"}</span></div>
+                        <div>Runtime：<span className="font-medium text-slate-950">{ledger.runtimeKind || "-"}</span></div>
+                        <div>下一步：<span className="font-medium text-slate-950">{ledger.nextAction || "-"}</span></div>
+                        {Object.entries(refs).map(([key, value]) => (
+                            <div key={key}>{key}: <span className="font-mono text-xs text-slate-700">{Array.isArray(value) ? value.length : 0}</span></div>
+                        ))}
+                    </div>
+                    <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
+                        {timeline.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">暂无 ledger 事件。</div>
+                        ) : timeline.map((item) => (
+                            <div key={item.id || `${item.type}-${item.ts}`} className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+                                <div className="flex flex-wrap items-center gap-2 text-xs">
+                                    <span className="rounded-full bg-slate-950 px-2 py-0.5 font-medium text-white">{item.type || "event"}</span>
+                                    <span className="text-slate-500">{item.source || "-"}</span>
+                                    <span className="font-mono text-slate-400">{item.ts || "-"}</span>
+                                </div>
+                                {item.summary ? <p className="mt-2 text-sm text-slate-700">{item.summary}</p> : null}
+                                {item.refs && Object.keys(item.refs).length > 0 ? (
+                                    <pre className="mt-2 max-h-28 overflow-auto rounded-xl bg-slate-50 p-2 text-xs text-slate-500">
+                                        {JSON.stringify(item.refs, null, 2)}
+                                    </pre>
+                                ) : null}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ) : !loading && !error ? (
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">暂无 ledger 数据。</div>
+            ) : null}
+        </div>
+    );
+}
 export default function OperationsCenterPage() {
     const t = useT();
     const router = useRouter();
@@ -594,6 +866,7 @@ export default function OperationsCenterPage() {
 
                 <TabsContent value="runs" className="space-y-4">
                     {runtime.runs.some((run) => ["paused", "failed", "waiting_input"].includes(run.status || "")) ? (<StatusNotice title={"app.admin.dashboard.operations.center.page.k9eb5cbb2"} description={"app.admin.dashboard.operations.center.page.ke692c9ed"} tone="success"/>) : null}
+                    <RunLedgerPanel runId={focusRunId} />
                     <RecentRunsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId}/>
                 </TabsContent>
 
@@ -604,6 +877,9 @@ export default function OperationsCenterPage() {
                 <TabsContent value="advanced">
                     <AdvancedSection title="Storage Retention" defaultOpen={false}>
                         <StorageRetentionPanel />
+                    </AdvancedSection>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.logs.title")} defaultOpen>
+                        <OperationLogsPanel />
                     </AdvancedSection>
                     <AdvancedSection title={"app.admin.dashboard.operations.center.page.k428237fe"} defaultOpen>
                         <AuditLogsPanel />

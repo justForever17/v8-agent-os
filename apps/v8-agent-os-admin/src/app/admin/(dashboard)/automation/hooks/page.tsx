@@ -54,6 +54,17 @@ function parseJsonField(label: string, value: string, locale: "zh-CN" | "en") {
     }
     return parsed as Record<string, unknown>;
 }
+const TRIGGER_KIND_OPTIONS = [
+    { value: "nudge", label: "app.admin.dashboard.automation.wakeIngress.triggerKind.nudge" },
+    { value: "wake", label: "app.admin.dashboard.automation.wakeIngress.triggerKind.wake" },
+    { value: "recovery_wake", label: "app.admin.dashboard.automation.wakeIngress.triggerKind.recoveryWake" },
+] as const;
+const ATTACH_POLICY_OPTIONS = [
+    { value: "new_session", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.newSession" },
+    { value: "attach_session", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.attachSession" },
+    { value: "attach_run", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.attachRun" },
+    { value: "resume_run", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.resumeRun" },
+] as const;
 export default function HooksPage() {
     const t = useT();
     const { locale } = useLocale();
@@ -294,18 +305,13 @@ export default function HooksPage() {
               <div className="grid gap-2">
                 <Label htmlFor="triggerKind">{t("app.admin.dashboard.automation.hooks.page.k01313cef")}</Label>
                 <select id="triggerKind" className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm" value={formData.triggerKind || "nudge"} onChange={(e) => setFormData({ ...formData, triggerKind: e.target.value as HookConfig["triggerKind"] })}>
-                  <option value="nudge">nudge</option>
-                  <option value="wake">wake</option>
-                  <option value="recovery_wake">recovery_wake</option>
+                  {TRIGGER_KIND_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
                 </select>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="attachPolicy">{t("app.admin.dashboard.automation.hooks.page.ka1c2596c")}</Label>
                 <select id="attachPolicy" className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm" value={formData.attachPolicy || "new_session"} onChange={(e) => setFormData({ ...formData, attachPolicy: e.target.value as HookConfig["attachPolicy"] })}>
-                  <option value="new_session">new_session</option>
-                  <option value="attach_session">attach_session</option>
-                  <option value="attach_run">attach_run</option>
-                  <option value="resume_run">resume_run</option>
+                  {ATTACH_POLICY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
                 </select>
               </div>
             </div>

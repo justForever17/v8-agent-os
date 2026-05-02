@@ -138,6 +138,9 @@ export function ModelCardV2({
     const pricing = controlMeta?.pricing || model.pricing || null;
     const registry = controlMeta?.capabilityRegistry || model.capabilityRegistry || null;
     const missingFields = registry?.missingFields || [];
+    const roleDoctor = (controlMeta as any)?.roleDoctor || (model as any)?.roleDoctor || null;
+    const roleDoctorIssues = Array.isArray(roleDoctor?.issues) ? roleDoctor.issues : [];
+    const roleDoctorWarnings = Array.isArray(roleDoctor?.warnings) ? roleDoctor.warnings : [];
     const modelIcon = resolveModelIcon({
         modelId: model.modelId,
         providerId: model.provider?.id,
@@ -158,6 +161,8 @@ export function ModelCardV2({
             : "",
         missingFields.length ? `Missing: ${missingFields.join(", ")}` : "",
         controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "",
+        roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: any) => item.code || item.message).join(", ")}` : "",
+        roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: any) => item.code || item.message).join(", ")}` : "",
         capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "",
         assignedRoles.length ? `Roles: ${assignedRoles.map((role) => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none",
         statusMessage ? `Status: ${statusMessage}` : "",

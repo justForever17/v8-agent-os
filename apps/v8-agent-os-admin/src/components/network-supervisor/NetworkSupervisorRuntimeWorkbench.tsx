@@ -127,6 +127,14 @@ type RuntimeStatus = {
         messagesPath: string;
         modelsPath: string;
     };
+    compatIngress?: {
+        maxExternalPayloadTokens: number;
+        recent: Array<Record<string, unknown>>;
+    };
+    pendingExternalTools?: {
+        waitingCount: number;
+        recent: Array<Record<string, unknown>>;
+    };
     delegationAvailability: Availability;
     toolAvailability?: {
         delegate_network_task?: Availability;
@@ -224,6 +232,14 @@ const EMPTY_STATUS: RuntimeStatus = {
         messagesPath: "/v1/messages",
         modelsPath: "/v1/models",
     },
+    compatIngress: {
+        maxExternalPayloadTokens: 0,
+        recent: [],
+    },
+    pendingExternalTools: {
+        waitingCount: 0,
+        recent: [],
+    },
     delegationAvailability: { available: false, reasons: [] },
     toolAvailability: {},
 };
@@ -269,6 +285,8 @@ function normalizeStatus(value: unknown): RuntimeStatus {
     const payload = (value && typeof value === "object") ? value as Partial<RuntimeStatus> : {};
     const openaiCompat = (payload.openaiCompat || {}) as NonNullable<RuntimeStatus["openaiCompat"]>;
     const anthropicCompat = (payload.anthropicCompat || {}) as NonNullable<RuntimeStatus["anthropicCompat"]>;
+    const compatIngress = (payload.compatIngress || {}) as NonNullable<RuntimeStatus["compatIngress"]>;
+    const pendingExternalTools = (payload.pendingExternalTools || {}) as NonNullable<RuntimeStatus["pendingExternalTools"]>;
     return {
         ...EMPTY_STATUS,
         ...payload,
@@ -297,6 +315,14 @@ function normalizeStatus(value: unknown): RuntimeStatus {
             baseUrlHint: String(anthropicCompat.baseUrlHint || EMPTY_STATUS.anthropicCompat?.baseUrlHint || ""),
             messagesPath: String(anthropicCompat.messagesPath || EMPTY_STATUS.anthropicCompat?.messagesPath || "/v1/messages"),
             modelsPath: String(anthropicCompat.modelsPath || EMPTY_STATUS.anthropicCompat?.modelsPath || "/v1/models"),
+        },
+        compatIngress: {
+            maxExternalPayloadTokens: Number(compatIngress.maxExternalPayloadTokens || 0),
+            recent: Array.isArray(compatIngress.recent) ? compatIngress.recent.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [],
+        },
+        pendingExternalTools: {
+            waitingCount: Number(pendingExternalTools.waitingCount || 0),
+            recent: Array.isArray(pendingExternalTools.recent) ? pendingExternalTools.recent.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [],
         },
         delegationAvailability: {
             ...EMPTY_STATUS.delegationAvailability,
@@ -855,6 +881,28 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     </div>
 
                     <div className="space-y-4">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressDiagnosticsDescription")} panelClassName="text-xs leading-5">
+                                    <span className="cursor-help text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressDiagnosticsTitle")}</span>
+                                </AdminHoverInfo>
+                                <Badge variant={status.pendingExternalTools?.waitingCount ? "default" : "secondary"}>
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressPendingTools", { count: status.pendingExternalTools?.waitingCount || 0 })}
+                                </Badge>
+                            </div>
+                            {status.compatIngress?.recent?.length ? (<div className="space-y-2">
+                                    {status.compatIngress.recent.slice(0, 3).map((item, index) => (<div key={`compat-ingress-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge variant="outline">{String(item.protocol || "compat")}</Badge>
+                                                <span>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressPayloadTokens", { count: Number(item.payloadTokens || 0) })}</span>
+                                                <span>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressToolCount", { count: Number(item.clientToolCount || 0) })}</span>
+                                            </div>
+                                            <div className="mt-1 break-all text-slate-500">{String(item.rawRef || "—")}</div>
+                                        </div>))}
+                                </div>) : (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressNoRecent")}
+                                </div>)}
+                        </div>
                         <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4">
                             <div className="flex items-center justify-between gap-4">
                                 <div>

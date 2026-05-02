@@ -22,7 +22,6 @@ from runtimes.network_supervisor.anthropic_compat import (
     ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS_PAYLOAD_TOKENS,
     anthropic_wire_tool_use_id,
     build_anthropic_compat_models_response,
-    build_anthropic_message_response,
     build_engine_chat_request_from_anthropic,
     extract_anthropic_tool_use_blocks_from_events,
     extract_anthropic_api_key,
@@ -38,13 +37,13 @@ from runtimes.network_supervisor.openai_compat import (
     build_openai_compat_models_response,
     build_engine_chat_request_from_openai,
     build_external_tool_alias_maps,
-    build_openai_completion_response,
     extract_bearer_token,
     extract_external_tool_calls_from_events,
     normalize_openai_compat_model_aliases,
     resolve_openai_compat_model_alias,
     wire_tool_call_id,
 )
+from runtimes.network_supervisor.compat_wire_emitter import compat_wire_emitter
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
 
@@ -960,7 +959,7 @@ async def post_network_supervisor_openai_chat_completions(
             "v8os_status": "waiting_approval",
         }
     else:
-        response_payload = build_openai_completion_response(
+        response_payload = compat_wire_emitter.openai_chat_completion(
             response_id=f"chatcmpl-{uuid.uuid4().hex}",
             model_name=response_model_name,
             events=events,
@@ -1091,7 +1090,7 @@ async def post_network_supervisor_anthropic_messages(
             }
         )
     return JSONResponse(
-        build_anthropic_message_response(
+        compat_wire_emitter.anthropic_message(
             response_id=f"msg_{uuid.uuid4().hex}",
             model_name=response_model_name,
             events=events,

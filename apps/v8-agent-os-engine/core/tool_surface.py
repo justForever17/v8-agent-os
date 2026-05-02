@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +19,25 @@ DEFAULT_OUTPUT_RESERVE_TOKENS = 2048
 CONTEXT_SAFETY_BUFFER_RATIO = 0.2
 CHARS_PER_TOKEN_ESTIMATE = 4
 MIN_TOOL_OUTPUT_BUDGET_CHARS = 1200
+
+
+@dataclass(slots=True)
+class ToolSurfaceEnvelope:
+    """Agent-visible summary contract for tool output surfaces."""
+
+    runId: str | None = None
+    tool: str = ""
+    toolCallId: str | None = None
+    runtimeKind: str = "native"
+    summary: str = ""
+    refs: dict[str, Any] = field(default_factory=dict)
+    budget: dict[str, Any] = field(default_factory=dict)
+    omitted: dict[str, Any] = field(default_factory=dict)
+    nextAction: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        return {key: value for key, value in payload.items() if value not in (None, "", {}, [])}
 
 TOOL_OUTPUT_TARGET_CHARS = {
     "default": 8000,
@@ -179,6 +199,7 @@ def _safe_int(value: Any, default: int) -> int:
 
 def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, Any]:
     config = _request_config(request)
+    run_id = _nested_config_value(config, "runId", "run_id", "activeRunId", "active_run_id")
     context_window_tokens = _safe_int(
         _nested_config_value(
             config,
@@ -218,6 +239,7 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
     agent_visible_budget = max(MIN_TOOL_OUTPUT_BUDGET_CHARS, min(dynamic_budget_chars, target_chars, hard_max_chars))
     return {
         "budgetSource": "dynamic_context_budget",
+        "runId": run_id,
         "agentVisibleBudget": int(agent_visible_budget),
         "dynamicBudgetChars": int(dynamic_budget_chars),
         "hardMaxChars": int(hard_max_chars),
@@ -313,24 +335,36 @@ def _tool_surface_payload(
     was_truncated: bool,
     strategy: str,
     omitted_chars: int = 0,
+    summary: str | None = None,
+    next_action: str | None = None,
 ) -> dict[str, Any]:
-    return {
-        "tool": tool_name,
-        "toolCallId": tool_call_id,
-        "runtimeKind": runtime_kind,
-        "refs": {"rawRef": raw_ref} if raw_ref else {},
-        "budget": {
+    run_id = str(
+        budget_meta.get("runId")
+        or budget_meta.get("run_id")
+        or budget_meta.get("sessionRunId")
+        or ""
+    ).strip() or None
+    envelope = ToolSurfaceEnvelope(
+        runId=run_id,
+        tool=tool_name,
+        toolCallId=tool_call_id,
+        runtimeKind=runtime_kind,
+        summary=summary or ("Tool output truncated; use rawRef for full evidence." if was_truncated else "Tool output captured."),
+        refs={"rawRef": raw_ref} if raw_ref else {},
+        budget={
             "budgetSource": budget_meta.get("budgetSource"),
             "agentVisibleBudget": budget_meta.get("agentVisibleBudget"),
             "hardMaxChars": budget_meta.get("hardMaxChars"),
             "targetChars": budget_meta.get("targetChars"),
         },
-        "omitted": {
+        omitted={
             "wasBudgetTruncated": was_truncated,
             "semanticTruncationStrategy": strategy,
             "omittedChars": max(0, int(omitted_chars or 0)),
         },
-    }
+        nextAction=next_action or ("Call tool_observation_detail with rawRef for full evidence when needed." if raw_ref and was_truncated else None),
+    )
+    return envelope.to_dict()
 
 
 def _inject_surface_metadata(text: str, surface: dict[str, Any], *, budget: int) -> str:
@@ -414,6 +448,10 @@ def record_raw_observation(
 ) -> str:
     observation_id = f"toolobs_{uuid.uuid4().hex}"
     raw_ref = f"toolobs://{observation_id}"
+    metadata_payload = dict(metadata or {})
+    run_id = str((budget_meta or {}).get("runId") or (budget_meta or {}).get("run_id") or "").strip()
+    if run_id and not metadata_payload.get("runId"):
+        metadata_payload["runId"] = run_id
     try:
         from core.observability_db import observability_db
 
@@ -430,7 +468,7 @@ def record_raw_observation(
                 "raw_sha256": _hash_text(raw_content or ""),
                 "raw_body": raw_content,
                 "budget": dict(budget_meta or {}),
-                "metadata": dict(metadata or {}),
+                "metadata": metadata_payload,
                 "created_at": utc_now_iso(),
             }
         )

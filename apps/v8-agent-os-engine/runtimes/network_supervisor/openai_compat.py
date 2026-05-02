@@ -26,10 +26,15 @@ COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS = 64_000
 COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS = 1_000_000
 COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS = 32_000
 COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES = 2_000_000
+COMPAT_MODEL_VISIBLE_TOOL_DESCRIPTION_CHARS = 12000
 
 
 class _CompatToolEmptyArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class _CompatToolAnyArgs(BaseModel):
+    model_config = ConfigDict(extra="allow")
 
 
 def extract_bearer_token(header_value: str | None) -> str:
@@ -156,32 +161,71 @@ def _max_json_depth(payload: Any, *, _depth: int = 0) -> int:
     return _depth + 1
 
 
-def _validate_external_tool_budget(
+def _line_safe_excerpt(text: str, max_chars: int) -> tuple[str, int]:
+    raw = str(text or "")
+    if max_chars <= 0 or len(raw) <= max_chars:
+        return raw, 0
+    marker = "\n\n...[external tool description omitted; full original preserved in rawSchemaRef]...\n\n"
+    available = max(0, max_chars - len(marker))
+    if available <= 0:
+        return marker[:max_chars], max(0, len(raw) - max_chars)
+    head = max(1, int(available * 0.6))
+    tail = max(1, available - head)
+    return f"{raw[:head].rstrip()}{marker}{raw[-tail:].lstrip()}", max(0, len(raw) - available)
+
+
+def _external_tool_budget_adjustments(
     *,
     wire_name: str,
     description: str,
     parameters: dict[str, Any],
     max_description_tokens: int,
     max_schema_bytes: int,
-) -> None:
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "visibleDescription": description,
+        "descriptionOmittedChars": 0,
+        "parameters": parameters,
+        "reservoirMode": False,
+        "schemaOmissionReason": None,
+        "recoveryHints": [],
+    }
     description_tokens = estimate_prompt_tokens(description)
     if description_tokens > int(max_description_tokens):
-        raise ValueError(
-            f"External tool '{wire_name}' description is too large: "
-            f"{description_tokens} estimated tokens > {int(max_description_tokens)}"
+        visible_description, omitted_chars = _line_safe_excerpt(
+            description,
+            min(max(1200, int(max_description_tokens) * 4), COMPAT_MODEL_VISIBLE_TOOL_DESCRIPTION_CHARS),
+        )
+        diagnostics["visibleDescription"] = visible_description
+        diagnostics["descriptionOmittedChars"] = omitted_chars
+        diagnostics["reservoirMode"] = True
+        diagnostics["recoveryHints"].append(
+            f"External tool description exceeded model-visible budget ({description_tokens} estimated tokens); use rawSchemaRef for the full original description."
         )
     schema_bytes = _json_size_bytes(parameters)
-    if schema_bytes > int(max_schema_bytes):
-        raise ValueError(
-            f"External tool '{wire_name}' parameters schema is too large: "
-            f"{schema_bytes} bytes > {int(max_schema_bytes)}"
-        )
     schema_depth = _max_json_depth(parameters)
-    if schema_depth > _MAX_SCHEMA_DEPTH:
-        raise ValueError(
-            f"External tool '{wire_name}' parameters schema is too deeply nested: "
-            f"{schema_depth} > {_MAX_SCHEMA_DEPTH}"
+    if schema_bytes > int(max_schema_bytes):
+        diagnostics["schemaOmissionReason"] = (
+            f"parameters schema too large: {schema_bytes} bytes > {int(max_schema_bytes)}"
         )
+    elif schema_depth > _MAX_SCHEMA_DEPTH:
+        diagnostics["schemaOmissionReason"] = (
+            f"parameters schema too deeply nested: {schema_depth} > {_MAX_SCHEMA_DEPTH}"
+        )
+    if diagnostics["schemaOmissionReason"]:
+        diagnostics["parameters"] = {
+            "type": "object",
+            "additionalProperties": True,
+            "description": (
+                f"Model-visible schema omitted for external tool '{wire_name}' because "
+                f"{diagnostics['schemaOmissionReason']}. Full original schema is preserved in rawSchemaRef."
+            ),
+        }
+        diagnostics["reservoirMode"] = True
+        diagnostics["recoveryHints"].append(
+            "This external tool is in reservoir mode: preserve the wire tool name and call it with arguments matching the client tool manual or recent transcript context."
+        )
+    return diagnostics
 
 
 def _infer_external_tool_semantics(wire_name: str, description: str, parameters: dict[str, Any] | None) -> dict[str, Any]:
@@ -245,9 +289,13 @@ def _render_external_tool_description_for_internal_model(original_description: s
     if wire_name:
         lines.append(f"External wire tool name: {wire_name}")
     original = str(original_description or "").strip()
-    if original:
+    visible_description = str(getattr(function_payload, "visible_description", "") or original).strip()
+    if visible_description:
         lines.append("Original external tool description:")
-        lines.append(original)
+        lines.append(visible_description)
+    reservoir_mode = bool(getattr(function_payload, "reservoir_mode", False))
+    if reservoir_mode and original and visible_description != original:
+        lines.append("Full original description is preserved in rawSchemaRef; the text above is a model-visible excerpt.")
     kind = str(getattr(function_payload, "tool_kind", "") or "other")
     side_effect = str(getattr(function_payload, "side_effect", "") or "none")
     lines.append(
@@ -262,6 +310,9 @@ def _render_external_tool_description_for_internal_model(original_description: s
     raw_schema_ref = str(getattr(function_payload, "raw_schema_ref", "") or "").strip()
     if raw_schema_ref:
         lines.append(f"Raw schema ref: {raw_schema_ref}")
+    schema_omission_reason = str(getattr(function_payload, "schema_omission_reason", "") or "").strip()
+    if schema_omission_reason:
+        lines.append(f"Schema reservoir reason: {schema_omission_reason}")
     return "\n".join(lines).strip()
 
 
@@ -286,6 +337,8 @@ def _build_args_schema(internal_alias_name: str, parameters: dict[str, Any] | No
     properties = payload.get("properties") if isinstance(payload.get("properties"), dict) else {}
     required = {str(item).strip() for item in list(payload.get("required") or []) if str(item).strip()}
     if not properties:
+        if payload.get("additionalProperties") is True:
+            return _CompatToolAnyArgs
         return _CompatToolEmptyArgs
 
     fields: dict[str, tuple[Any, Field]] = {}
@@ -351,9 +404,10 @@ def select_external_tools_for_request(
             continue
         if selected_wire_name and wire_name != selected_wire_name:
             continue
-        description = str(function_payload.get("description") or "").strip()
+        description = str(function_payload.get("description") or "")
         parameters = function_payload.get("parameters") if isinstance(function_payload.get("parameters"), dict) else {}
-        _validate_external_tool_budget(
+        raw_schema_ref = _record_external_tool_schema_ref(wire_name, raw)
+        budget_adjustments = _external_tool_budget_adjustments(
             wire_name=wire_name,
             description=description,
             parameters=parameters,
@@ -361,7 +415,10 @@ def select_external_tools_for_request(
             max_schema_bytes=max_tool_schema_bytes,
         )
         semantics = _infer_external_tool_semantics(wire_name, description, parameters)
-        raw_schema_ref = _record_external_tool_schema_ref(wire_name, raw)
+        if budget_adjustments.get("recoveryHints"):
+            semantics["recoveryHints"] = list(semantics.get("recoveryHints") or []) + [
+                str(item) for item in list(budget_adjustments.get("recoveryHints") or []) if str(item).strip()
+            ]
         seen_wire_names.add(wire_name)
         normalized.append(
             ExternalToolSpec.model_validate(
@@ -370,9 +427,13 @@ def select_external_tools_for_request(
                     "function": {
                         "name": wire_name,
                         "description": description or None,
-                        "parameters": parameters,
+                        "visibleDescription": budget_adjustments.get("visibleDescription") or description or None,
+                        "parameters": budget_adjustments.get("parameters") if isinstance(budget_adjustments.get("parameters"), dict) else parameters,
                         "internalAliasName": _unique_internal_alias_name(wire_name, seen_aliases),
                         "rawSchemaRef": raw_schema_ref,
+                        "reservoirMode": bool(budget_adjustments.get("reservoirMode")),
+                        "descriptionOmittedChars": int(budget_adjustments.get("descriptionOmittedChars") or 0),
+                        "schemaOmissionReason": budget_adjustments.get("schemaOmissionReason") or None,
                         **semantics,
                     },
                 }

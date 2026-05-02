@@ -22,6 +22,11 @@ class ExternalToolFunctionSpec(BaseModel):
 
     name: str = Field(default="", description="Original wire-visible external function name")
     description: Optional[str] = Field(default=None, description="External function description")
+    visible_description: Optional[str] = Field(
+        default=None,
+        alias="visibleDescription",
+        description="Model-visible description excerpt. Full original remains in rawSchemaRef.",
+    )
     parameters: Dict[str, Any] = Field(default_factory=dict, description="JSON schema parameters")
     internal_alias_name: Optional[str] = Field(default=None, alias="internalAliasName")
     tool_kind: Optional[str] = Field(default=None, alias="toolKind", description="Inferred external tool kind")
@@ -30,6 +35,9 @@ class ExternalToolFunctionSpec(BaseModel):
     recovery_hints: List[str] = Field(default_factory=list, alias="recoveryHints", description="Failure recovery hints for the supervisor")
     client_owned_workspace: bool = Field(default=False, alias="clientOwnedWorkspace", description="Whether the tool operates in the external client's workspace")
     raw_schema_ref: Optional[str] = Field(default=None, alias="rawSchemaRef", description="Raw evidence ref for the original external tool schema")
+    reservoir_mode: bool = Field(default=False, alias="reservoirMode", description="Whether model-visible schema/description was compacted into reservoir mode")
+    description_omitted_chars: int = Field(default=0, alias="descriptionOmittedChars")
+    schema_omission_reason: Optional[str] = Field(default=None, alias="schemaOmissionReason")
 
 
 class ExternalToolSpec(BaseModel):

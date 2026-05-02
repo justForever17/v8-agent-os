@@ -64,10 +64,38 @@ type SummaryPayload = {
     };
 };
 type StorageRetentionPayload = {
+    config?: {
+        budgets?: Record<string, {
+            maxBytes?: number;
+            retentionDays?: number;
+            mode?: string;
+        }>;
+    };
     maxBytes?: number;
     totalGovernedBytes?: number;
     overCapBytes?: number;
     components?: Record<string, number>;
+    budgetComponents?: Record<string, {
+        label?: string;
+        usedBytes?: number;
+        maxBytes?: number;
+        retentionDays?: number;
+        mode?: string;
+        autoPrune?: boolean;
+    }>;
+    budgetFindings?: Array<{
+        key?: string;
+        label?: string;
+        severity?: string;
+        usedBytes?: number;
+        maxBytes?: number;
+        usageRatio?: number;
+    }>;
+    recommendations?: Array<{
+        key?: string;
+        action?: string;
+        message?: string;
+    }>;
     recentRetentionEvents?: Array<{
         id?: string;
         status?: string;
@@ -113,22 +141,69 @@ type RunLedgerPayload = {
     }>;
 };
 
+type DoctorPayload = {
+    summary?: {
+        status?: string;
+        counts?: Record<string, number>;
+    };
+    checks?: Array<{
+        id?: string;
+        status?: string;
+        title?: string;
+        summary?: string;
+    }>;
+    repairPlan?: {
+        actions?: Array<{
+            id?: string;
+            title?: string;
+            description?: string;
+            requiresConfirmation?: boolean;
+        }>;
+    };
+};
+
+type ConfigMigrationPlan = {
+    status?: string;
+    reason?: string;
+    changes?: Array<{ path?: string; before?: unknown; after?: unknown }>;
+};
+
 function formatBytes(value?: number) {
     const bytes = Number(value || 0);
     if (bytes <= 0) return "0 MB";
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function bytesToMb(value?: number) {
+    return Math.round(Number(value || 0) / 1024 / 1024);
+}
+
+function mbToBytes(value: string) {
+    const mb = Number(value || 0);
+    if (!Number.isFinite(mb) || mb <= 0) return 0;
+    return Math.round(mb * 1024 * 1024);
+}
+
 function StorageRetentionPanel() {
     const [stats, setStats] = useState<StorageRetentionPayload | null>(null);
     const [lastResult, setLastResult] = useState<Record<string, any> | null>(null);
+    const [budgetDraft, setBudgetDraft] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(false);
     const load = async () => {
         setLoading(true);
         try {
             const response = await fetch("/api/storage-retention/stats", { cache: "no-store" });
             const payload = await response.json().catch(() => null);
-            if (response.ok) setStats(payload);
+            if (response.ok) {
+                setStats(payload);
+                const budgets = payload?.config?.budgets || payload?.budgetComponents || {};
+                const nextDraft: Record<string, string> = {};
+                for (const [key, value] of Object.entries(budgets)) {
+                    const maxBytes = Number((value as any)?.maxBytes || 0);
+                    if (maxBytes > 0) nextDraft[key] = String(bytesToMb(maxBytes));
+                }
+                setBudgetDraft(nextDraft);
+            }
         }
         finally {
             setLoading(false);
@@ -150,10 +225,35 @@ function StorageRetentionPanel() {
             setLoading(false);
         }
     };
+    const saveBudgets = async () => {
+        if (!stats?.config) return;
+        if (!window.confirm("确认保存新的空间治理预算？保存后会立即影响后续 dry-run 与日志滚动判断。")) return;
+        setLoading(true);
+        try {
+            const budgets: Record<string, any> = { ...(stats.config.budgets || {}) };
+            for (const [key, value] of Object.entries(budgetDraft)) {
+                budgets[key] = {
+                    ...(budgets[key] || {}),
+                    maxBytes: mbToBytes(value),
+                };
+            }
+            const response = await fetch("/api/storage-retention/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ...(stats.config || {}), budgets }),
+            });
+            const payload = await response.json().catch(() => null);
+            setLastResult(payload);
+            await load();
+        } finally {
+            setLoading(false);
+        }
+    };
     useEffect(() => {
         void load();
     }, []);
     const components = stats?.components || {};
+    const budgetComponents = stats?.budgetComponents || {};
     const actionCount = Array.isArray(lastResult?.actions) ? lastResult.actions.length : 0;
     return (
         <div className="space-y-4">
@@ -161,7 +261,7 @@ function StorageRetentionPanel() {
                 <div>
                     <div className="text-sm font-semibold text-slate-900">Storage Retention</div>
                     <div className="text-xs leading-5 text-slate-500">
-                        200MB hard cap for observability logs, snapshots, checkpoints and runtime log files. User-visible messages and artifacts are protected.
+                        日志采用 200MB 硬滚动；Raw evidence / Artifacts / Screenshots / Vector DB 使用可调预算，向量库默认只告警不自动删除。
                     </div>
                 </div>
                 <div className="flex gap-2">
@@ -171,6 +271,7 @@ function StorageRetentionPanel() {
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => void run("dry-run")} disabled={loading}>Dry run</Button>
                     <Button size="sm" onClick={() => void run("prune")} disabled={loading}>Prune</Button>
+                    <Button variant="outline" size="sm" onClick={() => void saveBudgets()} disabled={loading}>保存预算</Button>
                 </div>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
@@ -191,6 +292,46 @@ function StorageRetentionPanel() {
                     <div className="font-semibold text-slate-900">{lastResult?.status || stats?.recentRetentionEvents?.[0]?.status || "none"}</div>
                 </div>
             </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Budgets</div>
+                <div className="grid gap-3 md:grid-cols-2">
+                    {Object.entries(budgetComponents).map(([key, value]) => {
+                        const used = Number(value.usedBytes || 0);
+                        const max = Number(value.maxBytes || 0);
+                        const ratio = max > 0 ? used / max : 0;
+                        return (
+                            <div key={key} className="rounded-xl border border-slate-200 p-3 text-xs">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <div className="font-semibold text-slate-900">{value.label || key}</div>
+                                        <div className="text-slate-500">
+                                            used {formatBytes(used)} · {value.mode || "warn_only"}{value.retentionDays ? ` · ${value.retentionDays}d` : ""}
+                                        </div>
+                                    </div>
+                                    <div className={ratio >= 1 ? "text-amber-700" : "text-slate-500"}>{Math.round(ratio * 100)}%</div>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
+                                    <Input
+                                        className="h-8"
+                                        type="number"
+                                        min={1}
+                                        value={budgetDraft[key] || ""}
+                                        onChange={(event) => setBudgetDraft((current) => ({ ...current, [key]: event.target.value }))}
+                                    />
+                                    <span className="shrink-0 text-slate-500">MB</span>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+            {Array.isArray(stats?.recommendations) && stats.recommendations.length ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                    {stats.recommendations.map((item) => (
+                        <div key={`${item.key}-${item.action}`}>{item.message}</div>
+                    ))}
+                </div>
+            ) : null}
             <div className="grid gap-2 md:grid-cols-2">
                 {Object.entries(components).map(([key, value]) => (
                     <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2 text-xs">
@@ -204,6 +345,145 @@ function StorageRetentionPanel() {
                     Result: {lastResult.status || "unknown"} · actions {actionCount} · before {formatBytes(lastResult.beforeBytes)} · after {formatBytes(lastResult.afterBytes)}
                 </div>
             ) : null}
+        </div>
+    );
+}
+
+function SystemDoctorPanel() {
+    const [payload, setPayload] = useState<DoctorPayload | null>(null);
+    const [loading, setLoading] = useState(false);
+    const load = async () => {
+        setLoading(true);
+        try {
+            const response = await fetch("/api/system/doctor", { cache: "no-store" });
+            const data = await response.json().catch(() => null);
+            if (response.ok) setPayload(data);
+        } finally {
+            setLoading(false);
+        }
+    };
+    useEffect(() => {
+        void load();
+    }, []);
+    const checks = payload?.checks || [];
+    const actions = payload?.repairPlan?.actions || [];
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <div className="text-sm font-semibold text-slate-900">System Doctor</div>
+                    <div className="text-xs leading-5 text-slate-500">端口、依赖、数据库、模型、runtime、MCP/Skills 与空间压力的本地体检。Repair 默认只生成计划。</div>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+                    {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                    Refresh
+                </Button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <div className="text-xs text-slate-500">Status</div>
+                    <div className={payload?.summary?.status === "ok" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>{payload?.summary?.status || "unknown"}</div>
+                </div>
+                {["ok", "warning", "error"].map((key) => (
+                    <div key={key} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                        <div className="text-xs text-slate-500">{key}</div>
+                        <div className="font-semibold text-slate-900">{payload?.summary?.counts?.[key] ?? 0}</div>
+                    </div>
+                ))}
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+                {checks.slice(0, 12).map((check) => (
+                    <div key={check.id} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+                        <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold text-slate-900">{check.title || check.id}</span>
+                            <span className={check.status === "ok" ? "text-emerald-700" : check.status === "error" ? "text-red-700" : "text-amber-700"}>{check.status || "info"}</span>
+                        </div>
+                        <div className="text-slate-500">{check.summary}</div>
+                    </div>
+                ))}
+            </div>
+            {actions.length ? (
+                <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
+                    <div className="mb-2 font-semibold text-slate-900">Repair plan</div>
+                    {actions.map((action) => (
+                        <div key={action.id} className="mb-2">
+                            <span className="font-medium text-slate-900">{action.title}</span>
+                            <span className="text-slate-500"> · {action.requiresConfirmation ? "需要确认" : "仅诊断"}</span>
+                            <div>{action.description}</div>
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function ConfigMigrationPanel() {
+    const [plan, setPlan] = useState<ConfigMigrationPlan | null>(null);
+    const [ledger, setLedger] = useState<{ migrations?: Array<Record<string, any>> } | null>(null);
+    const [loading, setLoading] = useState(false);
+    const load = async () => {
+        setLoading(true);
+        try {
+            const [planResponse, ledgerResponse] = await Promise.all([
+                fetch("/api/config/migrations/plan?target=storage_retention_balanced", { cache: "no-store" }),
+                fetch("/api/config/migrations", { cache: "no-store" }),
+            ]);
+            if (planResponse.ok) setPlan(await planResponse.json().catch(() => null));
+            if (ledgerResponse.ok) setLedger(await ledgerResponse.json().catch(() => null));
+        } finally {
+            setLoading(false);
+        }
+    };
+    const apply = async () => {
+        if (!window.confirm("确认应用 storageRetention 均衡预算迁移？执行前会备份 config.json，可从 ledger 回滚。")) return;
+        setLoading(true);
+        try {
+            await fetch("/api/config/migrations/apply", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ target: "storage_retention_balanced", reason: "admin_apply_storage_budget_defaults" }),
+            });
+            await load();
+        } finally {
+            setLoading(false);
+        }
+    };
+    useEffect(() => {
+        void load();
+    }, []);
+    const changes = plan?.changes || [];
+    const migrations = ledger?.migrations || [];
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <div className="text-sm font-semibold text-slate-900">Config Migration</div>
+                    <div className="text-xs leading-5 text-slate-500">展示 config.json 会改什么、为什么、备份在哪里，以及是否可回滚。</div>
+                </div>
+                <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>刷新</Button>
+                    <Button size="sm" onClick={() => void apply()} disabled={loading || plan?.status !== "ready"}>应用迁移</Button>
+                </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+                <div className="font-semibold text-slate-900">storage_retention_balanced · {plan?.status || "unknown"}</div>
+                <div className="text-slate-500">{plan?.reason}</div>
+                <div className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-50 p-2 font-mono text-[11px] text-slate-600">
+                    {changes.length ? changes.slice(0, 40).map((item) => (
+                        <div key={item.path}>{item.path}: {JSON.stringify(item.before)} → {JSON.stringify(item.after)}</div>
+                    )) : "no changes"}
+                </div>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+                {migrations.slice(0, 6).map((item) => (
+                    <div key={String(item.id)} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+                        <div className="font-semibold text-slate-900">{String(item.id)}</div>
+                        <div className="text-slate-500">{String(item.status)} · {String(item.createdAt || "")}</div>
+                        <div className="break-all text-slate-500">{String(item.backupPath || "")}</div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
@@ -875,6 +1155,12 @@ export default function OperationsCenterPage() {
                 </TabsContent>
 
                 <TabsContent value="advanced">
+                    <AdvancedSection title="System Doctor" defaultOpen>
+                        <SystemDoctorPanel />
+                    </AdvancedSection>
+                    <AdvancedSection title="Config Migration" defaultOpen={false}>
+                        <ConfigMigrationPanel />
+                    </AdvancedSection>
                     <AdvancedSection title="Storage Retention" defaultOpen={false}>
                         <StorageRetentionPanel />
                     </AdvancedSection>

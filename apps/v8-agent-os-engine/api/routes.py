@@ -25,6 +25,7 @@ from runtimes.memory.prompts import (
 
 from . import chat_realtime_routes as chat_realtime_routes_module
 from . import command_preset_routes as command_preset_routes_module
+from . import config_migration_routes as config_migration_routes_module
 from . import config_registry_routes as config_registry_routes_module
 from . import creative_media_routes as creative_media_routes_module
 from . import engineering_routes as engineering_routes_module
@@ -34,6 +35,7 @@ from . import platform_routes as platform_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import session_workflow_routes as session_workflow_routes_module
 from . import storage_retention_routes as storage_retention_routes_module
+from . import system_doctor_routes as system_doctor_routes_module
 router = APIRouter()
 _STARTUP_PROFILE = resolve_startup_profile()
 
@@ -119,6 +121,7 @@ def _service_states(profile: str = _STARTUP_PROFILE) -> dict[str, dict[str, obje
 
 router.include_router(chat_realtime_routes_module.router)
 router.include_router(command_preset_routes_module.router)
+router.include_router(config_migration_routes_module.router)
 router.include_router(config_registry_routes_module.router)
 router.include_router(creative_media_routes_module.router)
 router.include_router(engineering_routes_module.router)
@@ -128,6 +131,7 @@ router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(platform_routes_module.router)
 router.include_router(storage_retention_routes_module.router)
+router.include_router(system_doctor_routes_module.router)
 
 if service_enabled("extensions", profile=_STARTUP_PROFILE):
     _include_optional_router("extensions_routes")

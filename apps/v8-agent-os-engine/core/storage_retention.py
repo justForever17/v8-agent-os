@@ -16,12 +16,14 @@ from core.v8_agent_os_paths import (
     RUNTIME_DATA_HOME,
     STATE_DB_PATH,
     V8_AGENT_OS_HOME,
+    WORKSPACE_HOME,
 )
 
 
 ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 LOG_FILE_SUFFIXES = {".log", ".jsonl", ".html", ".txt"}
+IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 STATE_LOG_TABLES = (
     "model_invocation_logs",
     "provider_health_logs",
@@ -53,6 +55,22 @@ def _file_size(path: Path) -> int:
 
 def _sqlite_family_size(path: Path) -> int:
     return sum(_file_size(candidate) for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")))
+
+
+def _directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return _file_size(path)
+    total = 0
+    try:
+        iterator = path.rglob("*")
+        for item in iterator:
+            if item.is_file():
+                total += _file_size(item)
+    except OSError:
+        return total
+    return total
 
 
 @contextmanager
@@ -106,6 +124,83 @@ class StorageRetentionService:
     def _log_files_size(self) -> int:
         return sum(_file_size(item) for item in self._log_files())
 
+    def _artifact_file_bytes(self) -> int:
+        paths: set[Path] = set()
+        if STATE_DB_PATH.exists():
+            try:
+                with _connect(STATE_DB_PATH) as conn:
+                    if self._table_exists(conn, "runtime_artifacts"):
+                        for row in conn.execute("SELECT source_path, workspace_path FROM runtime_artifacts").fetchall():
+                            for key in ("source_path", "workspace_path"):
+                                raw_path = str(row[key] or "").strip()
+                                if not raw_path:
+                                    continue
+                                path = Path(raw_path).expanduser()
+                                if path.exists() and path.is_file():
+                                    paths.add(path.resolve())
+            except Exception:
+                pass
+        artifact_roots = [
+            WORKSPACE_HOME / ".v8-agent-os" / "artifacts",
+            RUNTIME_DATA_HOME / "artifacts",
+            V8_AGENT_OS_HOME / "artifacts",
+        ]
+        total = sum(_file_size(path) for path in paths)
+        total += sum(_directory_size(root) for root in artifact_roots if root.exists())
+        return total
+
+    def _screenshot_file_bytes(self) -> int:
+        roots = [
+            RUNTIME_DATA_HOME,
+            WORKSPACE_HOME / ".v8-agent-os" / "artifacts",
+            V8_AGENT_OS_HOME / "screenshots",
+        ]
+        total = 0
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                for item in root.rglob("*"):
+                    if not item.is_file():
+                        continue
+                    normalized = str(item).lower()
+                    if item.suffix.lower() in IMAGE_FILE_SUFFIXES and (
+                        "screenshot" in normalized or "screen" in normalized or "capture" in normalized
+                    ):
+                        total += _file_size(item)
+            except OSError:
+                continue
+        return total
+
+    def _raw_evidence_bytes(self) -> int:
+        if not OBSERVABILITY_DB_PATH.exists():
+            return 0
+        with _connect(OBSERVABILITY_DB_PATH) as conn:
+            if not self._table_exists(conn, "tool_observation_records"):
+                return 0
+            try:
+                row = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(raw_chars, 0)
+                        + COALESCE(length(CAST(raw_body_text AS BLOB)), 0)
+                        + COALESCE(length(CAST(metadata_json AS BLOB)), 0)
+                    ), 0) AS bytes
+                    FROM tool_observation_records
+                    """
+                ).fetchone()
+                return int(row["bytes"] or 0) if row else 0
+            except Exception:
+                return 0
+
+    def _vector_db_bytes(self) -> int:
+        candidates = [
+            V8_AGENT_OS_HOME / "memory" / ".index",
+            V8_AGENT_OS_HOME / "vector",
+            V8_AGENT_OS_HOME / "vectors",
+        ]
+        return sum(_directory_size(path) for path in candidates if path.exists())
+
     def _governed_total_bytes(self) -> int:
         return (
             _sqlite_family_size(OBSERVABILITY_DB_PATH)
@@ -116,6 +211,11 @@ class StorageRetentionService:
 
     def build_stats(self) -> Dict[str, Any]:
         config = self.get_config()
+        budgets = dict(config.get("budgets") or {})
+        raw_evidence_bytes = self._raw_evidence_bytes()
+        artifact_bytes = self._artifact_file_bytes()
+        screenshot_bytes = self._screenshot_file_bytes()
+        vector_db_bytes = self._vector_db_bytes()
         components = {
             "observabilityDbBytes": _sqlite_family_size(OBSERVABILITY_DB_PATH),
             "checkpointDbBytes": _sqlite_family_size(CHECKPOINT_DB_PATH),
@@ -123,16 +223,119 @@ class StorageRetentionService:
             "pluginRuntimeLogBytes": self._log_files_size(),
             "stateDbBytes": _sqlite_family_size(STATE_DB_PATH),
             "protectedUserTranscriptBytes": self._protected_payload_bytes(),
+            "rawEvidenceBytes": raw_evidence_bytes,
+            "artifactFileBytes": artifact_bytes,
+            "screenshotFileBytes": screenshot_bytes,
+            "vectorDbBytes": vector_db_bytes,
         }
         total = self._governed_total_bytes()
+        budget_components = {
+            "logs": {
+                "label": "Logs",
+                "usedBytes": total,
+                "maxBytes": int((budgets.get("logs") or {}).get("maxBytes") or config.get("maxBytes") or 209715200),
+                "mode": str((budgets.get("logs") or {}).get("mode") or config.get("mode") or "hard_rolling"),
+                "autoPrune": True,
+            },
+            "rawEvidence": {
+                "label": "Raw evidence",
+                "usedBytes": raw_evidence_bytes,
+                "maxBytes": int((budgets.get("rawEvidence") or {}).get("maxBytes") or 2 * 1024 * 1024 * 1024),
+                "retentionDays": int((budgets.get("rawEvidence") or {}).get("retentionDays") or 30),
+                "mode": str((budgets.get("rawEvidence") or {}).get("mode") or "rolling"),
+                "autoPrune": False,
+            },
+            "artifacts": {
+                "label": "Artifacts",
+                "usedBytes": artifact_bytes,
+                "maxBytes": int((budgets.get("artifacts") or {}).get("maxBytes") or 8 * 1024 * 1024 * 1024),
+                "retentionDays": int((budgets.get("artifacts") or {}).get("retentionDays") or 60),
+                "mode": str((budgets.get("artifacts") or {}).get("mode") or "manual_prune"),
+                "autoPrune": False,
+            },
+            "screenshots": {
+                "label": "Screenshots",
+                "usedBytes": screenshot_bytes,
+                "maxBytes": int((budgets.get("screenshots") or {}).get("maxBytes") or 2 * 1024 * 1024 * 1024),
+                "retentionDays": int((budgets.get("screenshots") or {}).get("retentionDays") or 14),
+                "mode": str((budgets.get("screenshots") or {}).get("mode") or "rolling"),
+                "autoPrune": False,
+            },
+            "vectorDb": {
+                "label": "Vector DB",
+                "usedBytes": vector_db_bytes,
+                "maxBytes": int((budgets.get("vectorDb") or {}).get("maxBytes") or 4 * 1024 * 1024 * 1024),
+                "mode": str((budgets.get("vectorDb") or {}).get("mode") or "warn_only"),
+                "autoPrune": False,
+            },
+        }
+        budget_findings = self._budget_findings(budget_components)
         return {
             "config": config,
             "maxBytes": int(config.get("maxBytes") or 209715200),
             "totalGovernedBytes": total,
             "overCapBytes": max(0, total - int(config.get("maxBytes") or 209715200)),
             "components": components,
+            "budgets": budgets,
+            "budgetComponents": budget_components,
+            "budgetFindings": budget_findings,
+            "recommendations": self._budget_recommendations(budget_findings),
             "recentRetentionEvents": observability_db.recent_retention_events(limit=10),
         }
+
+    @staticmethod
+    def _budget_findings(budget_components: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        for key, item in budget_components.items():
+            used = int(item.get("usedBytes") or 0)
+            cap = int(item.get("maxBytes") or 0)
+            if cap <= 0:
+                continue
+            ratio = used / cap
+            if ratio >= 1:
+                severity = "error" if item.get("autoPrune") else "warning"
+            elif ratio >= 0.8:
+                severity = "warning"
+            else:
+                severity = "ok"
+            findings.append(
+                {
+                    "key": key,
+                    "label": item.get("label") or key,
+                    "severity": severity,
+                    "usedBytes": used,
+                    "maxBytes": cap,
+                    "usageRatio": ratio,
+                    "mode": item.get("mode"),
+                    "autoPrune": bool(item.get("autoPrune")),
+                }
+            )
+        return findings
+
+    @staticmethod
+    def _budget_recommendations(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        recommendations: list[dict[str, Any]] = []
+        for item in findings:
+            if item.get("severity") == "ok":
+                continue
+            key = str(item.get("key") or "")
+            if key == "vectorDb":
+                action = "manual_vector_cleanup"
+                message = "Vector DB is over budget; recommend manual knowledge cleanup or re-index compaction."
+            elif key == "artifacts":
+                action = "review_old_artifacts"
+                message = "Artifacts are over budget; review old generated files before deleting."
+            elif key == "rawEvidence":
+                action = "dry_run_raw_evidence_prune"
+                message = "Raw evidence is near or over budget; run a dry-run before pruning observation details."
+            elif key == "screenshots":
+                action = "dry_run_screenshot_prune"
+                message = "Screenshots are near or over budget; old screenshots can usually be pruned after artifact handoff."
+            else:
+                action = "run_storage_retention"
+                message = "Logs are near or over budget; hard rolling retention can prune low-risk observability logs."
+            recommendations.append({"key": key, "action": action, "message": message})
+        return recommendations
 
     def _protected_payload_bytes(self) -> int:
         if not STATE_DB_PATH.exists():

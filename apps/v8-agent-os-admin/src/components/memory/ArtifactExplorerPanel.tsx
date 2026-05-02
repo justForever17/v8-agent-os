@@ -49,6 +49,16 @@ interface ArtifactRecord {
 
 const ARTIFACT_KINDS: ArtifactKind[] = ["image", "video", "audio", "document", "file"];
 
+function bytesToMb(value?: number) {
+    return Math.round(Number(value || 0) / 1024 / 1024);
+}
+
+function mbToBytes(value: string) {
+    const mb = Number(value || 0);
+    if (!Number.isFinite(mb) || mb <= 0) return 0;
+    return Math.round(mb * 1024 * 1024);
+}
+
 function getArtifactKind(artifact: ArtifactRecord): ArtifactKind {
     return ((artifact.kind || artifact.artifact_kind || "file") as ArtifactKind) || "file";
 }
@@ -103,6 +113,8 @@ export function ArtifactExplorerPanel() {
     const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
     const [query, setQuery] = useState("");
     const [kindFilter, setKindFilter] = useState<ArtifactKind>("all");
+    const [artifactBudgetMb, setArtifactBudgetMb] = useState("");
+    const [artifactBudgetUsedMb, setArtifactBudgetUsedMb] = useState<number | null>(null);
 
     const artifactLabel = useCallback(
         (artifact: ArtifactRecord) => artifact.displayLabel || artifact.title || getArtifactId(artifact) || t("components.memory.ArtifactExplorerPanel.kd43de6cf"),
@@ -169,6 +181,42 @@ export function ArtifactExplorerPanel() {
         }
     }, [selectedId, t, toast]);
 
+    const loadArtifactBudget = useCallback(async () => {
+        const response = await fetch("/api/storage-retention/stats", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null);
+        const budget = payload?.budgetComponents?.artifacts || payload?.config?.budgets?.artifacts;
+        if (budget?.maxBytes) setArtifactBudgetMb(String(bytesToMb(Number(budget.maxBytes))));
+        if (budget?.usedBytes != null) setArtifactBudgetUsedMb(bytesToMb(Number(budget.usedBytes)));
+    }, []);
+
+    const saveArtifactBudget = useCallback(async () => {
+        if (!window.confirm("确认保存 artifact 空间预算？保存后会影响 Operations 的 dry-run 和容量告警。")) return;
+        const statsResponse = await fetch("/api/storage-retention/stats", { cache: "no-store" });
+        const stats = await statsResponse.json().catch(() => null);
+        const config = stats?.config || {};
+        const budgets = { ...(config.budgets || {}) };
+        budgets.artifacts = { ...(budgets.artifacts || {}), maxBytes: mbToBytes(artifactBudgetMb) };
+        const response = await fetch("/api/storage-retention/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...config, budgets }),
+        });
+        if (!response.ok) {
+            toast({
+                title: t("components.memory.ArtifactExplorerPanel.k81ef3416"),
+                description: `Storage config failed: ${response.status}`,
+                variant: "destructive",
+            });
+            return;
+        }
+        toast({
+            title: t("components.memory.ArtifactExplorerPanel.k876e8c06"),
+            description: "Artifact budget saved.",
+        });
+        await loadArtifactBudget();
+    }, [artifactBudgetMb, loadArtifactBudget, t, toast]);
+
     const loadArtifactDetail = useCallback(async (artifactId: string, fallback?: ArtifactRecord) => {
         setDetailLoading(true);
         try {
@@ -195,7 +243,8 @@ export function ArtifactExplorerPanel() {
 
     useEffect(() => {
         void loadArtifacts();
-    }, [loadArtifacts]);
+        void loadArtifactBudget();
+    }, [loadArtifacts, loadArtifactBudget]);
 
     const filteredArtifacts = useMemo(() => {
         const normalized = query.trim().toLowerCase();
@@ -287,6 +336,24 @@ export function ArtifactExplorerPanel() {
                                 </Card>
                             );
                         })}
+                    </div>
+
+                    <div className="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/10 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <div className="font-medium text-foreground">Artifact space budget</div>
+                            <div>当前使用 {artifactBudgetUsedMb ?? "-"} MB。预算用于 Operations dry-run 和容量告警，不会自动删除产物。</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Input
+                                className="h-8 w-32"
+                                type="number"
+                                min={1}
+                                value={artifactBudgetMb}
+                                onChange={(event) => setArtifactBudgetMb(event.target.value)}
+                            />
+                            <span>MB</span>
+                            <Button variant="outline" size="sm" onClick={() => void saveArtifactBudget()}>保存</Button>
+                        </div>
                     </div>
 
                     <div className="flex flex-col gap-3 lg:flex-row">

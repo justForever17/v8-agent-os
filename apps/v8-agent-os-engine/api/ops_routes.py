@@ -26,6 +26,11 @@ class TerminalInputRequest(BaseModel):
     input_text: str
 
 
+class SensitiveTerminalInputRequest(BaseModel):
+    input_text: str
+    secret_type: str | None = None
+
+
 class SafetyDryRunRequest(BaseModel):
     command: str
     runtime_context: dict | None = None
@@ -454,6 +459,27 @@ async def send_bg_process_input(cmd_id: str, request: TerminalInputRequest):
 
         result = send_background_input.invoke({"command_id": cmd_id, "input_text": request.input_text})
         return {"status": "success", "message": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bg_processes/{cmd_id}/sensitive-input")
+async def send_bg_process_sensitive_input(cmd_id: str, request: SensitiveTerminalInputRequest):
+    try:
+        from core.native_tools import _bg_processes
+
+        process = _bg_processes.get(cmd_id)
+        if process is None:
+            raise HTTPException(status_code=404, detail=f"No active background command with ID: {cmd_id}")
+        process.write_input(request.input_text)
+        return {
+            "status": "success",
+            "secretInputSeen": True,
+            "secretType": request.secret_type or "terminal_secret",
+            "target": "background_process_stdin",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

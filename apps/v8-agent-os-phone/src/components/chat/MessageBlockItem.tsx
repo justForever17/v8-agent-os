@@ -66,6 +66,24 @@ function isNoticeableContextGovernance(requestInfo: unknown) {
     return Boolean(record.noticeable_latency);
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function extractSafetyEventSummary(requestInfo: unknown): Record<string, unknown> | undefined {
+    const request = asRecord(requestInfo);
+    const direct = asRecord(request.eventSummary);
+    if (Object.keys(direct).length) return direct;
+    const safety = asRecord(request.safety);
+    const safetySummary = asRecord(safety.eventSummary);
+    if (Object.keys(safetySummary).length) return safetySummary;
+    const details = asRecord(safety.details);
+    const nested = asRecord(details.eventSummary);
+    return Object.keys(nested).length ? nested : undefined;
+}
+
 function ContextGovernanceDivider({
     label,
     detail,
@@ -384,7 +402,9 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             : node.governanceType === "lane_updated"
                     ? t("src.components.chat.messageblockitem.run_scheduling")
                     : node.governanceType === "approval_request"
-                        ? t("src.components.chat.messageblockitem.approval")
+                        ? approvalKind === "safety_review"
+                            ? t("src.components.chat.messageblockitem.safety_review")
+                            : t("src.components.chat.messageblockitem.approval")
                         : approvalKind === "safety_blocked"
                         ? t("src.components.chat.messageblockitem.safety_blocked")
                         : t("src.components.chat.messageblockitem.runtime_control");
@@ -392,6 +412,8 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             ? "safety"
             : node.governanceType === "run_controlled" || node.governanceType === "lane_updated"
                 ? "control"
+            : approvalKind === "safety_review"
+                ? "safety"
             : "approval";
         return (
             <ApprovalCard
@@ -399,6 +421,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                 body={node.question || node.reason || node.topic || node.status || ""}
                 status={node.status}
                 tone={tone}
+                eventSummary={extractSafetyEventSummary(node.requestInfo)}
             />
         );
     }

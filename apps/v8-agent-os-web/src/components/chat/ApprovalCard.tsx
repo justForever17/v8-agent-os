@@ -13,6 +13,7 @@ type ApprovalCardProps = {
     body: string;
     status?: string;
     tone?: ApprovalTone;
+    eventSummary?: unknown;
 };
 
 const TONE_STYLES: Record<ApprovalTone, { wrapper: string; icon: string }> = {
@@ -30,13 +31,37 @@ const TONE_STYLES: Record<ApprovalTone, { wrapper: string; icon: string }> = {
     },
 };
 
-export function ApprovalCard({ title, body, status, tone = "approval" }: ApprovalCardProps) {
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function summaryRows(value: unknown) {
+    const summary = asRecord(value);
+    if (!summary) return [];
+    const keys = ["operation", "target", "host", "providerId", "credentialClass", "riskCode", "matchedRule", "nextAction"];
+    return keys
+        .map((key) => {
+            const item = summary[key];
+            return typeof item === "string" && item.trim()
+                ? { key, value: item.trim() }
+                : null;
+        })
+        .filter((item): item is { key: string; value: string } => Boolean(item))
+        .slice(0, 6);
+}
+
+export function ApprovalCard({ title, body, status, tone = "approval", eventSummary }: ApprovalCardProps) {
     const t = useT();
     const styles = TONE_STYLES[tone];
     const Icon = tone === "control" ? AlertTriangle : ShieldAlert;
+    const rows = summaryRows(eventSummary);
     const hint =
         tone === "control"
             ? t(lt("这是运行时发出的控制状态，不属于普通工具输出。", "This is a runtime control state rather than a regular tool result."))
+            : tone === "safety"
+                ? t(lt("这是 Safety Guardian 的治理节点，区别于 ask_user 普通问答。", "This is a Safety Guardian governance node, separate from ask_user."))
             : t(lt("这是一个需要人工确认的运行节点。", "This is a run node waiting for human review."));
 
     return (
@@ -53,6 +78,16 @@ export function ApprovalCard({ title, body, status, tone = "approval" }: Approva
                     <div className="mt-2 whitespace-pre-wrap text-sm leading-6">
                         {body}
                     </div>
+                    {rows.length ? (
+                        <div className="mt-3 grid gap-1.5 rounded-xl border border-current/15 bg-background/35 p-2.5 text-xs">
+                            {rows.map((row) => (
+                                <div key={row.key} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+                                    <span className="font-semibold text-current/60">{row.key}</span>
+                                    <span className="break-words text-current/90">{row.value}</span>
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
                     <div className="mt-2 text-xs font-medium text-current/70">{hint}</div>
                 </div>
             </div>

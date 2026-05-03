@@ -38,6 +38,19 @@ function tryParseJsonRecord(value: unknown): Record<string, unknown> | null {
     }
 }
 
+function extractSafetyEventSummary(value: unknown): Record<string, unknown> | undefined {
+    const request = tryParseJsonRecord(value);
+    if (!request) return undefined;
+    const direct = tryParseJsonRecord(request.eventSummary);
+    if (direct) return direct;
+    const safety = tryParseJsonRecord(request.safety);
+    const safetySummary = tryParseJsonRecord(safety?.eventSummary);
+    if (safetySummary) return safetySummary;
+    const details = tryParseJsonRecord(safety?.details);
+    const nested = tryParseJsonRecord(details?.eventSummary);
+    return nested || undefined;
+}
+
 function compactToolResult(toolName: string, value: unknown) {
     if (toolName !== 'download_media_for_vision') {
         return value;
@@ -278,6 +291,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                             ? t(lt("运行调度", "Run scheduling"))
                             : t(lt("系统控制信号", "System control"));
             const question = node.question || node.reason || node.topic || node.status || "";
+            const eventSummary = extractSafetyEventSummary(node.requestInfo);
             if (node.governanceType === "ask_user") {
                 return null;
             }
@@ -313,12 +327,13 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     title={isApproval ? approvalLabel : controlLabel}
                     body={question}
                     status={node.status}
+                    eventSummary={eventSummary}
                     tone={
                         !isApproval
                             ? node.governanceType === "safety_blocked"
                                 ? "safety"
                                 : "control"
-                            : approvalKind === "safety_blocked"
+                            : approvalKind === "safety_blocked" || approvalKind === "safety_review"
                                 ? "safety"
                                 : "approval"
                     }

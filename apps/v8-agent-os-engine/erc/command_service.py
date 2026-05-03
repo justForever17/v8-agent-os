@@ -36,6 +36,19 @@ class CommandService:
             or ""
         ).strip()
 
+    def _sanitize_approval_response(self, response: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(response, dict):
+            return response
+        sanitized: Dict[str, Any] = {}
+        sensitive_keys = {"password", "passwd", "secret", "token", "api_key", "apikey", "credential", "sensitive_input", "sensitiveInput"}
+        for key, value in response.items():
+            normalized_key = str(key or "").replace("-", "_").lower()
+            if normalized_key in sensitive_keys or any(marker in normalized_key for marker in ("password", "secret", "token", "credential")):
+                sanitized[str(key)] = "[REDACTED]"
+            else:
+                sanitized[str(key)] = value
+        return sanitized
+
     def _find_existing_pending_approval(self, request: ApprovalRequest) -> Optional[Dict[str, Any]]:
         fingerprint = self._operation_fingerprint(request.request)
         target_fingerprint = self._operation_target_fingerprint(request.request)
@@ -157,6 +170,7 @@ class CommandService:
     def approve(self, approval_id: str, response: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         from core.database import db
 
+        response = self._sanitize_approval_response(response)
         db.update_pending_approval(approval_id, status="approved", response=response)
         approval = db.get_pending_approval(approval_id)
         if approval:
@@ -169,6 +183,7 @@ class CommandService:
     def reject(self, approval_id: str, response: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         from core.database import db
 
+        response = self._sanitize_approval_response(response)
         db.update_pending_approval(approval_id, status="rejected", response=response)
         approval = db.get_pending_approval(approval_id)
         if approval and approval.get("run_id"):

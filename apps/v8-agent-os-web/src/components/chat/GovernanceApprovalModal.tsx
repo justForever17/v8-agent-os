@@ -35,6 +35,33 @@ function stringifyCommand(value: unknown) {
     return "";
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function extractEventSummary(request: Record<string, unknown>, safety: Record<string, unknown>) {
+    const direct = asRecord(request.eventSummary);
+    if (Object.keys(direct).length) return direct;
+    const safetySummary = asRecord(safety.eventSummary);
+    if (Object.keys(safetySummary).length) return safetySummary;
+    const details = asRecord(safety.details);
+    const nested = asRecord(details.eventSummary);
+    return Object.keys(nested).length ? nested : {};
+}
+
+function eventSummaryRows(summary: Record<string, unknown>) {
+    const keys = ["operation", "target", "host", "providerId", "credentialClass", "riskCode", "matchedRule", "nextAction"];
+    return keys
+        .map((key) => {
+            const value = summary[key];
+            return typeof value === "string" && value.trim() ? { key, value: value.trim() } : null;
+        })
+        .filter((item): item is { key: string; value: string } => Boolean(item))
+        .slice(0, 8);
+}
+
 function extractApprovalDetails(approval: SessionApprovalView) {
     const request = approval.request && typeof approval.request === "object"
         ? approval.request as Record<string, unknown>
@@ -61,6 +88,7 @@ function extractApprovalDetails(approval: SessionApprovalView) {
         prompt,
         riskSummary,
         command,
+        eventSummary: extractEventSummary(request, safety),
     };
 }
 
@@ -84,6 +112,7 @@ export function GovernanceApprovalModal({
     const t = useT();
     const [answer, setAnswer] = useState("");
     const details = useMemo(() => approval ? extractApprovalDetails(approval) : null, [approval]);
+    const summaryRows = useMemo(() => details ? eventSummaryRows(details.eventSummary) : [], [details]);
 
     if (!approval || !details) {
         return null;
@@ -130,6 +159,22 @@ export function GovernanceApprovalModal({
                                 {t(lt("风险摘要", "Risk summary"))}
                             </div>
                             <div className="text-sm leading-6 text-foreground">{details.riskSummary}</div>
+                        </div>
+                    ) : null}
+
+                    {summaryRows.length ? (
+                        <div className="rounded-2xl border border-amber-500/25 bg-amber-50/80 p-3.5 dark:bg-amber-500/10 sm:p-4">
+                            <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
+                                {t(lt("事件摘要", "Event summary"))}
+                            </div>
+                            <div className="grid gap-2 text-xs">
+                                {summaryRows.map((row) => (
+                                    <div key={row.key} className="grid grid-cols-[116px_minmax(0,1fr)] gap-2">
+                                        <span className="font-semibold text-muted-foreground">{row.key}</span>
+                                        <span className="break-words text-foreground">{row.value}</span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     ) : null}
 

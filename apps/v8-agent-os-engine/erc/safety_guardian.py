@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 from uuid import uuid4
 
 import psutil
@@ -28,6 +28,10 @@ from erc.models import RuntimeSource
 MACHINE_POSTURE_DEDICATED = "dedicated_runtime_host"
 MACHINE_POSTURE_DEVELOPER = "developer_mixed_host"
 VALID_MACHINE_POSTURES = {MACHINE_POSTURE_DEDICATED, MACHINE_POSTURE_DEVELOPER}
+_ENGINE_ROOT = Path(__file__).resolve().parents[1]
+_TRUSTED_NETWORK_CATALOG_PATH = Path(__file__).resolve().parent / "assets" / "trusted_network_catalog.json"
+_MODEL_PROVIDER_CATALOG_PATH = _ENGINE_ROOT / "core" / "model_catalog" / "provider_catalog.json"
+_MEDIA_PROVIDER_MATRIX_PATH = _ENGINE_ROOT / "runtimes" / "creative_media" / "assets" / "media_provider_format_matrix.json"
 
 DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
     "enabled": True,
@@ -91,7 +95,9 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
         "localHosts": ["127.0.0.1", "localhost", "::1"],
         "blockedHosts": [],
         "reviewHosts": [],
+        "trustedHosts": [],
         "reviewMethods": ["POST", "PUT", "PATCH", "DELETE"],
+        "unknownCredentialHostVerdict": "review",
     },
     "automationRules": {
         "blockedActionTypes": [],
@@ -214,6 +220,15 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
         "sensitiveReadVerdict": "review",
         "highRiskMutationVerdict": "block",
         "mediumRiskMutationVerdict": "review",
+    },
+    "crossPlatformSystemProtection": {
+        "enabled": True,
+        "sensitiveReadVerdict": "review",
+        "highRiskMutationVerdict": "block",
+        "mediumRiskMutationVerdict": "review",
+        "privilegeElevationVerdict": "review",
+        "persistenceVerdict": "review",
+        "firewallVerdict": "review",
     },
     "externalToolLocalSystemProtection": {
         "enabled": True,
@@ -563,13 +578,16 @@ class SafetyDecision:
         return self.verdict == "block"
 
     def to_payload(self) -> Dict[str, Any]:
+        event_summary = self.details.get("eventSummary") if isinstance(self.details, dict) else None
         return {
             "verdict": self.verdict,
             "reason": self.reason,
             "risk_code": self.risk_code,
+            "riskCode": self.risk_code,
             "allow_override": self.allow_override,
             "governanceTarget": self.governance_target,
             "posture": self.posture,
+            "eventSummary": event_summary if isinstance(event_summary, dict) else {},
             "details": self.details,
         }
 
@@ -586,6 +604,7 @@ class SafetyDecision:
             "runtimeKind": runtime_kind or "unknown",
             "targetSurface": "governance_hud",
             "safety": self.to_payload(),
+            "eventSummary": self.to_payload().get("eventSummary") or {},
         }
 
 
@@ -660,15 +679,88 @@ class SafetyGuardian:
         allow_override: bool | None = None,
     ) -> SafetyDecision:
         normalized_verdict = self._normalize_verdict(verdict, fallback="allow", allowed={"allow", "audit", "review", "block"})
+        next_details = dict(details or {})
+        next_details.setdefault(
+            "eventSummary",
+            self._build_event_summary(
+                verdict=normalized_verdict,
+                reason=reason,
+                risk_code=risk_code,
+                governance_target=governance_target,
+                details=next_details,
+            ),
+        )
         return SafetyDecision(
             verdict=normalized_verdict,  # type: ignore[arg-type]
             reason=reason,
             risk_code=risk_code,
-            details=dict(details or {}),
+            details=next_details,
             allow_override=(normalized_verdict != "block") if allow_override is None else allow_override,
             governance_target=governance_target,
             posture=posture,
         )
+
+    def _build_event_summary(
+        self,
+        *,
+        verdict: str,
+        reason: str,
+        risk_code: str,
+        governance_target: str,
+        details: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtime_context = details.get("runtime_context") if isinstance(details.get("runtime_context"), dict) else {}
+        trusted_network = details.get("trustedNetwork") if isinstance(details.get("trustedNetwork"), dict) else {}
+        provider_id = str(trusted_network.get("providerId") or trusted_network.get("id") or details.get("providerId") or "").strip()
+        target = (
+            details.get("url")
+            or details.get("path")
+            or details.get("command")
+            or details.get("target")
+            or details.get("tool_name")
+            or details.get("pid")
+            or ""
+        )
+        method = str(details.get("method") or "").upper()
+        host = ""
+        if details.get("url"):
+            host = (urlparse(str(details.get("url") or "")).hostname or "").lower()
+        os_surface = "windows" if str(risk_code).startswith("windows_") else (
+            "linux_macos" if str(risk_code).startswith(("linux_", "macos_", "cross_platform_", "privilege_", "firewall_")) else ""
+        )
+        operation = str(details.get("operation") or method or "").strip()
+        if not operation:
+            if details.get("command"):
+                operation = "command"
+            elif details.get("path"):
+                operation = "file_write"
+            elif details.get("url"):
+                operation = "http_request"
+            else:
+                operation = str(governance_target or "safety")
+        summary = {
+            "actionFamily": str(governance_target or "safety"),
+            "operation": operation,
+            "target": self._redact_sensitive_text(str(target or ""))[:500],
+            "method": method or None,
+            "host": host or None,
+            "providerId": provider_id or None,
+            "credentialClass": details.get("credentialClass") or details.get("credential_class") or None,
+            "osSurface": os_surface or None,
+            "riskCode": risk_code,
+            "verdict": verdict,
+            "matchedRule": details.get("matchedRule") or details.get("registrySignal") or details.get("pattern") or None,
+            "reason": self._redact_sensitive_text(str(reason or ""))[:500],
+            "nextAction": "block" if verdict == "block" else ("approval_required" if verdict == "review" else "continue"),
+            "redactedPreview": self._redact_sensitive_text(
+                str(details.get("body_preview") or details.get("matched_command") or details.get("command") or "")
+            )[:500],
+            "omittedFields": [],
+        }
+        if runtime_context:
+            summary["runtimeKind"] = runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or None
+            summary["runId"] = runtime_context.get("run_id") or runtime_context.get("runId") or None
+        return {key: value for key, value in summary.items() if value not in (None, "", [])}
 
     def log_decision_event(
         self,
@@ -1013,6 +1105,10 @@ class SafetyGuardian:
     def _project_safety_approval(self, approval: Dict[str, Any]) -> Dict[str, Any]:
         request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
         safety = request.get("safety") if isinstance(request.get("safety"), dict) else {}
+        event_summary = safety.get("eventSummary") if isinstance(safety.get("eventSummary"), dict) else {}
+        if not event_summary:
+            details = safety.get("details") if isinstance(safety.get("details"), dict) else {}
+            event_summary = details.get("eventSummary") if isinstance(details.get("eventSummary"), dict) else {}
         allowlist_candidate = request.get("allowlistCandidate") if isinstance(request.get("allowlistCandidate"), dict) else None
         return {
             "id": approval.get("id"),
@@ -1025,6 +1121,7 @@ class SafetyGuardian:
             "riskCode": safety.get("risk_code") or safety.get("riskCode") or request.get("riskCode"),
             "verdict": safety.get("verdict"),
             "reason": self._redact_sensitive_text(str(safety.get("reason") or "")),
+            "eventSummary": event_summary,
             "allowlistCandidate": allowlist_candidate,
         }
 
@@ -1039,6 +1136,9 @@ class SafetyGuardian:
         safety_details = details.get("details") if isinstance(details.get("details"), dict) else {}
         runtime_context = safety_details.get("runtime_context") if isinstance(safety_details.get("runtime_context"), dict) else {}
         analysis = safety_details.get("analysis") if isinstance(safety_details.get("analysis"), dict) else {}
+        event_summary = details.get("eventSummary") if isinstance(details.get("eventSummary"), dict) else {}
+        if not event_summary:
+            event_summary = safety_details.get("eventSummary") if isinstance(safety_details.get("eventSummary"), dict) else {}
         return {
             "id": row.get("id"),
             "timestamp": row.get("timestamp"),
@@ -1053,6 +1153,7 @@ class SafetyGuardian:
             "decodedPreview": self._redact_sensitive_payload(analysis.get("decodedCommands") if isinstance(analysis, dict) else []),
             "encodedIndicators": analysis.get("encodedIndicators") if isinstance(analysis, dict) else [],
             "downloadHosts": analysis.get("downloadHosts") if isinstance(analysis, dict) else [],
+            "eventSummary": event_summary,
         }
 
     def _redact_sensitive_payload(self, value: Any) -> Any:
@@ -1138,7 +1239,13 @@ class SafetyGuardian:
             "localHosts": legacy_local_hosts or [str(item).strip().lower() for item in network_rules.get("localHosts", []) if str(item).strip()] or merged["networkRules"]["localHosts"],
             "blockedHosts": [str(item).strip().lower() for item in network_rules.get("blockedHosts", []) if str(item).strip()],
             "reviewHosts": [str(item).strip().lower() for item in network_rules.get("reviewHosts", []) if str(item).strip()],
+            "trustedHosts": [str(item).strip().lower() for item in network_rules.get("trustedHosts", []) if str(item).strip()],
             "reviewMethods": [str(item).strip().upper() for item in network_rules.get("reviewMethods", []) if str(item).strip()] or merged["networkRules"]["reviewMethods"],
+            "unknownCredentialHostVerdict": self._normalize_verdict(
+                network_rules.get("unknownCredentialHostVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["networkRules"]["unknownCredentialHostVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
         }
 
         automation_rules = dict(raw.get("automationRules") or {})
@@ -1318,6 +1425,46 @@ class SafetyGuardian:
             "mediumRiskMutationVerdict": self._normalize_verdict(
                 windows_profile_protection.get("mediumRiskMutationVerdict"),
                 fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["windowsProfileProtection"]["mediumRiskMutationVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+        }
+
+        cross_platform_system_protection = dict(raw.get("crossPlatformSystemProtection") or {})
+        merged["crossPlatformSystemProtection"] = {
+            "enabled": bool(
+                cross_platform_system_protection.get(
+                    "enabled",
+                    DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["enabled"],
+                )
+            ),
+            "sensitiveReadVerdict": self._normalize_verdict(
+                cross_platform_system_protection.get("sensitiveReadVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["sensitiveReadVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "highRiskMutationVerdict": self._normalize_verdict(
+                cross_platform_system_protection.get("highRiskMutationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["highRiskMutationVerdict"],
+                allowed={"review", "block"},
+            ),
+            "mediumRiskMutationVerdict": self._normalize_verdict(
+                cross_platform_system_protection.get("mediumRiskMutationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["mediumRiskMutationVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "privilegeElevationVerdict": self._normalize_verdict(
+                cross_platform_system_protection.get("privilegeElevationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["privilegeElevationVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "persistenceVerdict": self._normalize_verdict(
+                cross_platform_system_protection.get("persistenceVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["persistenceVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "firewallVerdict": self._normalize_verdict(
+                cross_platform_system_protection.get("firewallVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["crossPlatformSystemProtection"]["firewallVerdict"],
                 allowed={"audit", "review", "block"},
             ),
         }
@@ -1559,6 +1706,20 @@ class SafetyGuardian:
         if windows_profile_decision is not None:
             return windows_profile_decision
 
+        cross_platform_decision = None
+        for candidate in policy_commands:
+            cross_platform_decision = self._assess_cross_platform_system_command(
+                candidate,
+                config=config,
+                posture=posture,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+            if cross_platform_decision is not None:
+                break
+        if cross_platform_decision is not None:
+            return cross_platform_decision
+
         sensitive_read_command = next(
             (
                 candidate
@@ -1765,6 +1926,17 @@ class SafetyGuardian:
         if windows_profile_file_decision is not None:
             return windows_profile_file_decision
 
+        cross_platform_file_decision = self._assess_cross_platform_file_write(
+            normalized,
+            append=append,
+            config=config,
+            posture=posture,
+            runtime_context=runtime_context or {},
+            content_preview=content_preview,
+        )
+        if cross_platform_file_decision is not None:
+            return cross_platform_file_decision
+
         if self._matches_path_patterns(normalized, config["fileRules"]["blockedPathPatterns"]):
             return self._decision(
                 verdict="block",
@@ -1922,6 +2094,21 @@ class SafetyGuardian:
                     posture=posture,
                     runtime_context=runtime_context,
                 )
+            command_decision = self._assess_cross_platform_system_command(
+                command_text,
+                config=config,
+                posture=posture,
+                runtime_context=runtime_context,
+                analysis_payload=None,
+            )
+            if command_decision is not None and not command_decision.is_allow():
+                return self._external_tool_local_system_decision(
+                    source_decision=command_decision,
+                    tool_name=name,
+                    params=params,
+                    posture=posture,
+                    runtime_context=runtime_context,
+                )
             if is_shell_tool and "__pregel_scratchpad" in command_text.lower():
                 return self._decision(
                     verdict="block",
@@ -1938,6 +2125,22 @@ class SafetyGuardian:
             if is_write_tool or normalized_side_effect in {"write", "mutation", "mutating", "delete", "move"}:
                 for path in normalized_paths:
                     file_decision = self._assess_windows_profile_file_write(
+                        path,
+                        append=False,
+                        config=config,
+                        posture=posture,
+                        runtime_context=runtime_context,
+                        content_preview=self._external_tool_content_preview(params),
+                    )
+                    if file_decision is not None and not file_decision.is_allow():
+                        return self._external_tool_local_system_decision(
+                            source_decision=file_decision,
+                            tool_name=name,
+                            params=params,
+                            posture=posture,
+                            runtime_context=runtime_context,
+                        )
+                    file_decision = self._assess_cross_platform_file_write(
                         path,
                         append=False,
                         config=config,
@@ -1986,6 +2189,22 @@ class SafetyGuardian:
                             posture=posture,
                             runtime_context=runtime_context,
                         )
+                    if self._is_cross_platform_sensitive_path(path):
+                        source_decision = self._cross_platform_decision(
+                            verdict=self._cross_platform_verdict(config, "sensitiveReadVerdict", "review"),
+                            reason="外部工具会读取 Linux/macOS 敏感系统、认证或 secret 对象，需要先经 V8 Safety 审批。",
+                            risk_code=self._cross_platform_risk_code(path, mutation=False),
+                            posture=posture,
+                            path=path,
+                            runtime_context=runtime_context,
+                        )
+                        return self._external_tool_local_system_decision(
+                            source_decision=source_decision,
+                            tool_name=name,
+                            params=params,
+                            posture=posture,
+                            runtime_context=runtime_context,
+                        )
 
         return self._decision(
             verdict="allow",
@@ -2006,6 +2225,7 @@ class SafetyGuardian:
         method: str,
         url: str,
         *,
+        headers: Dict[str, Any] | None = None,
         body: str | None = None,
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> SafetyDecision:
@@ -2015,6 +2235,7 @@ class SafetyGuardian:
         parsed = urlparse(url or "")
         host = (parsed.hostname or "").lower()
         body_preview = (body or "")[:300]
+        headers_preview = self._redact_sensitive_payload(dict(headers or {}))
 
         if not parsed.scheme or not host:
             return self._decision(
@@ -2023,7 +2244,7 @@ class SafetyGuardian:
                 risk_code="ambiguous_http_target",
                 governance_target="external_mutation",
                 posture=posture,
-                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "headers_preview": headers_preview, "runtime_context": runtime_context or {}},
             )
 
         if host in config["networkRules"]["localHosts"]:
@@ -2033,7 +2254,7 @@ class SafetyGuardian:
                 risk_code="loopback_http_allowed",
                 governance_target="external_mutation",
                 posture=posture,
-                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "headers_preview": headers_preview, "runtime_context": runtime_context or {}},
             )
 
         if self._matches_host(host, config["networkRules"]["blockedHosts"]):
@@ -2043,7 +2264,7 @@ class SafetyGuardian:
                 risk_code="blocked_host",
                 governance_target="external_mutation",
                 posture=posture,
-                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "headers_preview": headers_preview, "runtime_context": runtime_context or {}},
                 allow_override=False,
             )
 
@@ -2054,22 +2275,83 @@ class SafetyGuardian:
                 risk_code="review_host",
                 governance_target="external_mutation",
                 posture=posture,
-                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                details={"method": method_upper, "url": url, "body_preview": body_preview, "headers_preview": headers_preview, "runtime_context": runtime_context or {}},
             )
 
-        if self._http_request_looks_like_credential_exfiltration(url=url, body=body, runtime_context=runtime_context):
+        trusted_network = self._match_trusted_network_target(url, config=config)
+        credential_class = self._http_request_credential_class(url=url, headers=headers, body=body, runtime_context=runtime_context)
+        base_details = {
+            "method": method_upper,
+            "url": url,
+            "body_preview": body_preview,
+            "headers_preview": headers_preview,
+            "runtime_context": runtime_context or {},
+            "trustedNetwork": trusted_network,
+            "credentialClass": credential_class,
+        }
+
+        if credential_class and trusted_network.get("matched"):
+            if method_upper in set(config["networkRules"]["reviewMethods"]) and bool(trusted_network.get("mutationRequiresReview")):
+                return self._decision(
+                    verdict="review",
+                    reason="请求携带凭据且目标为可信金融/支付类官方 API；由于可能产生真实资金或账户副作用，需要人工确认。",
+                    risk_code="trusted_financial_mutation_http",
+                    governance_target="external_mutation",
+                    posture=posture,
+                    details=base_details,
+                )
+            if method_upper in set(config["networkRules"]["reviewMethods"]):
+                verdict = self._posture_verdict(
+                    config["networkMutationRules"]["defaultExternalMutationVerdict"],
+                    posture=posture,
+                    fallback="audit",
+                )
+                return self._decision(
+                    verdict=verdict,
+                    reason="请求携带凭据且目标匹配可信官方 API，按机器姿态放行/审计。",
+                    risk_code="trusted_provider_api_http",
+                    governance_target="external_mutation",
+                    posture=posture,
+                    details=base_details,
+                )
+            return self._decision(
+                verdict="allow",
+                reason="请求携带凭据且目标匹配可信官方 API。",
+                risk_code="trusted_provider_api_http",
+                governance_target="external_mutation",
+                posture=posture,
+                details=base_details,
+            )
+
+        if credential_class and not trusted_network.get("matched"):
+            verdict = self._normalize_verdict(
+                config["networkRules"].get("unknownCredentialHostVerdict"),
+                fallback="review",
+                allowed={"audit", "review", "block"},
+            )
+            return self._decision(
+                verdict=verdict,
+                reason="请求携带 API key/token/cookie 等凭据，但目标域名不在 Safety 可信官方 API 目录中，需要确认最终请求目标。",
+                risk_code="unknown_credential_host_http",
+                governance_target="private_data_exfiltration",
+                posture=posture,
+                details=base_details,
+                allow_override=verdict != "block",
+            )
+
+        if self._http_request_looks_like_credential_exfiltration(url=url, headers=headers, body=body, runtime_context=runtime_context):
             return self._decision(
                 verdict=config["networkMutationRules"]["credentialExfiltrationVerdict"],
                 reason="检测到疑似浏览器数据、凭证或本地敏感材料外传请求，已提升到高风险治理。",
                 risk_code="credential_exfiltration_http",
                 governance_target="private_data_exfiltration",
                 posture=posture,
-                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                details=base_details,
                 allow_override=False,
             )
 
         if method_upper in set(config["networkRules"]["reviewMethods"]):
-            if self._http_request_looks_sensitive(url=url, body=body, runtime_context=runtime_context):
+            if self._http_request_looks_sensitive(url=url, headers=headers, body=body, runtime_context=runtime_context):
                 verdict = config["networkMutationRules"]["sensitivePayloadVerdict"]
                 risk_code = "sensitive_external_mutation_http"
                 reason = "对外部域名发起的变更型网络请求携带了敏感 payload，需要人工确认。"
@@ -2089,7 +2371,7 @@ class SafetyGuardian:
                 risk_code=risk_code,
                 governance_target=governance_target,
                 posture=posture,
-                details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+                details=base_details,
             )
 
         return self._decision(
@@ -2098,7 +2380,7 @@ class SafetyGuardian:
             risk_code="http_allowed",
             governance_target="external_mutation",
             posture=posture,
-            details={"method": method_upper, "url": url, "body_preview": body_preview, "runtime_context": runtime_context or {}},
+            details=base_details,
         )
 
     def assess_cron_mutation(self, action: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
@@ -2868,12 +3150,14 @@ class SafetyGuardian:
         self,
         *,
         url: str,
+        headers: Dict[str, Any] | None = None,
         body: str | None,
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> bool:
         combined = self._flatten_text_values(
             {
                 "url": url,
+                "headers": headers or {},
                 "body": body or "",
                 "runtime_context": runtime_context or {},
             }
@@ -2902,12 +3186,14 @@ class SafetyGuardian:
         self,
         *,
         url: str,
+        headers: Dict[str, Any] | None = None,
         body: str | None,
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> bool:
         combined = self._flatten_text_values(
             {
                 "url": url,
+                "headers": headers or {},
                 "body": body or "",
                 "runtime_context": runtime_context or {},
             }
@@ -2939,6 +3225,213 @@ class SafetyGuardian:
             "content-disposition",
         )
         return any(token in combined for token in local_sensitive_tokens) and any(token in combined for token in exfil_tokens)
+
+    def _http_request_credential_class(
+        self,
+        *,
+        url: str,
+        headers: Dict[str, Any] | None = None,
+        body: str | None = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        headers = dict(headers or {})
+        header_text = self._flatten_text_values(headers)
+        query_keys = {key.lower() for key, value in parse_qsl(urlparse(url or "").query, keep_blank_values=True) if str(value or "").strip()}
+        combined = self._flatten_text_values(
+            {
+                "url": url,
+                "headers": headers,
+                "body": body or "",
+                "runtime_context": runtime_context or {},
+            }
+        )
+        if "authorization" in header_text and "bearer" in header_text:
+            return "bearer_api_key"
+        if "x-api-key" in header_text or "api-key" in header_text:
+            return "api_key"
+        if "cookie" in header_text:
+            return "cookie"
+        if query_keys.intersection({"api_key", "apikey", "appid", "key", "access_token", "token"}):
+            return "api_key"
+        if re.search(r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?key)\s*[:=]", combined):
+            return "api_key"
+        if re.search(r"(?i)\bbearer\s+[a-z0-9._\-+/=]{12,}", combined):
+            return "bearer_api_key"
+        if re.search(r"(?i)\bsk-[a-z0-9][a-z0-9_\-]{12,}", combined):
+            return "api_key"
+        if re.search(r"(?i)\b(?:xox[baprs]-|gh[pousr]_|ya29\.|eyj[a-z0-9_-]{12,})", combined):
+            return "token"
+        return ""
+
+    def _read_json_file(self, path: Path) -> Dict[str, Any]:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _trusted_network_catalog_entries(self, config: Dict[str, Any]) -> list[Dict[str, Any]]:
+        entries: list[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _add_entry(entry: Dict[str, Any], *, source: str = "") -> None:
+            hosts = [str(item).strip().lower() for item in entry.get("officialHosts", []) if str(item).strip()]
+            base_urls = [str(item).strip() for item in entry.get("allowedBaseUrls", []) if str(item).strip()]
+            if not hosts and base_urls:
+                for base_url in base_urls:
+                    parsed = urlparse(base_url)
+                    if parsed.hostname:
+                        hosts.append(parsed.hostname.lower())
+            if not hosts:
+                return
+            normalized = dict(entry)
+            normalized["officialHosts"] = sorted(set(hosts))
+            normalized["allowedBaseUrls"] = base_urls
+            normalized.setdefault("category", "provider")
+            normalized.setdefault("id", hosts[0])
+            normalized.setdefault("displayName", normalized["id"])
+            normalized.setdefault("confidence", "configured")
+            if source:
+                normalized.setdefault("source", source)
+            key = json.dumps(
+                {
+                    "id": normalized.get("id"),
+                    "hosts": normalized["officialHosts"],
+                    "baseUrls": normalized["allowedBaseUrls"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            entries.append(normalized)
+
+        for entry in list(self._read_json_file(_TRUSTED_NETWORK_CATALOG_PATH).get("entries") or []):
+            if isinstance(entry, dict):
+                _add_entry(entry, source="builtin")
+
+        for provider in list(self._read_json_file(_MODEL_PROVIDER_CATALOG_PATH).get("providers") or []):
+            if not isinstance(provider, dict):
+                continue
+            base_url = str(provider.get("baseUrl") or provider.get("base_url") or "").strip()
+            if not base_url:
+                continue
+            _add_entry(
+                {
+                    "id": provider.get("id") or provider.get("name") or base_url,
+                    "category": "ai",
+                    "displayName": provider.get("name") or provider.get("id") or base_url,
+                    "allowedBaseUrls": [base_url],
+                    "credentialTypes": ["api_key", "bearer_api_key"],
+                    "allowedMethods": ["GET", "POST"],
+                    "sourceUrl": provider.get("sourceUrl"),
+                    "confidence": provider.get("confidence") or "provider_catalog",
+                },
+                source="model_provider_catalog",
+            )
+
+        media_matrix = self._read_json_file(_MEDIA_PROVIDER_MATRIX_PATH)
+        for modality_items in media_matrix.values():
+            if not isinstance(modality_items, dict):
+                continue
+            for provider_id, provider in modality_items.items():
+                if not isinstance(provider, dict):
+                    continue
+                base_url = str(provider.get("baseUrlDefault") or provider.get("baseUrl") or "").strip()
+                if not base_url or base_url in {"internal", "local"}:
+                    continue
+                if not base_url.startswith(("http://", "https://")):
+                    continue
+                _add_entry(
+                    {
+                        "id": str(provider_id or base_url),
+                        "category": "ai",
+                        "displayName": provider.get("displayName") or provider.get("name") or provider_id,
+                        "allowedBaseUrls": [base_url],
+                        "credentialTypes": ["api_key", "bearer_api_key"],
+                        "allowedMethods": ["GET", "POST"],
+                        "confidence": provider.get("confidence") or "media_provider_matrix",
+                    },
+                    source="media_provider_matrix",
+                )
+
+        try:
+            models_config = storage.get_models_config() or {}
+        except Exception:
+            models_config = {}
+        providers = models_config.get("providers") if isinstance(models_config.get("providers"), dict) else {}
+        for provider_id, provider in providers.items():
+            if not isinstance(provider, dict):
+                continue
+            base_url = str(provider.get("baseUrl") or provider.get("base_url") or "").strip()
+            if not base_url:
+                continue
+            _add_entry(
+                {
+                    "id": f"user_configured:{provider_id}",
+                    "category": "user_configured",
+                    "displayName": provider.get("name") or provider_id,
+                    "allowedBaseUrls": [base_url],
+                    "credentialTypes": ["api_key", "bearer_api_key", "oauth"],
+                    "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                    "confidence": "user_configured",
+                },
+                source="models_config",
+            )
+
+        for host in list((config.get("networkRules") or {}).get("trustedHosts") or []):
+            normalized_host = str(host or "").strip().lower()
+            if normalized_host:
+                _add_entry(
+                    {
+                        "id": f"trusted_host:{normalized_host}",
+                        "category": "user_configured",
+                        "displayName": normalized_host,
+                        "officialHosts": [normalized_host],
+                        "allowedBaseUrls": [],
+                        "credentialTypes": ["api_key", "bearer_api_key", "oauth"],
+                        "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "confidence": "user_configured",
+                    },
+                    source="safety_config",
+                )
+
+        return entries
+
+    def _trusted_base_url_matches(self, request_url: str, base_url: str) -> bool:
+        if not base_url:
+            return False
+        if "*" in base_url:
+            pattern = "^" + re.escape(base_url).replace(r"\*", r"[^/]+") + r"(?:/.*)?$"
+            return re.match(pattern, request_url, re.IGNORECASE) is not None
+        return request_url.lower().startswith(base_url.rstrip("/").lower())
+
+    def _match_trusted_network_target(self, url: str, *, config: Dict[str, Any]) -> Dict[str, Any]:
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return {"matched": False, "reason": "missing_host"}
+        normalized_url = str(url or "").strip()
+        for entry in self._trusted_network_catalog_entries(config):
+            hosts = [str(item).strip().lower() for item in entry.get("officialHosts", []) if str(item).strip()]
+            allow_subdomains = bool(entry.get("allowSubdomains"))
+            host_matches = any(host == item or (allow_subdomains and host.endswith(f".{item}")) for item in hosts)
+            base_urls = [str(item).strip() for item in entry.get("allowedBaseUrls", []) if str(item).strip()]
+            base_matches = any(self._trusted_base_url_matches(normalized_url, item) for item in base_urls)
+            if host_matches or base_matches:
+                return {
+                    "matched": True,
+                    "providerId": entry.get("id"),
+                    "displayName": entry.get("displayName"),
+                    "category": entry.get("category"),
+                    "confidence": entry.get("confidence"),
+                    "sourceUrl": entry.get("sourceUrl"),
+                    "mutationRequiresReview": bool(entry.get("mutationRequiresReview")) or str(entry.get("category") or "").lower() in {"finance", "payment"},
+                    "matchedHost": host,
+                }
+        return {"matched": False, "matchedHost": host, "reason": "not_in_trusted_catalog"}
 
     def _skill_scan_governance(
         self,
@@ -3248,6 +3741,8 @@ class SafetyGuardian:
             return False
         if self._windows_profile_protection_enabled(self._config()) and self._is_windows_profile_sensitive_path(normalized, include_roots=True):
             return True
+        if self._cross_platform_protection_enabled(self._config()) and self._is_cross_platform_sensitive_path(normalized):
+            return True
         sensitive_roots = [
             Path.home() / ".ssh",
             Path.home() / ".aws",
@@ -3264,6 +3759,336 @@ class SafetyGuardian:
             except Exception:
                 continue
         return False
+
+    def _cross_platform_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return dict((config or self._config()).get("crossPlatformSystemProtection") or {})
+
+    def _cross_platform_protection_enabled(self, config: Optional[Dict[str, Any]] = None) -> bool:
+        return bool(self._cross_platform_config(config).get("enabled", True))
+
+    def _cross_platform_verdict(self, config: Dict[str, Any], key: str, fallback: str) -> str:
+        return self._normalize_verdict(
+            self._cross_platform_config(config).get(key),
+            fallback=fallback,
+            allowed={"allow", "audit", "review", "block"},
+        )
+
+    def _path_text_for_policy(self, path: Path | str) -> str:
+        text = str(path or "").strip().lower().replace("\\", "/")
+        text = re.sub(r"/+", "/", text)
+        return text
+
+    def _is_cross_platform_hard_auth_path(self, path: Path) -> bool:
+        text = self._path_text_for_policy(path)
+        hard_needles = (
+            "/etc/passwd",
+            "/etc/shadow",
+            "/etc/group",
+            "/etc/gshadow",
+            "/etc/sudoers",
+            "/etc/sudoers.d/",
+            "/etc/pam.d/",
+            "/etc/ssh/sshd_config",
+            "/root/",
+            "/var/db/dslocal/nodes/default/users",
+        )
+        return any(needle in text for needle in hard_needles)
+
+    def _is_cross_platform_persistence_path(self, path: Path) -> bool:
+        text = self._path_text_for_policy(path)
+        persistence_needles = (
+            "/etc/systemd/system/",
+            "/lib/systemd/system/",
+            "/usr/lib/systemd/system/",
+            "/library/launchdaemons/",
+            "/library/launchagents/",
+            "/users/",
+            "/.config/autostart/",
+            "/etc/cron",
+            "/var/spool/cron",
+        )
+        if any(needle in text for needle in persistence_needles if needle != "/users/"):
+            return True
+        return "/users/" in text and "/library/launchagents/" in text
+
+    def _is_cross_platform_secret_path(self, path: Path) -> bool:
+        text = self._path_text_for_policy(path)
+        secret_needles = (
+            "/.ssh/",
+            "/.aws/credentials",
+            "/.kube/config",
+            "/library/keychains/",
+            "/.gnupg/",
+            "/.docker/config.json",
+            "/.config/gcloud/",
+            "/login.keychain",
+            "/keychains/",
+        )
+        return any(needle in text for needle in secret_needles)
+
+    def _is_cross_platform_sensitive_path(self, path: Path) -> bool:
+        return (
+            self._is_cross_platform_hard_auth_path(path)
+            or self._is_cross_platform_persistence_path(path)
+            or self._is_cross_platform_secret_path(path)
+        )
+
+    def _cross_platform_risk_code(self, path: Path, *, mutation: bool) -> str:
+        text = self._path_text_for_policy(path)
+        if "/var/db/dslocal/" in text or "/library/keychains/" in text or "/keychains/" in text:
+            return "macos_account_store_mutation" if mutation else "macos_keychain_sensitive_read"
+        if self._is_cross_platform_hard_auth_path(path):
+            return "linux_auth_store_mutation" if mutation else "linux_sensitive_read"
+        if self._is_cross_platform_persistence_path(path):
+            return "cross_platform_persistence_mutation" if mutation else "cross_platform_sensitive_read"
+        return "cross_platform_sensitive_system_mutation" if mutation else "cross_platform_sensitive_read"
+
+    def _cross_platform_decision(
+        self,
+        *,
+        verdict: str,
+        reason: str,
+        risk_code: str,
+        posture: str,
+        command: str | None = None,
+        path: Path | None = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+        analysis_payload: Optional[Dict[str, Any]] = None,
+        extra_details: Optional[Dict[str, Any]] = None,
+    ) -> SafetyDecision:
+        details: Dict[str, Any] = {"runtime_context": runtime_context or {}}
+        if command is not None:
+            details["command"] = command
+        if path is not None:
+            details["path"] = str(path)
+        if analysis_payload is not None:
+            details["analysis"] = analysis_payload
+        if extra_details:
+            details.update(extra_details)
+        return self._decision(
+            verdict=verdict,
+            reason=reason,
+            risk_code=risk_code,
+            governance_target="system_integrity",
+            posture=posture,
+            details=details,
+            allow_override=verdict != "block",
+        )
+
+    def _posix_command_has_mutating_verb(self, command: str) -> bool:
+        lower = f" {str(command or '').lower()} "
+        if re.search(r"(?<![a-z0-9_-])(rm|mv|cp|rsync|chmod|chown|chgrp|chattr|setfacl|ln|mount|umount)(?![a-z0-9_-])", lower):
+            return True
+        return any(token in lower for token in [" > ", ">>", " tee ", " install ", " ditto "])
+
+    def _posix_command_is_sensitive_read(self, command: str) -> bool:
+        lower = str(command or "").lower()
+        if any(token in lower for token in ["&&", "||", ";", ">", ">>", "| tee", " rm ", " mv ", " cp ", "rsync", "chmod", "chown", "chattr", "setfacl"]):
+            return False
+        return re.search(r"(?<![a-z0-9_-])(cat|less|more|head|tail|grep|rg|find|ls|stat|file|get-content|dir)(?![a-z0-9_-])", lower) is not None
+
+    def _firewall_command_is_mutating(self, command: str) -> bool:
+        lower = str(command or "").strip().lower()
+        if not re.search(r"(?<![a-z0-9_-])(ufw|iptables|ip6tables|nft|firewall-cmd|pfctl|socketfilterfw|networksetup|netsh)(?![a-z0-9_-])", lower):
+            return False
+        read_only_tokens = (" status", " list", " show", " -l", " --list", " print", " get")
+        if any(token in lower for token in read_only_tokens) and not any(token in lower for token in (" allow", " deny", " delete", " add", " enable", " disable", " flush", " -f ", " --reload", " set")):
+            return False
+        return True
+
+    def _persistence_command_is_mutating(self, command: str) -> str:
+        lower = str(command or "").strip().lower()
+        if re.search(r"\bsystemctl\s+(enable|disable|start|stop|restart|reload|mask|unmask|daemon-reload|edit)\b", lower):
+            return "systemd"
+        if re.search(r"\blaunchctl\s+(load|unload|bootstrap|bootout|enable|disable|kickstart|submit|remove)\b", lower):
+            return "launchd"
+        if re.search(r"\bcrontab\s+(-e|-r|[^-]\S*)", lower) and " -l" not in lower:
+            return "cron"
+        if re.search(r"\b(defaults|security|dscl|sysadminctl)\b", lower):
+            return "macos_admin"
+        return ""
+
+    def _strip_leading_sudo(self, command: str) -> str:
+        tokens = self._command_tokens(command)
+        if not tokens:
+            return command
+        try:
+            index = next(i for i, token in enumerate(tokens) if token.strip("\"'").lower() in {"sudo", "doas"})
+        except StopIteration:
+            return command
+        rest = tokens[index + 1:]
+        while rest and rest[0].startswith("-"):
+            rest = rest[1:]
+        return " ".join(rest) if rest else command
+
+    def _assess_cross_platform_system_command(
+        self,
+        command: str,
+        *,
+        config: Dict[str, Any],
+        posture: str,
+        runtime_context: Optional[Dict[str, Any]],
+        analysis_payload: Optional[Dict[str, Any]],
+    ) -> Optional[SafetyDecision]:
+        if not self._cross_platform_protection_enabled(config):
+            return None
+        raw = str(command or "").strip()
+        if not raw:
+            return None
+        lower = raw.lower()
+        paths = self._extract_explicit_paths_from_command(raw)
+        high_verdict = self._cross_platform_verdict(config, "highRiskMutationVerdict", "block")
+        read_verdict = self._cross_platform_verdict(config, "sensitiveReadVerdict", "review")
+        privilege_verdict = self._cross_platform_verdict(config, "privilegeElevationVerdict", "review")
+        persistence_verdict = self._cross_platform_verdict(config, "persistenceVerdict", "review")
+        firewall_verdict = self._cross_platform_verdict(config, "firewallVerdict", "review")
+
+        mutating = self._posix_command_has_mutating_verb(raw)
+        sensitive_paths = [path for path in paths if self._is_cross_platform_sensitive_path(path)]
+        hard_paths = [path for path in paths if self._is_cross_platform_hard_auth_path(path)]
+        persistence_paths = [path for path in paths if self._is_cross_platform_persistence_path(path)]
+
+        if (mutating or re.search(r"\b(sudo|doas)\b", lower)) and hard_paths:
+            path = hard_paths[0]
+            return self._cross_platform_decision(
+                verdict=high_verdict,
+                reason="命令会修改 Linux/macOS 账号、认证或 sudo/PAM/SSH 核心系统对象，可能导致无法登录或权限失控。",
+                risk_code=self._cross_platform_risk_code(path, mutation=True),
+                posture=posture,
+                command=raw,
+                path=path,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        if mutating and persistence_paths:
+            path = persistence_paths[0]
+            return self._cross_platform_decision(
+                verdict=persistence_verdict,
+                reason="命令会修改 systemd/launchd/cron/autostart 等持久化启动面，需要人工确认。",
+                risk_code=self._cross_platform_risk_code(path, mutation=True),
+                posture=posture,
+                command=raw,
+                path=path,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        if self._posix_command_is_sensitive_read(raw) and sensitive_paths:
+            path = sensitive_paths[0]
+            return self._cross_platform_decision(
+                verdict=read_verdict,
+                reason="命令会读取 Linux/macOS 敏感系统、认证或 secret 对象，需要人工确认用途。",
+                risk_code=self._cross_platform_risk_code(path, mutation=False),
+                posture=posture,
+                command=raw,
+                path=path,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        persistence_signal = self._persistence_command_is_mutating(raw)
+        if persistence_signal:
+            return self._cross_platform_decision(
+                verdict=persistence_verdict,
+                reason="命令会修改启动项、系统服务、cron 或 macOS 管理面，需要人工确认。",
+                risk_code="cross_platform_persistence_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+                extra_details={"matchedRule": persistence_signal},
+            )
+
+        if self._firewall_command_is_mutating(raw):
+            return self._cross_platform_decision(
+                verdict=firewall_verdict,
+                reason="命令会修改本机防火墙或网络安全策略，需要人工确认。",
+                risk_code="cross_platform_firewall_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        if re.search(r"(?<![a-z0-9_-])(sudo|doas)(?![a-z0-9_-])", lower):
+            stripped = self._strip_leading_sudo(raw)
+            if stripped and stripped != raw:
+                nested = self._assess_cross_platform_system_command(
+                    stripped,
+                    config=config,
+                    posture=posture,
+                    runtime_context=runtime_context,
+                    analysis_payload=analysis_payload,
+                )
+                if nested is not None and nested.is_block():
+                    return nested
+            return self._cross_platform_decision(
+                verdict=privilege_verdict,
+                reason="命令请求 sudo/doas 提权。提权本身不阻断，但需要远程 Safety 审批后才能继续。",
+                risk_code="privilege_elevation_review",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+                extra_details={"requiresSensitiveInput": True, "secretType": "sudo_password"},
+            )
+
+        return None
+
+    def _assess_cross_platform_file_write(
+        self,
+        path: Path,
+        *,
+        append: bool,
+        config: Dict[str, Any],
+        posture: str,
+        runtime_context: Optional[Dict[str, Any]],
+        content_preview: str | None,
+    ) -> Optional[SafetyDecision]:
+        if not self._cross_platform_protection_enabled(config):
+            return None
+        high_verdict = self._cross_platform_verdict(config, "highRiskMutationVerdict", "block")
+        persistence_verdict = self._cross_platform_verdict(config, "persistenceVerdict", "review")
+        if self._is_cross_platform_hard_auth_path(path) or self._is_cross_platform_secret_path(path):
+            return self._cross_platform_decision(
+                verdict=high_verdict,
+                reason="禁止直接写入 Linux/macOS 账号、认证、sudo/PAM/SSH 或 secret store 关键对象。",
+                risk_code=self._cross_platform_risk_code(path, mutation=True),
+                posture=posture,
+                path=path,
+                runtime_context=runtime_context,
+                extra_details={"append": append},
+            )
+        if self._is_cross_platform_persistence_path(path):
+            return self._cross_platform_decision(
+                verdict=persistence_verdict,
+                reason="写入 systemd/launchd/cron/autostart 等启动持久化面需要人工确认。",
+                risk_code=self._cross_platform_risk_code(path, mutation=True),
+                posture=posture,
+                path=path,
+                runtime_context=runtime_context,
+                extra_details={"append": append},
+            )
+        if path.suffix.lower() in {".sh", ".command", ".zsh", ".bash", ".plist", ".service"} and content_preview:
+            script_decision = self._assess_cross_platform_system_command(
+                content_preview,
+                config=config,
+                posture=posture,
+                runtime_context=runtime_context,
+                analysis_payload=None,
+            )
+            if script_decision is not None and not script_decision.is_allow():
+                return self._cross_platform_decision(
+                    verdict=script_decision.verdict,
+                    reason="写入的脚本或启动配置内容包含 Linux/macOS 系统安全高风险操作。",
+                    risk_code=script_decision.risk_code,
+                    posture=posture,
+                    path=path,
+                    runtime_context=runtime_context,
+                    extra_details={"append": append, "scriptSafety": script_decision.to_payload()},
+                )
+        return None
 
     def _windows_profile_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return dict((config or self._config()).get("windowsProfileProtection") or {})
@@ -4105,7 +4930,13 @@ class SafetyGuardian:
             if not candidate:
                 continue
             expanded = self._expand_path_text(candidate)
-            if candidate.startswith(("-", "/")) and not re.match(r"^[a-zA-Z]:[\\/]", expanded):
+            if candidate.startswith("-") and not re.match(r"^[a-zA-Z]:[\\/]", expanded):
+                continue
+            if (
+                candidate.startswith("/")
+                and not re.match(r"^[a-zA-Z]:[\\/]", expanded)
+                and not re.match(r"^/(?:etc|var|root|users|library|system|boot|lib|usr|home|tmp)(?:/|$)", expanded, re.IGNORECASE)
+            ):
                 continue
             if not (
                 re.match(r"^[a-zA-Z]:[\\/]", expanded)

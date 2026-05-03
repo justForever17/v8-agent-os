@@ -88,6 +88,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     const [isCollapsed, setIsCollapsed] = useState(compact);
     const [terminalOutput, setTerminalOutput] = useState(() => normalizeTerminalScreen(String(processRecord.stableScreenSnapshot || process.screenSnapshot || "")));
     const [inputText, setInputText] = useState("");
+    const [sensitiveInput, setSensitiveInput] = useState(false);
     const [sendingInput, setSendingInput] = useState(false);
     const [pollingEnabled, setPollingEnabled] = useState(false);
     const rotation = useRef(new Animated.Value(compact ? 1 : 0)).current;
@@ -275,12 +276,18 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
         }
         setSendingInput(true);
         try {
-            await authorizedFetch(process.inputAdminPath, {
+            const inputPath = sensitiveInput
+                ? process.inputAdminPath.replace(/\/input(?:\?.*)?$/i, "/sensitive-input")
+                : process.inputAdminPath;
+            await authorizedFetch(inputPath, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ input_text: inputText }),
+                body: JSON.stringify(sensitiveInput
+                    ? { input_text: inputText, secret_type: "terminal_secret" }
+                    : { input_text: inputText }),
             });
             setInputText("");
+            setSensitiveInput(false);
         } finally {
             setSendingInput(false);
         }
@@ -384,12 +391,37 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                         <Input
                             value={inputText}
                             onChangeText={setInputText}
-                            placeholder={t("src.components.chat.interactiveterminalcard.send_input_to_background_command")}
+                            placeholder={
+                                sensitiveInput
+                                    ? t("src.components.chat.interactiveterminalcard.send_sensitive_input_once")
+                                    : t("src.components.chat.interactiveterminalcard.send_input_to_background_command")
+                            }
                             editable={inputEnabled && !sendingInput}
                             style={styles.input}
+                            secureTextEntry={sensitiveInput}
                             onSubmitEditing={() => void handleSendInput()}
                             returnKeyType="send"
                         />
+                        <Pressable
+                            disabled={!inputEnabled || sendingInput}
+                            onPress={() => setSensitiveInput((current) => !current)}
+                            style={[
+                                styles.secretToggle,
+                                {
+                                    borderColor: sensitiveInput ? colors.warning : colors.border,
+                                    backgroundColor: sensitiveInput
+                                        ? (themeMode === "dark" ? "rgba(245,158,11,0.16)" : "rgba(254,243,199,0.92)")
+                                        : colors.surface,
+                                    opacity: inputEnabled && !sendingInput ? 1 : 0.55,
+                                },
+                            ]}
+                        >
+                            <MaterialCommunityIcons
+                                name={sensitiveInput ? "lock-check-outline" : "lock-outline"}
+                                size={15}
+                                color={sensitiveInput ? colors.warning : colors.textMuted}
+                            />
+                        </Pressable>
                         <Button
                             size="sm"
                             onPress={() => void handleSendInput()}
@@ -506,5 +538,13 @@ const styles = StyleSheet.create({
     },
     input: {
         flex: 1,
+    },
+    secretToggle: {
+        width: 40,
+        height: 40,
+        borderRadius: radii.sm,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
     },
 });

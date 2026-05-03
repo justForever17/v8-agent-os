@@ -70,11 +70,13 @@ export const ApprovalCard = memo(function ApprovalCard({
     body,
     status,
     tone = "approval",
+    eventSummary,
 }: {
     title: string;
     body: string;
     status?: string;
     tone?: ApprovalTone;
+    eventSummary?: unknown;
 }) {
     const { themeMode, t } = useUiPrefs();
     const accent = TONE_STYLES[tone];
@@ -82,8 +84,20 @@ export const ApprovalCard = memo(function ApprovalCard({
     const displayStatus = typeof status === "string" && status.trim().toLowerCase() !== "unknown"
         ? status.trim()
         : "";
+    const summary = eventSummary && typeof eventSummary === "object" && !Array.isArray(eventSummary)
+        ? eventSummary as Record<string, unknown>
+        : {};
+    const summaryRows = ["operation", "target", "host", "providerId", "credentialClass", "riskCode", "matchedRule", "nextAction"]
+        .map((key) => {
+            const value = summary[key];
+            return typeof value === "string" && value.trim() ? { key, value: value.trim() } : null;
+        })
+        .filter((item): item is { key: string; value: string } => Boolean(item))
+        .slice(0, 6);
     const hint = tone === "control"
         ? t("src.components.chat.approvalcard.this_is_a_runtime_control_state_rather_than_a_regular_tool_result")
+        : tone === "safety"
+            ? t("src.components.chat.approvalcard.this_is_a_safety_guardian_governance_node")
         : t("src.components.chat.approvalcard.this_is_a_run_node_waiting_for_human_review");
 
     return (
@@ -117,6 +131,16 @@ export const ApprovalCard = memo(function ApprovalCard({
                         {displayStatus ? <Badge variant="outline">{displayStatus}</Badge> : null}
                     </View>
                     <Text selectable style={[styles.copy, { color: isDark ? accent.darkText : accent.lightText }]}>{body}</Text>
+                    {summaryRows.length ? (
+                        <View style={[styles.summaryBox, { borderColor: isDark ? accent.darkBorder : accent.lightBorder }]}>
+                            {summaryRows.map((row) => (
+                                <View key={row.key} style={styles.summaryRow}>
+                                    <Text style={[styles.summaryKey, { color: isDark ? `${accent.darkText}B3` : `${accent.lightText}B3` }]}>{row.key}</Text>
+                                    <Text style={[styles.summaryValue, { color: isDark ? accent.darkText : accent.lightText }]}>{row.value}</Text>
+                                </View>
+                            ))}
+                        </View>
+                    ) : null}
                     <Text
                         selectable
                         style={[
@@ -180,5 +204,27 @@ const styles = StyleSheet.create({
     hint: {
         fontSize: 12,
         lineHeight: 18,
+    },
+    summaryBox: {
+        borderWidth: 1,
+        borderRadius: 14,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        gap: 6,
+    },
+    summaryRow: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+    },
+    summaryKey: {
+        width: 104,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+    summaryValue: {
+        flex: 1,
+        fontSize: 11,
+        lineHeight: 16,
     },
 });

@@ -34,6 +34,31 @@ function stringifyCommand(value: unknown) {
     return "";
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function extractEventSummary(request: Record<string, unknown>, safety: Record<string, unknown>) {
+    const direct = asRecord(request.eventSummary);
+    if (Object.keys(direct).length) return direct;
+    const safetySummary = asRecord(safety.eventSummary);
+    if (Object.keys(safetySummary).length) return safetySummary;
+    const details = asRecord(safety.details);
+    return asRecord(details.eventSummary);
+}
+
+function eventSummaryRows(summary: Record<string, unknown>) {
+    return ["operation", "target", "host", "providerId", "credentialClass", "riskCode", "matchedRule", "nextAction"]
+        .map((key) => {
+            const value = summary[key];
+            return typeof value === "string" && value.trim() ? { key, value: value.trim() } : null;
+        })
+        .filter((item): item is { key: string; value: string } => Boolean(item))
+        .slice(0, 8);
+}
+
 function extractApprovalDetails(approval: PendingApproval) {
     const request = approval.request || {};
     const safety = request.safety && typeof request.safety === "object"
@@ -66,6 +91,7 @@ function extractApprovalDetails(approval: PendingApproval) {
         reason,
         command,
         riskSummary,
+        eventSummary: extractEventSummary(request as Record<string, unknown>, safety),
     };
 }
 
@@ -89,6 +115,7 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
     const { colors, t, themeMode } = useUiPrefs();
     const [answer, setAnswer] = useState("");
     const details = useMemo(() => approval ? extractApprovalDetails(approval) : null, [approval]);
+    const summaryRows = useMemo(() => details ? eventSummaryRows(details.eventSummary) : [], [details]);
 
     if (!visible) {
         return null;
@@ -145,6 +172,22 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                                     {t("src.components.chat.governanceapprovalmodal.risk_summary")}
                                 </Text>
                                 <Text style={[styles.detailText, { color: colors.text }]}>{resolvedReason}</Text>
+                            </View>
+                        ) : null}
+
+                        {summaryRows.length ? (
+                            <View style={[styles.detailCard, styles.summaryCard, { borderColor: "rgba(245,158,11,0.30)", backgroundColor: themeMode === "dark" ? "rgba(245,158,11,0.10)" : "rgba(255,251,235,0.92)" }]}>
+                                <Text style={[styles.sectionLabel, { color: colors.warning }]}>
+                                    {t("src.components.chat.governanceapprovalmodal.event_summary")}
+                                </Text>
+                                <View style={styles.summaryRows}>
+                                    {summaryRows.map((row) => (
+                                        <View key={row.key} style={styles.summaryRow}>
+                                            <Text style={[styles.summaryKey, { color: colors.textSoft }]}>{row.key}</Text>
+                                            <Text style={[styles.summaryValue, { color: colors.text }]}>{row.value}</Text>
+                                        </View>
+                                    ))}
+                                </View>
                             </View>
                         ) : null}
 
@@ -271,6 +314,27 @@ const styles = StyleSheet.create({
         fontSize: 12,
         lineHeight: 18,
         fontFamily: "monospace",
+    },
+    summaryCard: {
+        gap: 0,
+    },
+    summaryRows: {
+        gap: 7,
+    },
+    summaryRow: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+    },
+    summaryKey: {
+        width: 112,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+    summaryValue: {
+        flex: 1,
+        fontSize: 11,
+        lineHeight: 16,
     },
     answerSection: {
         gap: 8,

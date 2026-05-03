@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Square, TerminalSquare, ChevronDown } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Square, TerminalSquare, ChevronDown, LockKeyhole } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -21,28 +21,33 @@ interface InteractiveTerminalCardProps {
 
 export function InteractiveTerminalCard({ process, compact = false, onTerminated }: InteractiveTerminalCardProps) {
     const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
-    const [isRunning, setIsRunning] = useState<boolean>(() => String(process.status || '').trim().toLowerCase() !== 'stopped');
-    const [isCollapsed, setIsCollapsed] = useState(compact);
-    const [compactSnapshot, setCompactSnapshot] = useState<string>(() =>
-        String(processRecord.stableScreenSnapshot || process.screenSnapshot || '').trim(),
+    const processStatusRunning = useMemo(
+        () => String(process.status || '').trim().toLowerCase() !== 'stopped',
+        [process.status],
     );
+    const streamUnavailable = useMemo(
+        () => !compact && !resolveAdminProcessWsUrl('web', undefined, process),
+        [compact, process],
+    );
+    const [observedRunning, setObservedRunning] = useState<boolean | null>(null);
+    const [isCollapsed, setIsCollapsed] = useState(compact);
+    const [sensitiveMode, setSensitiveMode] = useState(false);
+    const processSnapshot = useMemo(() =>
+        String(processRecord.stableScreenSnapshot || process.screenSnapshot || '').trim(),
+    [process.screenSnapshot, processRecord.stableScreenSnapshot]);
+    const [polledCompactSnapshot, setPolledCompactSnapshot] = useState<string>('');
+    const compactSnapshot = polledCompactSnapshot || processSnapshot;
+    const isRunning = !streamUnavailable && (processStatusRunning ? (observedRunning ?? true) : false);
     const terminalRef = useRef<HTMLDivElement>(null);
     const xtermRef = useRef<Terminal | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const initRef = useRef(false);
-
-    // Fit terminal when expanding
-    useEffect(() => {
-        setIsRunning(String(process.status || '').trim().toLowerCase() !== 'stopped');
-    }, [process.status]);
+    const sensitiveModeRef = useRef(false);
 
     useEffect(() => {
-        const nextSnapshot = String(processRecord.stableScreenSnapshot || process.screenSnapshot || '').trim();
-        if (nextSnapshot) {
-            setCompactSnapshot(nextSnapshot);
-        }
-    }, [process.screenSnapshot, processRecord.stableScreenSnapshot]);
+        sensitiveModeRef.current = sensitiveMode;
+    }, [sensitiveMode]);
 
     useEffect(() => {
         if (!isCollapsed && fitAddonRef.current) {
@@ -57,7 +62,7 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
         }
         try {
             await fetch(terminatePath, { method: 'POST' });
-            setIsRunning(false);
+            setObservedRunning(false);
             onTerminated?.(process.processId);
         } catch (err) {
             console.error('Termination error:', err);
@@ -96,7 +101,6 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
         // WebSocket — goes through the Next.js → Admin → Engine proxy chain
         const wsUrl = resolveAdminProcessWsUrl('web', undefined, process);
         if (!wsUrl) {
-            setIsRunning(false);
             term.writeln('\r\n[Missing process stream]');
             return () => {
                 window.removeEventListener('resize', handleResize);
@@ -111,13 +115,13 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
         };
 
         ws.onclose = () => {
-            setIsRunning(false);
+            setObservedRunning(false);
             if (term) term.writeln('\r\n[Process Terminated]');
             onTerminated?.(process.processId);
         };
 
         ws.onerror = () => {
-            setIsRunning(false);
+            setObservedRunning(false);
             if (term) term.writeln('\r\n[Connection Error]');
             onTerminated?.(process.processId);
         };
@@ -127,13 +131,22 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
             if (!process.canInput || !inputPath || !data) {
                 return;
             }
-            void fetch(inputPath, {
+            const sendAsSensitive = sensitiveModeRef.current;
+            const targetPath = sendAsSensitive
+                ? inputPath.replace(/\/input(?:\?.*)?$/i, '/sensitive-input')
+                : inputPath;
+            void fetch(targetPath, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input_text: data }),
+                body: JSON.stringify(sendAsSensitive
+                    ? { input_text: data, secret_type: 'terminal_secret' }
+                    : { input_text: data }),
             }).catch((error) => {
                 console.error('Terminal input error:', error);
             });
+            if (sendAsSensitive && /[\r\n]/.test(data)) {
+                setSensitiveMode(false);
+            }
         });
 
         return () => {
@@ -181,12 +194,12 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
                     || '',
                 ).trim();
                 if (nextSnapshot) {
-                    setCompactSnapshot(nextSnapshot);
+                    setPolledCompactSnapshot(nextSnapshot);
                 }
                 const stillRunning = typeof payload.process?.status === 'string'
                     ? String(payload.process.status || '').trim().toLowerCase() !== 'stopped'
                     : Boolean(payload.is_running ?? payload.isRunning ?? payload.process?.is_running);
-                setIsRunning(stillRunning);
+                setObservedRunning(stillRunning);
             } catch (error) {
                 console.error('Compact terminal polling error:', error);
             }
@@ -234,6 +247,24 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                    {isRunning && process.canInput && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setSensitiveMode((current) => !current);
+                            }}
+                            className={cn(
+                                "flex items-center justify-center px-2 py-0.5 gap-1 text-[10px] font-semibold rounded-full transition-colors active:scale-95",
+                                sensitiveMode
+                                    ? "bg-amber-500/90 text-white hover:bg-amber-600"
+                                    : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
+                            )}
+                            title="一次性敏感输入：不会通过普通输入响应回显"
+                        >
+                            <LockKeyhole className="w-2.5 h-2.5" />
+                            <span>敏感</span>
+                        </button>
+                    )}
                     {isRunning && process.canTerminate && (
                         <button
                             onClick={(e) => { e.stopPropagation(); handleTerminate(); }}

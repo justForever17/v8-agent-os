@@ -3672,7 +3672,7 @@ def http_request(
     try:
         runtime_context = get_runtime_context()
         allowed, error_message = _enforce_safety_decision(
-            safety_guardian.assess_http_request(method, url, body=body, runtime_context=runtime_context),
+            safety_guardian.assess_http_request(method, url, headers=headers, body=body, runtime_context=runtime_context),
             tool_call_id=tool_call_id,
             question=f"Safety Guardian 检测到外部网络请求需要确认，是否继续？\n\n{method.upper()} {url}",
         )

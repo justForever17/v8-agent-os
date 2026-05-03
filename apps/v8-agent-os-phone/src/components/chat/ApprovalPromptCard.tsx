@@ -7,6 +7,30 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function extractSafetySummary(approval: PendingApproval) {
+    const request = asRecord(approval.request);
+    const safety = asRecord(request.safety);
+    const details = asRecord(safety.details);
+    const summary = asRecord(request.eventSummary);
+    const safetySummary = Object.keys(summary).length ? summary : asRecord(safety.eventSummary);
+    const nested = Object.keys(safetySummary).length ? safetySummary : asRecord(details.eventSummary);
+    const rows = ["operation", "target", "host", "providerId", "credentialClass", "riskCode", "matchedRule", "nextAction"]
+        .map((key) => {
+            const value = nested[key];
+            return typeof value === "string" && value.trim() ? { key, value: value.trim() } : null;
+        })
+        .filter((item): item is { key: string; value: string } => Boolean(item))
+        .slice(0, 6);
+    const reason = String(safety.reason || nested.reason || request.reason || "").trim();
+    return { rows, reason };
+}
+
 export function ApprovalPromptCard({
     approval,
     busy = false,
@@ -21,20 +45,42 @@ export function ApprovalPromptCard({
 
     const title = approval.request?.question || approval.request?.prompt || t("src.components.chat.approvalpromptcard.this_run_is_waiting_for_human_confirmation");
     const kind = approval.approval_kind || "human_input_required";
+    const isSafety = String(kind || approval.request?.approvalKind || "").trim().toLowerCase().startsWith("safety");
+    const safetySummary = extractSafetySummary(approval);
 
     return (
-        <GlassCard>
+        <GlassCard style={isSafety ? styles.safetyCard : undefined}>
             <View style={styles.header}>
-                <View style={styles.iconShell}>
-                    <MaterialCommunityIcons name="account-question-outline" size={16} color={colors.accent} />
+                <View style={[styles.iconShell, isSafety && styles.safetyIconShell]}>
+                    <MaterialCommunityIcons
+                        name={isSafety ? "shield-alert-outline" : "account-question-outline"}
+                        size={16}
+                        color={isSafety ? colors.danger : colors.accent}
+                    />
                 </View>
                 <View style={styles.headerBody}>
-                    <Text style={styles.headerTitle}>{t("src.components.chat.approvalpromptcard.waiting_for_review")}</Text>
+                    <Text style={[styles.headerTitle, isSafety && styles.safetyTitle]}>
+                        {isSafety ? t("src.components.chat.approvalpromptcard.safety_guardian_review") : t("src.components.chat.approvalpromptcard.waiting_for_review")}
+                    </Text>
                     <Text style={styles.headerSubtitle}>{kind}</Text>
                 </View>
             </View>
 
             <Text style={styles.question}>{title}</Text>
+            {isSafety && safetySummary.reason ? (
+                <Text style={styles.safetyReason}>{safetySummary.reason}</Text>
+            ) : null}
+
+            {isSafety && safetySummary.rows.length ? (
+                <View style={styles.summaryBox}>
+                    {safetySummary.rows.map((row) => (
+                        <View key={row.key} style={styles.summaryRow}>
+                            <Text style={styles.summaryKey}>{row.key}</Text>
+                            <Text style={styles.summaryValue}>{row.value}</Text>
+                        </View>
+                    ))}
+                </View>
+            ) : null}
 
             <TextInput
                 value={answer}
@@ -74,6 +120,10 @@ const styles = StyleSheet.create({
         gap: spacing.sm,
         marginBottom: 8,
     },
+    safetyCard: {
+        borderColor: "rgba(239, 68, 68, 0.35)",
+        backgroundColor: "rgba(255, 241, 242, 0.92)",
+    },
     iconShell: {
         width: 30,
         height: 30,
@@ -81,6 +131,9 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: colors.accentSoft,
+    },
+    safetyIconShell: {
+        backgroundColor: "rgba(239, 68, 68, 0.12)",
     },
     headerBody: {
         flex: 1,
@@ -91,6 +144,9 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: "800",
     },
+    safetyTitle: {
+        color: colors.danger,
+    },
     headerSubtitle: {
         color: colors.textMuted,
         fontSize: 11,
@@ -100,6 +156,39 @@ const styles = StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         marginBottom: 10,
+    },
+    safetyReason: {
+        color: colors.textMuted,
+        fontSize: 13,
+        lineHeight: 19,
+        marginBottom: 10,
+    },
+    summaryBox: {
+        borderWidth: 1,
+        borderColor: "rgba(239, 68, 68, 0.18)",
+        backgroundColor: "rgba(255,255,255,0.56)",
+        borderRadius: 14,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        gap: 6,
+        marginBottom: 10,
+    },
+    summaryRow: {
+        flexDirection: "row",
+        gap: 8,
+        alignItems: "flex-start",
+    },
+    summaryKey: {
+        width: 104,
+        color: colors.textSoft,
+        fontSize: 11,
+        fontWeight: "800",
+    },
+    summaryValue: {
+        flex: 1,
+        color: colors.text,
+        fontSize: 11,
+        lineHeight: 16,
     },
     input: {
         minHeight: 64,

@@ -78,7 +78,7 @@ def build_liveness_view(
         idle_reason = "awaiting_admission"
     elif run_status == "running" or workflow_status in {"running", "created"}:
         status = "running"
-    elif run_status in {"completed", "failed", "cancelled"}:
+    elif run_status in {"completed", "failed", "cancelled", "abandoned"}:
         status = "terminal"
 
     return {

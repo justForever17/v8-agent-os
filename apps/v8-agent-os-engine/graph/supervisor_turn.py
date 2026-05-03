@@ -52,8 +52,46 @@ def _estimate_memory_context_chars(diagnostics: dict) -> int:
 
 
 def _is_network_supervisor_compat_transport(state) -> bool:
-    transport = str((state or {}).get("transport") or "").strip()
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    transport = str(
+        (state or {}).get("transport")
+        or route_context.get("transport")
+        or route_context.get("triggerSource")
+        or ""
+    ).strip()
     return transport in {"network_supervisor_openai", "network_supervisor_anthropic"}
+
+
+def _compat_ingress_diagnostics_from_state(state) -> dict:
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    diagnostics = route_context.get("compatIngressDiagnostics") or route_context.get("compat_ingress_diagnostics")
+    return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def _compat_external_tools_primary(state) -> bool:
+    diagnostics = _compat_ingress_diagnostics_from_state(state)
+    if "externalToolsPrimary" in diagnostics:
+        return bool(diagnostics.get("externalToolsPrimary"))
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    if "externalToolsPrimary" in route_context:
+        return bool(route_context.get("externalToolsPrimary"))
+    return False
+
+
+def _compat_suppress_extensions_prefilter(state) -> bool:
+    diagnostics = _compat_ingress_diagnostics_from_state(state)
+    if "suppressExtensionsPrefilter" in diagnostics:
+        return bool(diagnostics.get("suppressExtensionsPrefilter"))
+    return _is_network_supervisor_compat_transport(state) and _compat_external_tools_primary(state)
+
+
+def _compat_suppress_passive_rag(state) -> tuple[bool, str]:
+    diagnostics = _compat_ingress_diagnostics_from_state(state)
+    if "suppressPassiveRag" in diagnostics:
+        return bool(diagnostics.get("suppressPassiveRag")), str(
+            diagnostics.get("ragSkipReason") or diagnostics.get("skipReason") or "compat_classifier_suppressed_passive_rag"
+        )
+    return False, ""
 
 
 _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
@@ -141,8 +179,12 @@ def execute_supervisor_turn(
     llm_factory,
     sanitize_response_tool_calls,
 ):
+    compat_diagnostics = _compat_ingress_diagnostics_from_state(state)
     context_info = resolve_supervisor_request_context(messages, scope_resolution_service)
     user_query = context_info["user_query"]
+    compat_latest_human = str(compat_diagnostics.get("latestHumanUtterance") or "").strip()
+    if _is_network_supervisor_compat_transport(state) and compat_latest_human:
+        user_query = compat_latest_human
     current_scope = context_info["current_scope"]
     scope_chain = context_info["scope_chain"]
     session_id = context_info["session_id"]
@@ -162,10 +204,10 @@ def execute_supervisor_turn(
             actor="supervisor",
             route_context=dict(state.get("current_route_context") or {}),
         )
-        if _is_network_supervisor_compat_transport(state):
+        if _is_network_supervisor_compat_transport(state) and _compat_external_tools_primary(state):
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()
-        if _is_network_supervisor_compat_transport(state):
+        if _is_network_supervisor_compat_transport(state) and _compat_suppress_extensions_prefilter(state):
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
             route_duration_ms = 0.0
         else:
@@ -242,15 +284,25 @@ def execute_supervisor_turn(
             state=state,
         )
 
-        passive_rag_started_at = time.perf_counter()
-        prepared_messages = apply_passive_rag_injection(
-            messages,
-            user_query=user_query,
-            scope_chain=scope_chain,
-            memory_runtime=memory_runtime,
-        )
-        passive_rag_duration_ms = round((time.perf_counter() - passive_rag_started_at) * 1000, 2)
-        passive_rag_diagnostics = _last_human_memory_rag_diagnostics(prepared_messages)
+        if _is_network_supervisor_compat_transport(state) and _compat_suppress_passive_rag(state)[0]:
+            prepared_messages = messages
+            passive_rag_duration_ms = 0.0
+            _suppress_rag, rag_skip_reason = _compat_suppress_passive_rag(state)
+            passive_rag_diagnostics = {
+                "injection_allowed": False,
+                "reject_reason": rag_skip_reason or "compat_classifier_suppressed_passive_rag",
+                "compatIngressFiltering": True,
+            }
+        else:
+            passive_rag_started_at = time.perf_counter()
+            prepared_messages = apply_passive_rag_injection(
+                messages,
+                user_query=user_query,
+                scope_chain=scope_chain,
+                memory_runtime=memory_runtime,
+            )
+            passive_rag_duration_ms = round((time.perf_counter() - passive_rag_started_at) * 1000, 2)
+            passive_rag_diagnostics = _last_human_memory_rag_diagnostics(prepared_messages)
         log_memory_observation(
             "passive_rag",
             "SUCCESS" if passive_rag_diagnostics.get("injection_allowed") else "SKIPPED",

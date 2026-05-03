@@ -17,9 +17,6 @@ from runtimes.network_supervisor.models import (
     NetworkPeerMutationPayload,
 )
 from runtimes.network_supervisor.anthropic_compat import (
-    ANTHROPIC_COMPAT_MIN_EXTERNAL_SYSTEM_TOKENS,
-    ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS,
-    ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS_PAYLOAD_TOKENS,
     anthropic_wire_tool_use_id,
     build_anthropic_compat_models_response,
     build_engine_chat_request_from_anthropic,
@@ -28,21 +25,15 @@ from runtimes.network_supervisor.anthropic_compat import (
     wants_anthropic_thinking,
 )
 from runtimes.network_supervisor.openai_compat import (
-    COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
-    COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
-    COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS,
-    COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
-    COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
-    COMPAT_MAX_EXTERNAL_TOOLS,
     build_openai_compat_models_response,
     build_engine_chat_request_from_openai,
     build_external_tool_alias_maps,
     extract_bearer_token,
     extract_external_tool_calls_from_events,
     normalize_openai_compat_model_aliases,
-    resolve_openai_compat_model_alias,
     wire_tool_call_id,
 )
+from runtimes.network_supervisor.compat_model_budget import resolve_compat_model_budget
 from runtimes.network_supervisor.compat_wire_emitter import (
     AnthropicStreamTimelineEmitter,
     OpenAIStreamTimelineEmitter,
@@ -115,6 +106,137 @@ def _approval_notice_text(event: dict[str, Any], *, run_id: str) -> str:
         parts.append(f"approvalRef={approval_ref}")
     parts.append("审批完成后，外部客户端可继续发送下一轮消息，V8OS 会尝试恢复该 run。")
     return "\n".join(parts)
+
+
+def _compat_ingress_diagnostics(chat_request: Any) -> dict[str, Any]:
+    try:
+        data = getattr(chat_request, "data", None)
+        diagnostics = getattr(data, "compat_ingress_diagnostics", None) if data is not None else None
+        if isinstance(diagnostics, dict):
+            return dict(diagnostics)
+    except Exception:
+        return {}
+    return {}
+
+
+def _compat_background_request_kind(chat_request: Any) -> str:
+    diagnostics = _compat_ingress_diagnostics(chat_request)
+    if str(diagnostics.get("compatRequestKind") or "").strip() == "background_suggestion":
+        return str(diagnostics.get("backgroundRequestKind") or "compat_background_suggestion").strip()
+    return str(diagnostics.get("backgroundRequestKind") or "").strip()
+
+
+def _compat_minimal_reply_kind(chat_request: Any) -> str:
+    diagnostics = _compat_ingress_diagnostics(chat_request)
+    policy = str(diagnostics.get("compatExecutionPolicy") or "").strip()
+    if policy == "reject_or_minimal_reply":
+        return str(diagnostics.get("compatRequestKind") or "unknown_nonhuman").strip()
+    return ""
+
+
+def _compat_background_text(kind: str) -> str:
+    if kind == "claude_code_suggestion":
+        # Claude Code periodically asks its configured API for "what the user may
+        # type next". This is UI assistance, not a V8OS task. Keep the response
+        # tiny so it never wakes Supervisor, tools, memory, or runtime planning.
+        return "继续"
+    return "OK"
+
+
+def _trim_events_after_first_external_tool(
+    events: list[dict[str, Any]],
+    *,
+    external_tools,
+    protocol: str,
+) -> list[dict[str, Any]]:
+    if not events:
+        return []
+    _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(external_tools)
+    trimmed: list[dict[str, Any]] = []
+    found_external_tool = False
+    for event in list(events or []):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip()
+        if found_external_tool:
+            if event_type == "done":
+                done_event = dict(event)
+                done_event["status"] = "waiting_external_tool"
+                trimmed.append(done_event)
+                break
+            continue
+        trimmed.append(event)
+        if event_type != "tool_start":
+            continue
+        tool_payload = dict(event.get("tool") or {})
+        internal_name = str(tool_payload.get("toolName") or "").strip()
+        if internal_to_wire.get(internal_name):
+            found_external_tool = True
+    return trimmed
+
+
+def _openai_background_completion(*, response_model_name: str, text: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "id": f"chatcmpl-{uuid.uuid4().hex}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": response_model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "v8os_status": "compat_background_request",
+        }
+    )
+
+
+async def _stream_openai_background_completion(*, response_model_name: str, text: str) -> StreamingResponse:
+    response_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+
+    async def _generator():
+        emitter = OpenAIStreamTimelineEmitter(response_id=response_id, model_name=response_model_name, created=created)
+        for frame in emitter.text_delta(text):
+            yield frame
+        for frame in emitter.finish("stop"):
+            yield frame
+
+    return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
+
+
+def _anthropic_background_message(*, response_model_name: str, text: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "id": f"msg_{uuid.uuid4().hex}",
+            "type": "message",
+            "role": "assistant",
+            "model": response_model_name,
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "v8os_status": "compat_background_request",
+        }
+    )
+
+
+async def _stream_anthropic_background_message(*, response_model_name: str, text: str) -> StreamingResponse:
+    response_id = f"msg_{uuid.uuid4().hex}"
+
+    async def _generator():
+        emitter = AnthropicStreamTimelineEmitter(response_id=response_id, model_name=response_model_name)
+        yield emitter.message_start()
+        for frame in emitter.text_delta(text):
+            yield frame
+        for frame in emitter.finish("end_turn"):
+            yield frame
+
+    return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
 
 
 def _openai_tool_result_ids(payload: dict[str, Any]) -> list[str]:
@@ -233,6 +355,7 @@ async def _stream_openai_chat_completion(
         emitter = OpenAIStreamTimelineEmitter(response_id=response_id, model_name=response_model_name, created=created)
         emitted_tool_call_ids: set[str] = set()
         tool_calls_seen = False
+        external_tool_stop_requested = False
         try:
             async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
                 if not isinstance(event, dict):
@@ -255,6 +378,8 @@ async def _stream_openai_chat_completion(
                     }
                     _record_openai_memory_adapter_status(failed)
                     raise RuntimeError(message)
+                if external_tool_stop_requested and event_type != "done":
+                    continue
                 if event_type == "text_chunk":
                     content = str(event.get("content") or "")
                     for frame in emitter.text_delta(content):
@@ -300,6 +425,7 @@ async def _stream_openai_chat_completion(
                         arguments=arguments,
                     ):
                         yield frame
+                    external_tool_stop_requested = True
                     continue
                 if event_type == "done":
                     if _is_waiting_approval_event(event):
@@ -324,12 +450,17 @@ async def _stream_openai_chat_completion(
                             yield frame
                         return
                     finish_reason = "tool_calls" if tool_calls_seen or str(event.get("status") or "").strip() in {"tool_calls_requested", "waiting_external_tool"} else "stop"
+                    visible_events = _trim_events_after_first_external_tool(
+                        events,
+                        external_tools=chat_request.config.external_tools,
+                        protocol="openai",
+                    )
                     response_payload = {"choices": [{"finish_reason": finish_reason}]}
                     result = network_supervisor_memory_adapter.record_openai_compat_delta(
                         payload=request_payload,
                         chat_request=chat_request,
                         run_id=run_id,
-                        events=events,
+                        events=visible_events,
                         response_payload=response_payload,
                         project_id=project_id,
                         workspace_id=workspace_id,
@@ -343,11 +474,16 @@ async def _stream_openai_chat_completion(
                     return
             finish_reason = "tool_calls" if tool_calls_seen else "stop"
             response_payload = {"choices": [{"finish_reason": finish_reason}]}
+            visible_events = _trim_events_after_first_external_tool(
+                events,
+                external_tools=chat_request.config.external_tools,
+                protocol="openai",
+            )
             result = network_supervisor_memory_adapter.record_openai_compat_delta(
                 payload=request_payload,
                 chat_request=chat_request,
                 run_id=run_id,
-                events=events,
+                events=visible_events,
                 response_payload=response_payload,
                 project_id=project_id,
                 workspace_id=workspace_id,
@@ -393,6 +529,7 @@ async def _stream_anthropic_message(
         run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
         emitter = AnthropicStreamTimelineEmitter(response_id=response_id, model_name=response_model_name)
         tool_uses_seen = False
+        external_tool_stop_requested = False
         yield emitter.message_start()
         try:
             async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_anthropic", run_id=run_id):
@@ -401,6 +538,8 @@ async def _stream_anthropic_message(
                 event_type = str(event.get("type") or "").strip()
                 if event_type == "error":
                     raise RuntimeError(str(event.get("error") or "Anthropic compat execution failed"))
+                if external_tool_stop_requested and event_type != "done":
+                    continue
                 if event_type == "reasoning_chunk" and include_thinking:
                     content = str(event.get("content") or "")
                     for frame in emitter.thinking_delta(content):
@@ -441,6 +580,7 @@ async def _stream_anthropic_message(
                     )
                     for frame in emitter.tool_use(wire_id=wire_id, wire_name=wire_name, input_payload=parsed_args):
                         yield frame
+                    external_tool_stop_requested = True
                     continue
                 if event_type == "done":
                     if _is_waiting_approval_event(event):
@@ -644,40 +784,47 @@ async def post_network_supervisor_openai_chat_completions(
     compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
-        response_model_name = resolve_openai_compat_model_alias(payload.get("model"), aliases)
+        budget = resolve_compat_model_budget(payload.get("model"), aliases=aliases, compat_config=compat_config)
+        response_model_name = budget.requested_alias
         chat_request = build_engine_chat_request_from_openai(
             payload,
             project_id=project_id,
             workspace_id=workspace_id,
             scope_hint=scope_hint,
             scope_mode=scope_mode,
-            model_name_override="gpt-4o",
-            max_external_tools=max(int(compat_config.max_external_tools or 8), COMPAT_MAX_EXTERNAL_TOOLS),
-            max_external_system_tokens=max(
-                int(compat_config.max_external_system_tokens or 1200),
-                COMPAT_MAX_EXTERNAL_SYSTEM_TOKENS,
-            ),
-            max_external_message_tokens=max(
-                int(compat_config.max_external_message_tokens or 16000),
-                COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
-            ),
-            max_external_tool_description_tokens=max(
-                int(compat_config.max_external_tool_description_tokens or 800),
-                COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
-            ),
-            max_external_tool_schema_bytes=max(
-                int(compat_config.max_external_tool_schema_bytes or 32768),
-                COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
-            ),
-            max_external_tools_payload_tokens=max(
-                int(compat_config.max_external_tools_payload_tokens or 6000),
-                COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
-            ),
+            model_name_override=budget.execution_model_ref,
+            max_external_tools=budget.max_external_tools,
+            max_external_system_tokens=budget.max_external_system_tokens,
+            max_external_message_tokens=budget.max_external_message_tokens,
+            max_external_tool_description_tokens=budget.max_external_tool_description_tokens,
+            max_external_tool_schema_bytes=budget.max_external_tool_schema_bytes,
+            max_external_payload_tokens=budget.max_external_payload_tokens,
+            max_external_tools_payload_tokens=budget.max_external_tools_payload_tokens,
+            budget_diagnostics=budget.as_diagnostics(),
         )
         _apply_external_tool_resume_claim(chat_request, external_tool_claim)
     except ValueError as exc:
         status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    background_kind = _compat_background_request_kind(chat_request)
+    if background_kind:
+        background_text = _compat_background_text(background_kind)
+        if bool(payload.get("stream")):
+            return await _stream_openai_background_completion(
+                response_model_name=response_model_name,
+                text=background_text,
+            )
+        return _openai_background_completion(response_model_name=response_model_name, text=background_text)
+
+    minimal_kind = _compat_minimal_reply_kind(chat_request)
+    if minimal_kind:
+        if bool(payload.get("stream")):
+            return await _stream_openai_background_completion(
+                response_model_name=response_model_name,
+                text="OK",
+            )
+        return _openai_background_completion(response_model_name=response_model_name, text="OK")
 
     if bool(payload.get("stream")):
         return await _stream_openai_chat_completion(
@@ -698,8 +845,13 @@ async def post_network_supervisor_openai_chat_completions(
             raise HTTPException(status_code=500, detail=str(event.get("error") or "OpenAI compat execution failed"))
         if isinstance(event, dict):
             events.append(event)
+    visible_events = _trim_events_after_first_external_tool(
+        events,
+        external_tools=chat_request.config.external_tools,
+        protocol="openai",
+    )
     wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
-    for tool_call in extract_external_tool_calls_from_events(events, external_tools=chat_request.config.external_tools):
+    for tool_call in extract_external_tool_calls_from_events(visible_events, external_tools=chat_request.config.external_tools):
         function_payload = dict(tool_call.get("function") or {})
         external_wire_name = str(function_payload.get("name") or "").strip()
         network_supervisor_service.record_pending_external_tool(
@@ -712,7 +864,7 @@ async def post_network_supervisor_openai_chat_completions(
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
         )
-    approval_event = next((event for event in reversed(events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
+    approval_event = next((event for event in reversed(visible_events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
     if approval_event:
         response_payload = {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
@@ -733,14 +885,14 @@ async def post_network_supervisor_openai_chat_completions(
         response_payload = compat_wire_emitter.openai_chat_completion(
             response_id=f"chatcmpl-{uuid.uuid4().hex}",
             model_name=response_model_name,
-            events=events,
+            events=visible_events,
             external_tools=chat_request.config.external_tools,
         )
     adapter_result = network_supervisor_memory_adapter.record_openai_compat_delta(
         payload=payload,
         chat_request=chat_request,
         run_id=run_id,
-        events=events,
+        events=visible_events,
         response_payload=response_payload,
         project_id=project_id,
         workspace_id=workspace_id,
@@ -776,43 +928,47 @@ async def post_network_supervisor_anthropic_messages(
     compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
-        response_model_name = resolve_openai_compat_model_alias(payload.get("model"), aliases)
+        budget = resolve_compat_model_budget(payload.get("model"), aliases=aliases, compat_config=compat_config)
+        response_model_name = budget.requested_alias
         chat_request = build_engine_chat_request_from_anthropic(
             payload,
             project_id=project_id,
             workspace_id=workspace_id,
             scope_hint=scope_hint,
             scope_mode=scope_mode,
-            model_name_override="gpt-4o",
-            max_external_tools=max(
-                int(compat_config.max_external_tools or 8),
-                ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS,
-            ),
-            max_external_system_tokens=max(
-                int(compat_config.max_external_system_tokens or 1200),
-                ANTHROPIC_COMPAT_MIN_EXTERNAL_SYSTEM_TOKENS,
-            ),
-            max_external_message_tokens=max(
-                int(compat_config.max_external_message_tokens or 16000),
-                COMPAT_MAX_EXTERNAL_MESSAGE_TOKENS,
-            ),
-            max_external_tool_description_tokens=max(
-                int(compat_config.max_external_tool_description_tokens or 800),
-                COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
-            ),
-            max_external_tool_schema_bytes=max(
-                int(compat_config.max_external_tool_schema_bytes or 32768),
-                COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
-            ),
-            max_external_tools_payload_tokens=max(
-                int(compat_config.max_external_tools_payload_tokens or 6000),
-                ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS_PAYLOAD_TOKENS,
-            ),
+            model_name_override=budget.execution_model_ref,
+            max_external_tools=budget.max_external_tools,
+            max_external_system_tokens=budget.max_external_system_tokens,
+            max_external_message_tokens=budget.max_external_message_tokens,
+            max_external_tool_description_tokens=budget.max_external_tool_description_tokens,
+            max_external_tool_schema_bytes=budget.max_external_tool_schema_bytes,
+            max_external_payload_tokens=budget.max_external_payload_tokens,
+            max_external_tools_payload_tokens=budget.max_external_tools_payload_tokens,
+            budget_diagnostics=budget.as_diagnostics(),
         )
         _apply_external_tool_resume_claim(chat_request, external_tool_claim)
     except ValueError as exc:
         status_code = 404 if "Unknown V8OS OpenAI-compatible model alias" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    background_kind = _compat_background_request_kind(chat_request)
+    if background_kind:
+        background_text = _compat_background_text(background_kind)
+        if bool(payload.get("stream")):
+            return await _stream_anthropic_background_message(
+                response_model_name=response_model_name,
+                text=background_text,
+            )
+        return _anthropic_background_message(response_model_name=response_model_name, text=background_text)
+
+    minimal_kind = _compat_minimal_reply_kind(chat_request)
+    if minimal_kind:
+        if bool(payload.get("stream")):
+            return await _stream_anthropic_background_message(
+                response_model_name=response_model_name,
+                text="OK",
+            )
+        return _anthropic_background_message(response_model_name=response_model_name, text="OK")
 
     include_thinking = wants_anthropic_thinking(payload)
     if bool(payload.get("stream")):
@@ -832,8 +988,13 @@ async def post_network_supervisor_anthropic_messages(
             raise HTTPException(status_code=500, detail=str(event.get("error") or "Anthropic compat execution failed"))
         if isinstance(event, dict):
             events.append(event)
+    visible_events = _trim_events_after_first_external_tool(
+        events,
+        external_tools=chat_request.config.external_tools,
+        protocol="anthropic",
+    )
     wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
-    for tool_use in extract_anthropic_tool_use_blocks_from_events(events, external_tools=chat_request.config.external_tools):
+    for tool_use in extract_anthropic_tool_use_blocks_from_events(visible_events, external_tools=chat_request.config.external_tools):
         external_wire_name = str(tool_use.get("name") or "").strip()
         network_supervisor_service.record_pending_external_tool(
             protocol="anthropic",
@@ -845,7 +1006,7 @@ async def post_network_supervisor_anthropic_messages(
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
         )
-    approval_event = next((event for event in reversed(events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
+    approval_event = next((event for event in reversed(visible_events) if isinstance(event, dict) and _is_waiting_approval_event(event)), None)
     if approval_event:
         return JSONResponse(
             {
@@ -864,7 +1025,7 @@ async def post_network_supervisor_anthropic_messages(
         compat_wire_emitter.anthropic_message(
             response_id=f"msg_{uuid.uuid4().hex}",
             model_name=response_model_name,
-            events=events,
+            events=visible_events,
             external_tools=chat_request.config.external_tools,
             include_thinking=include_thinking,
         )

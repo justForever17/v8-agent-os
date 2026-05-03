@@ -164,7 +164,7 @@ class NetworkSupervisorService:
                 return
             run_service.transition_run(
                 run_id,
-                status="completed",
+                status="abandoned",
                 metadata={
                     "external_tool_final_reason": "external_tool_abandoned",
                     "abandonedExternalTool": {
@@ -176,7 +176,7 @@ class NetworkSupervisorService:
             )
             workflow_ledger_service.sync_run_status(
                 run_id,
-                run_status="completed",
+                run_status="abandoned",
                 reason="external_tool_abandoned",
                 metadata={"externalToolStatus": "external_tool_abandoned"},
             )

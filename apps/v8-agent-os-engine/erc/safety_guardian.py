@@ -209,6 +209,15 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
         ],
         "mutatingHttpMethods": ["POST", "PUT", "PATCH", "DELETE"],
     },
+    "windowsProfileProtection": {
+        "enabled": True,
+        "sensitiveReadVerdict": "review",
+        "highRiskMutationVerdict": "block",
+        "mediumRiskMutationVerdict": "review",
+    },
+    "externalToolLocalSystemProtection": {
+        "enabled": True,
+    },
     "activeDefense": DEFAULT_ACTIVE_DEFENSE_CONFIG,
 }
 
@@ -1287,6 +1296,42 @@ class SafetyGuardian:
             "mutatingHttpMethods": [str(item).strip().upper() for item in post_action_rules.get("mutatingHttpMethods", []) if str(item).strip()]
             or list(DEFAULT_SAFETY_GUARDIAN_CONFIG["postActionRules"]["mutatingHttpMethods"]),
         }
+
+        windows_profile_protection = dict(raw.get("windowsProfileProtection") or {})
+        merged["windowsProfileProtection"] = {
+            "enabled": bool(
+                windows_profile_protection.get(
+                    "enabled",
+                    DEFAULT_SAFETY_GUARDIAN_CONFIG["windowsProfileProtection"]["enabled"],
+                )
+            ),
+            "sensitiveReadVerdict": self._normalize_verdict(
+                windows_profile_protection.get("sensitiveReadVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["windowsProfileProtection"]["sensitiveReadVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+            "highRiskMutationVerdict": self._normalize_verdict(
+                windows_profile_protection.get("highRiskMutationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["windowsProfileProtection"]["highRiskMutationVerdict"],
+                allowed={"review", "block"},
+            ),
+            "mediumRiskMutationVerdict": self._normalize_verdict(
+                windows_profile_protection.get("mediumRiskMutationVerdict"),
+                fallback=DEFAULT_SAFETY_GUARDIAN_CONFIG["windowsProfileProtection"]["mediumRiskMutationVerdict"],
+                allowed={"audit", "review", "block"},
+            ),
+        }
+
+        external_tool_local_system_protection = dict(raw.get("externalToolLocalSystemProtection") or {})
+        merged["externalToolLocalSystemProtection"] = {
+            "enabled": bool(
+                external_tool_local_system_protection.get(
+                    "enabled",
+                    DEFAULT_SAFETY_GUARDIAN_CONFIG["externalToolLocalSystemProtection"]["enabled"],
+                )
+            ),
+        }
+
         merged["activeDefense"] = normalize_active_defense_config(
             raw.get("activeDefense") if isinstance(raw.get("activeDefense"), dict) else {}
         )
@@ -1500,6 +1545,20 @@ class SafetyGuardian:
                 details={"command": command, "runtime_context": runtime_context, "analysis": analysis_payload},
             )
 
+        windows_profile_decision = None
+        for candidate in policy_commands:
+            windows_profile_decision = self._assess_windows_profile_command(
+                candidate,
+                config=config,
+                posture=posture,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+            if windows_profile_decision is not None:
+                break
+        if windows_profile_decision is not None:
+            return windows_profile_decision
+
         sensitive_read_command = next(
             (
                 candidate
@@ -1678,7 +1737,14 @@ class SafetyGuardian:
     def assess_background_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
         return self.assess_system_command(command, runtime_context=runtime_context)
 
-    def assess_file_write(self, path: str, *, append: bool, runtime_context: Optional[Dict[str, Any]] = None) -> SafetyDecision:
+    def assess_file_write(
+        self,
+        path: str,
+        *,
+        append: bool,
+        runtime_context: Optional[Dict[str, Any]] = None,
+        content_preview: str | None = None,
+    ) -> SafetyDecision:
         config = self._config()
         posture = self._current_posture(config)
         if not config["enabled"]:
@@ -1687,6 +1753,17 @@ class SafetyGuardian:
         normalized = self._normalize_path(path)
         if not normalized:
             return SafetyDecision()
+
+        windows_profile_file_decision = self._assess_windows_profile_file_write(
+            normalized,
+            append=append,
+            config=config,
+            posture=posture,
+            runtime_context=runtime_context or {},
+            content_preview=content_preview,
+        )
+        if windows_profile_file_decision is not None:
+            return windows_profile_file_decision
 
         if self._matches_path_patterns(normalized, config["fileRules"]["blockedPathPatterns"]):
             return self._decision(
@@ -1797,6 +1874,131 @@ class SafetyGuardian:
             governance_target="system_integrity",
             posture=posture,
             details={"pid": pid, "action": action, "process": description, "runtime_context": runtime_context or {}},
+        )
+
+    def assess_external_tool_call(
+        self,
+        *,
+        tool_name: str,
+        params: Optional[Dict[str, Any]] = None,
+        tool_kind: str | None = None,
+        side_effect: str | None = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> SafetyDecision:
+        config = self._config()
+        posture = self._current_posture(config)
+        runtime_context = runtime_context or {}
+        params = dict(params or {})
+        if not config["enabled"] or not bool(config.get("externalToolLocalSystemProtection", {}).get("enabled", True)):
+            return SafetyDecision()
+
+        name = str(tool_name or "").strip()
+        normalized_name = name.lower()
+        normalized_kind = str(tool_kind or "").strip().lower()
+        normalized_side_effect = str(side_effect or "").strip().lower()
+        command_text = self._external_tool_command_text(params)
+        path_values = self._external_tool_path_values(params)
+        is_shell_tool = normalized_name in {"bash", "shell", "powershell", "cmd", "terminal"} or normalized_kind in {"shell", "command", "bash"}
+        is_write_tool = (
+            any(marker in normalized_name for marker in ["write", "edit", "multiedit", "delete", "move", "rename", "patch"])
+            or normalized_kind in {"write", "edit", "delete", "move"}
+            or any(marker in normalized_side_effect for marker in ["write", "delete", "mutat", "filesystem"])
+        )
+        is_read_tool = any(marker in normalized_name for marker in ["read", "grep", "glob", "ls", "list", "search"]) or normalized_kind in {"read", "search", "list"}
+
+        if command_text:
+            command_decision = self._assess_windows_profile_command(
+                command_text,
+                config=config,
+                posture=posture,
+                runtime_context=runtime_context,
+                analysis_payload=None,
+            )
+            if command_decision is not None and not command_decision.is_allow():
+                return self._external_tool_local_system_decision(
+                    source_decision=command_decision,
+                    tool_name=name,
+                    params=params,
+                    posture=posture,
+                    runtime_context=runtime_context,
+                )
+            if is_shell_tool and "__pregel_scratchpad" in command_text.lower():
+                return self._decision(
+                    verdict="block",
+                    reason="外部工具命令包含兼容桥接内部 scratchpad 标识，已 hard stop。",
+                    risk_code="external_tool_local_system_hard_stop",
+                    governance_target="system_integrity",
+                    posture=posture,
+                    details={"tool_name": name, "runtime_context": runtime_context, "sourceRiskCode": "compat_bridge_hard_stop"},
+                    allow_override=False,
+                )
+
+        normalized_paths = [path for item in path_values if (path := self._normalize_path(item)) is not None]
+        if normalized_paths:
+            if is_write_tool or normalized_side_effect in {"write", "mutation", "mutating", "delete", "move"}:
+                for path in normalized_paths:
+                    file_decision = self._assess_windows_profile_file_write(
+                        path,
+                        append=False,
+                        config=config,
+                        posture=posture,
+                        runtime_context=runtime_context,
+                        content_preview=self._external_tool_content_preview(params),
+                    )
+                    if file_decision is not None and not file_decision.is_allow():
+                        return self._external_tool_local_system_decision(
+                            source_decision=file_decision,
+                            tool_name=name,
+                            params=params,
+                            posture=posture,
+                            runtime_context=runtime_context,
+                        )
+                    if self._is_windows_profile_sensitive_path(path, include_roots=True):
+                        return self._decision(
+                            verdict=self._windows_profile_verdict(config, "highRiskMutationVerdict", "block"),
+                            reason="外部工具会写入、编辑、移动或删除 Windows profile 关键路径，已阻断。",
+                            risk_code="external_tool_local_system_hard_stop",
+                            governance_target="system_integrity",
+                            posture=posture,
+                            details={
+                                "tool_name": name,
+                                "path": str(path),
+                                "runtime_context": runtime_context,
+                                "sourceRiskCode": "windows_profile_hive_mutation",
+                            },
+                            allow_override=False,
+                        )
+            if is_read_tool:
+                for path in normalized_paths:
+                    if self._is_windows_profile_sensitive_path(path, include_roots=True):
+                        source_decision = self._windows_profile_decision(
+                            verdict=self._windows_profile_verdict(config, "sensitiveReadVerdict", "review"),
+                            reason="外部工具会读取 Windows profile 敏感对象，需要先经 V8 Safety 审批。",
+                            risk_code="windows_profile_sensitive_read",
+                            posture=posture,
+                            path=path,
+                            runtime_context=runtime_context,
+                        )
+                        return self._external_tool_local_system_decision(
+                            source_decision=source_decision,
+                            tool_name=name,
+                            params=params,
+                            posture=posture,
+                            runtime_context=runtime_context,
+                        )
+
+        return self._decision(
+            verdict="allow",
+            reason="external_tool_local_system_allowed",
+            risk_code="external_tool_local_system_allowed",
+            governance_target="system_integrity",
+            posture=posture,
+            details={
+                "tool_name": name,
+                "tool_kind": normalized_kind,
+                "side_effect": normalized_side_effect,
+                "runtime_context": runtime_context,
+            },
         )
 
     def assess_http_request(
@@ -2923,11 +3125,28 @@ class SafetyGuardian:
             confidence += 0.08
         return round(min(0.98, max(0.35, confidence)), 2)
 
+    def _expand_path_text(self, path: str | None) -> str:
+        text = str(path or "").strip().strip("\"'`")
+        if not text:
+            return ""
+        text = re.sub(
+            r"(?i)\$env:([a-z_][a-z0-9_]*)",
+            lambda match: os.environ.get(match.group(1), match.group(0)),
+            text,
+        )
+        text = re.sub(
+            r"(?i)\$\{env:([a-z_][a-z0-9_]*)\}",
+            lambda match: os.environ.get(match.group(1), match.group(0)),
+            text,
+        )
+        text = os.path.expandvars(text)
+        return text
+
     def _normalize_path(self, path: str | None) -> Optional[Path]:
         if not path:
             return None
         try:
-            return Path(path).expanduser().resolve(strict=False)
+            return Path(self._expand_path_text(path)).expanduser().resolve(strict=False)
         except Exception:
             return None
 
@@ -3027,6 +3246,8 @@ class SafetyGuardian:
         normalized = self._normalize_path(str(path))
         if normalized is None:
             return False
+        if self._windows_profile_protection_enabled(self._config()) and self._is_windows_profile_sensitive_path(normalized, include_roots=True):
+            return True
         sensitive_roots = [
             Path.home() / ".ssh",
             Path.home() / ".aws",
@@ -3043,6 +3264,527 @@ class SafetyGuardian:
             except Exception:
                 continue
         return False
+
+    def _windows_profile_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return dict((config or self._config()).get("windowsProfileProtection") or {})
+
+    def _windows_profile_protection_enabled(self, config: Optional[Dict[str, Any]] = None) -> bool:
+        return bool(self._windows_profile_config(config).get("enabled", True))
+
+    def _windows_profile_verdict(self, config: Dict[str, Any], key: str, fallback: str) -> str:
+        return self._normalize_verdict(
+            self._windows_profile_config(config).get(key),
+            fallback=fallback,
+            allowed={"allow", "audit", "review", "block"},
+        )
+
+    def _windows_users_root(self) -> Path:
+        home = Path.home()
+        if home.parent:
+            return home.parent
+        return Path(os.environ.get("SystemDrive", "C:") + "\\Users")
+
+    def _is_case_relative_to(self, path: Path, root: Path) -> bool:
+        normalized_path = self._normalize_path(str(path))
+        normalized_root = self._normalize_path(str(root))
+        if normalized_path is None or normalized_root is None:
+            return False
+        try:
+            normalized_path.relative_to(normalized_root)
+            return True
+        except ValueError:
+            return str(normalized_path).lower().startswith(str(normalized_root).rstrip("\\/").lower() + os.sep.lower())
+
+    def _is_windows_profile_hive_path(self, path: Path) -> bool:
+        name = path.name.lower()
+        if name in {"ntuser.dat", "usrclass.dat"}:
+            return True
+        return bool(re.match(r"^(?:ntuser|usrclass)\.dat(?:\.log\d*|\.tmp|\.blf|\.regtrans-ms)?$", name))
+
+    def _is_windows_default_or_temp_profile_path(self, path: Path) -> bool:
+        users_root = self._normalize_path(str(self._windows_users_root()))
+        normalized = self._normalize_path(str(path))
+        if users_root is None or normalized is None:
+            return False
+        try:
+            relative = normalized.relative_to(users_root)
+        except ValueError:
+            return False
+        first = relative.parts[0].lower() if relative.parts else ""
+        return first == "default" or first == "default user" or first.startswith("temp")
+
+    def _is_windows_startup_path(self, path: Path) -> bool:
+        text = str(path).lower().replace("/", "\\")
+        return "\\microsoft\\windows\\start menu\\programs\\startup\\" in text
+
+    def _is_windows_user_shell_script_path(self, path: Path) -> bool:
+        return path.suffix.lower() in {".ps1", ".bat", ".cmd", ".vbs", ".js", ".jse", ".wsf", ".wsh", ".lnk", ".exe"}
+
+    def _is_windows_current_profile_root(self, path: Path) -> bool:
+        normalized = self._normalize_path(str(path))
+        home = self._normalize_path(str(Path.home()))
+        return normalized is not None and home is not None and str(normalized).rstrip("\\/").lower() == str(home).rstrip("\\/").lower()
+
+    def _is_windows_profile_root_path(self, path: Path) -> bool:
+        if self._is_windows_current_profile_root(path):
+            return True
+        users_root = self._normalize_path(str(self._windows_users_root()))
+        normalized = self._normalize_path(str(path))
+        if users_root is None or normalized is None:
+            return False
+        try:
+            relative = normalized.relative_to(users_root)
+        except ValueError:
+            return False
+        if len(relative.parts) != 1:
+            return False
+        name = relative.parts[0].lower()
+        return name == "default" or name == "default user" or name.startswith("temp")
+
+    def _is_windows_profile_sensitive_path(self, path: Path, *, include_roots: bool = False) -> bool:
+        normalized = self._normalize_path(str(path))
+        if normalized is None:
+            return False
+        if self._is_windows_profile_hive_path(normalized):
+            return True
+        if self._is_windows_default_or_temp_profile_path(normalized):
+            return True
+        if include_roots and self._is_windows_profile_root_path(normalized):
+            return True
+        if self._is_windows_startup_path(normalized):
+            return True
+        return False
+
+    def _windows_profile_registry_signal(self, value: str) -> str:
+        normalized = str(value or "").lower().replace("/", "\\")
+        normalized = re.sub(r"\s+", " ", normalized)
+        registry_needles = [
+            "\\profilelist",
+            "profileimagepath",
+            "user shell folders",
+            "\\shell folders",
+            "currentversion\\run",
+            "currentversion\\runonce",
+        ]
+        if any(needle in normalized for needle in registry_needles):
+            if "profilelist" in normalized or "profileimagepath" in normalized:
+                return "profile_mapping"
+            if "shell folders" in normalized:
+                return "shell_folders"
+            if "currentversion\\run" in normalized or "currentversion\\runonce" in normalized:
+                return "startup_registry"
+        return ""
+
+    def _reg_command_verb(self, command: str) -> str:
+        tokens = self._command_tokens(command)
+        for index, token in enumerate(tokens):
+            clean = token.strip("\"'").lower()
+            if clean in {"reg", "reg.exe"} and index + 1 < len(tokens):
+                return tokens[index + 1].strip("\"'").lower()
+        return ""
+
+    def _command_has_any_verb(self, command: str, verbs: set[str]) -> bool:
+        tokens = [token.strip("\"'").lower() for token in self._command_tokens(command)]
+        joined = " ".join(tokens)
+        if any(token in verbs for token in tokens):
+            return True
+        return any(re.search(rf"(?<![a-z0-9_-]){re.escape(verb)}(?![a-z0-9_-])", joined) for verb in verbs)
+
+    def _path_list_has_windows_profile_sensitive_target(self, paths: list[Path], *, include_roots: bool = False) -> bool:
+        return any(self._is_windows_profile_sensitive_path(path, include_roots=include_roots) for path in paths)
+
+    def _windows_profile_decision(
+        self,
+        *,
+        verdict: str,
+        reason: str,
+        risk_code: str,
+        posture: str,
+        command: str | None = None,
+        path: Path | None = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+        analysis_payload: Optional[Dict[str, Any]] = None,
+        extra_details: Optional[Dict[str, Any]] = None,
+    ) -> SafetyDecision:
+        details: Dict[str, Any] = {"runtime_context": runtime_context or {}}
+        if command is not None:
+            details["command"] = command
+        if path is not None:
+            details["path"] = str(path)
+        if analysis_payload is not None:
+            details["analysis"] = analysis_payload
+        if extra_details:
+            details.update(extra_details)
+        return self._decision(
+            verdict=verdict,
+            reason=reason,
+            risk_code=risk_code,
+            governance_target="system_integrity",
+            posture=posture,
+            details=details,
+            allow_override=verdict != "block",
+        )
+
+    def _assess_windows_profile_command(
+        self,
+        command: str,
+        *,
+        config: Dict[str, Any],
+        posture: str,
+        runtime_context: Optional[Dict[str, Any]],
+        analysis_payload: Optional[Dict[str, Any]],
+    ) -> Optional[SafetyDecision]:
+        if not self._windows_profile_protection_enabled(config):
+            return None
+        raw = str(command or "").strip()
+        if not raw:
+            return None
+        lower = raw.lower()
+        paths = self._extract_explicit_paths_from_command(raw)
+        has_sensitive_path = self._path_list_has_windows_profile_sensitive_target(paths, include_roots=False)
+        has_profile_root_path = self._path_list_has_windows_profile_sensitive_target(paths, include_roots=True)
+        registry_signal = self._windows_profile_registry_signal(raw)
+        high_verdict = self._windows_profile_verdict(config, "highRiskMutationVerdict", "block")
+        medium_verdict = self._windows_profile_verdict(config, "mediumRiskMutationVerdict", "review")
+        read_verdict = self._windows_profile_verdict(config, "sensitiveReadVerdict", "review")
+
+        reg_verb = self._reg_command_verb(raw)
+        if reg_verb:
+            if registry_signal and reg_verb in {"add", "delete", "import", "load", "unload", "restore"}:
+                return self._windows_profile_decision(
+                    verdict=high_verdict,
+                    reason="命令会修改 Windows profile 注册表映射或用户 Shell Folder，可能导致无法登录或用户目录重映射。",
+                    risk_code="windows_profile_registry_mutation",
+                    posture=posture,
+                    command=raw,
+                    runtime_context=runtime_context,
+                    analysis_payload=analysis_payload,
+                    extra_details={"registrySignal": registry_signal, "verb": reg_verb},
+                )
+            if registry_signal and reg_verb in {"query", "export", "save"}:
+                return self._windows_profile_decision(
+                    verdict=read_verdict,
+                    reason="命令会读取 Windows profile 注册表映射，需要人工确认用途。",
+                    risk_code="windows_profile_sensitive_read",
+                    posture=posture,
+                    command=raw,
+                    runtime_context=runtime_context,
+                    analysis_payload=analysis_payload,
+                    extra_details={"registrySignal": registry_signal, "verb": reg_verb},
+                )
+            if reg_verb in {"import", "load", "restore"} and any(path.suffix.lower() == ".reg" for path in paths):
+                return self._windows_profile_decision(
+                    verdict=medium_verdict,
+                    reason="命令会导入或加载注册表文件，需要确认不会修改 Windows profile 映射。",
+                    risk_code="windows_profile_registry_mutation",
+                    posture=posture,
+                    command=raw,
+                    runtime_context=runtime_context,
+                    analysis_payload=analysis_payload,
+                    extra_details={"verb": reg_verb},
+                )
+
+        if registry_signal and re.search(r"(?<![a-z0-9_-])(set-itemproperty|new-itemproperty|remove-itemproperty|remove-item|new-item)(?![a-z0-9_-])", lower):
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="PowerShell 注册表命令会修改 Windows profile 映射或用户 Shell Folder。",
+                risk_code="windows_profile_registry_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+                extra_details={"registrySignal": registry_signal},
+            )
+
+        acl_commands = {"icacls", "takeown", "set-acl"}
+        if self._command_has_any_verb(raw, acl_commands) and has_profile_root_path:
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="命令会修改 Windows profile hive/Default/TEMP/profile root 的 ACL 或所有权。",
+                risk_code="windows_profile_acl_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        attrib_mutation = re.search(r"(?<![a-z0-9_-])attrib(?:\.exe)?(?![a-z0-9_-]).*(?:\+|-)[rashsi]", lower) is not None
+        if attrib_mutation and has_profile_root_path:
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="命令会修改 Windows profile 关键文件属性。",
+                risk_code="windows_profile_acl_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        reparse_signal = (
+            self._command_has_any_verb(raw, {"mklink", "subst"})
+            or "fsutil reparsepoint" in lower
+            or "fsutil hardlink" in lower
+            or "new-item" in lower and any(marker in lower for marker in ["symboliclink", "junction", "hardlink"])
+        )
+        if reparse_signal and has_profile_root_path:
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="命令会在 Windows profile 关键路径创建或删除 reparse point / junction / subst 映射。",
+                risk_code="windows_profile_reparse_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        destructive_commands = {
+            "del",
+            "erase",
+            "rd",
+            "rmdir",
+            "remove-item",
+            "rm",
+            "move",
+            "mv",
+            "ren",
+            "rename",
+            "rename-item",
+            "move-item",
+            "clear-content",
+        }
+        destructive_flags = any(flag in lower for flag in [" -recurse", " /s", " -force", " /q", " -r "])
+        if self._command_has_any_verb(raw, destructive_commands) and (has_sensitive_path or (has_profile_root_path and destructive_flags)):
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="命令会删除、移动、重命名或清空 Windows profile hive/Default/TEMP/profile root。",
+                risk_code="windows_profile_hive_mutation",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+            )
+
+        copy_commands = {"copy", "copy-item", "cp", "xcopy", "robocopy"}
+        destructive_copy = any(flag in lower for flag in ["/mir", "/purge", " /move", " /mov"])
+        if self._command_has_any_verb(raw, copy_commands) and has_profile_root_path:
+            if destructive_copy:
+                return self._windows_profile_decision(
+                    verdict=high_verdict,
+                    reason="命令会用 destructive copy/mirror 影响 Windows profile 关键路径。",
+                    risk_code="windows_profile_destructive_copy",
+                    posture=posture,
+                    command=raw,
+                    runtime_context=runtime_context,
+                    analysis_payload=analysis_payload,
+                    extra_details={"destructiveCopy": True},
+                )
+            if has_sensitive_path:
+                return self._windows_profile_decision(
+                    verdict=read_verdict,
+                    reason="命令会复制或备份 Windows profile hive/Default/TEMP/profile 关键对象，需要确认用途。",
+                    risk_code="windows_profile_sensitive_read",
+                    posture=posture,
+                    command=raw,
+                    runtime_context=runtime_context,
+                    analysis_payload=analysis_payload,
+                )
+
+        if self._looks_like_read_only_enumeration_command(raw) and (has_sensitive_path or registry_signal):
+            return self._windows_profile_decision(
+                verdict=read_verdict,
+                reason="命令会枚举 Windows profile hive/映射/Default/TEMP 敏感对象，需要人工确认。",
+                risk_code="windows_profile_sensitive_read",
+                posture=posture,
+                command=raw,
+                runtime_context=runtime_context,
+                analysis_payload=analysis_payload,
+                extra_details={"registrySignal": registry_signal} if registry_signal else None,
+            )
+
+        return None
+
+    def _assess_windows_profile_file_write(
+        self,
+        path: Path,
+        *,
+        append: bool,
+        config: Dict[str, Any],
+        posture: str,
+        runtime_context: Optional[Dict[str, Any]],
+        content_preview: str | None,
+    ) -> Optional[SafetyDecision]:
+        if not self._windows_profile_protection_enabled(config):
+            return None
+        high_verdict = self._windows_profile_verdict(config, "highRiskMutationVerdict", "block")
+        medium_verdict = self._windows_profile_verdict(config, "mediumRiskMutationVerdict", "review")
+        text = str(content_preview or "")
+
+        if self._is_windows_profile_hive_path(path) or self._is_windows_default_or_temp_profile_path(path):
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="禁止直接写入 Windows profile hive、Default profile 或 TEMP profile。",
+                risk_code="windows_profile_hive_mutation",
+                posture=posture,
+                path=path,
+                runtime_context=runtime_context,
+                extra_details={"append": append},
+            )
+
+        if self._is_windows_startup_path(path) and self._is_windows_user_shell_script_path(path):
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="禁止直接写入用户 Startup 自启动脚本、快捷方式或可执行文件。",
+                risk_code="windows_profile_registry_mutation",
+                posture=posture,
+                path=path,
+                runtime_context=runtime_context,
+                extra_details={"append": append},
+            )
+
+        registry_signal = self._windows_profile_registry_signal(text)
+        if path.suffix.lower() == ".reg" and registry_signal:
+            return self._windows_profile_decision(
+                verdict=high_verdict,
+                reason="禁止写入会修改 Windows profile 映射、Shell Folder 或启动项的 .reg 内容。",
+                risk_code="windows_profile_registry_mutation",
+                posture=posture,
+                path=path,
+                runtime_context=runtime_context,
+                extra_details={"append": append, "registrySignal": registry_signal},
+            )
+        if path.suffix.lower() == ".reg":
+            return self._windows_profile_decision(
+                verdict=medium_verdict,
+                reason="写入注册表导入文件需要确认不会影响 Windows profile 映射。",
+                risk_code="windows_profile_sensitive_read",
+                posture=posture,
+                path=path,
+                runtime_context=runtime_context,
+                extra_details={"append": append},
+            )
+
+        if path.suffix.lower() in {".ps1", ".bat", ".cmd"} and text:
+            script_decision = self._assess_windows_profile_command(
+                text,
+                config=config,
+                posture=posture,
+                runtime_context=runtime_context,
+                analysis_payload=None,
+            )
+            if script_decision is not None and not script_decision.is_allow():
+                return self._windows_profile_decision(
+                    verdict=script_decision.verdict,
+                    reason="写入的脚本内容包含 Windows profile/ACL/registry 映射高风险操作。",
+                    risk_code=script_decision.risk_code,
+                    posture=posture,
+                    path=path,
+                    runtime_context=runtime_context,
+                    extra_details={"append": append, "scriptSafety": script_decision.to_payload()},
+                )
+
+        return None
+
+    def _external_tool_command_text(self, params: Dict[str, Any]) -> str:
+        for key in ("command", "cmd", "script", "shell", "input"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    def _external_tool_content_preview(self, params: Dict[str, Any]) -> str:
+        for key in ("content", "new_string", "newString", "text", "body"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                return value[:12000]
+        return ""
+
+    def _external_tool_path_values(self, params: Dict[str, Any]) -> list[str]:
+        paths: list[str] = []
+        path_keys = {
+            "path",
+            "file_path",
+            "filepath",
+            "filePath",
+            "target",
+            "source",
+            "destination",
+            "dest",
+            "old_path",
+            "new_path",
+            "oldPath",
+            "newPath",
+        }
+
+        def _walk(value: Any, key_hint: str = "") -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                if key_hint in path_keys or self._looks_like_path_value(value):
+                    paths.append(value)
+                return
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    _walk(item, str(key))
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _walk(item, key_hint)
+
+        _walk(params)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = path.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(path)
+        return deduped[:24]
+
+    def _looks_like_path_value(self, value: str) -> bool:
+        text = str(value or "").strip()
+        if not text or len(text) > 500:
+            return False
+        expanded = self._expand_path_text(text)
+        return bool(
+            re.match(r"^[a-zA-Z]:[\\/]", expanded)
+            or expanded.startswith(("\\\\", "/", "~\\", "~/"))
+            or re.search(r"(?i)(%userprofile%|\$env:userprofile|\$\{env:userprofile\}|%localappdata%|\$env:localappdata|~[\\/])", text)
+        )
+
+    def _external_tool_local_system_decision(
+        self,
+        *,
+        source_decision: SafetyDecision,
+        tool_name: str,
+        params: Dict[str, Any],
+        posture: str,
+        runtime_context: Optional[Dict[str, Any]],
+    ) -> SafetyDecision:
+        if source_decision.is_block():
+            verdict = "block"
+            risk_code = "external_tool_local_system_hard_stop"
+            reason = "外部工具命中本地系统破坏面，V8 已 hard stop，不向外发出 tool_use。"
+            allow_override = False
+        else:
+            verdict = "review"
+            risk_code = "external_tool_local_system_review"
+            reason = "外部工具命中本地系统敏感面，需要 V8 Safety 审批后才可发出。"
+            allow_override = True
+        return self._decision(
+            verdict=verdict,
+            reason=reason,
+            risk_code=risk_code,
+            governance_target="system_integrity",
+            posture=posture,
+            details={
+                "tool_name": tool_name,
+                "runtime_context": runtime_context or {},
+                "sourceSafety": source_decision.to_payload(),
+                "paramsPreview": self._redact_sensitive_payload(params),
+            },
+            allow_override=allow_override,
+        )
 
     def _analyze_system_command(self, command: str, *, runtime_context: Optional[Dict[str, Any]]) -> _CommandAnalysis:
         analysis = _CommandAnalysis(original=str(command or ""))
@@ -3356,20 +4098,22 @@ class SafetyGuardian:
             return []
         seen: set[str] = set()
         extracted: list[Path] = []
-        quoted_matches = re.findall(r'["\']((?:[a-zA-Z]:[\\/]|\\\\|/)[^"\']+)["\']', raw)
+        quoted_matches = re.findall(r'["\']([^"\']+)["\']', raw)
         tokens = quoted_matches + self._command_tokens(raw)
         for token in tokens:
             candidate = str(token or "").strip().strip("\"'")
             if not candidate:
                 continue
-            if candidate.startswith(("-", "/")) and not re.match(r"^[a-zA-Z]:[\\/]", candidate):
+            expanded = self._expand_path_text(candidate)
+            if candidate.startswith(("-", "/")) and not re.match(r"^[a-zA-Z]:[\\/]", expanded):
                 continue
             if not (
-                re.match(r"^[a-zA-Z]:[\\/]", candidate)
-                or candidate.startswith(("\\\\", "/", "~\\", "~/"))
+                re.match(r"^[a-zA-Z]:[\\/]", expanded)
+                or expanded.startswith(("\\\\", "/", "~\\", "~/"))
+                or re.search(r"(?i)(%userprofile%|\$env:userprofile|\$\{env:userprofile\}|%localappdata%|\$env:localappdata|~[\\/])", candidate)
             ):
                 continue
-            normalized = self._normalize_path(candidate)
+            normalized = self._normalize_path(expanded)
             if normalized is None:
                 continue
             key = str(normalized).lower()

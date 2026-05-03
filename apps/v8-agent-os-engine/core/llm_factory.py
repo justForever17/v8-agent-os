@@ -257,12 +257,12 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             print(f"[Embedding] ⚠️ Failed to persist observed input token limit: {exc}")
 
     def _effective_max_tokens(self) -> int | None:
+        if not self.max_tokens:
+            return None
         observed = _EMBEDDING_OBSERVED_LIMITS.get(self._observed_limit_key()) or self._load_persisted_observed_limit()
         if observed and observed > 0:
-            if self.max_tokens:
-                return min(int(self.max_tokens), int(observed))
-            return int(observed)
-        return int(self.max_tokens) if self.max_tokens else None
+            return min(int(self.max_tokens), int(observed))
+        return int(self.max_tokens)
     
     def _truncate_text(self, text: str, *, token_limit: int | None = None) -> str:
         """Truncate text to stay within model's context window. Rough estimate: 1 token ≈ 3 chars for CJK."""
@@ -291,6 +291,10 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             capability_class=self.capability_class,
             model_id=self.model_name,
         )
+        if not self._effective_max_tokens():
+            raise ValueError(
+                f"missing_context_window: embedding model '{self.model_name}' must define contextWindow before retrieval can run"
+            )
         original_texts = list(texts)
         texts = [self._truncate_text(t) for t in original_texts]
         headers = {
@@ -438,19 +442,27 @@ class RestReranker(BaseReranker):
             print(f"[Reranker] ⚠️ Failed to persist observed query token limit: {exc}")
 
     def _effective_query_token_limit(self) -> int:
+        if not self.max_tokens:
+            raise ValueError(
+                f"missing_context_window: reranker model '{self.model_name}' must define contextWindow before rerank can run"
+            )
         observed = _RERANK_OBSERVED_QUERY_LIMITS.get(self._observed_query_limit_key()) or self._load_persisted_observed_query_limit()
-        configured = int(self.max_tokens) if self.max_tokens else 8192
-        default_query = min(max(256, configured // 8), 2048)
+        configured = int(self.max_tokens)
+        default_query = max(1, configured // 8)
         if observed and observed > 0:
             return min(default_query, int(observed))
         return default_query
 
     def _prepare_payload_documents(self, query: str, documents: list[str], *, query_limit: int | None = None) -> tuple[str, list[str], dict[str, Any]]:
-        total_budget = int(self.max_tokens or 8192)
+        if not self.max_tokens:
+            raise ValueError(
+                f"missing_context_window: reranker model '{self.model_name}' must define contextWindow before rerank can run"
+            )
+        total_budget = int(self.max_tokens)
         effective_query_limit = int(query_limit or self._effective_query_token_limit())
         trimmed_query = _truncate_text_for_token_limit(str(query or ""), effective_query_limit, label="Reranker")
-        remaining = max(1024, total_budget - effective_query_limit)
-        per_doc_limit = max(128, min(1024, remaining // max(1, min(len(documents), 20))))
+        remaining = max(1, total_budget - effective_query_limit)
+        per_doc_limit = max(1, remaining // max(1, len(documents)))
         trimmed_docs = [
             _truncate_text_for_token_limit(str(doc or ""), per_doc_limit, label="Reranker")
             for doc in list(documents or [])
@@ -501,20 +513,21 @@ class RestReranker(BaseReranker):
             res = self._post_rerank(endpoint, payload, headers)
             if res.status_code != 200 and _classify_rerank_provider_error(res.status_code, res.text) == "input_limit_exceeded":
                 observed_limit = _extract_observed_token_limit(res.text)
-                if not observed_limit and "query is too long" in str(res.text or "").lower():
-                    observed_limit = 1024
-                if observed_limit and observed_limit > 0 and observed_limit < int(limit_meta.get("queryTokenLimit") or 0):
-                    _RERANK_OBSERVED_QUERY_LIMITS[self._observed_query_limit_key()] = int(observed_limit)
-                    self._persist_observed_query_limit(int(observed_limit), endpoint=endpoint)
+                current_query_limit = int(limit_meta.get("queryTokenLimit") or 0)
+                retry_query_limit = int(observed_limit) if observed_limit and observed_limit > 0 else max(1, current_query_limit // 2)
+                if retry_query_limit and retry_query_limit > 0 and retry_query_limit < current_query_limit:
+                    if observed_limit and observed_limit > 0:
+                        _RERANK_OBSERVED_QUERY_LIMITS[self._observed_query_limit_key()] = int(observed_limit)
+                        self._persist_observed_query_limit(int(observed_limit), endpoint=endpoint)
                     retry_query, retry_documents, retry_limit_meta = self._prepare_payload_documents(
                         query,
                         documents,
-                        query_limit=int(observed_limit),
+                        query_limit=int(retry_query_limit),
                     )
                     retry_payload = dict(payload)
                     retry_payload["query"] = retry_query
                     retry_payload["documents"] = retry_documents
-                    print(f"[Reranker] ℹ️ Observed provider query token limit {observed_limit}; retrying with smaller query.")
+                    print(f"[Reranker] ℹ️ Retrying with smaller query token limit {retry_query_limit}.")
                     retry_res = self._post_rerank(endpoint, retry_payload, headers)
                     if retry_res.status_code == 200:
                         res = retry_res

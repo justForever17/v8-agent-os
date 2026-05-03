@@ -35,6 +35,12 @@ _TOOLING_HINTS = (
 _EXAMPLE_HINTS = ("example", "examples", "示例", "例子")
 _NOISE_HINTS = ("tips for getting started", "recent activity", "welcome back", "shortcut", "billing")
 _SAFETY_HINTS = ("safety", "permission", "安全", "权限")
+_SYSTEM_REMINDER_OPEN_RE = re.compile(r"^\s*<system-reminder\b", re.IGNORECASE)
+_SYSTEM_REMINDER_BLOCK_RE = re.compile(r"<system-reminder\b[^>]*>[\s\S]*?</system-reminder>", re.IGNORECASE)
+_CLIENT_BACKGROUND_HINTS = (
+    "[suggestion mode:",
+    "suggest what the user might naturally type next into claude code",
+)
 
 
 @dataclass(slots=True)
@@ -42,6 +48,36 @@ class CompatIngressResult:
     payload: dict[str, Any]
     raw_ref: str | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class CompatTurnClassification:
+    protocol: str
+    client_profile: str
+    request_kind: str
+    execution_policy: str
+    latest_human_utterance: str
+    raw_ref: str | None
+    skip_reason: str | None = None
+    suppress_passive_rag: bool = True
+    suppress_extensions_prefilter: bool = True
+    external_tools_primary: bool = False
+    background_request_kind: str | None = None
+
+    def as_diagnostics(self) -> dict[str, Any]:
+        return {
+            "compatClientProfile": self.client_profile,
+            "compatRequestKind": self.request_kind,
+            "compatExecutionPolicy": self.execution_policy,
+            "latestHumanUtterance": self.latest_human_utterance,
+            "rawRef": self.raw_ref,
+            "ragSkipReason": self.skip_reason,
+            "skipReason": self.skip_reason,
+            "suppressPassiveRag": self.suppress_passive_rag,
+            "suppressExtensionsPrefilter": self.suppress_extensions_prefilter,
+            "externalToolsPrimary": self.external_tools_primary,
+            "backgroundRequestKind": self.background_request_kind,
+        }
 
 
 def _json_dumps(payload: Any) -> str:
@@ -198,7 +234,7 @@ def _clean_external_system_prompt(protocol: str, system_text: str, *, raw_ref: s
     for title, body in _split_system_prompt_sections(text):
         buckets[_classify_system_section(title, body)].append(body)
 
-    if not buckets["clientCoreInstructions"]:
+    if not buckets["clientCoreInstructions"] and _classify_system_section("preamble", text) == "clientCoreInstructions":
         # Some clients ship a single unheaded block. Preserve a bounded core
         # preview rather than losing the client intent entirely.
         buckets["clientCoreInstructions"].append(text)
@@ -267,6 +303,249 @@ def _clean_external_system_prompt(protocol: str, system_text: str, *, raw_ref: s
     return "\n".join(lines).strip(), diagnostics
 
 
+def _is_external_system_reminder_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    return bool(_SYSTEM_REMINDER_OPEN_RE.match(value)) or "the following skills are available for use with the skill tool" in lowered
+
+
+def _strip_external_system_reminder_blocks(text: str) -> tuple[str, int]:
+    value = str(text or "")
+    stripped = _SYSTEM_REMINDER_BLOCK_RE.sub("", value)
+    omitted = max(0, len(value) - len(stripped))
+    return stripped.strip(), omitted
+
+
+def _is_client_background_request_text(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    return any(token in lowered for token in _CLIENT_BACKGROUND_HINTS)
+
+
+def _openai_message_texts(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for item in list(payload.get("messages") or []):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        rows.append((role, _flatten_openai_content(item.get("content"))))
+    return rows
+
+
+def _anthropic_message_texts(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    system_text = _flatten_anthropic_content(payload.get("system"))
+    if system_text.strip():
+        rows.append(("system", system_text))
+    for item in list(payload.get("messages") or []):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        rows.append((role, _flatten_anthropic_content(item.get("content"))))
+    return rows
+
+
+def _clean_visible_user_text(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    cleaned, _omitted = _strip_external_system_reminder_blocks(value)
+    cleaned = cleaned.strip()
+    if not cleaned or _is_external_system_reminder_text(cleaned):
+        return ""
+    return cleaned
+
+
+def _visible_openai_user_text(content: Any) -> str:
+    if isinstance(content, str):
+        return _clean_visible_user_text(content)
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            cleaned = _clean_visible_user_text(block)
+            if cleaned:
+                parts.append(cleaned)
+            continue
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").strip().lower()
+        if block_type in {"text", "input_text", "output_text"}:
+            cleaned = _clean_visible_user_text(str(block.get("text") or block.get("content") or ""))
+            if cleaned:
+                parts.append(cleaned)
+        # Claude-style tool_result blocks may be carried in a user message by
+        # Anthropic-compatible clients. They are deliberately not human input.
+    return "\n".join(parts).strip()
+
+
+def _visible_anthropic_user_text(content: Any) -> str:
+    if isinstance(content, str):
+        return _clean_visible_user_text(content)
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            cleaned = _clean_visible_user_text(block)
+            if cleaned:
+                parts.append(cleaned)
+            continue
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type") or "").strip().lower() != "text":
+            continue
+        cleaned = _clean_visible_user_text(str(block.get("text") or ""))
+        if cleaned:
+            parts.append(cleaned)
+    return "\n".join(parts).strip()
+
+
+def _latest_openai_human_candidate(payload: dict[str, Any]) -> tuple[str, str | None]:
+    for item in reversed(list(payload.get("messages") or [])):
+        if not isinstance(item, dict) or str(item.get("role") or "").strip().lower() != "user":
+            continue
+        text = _visible_openai_user_text(item.get("content"))
+        if not text:
+            continue
+        if _is_client_background_request_text(text):
+            return "", "background_suggestion"
+        return text, None
+    return "", None
+
+
+def _latest_anthropic_human_candidate(payload: dict[str, Any]) -> tuple[str, str | None]:
+    for item in reversed(list(payload.get("messages") or [])):
+        if not isinstance(item, dict) or str(item.get("role") or "").strip().lower() != "user":
+            continue
+        text = _visible_anthropic_user_text(item.get("content"))
+        if not text:
+            continue
+        if _is_client_background_request_text(text):
+            return "", "background_suggestion"
+        return text, None
+    return "", None
+
+
+def _count_openai_tool_results(payload: dict[str, Any]) -> int:
+    return sum(
+        1
+        for item in list(payload.get("messages") or [])
+        if isinstance(item, dict) and str(item.get("role") or "").strip().lower() == "tool"
+    )
+
+
+def _count_openai_assistant_tool_calls(payload: dict[str, Any]) -> int:
+    total = 0
+    for item in list(payload.get("messages") or []):
+        if not isinstance(item, dict) or str(item.get("role") or "").strip().lower() != "assistant":
+            continue
+        calls = item.get("tool_calls") or item.get("toolCalls") or []
+        if isinstance(calls, list):
+            total += len(calls)
+    return total
+
+
+def _count_anthropic_tool_blocks(payload: dict[str, Any], block_type: str) -> int:
+    total = 0
+    for item in list(payload.get("messages") or []):
+        if not isinstance(item, dict):
+            continue
+        for block in item.get("content") if isinstance(item.get("content"), list) else []:
+            if isinstance(block, dict) and str(block.get("type") or "").strip().lower() == block_type:
+                total += 1
+    return total
+
+
+def _detect_client_profile(*, protocol: str, payload: dict[str, Any], rows: list[tuple[str, str]], tool_count: int) -> str:
+    haystack = "\n".join(text for _role, text in rows).lower()
+    if "claude code" in haystack or "the following skills are available for use with the skill tool" in haystack:
+        return "claude_code"
+    if any(token in haystack for token in _CLIENT_BACKGROUND_HINTS):
+        return "claude_code"
+    if "cherry" in haystack and ("tool use" in haystack or "<tool_use" in haystack or "available tools" in haystack):
+        return "cherry_agent"
+    if "<tool_use" in haystack or "tool use formatting" in haystack or "tool use available tools" in haystack:
+        return "external_agent_client"
+    if tool_count:
+        return f"{protocol}_external_agent"
+    return "plain_chat"
+
+
+def classify_compat_turn(protocol: str, payload: dict[str, Any], *, raw_ref: str | None = None) -> CompatTurnClassification:
+    normalized_protocol = str(protocol or "").strip().lower()
+    if normalized_protocol == "anthropic":
+        rows = _anthropic_message_texts(payload)
+        latest_human, special_kind = _latest_anthropic_human_candidate(payload)
+        tool_result_count = _count_anthropic_tool_blocks(payload, "tool_result")
+        assistant_tool_count = _count_anthropic_tool_blocks(payload, "tool_use")
+        tool_count = len([item for item in list(payload.get("tools") or []) if isinstance(item, dict)])
+    else:
+        normalized_protocol = "openai"
+        rows = _openai_message_texts(payload)
+        latest_human, special_kind = _latest_openai_human_candidate(payload)
+        tool_result_count = _count_openai_tool_results(payload)
+        assistant_tool_count = _count_openai_assistant_tool_calls(payload)
+        tool_count = len([item for item in list(payload.get("tools") or []) if isinstance(item, dict)])
+
+    client_profile = _detect_client_profile(
+        protocol=normalized_protocol,
+        payload=payload,
+        rows=rows,
+        tool_count=tool_count,
+    )
+    background_kind = "claude_code_suggestion" if special_kind == "background_suggestion" else None
+
+    if background_kind:
+        request_kind = "background_suggestion"
+    elif latest_human:
+        request_kind = "human_turn"
+    elif tool_result_count:
+        request_kind = "tool_result_resume"
+    elif assistant_tool_count:
+        request_kind = "agent_internal_continuation"
+    else:
+        request_kind = "unknown_nonhuman"
+
+    external_tools_primary = bool(tool_count or client_profile in {"claude_code", "cherry_agent", "external_agent_client"})
+    if request_kind == "tool_result_resume":
+        execution_policy = "resume_only"
+    elif request_kind == "background_suggestion":
+        execution_policy = "background_bypass"
+    elif request_kind == "human_turn" and not external_tools_primary:
+        execution_policy = "v8_orchestration_allowed"
+    elif request_kind == "human_turn":
+        execution_policy = "external_agent_facade"
+    else:
+        execution_policy = "reject_or_minimal_reply"
+
+    # RAG is keyed by the human utterance, not by the transport. External-agent
+    # compat requests may still contain a real user turn; once we have cleaned
+    # and identified it, passive RAG should use that text instead of being
+    # blanket-disabled for compat.
+    suppress_passive_rag = request_kind != "human_turn"
+    suppress_extensions_prefilter = execution_policy != "v8_orchestration_allowed"
+    skip_reason = None
+    if suppress_passive_rag:
+        skip_reason = f"compat_{request_kind}_{execution_policy}_suppresses_passive_rag"
+
+    return CompatTurnClassification(
+        protocol=normalized_protocol,
+        client_profile=client_profile,
+        request_kind=request_kind,
+        execution_policy=execution_policy,
+        latest_human_utterance=latest_human,
+        raw_ref=raw_ref,
+        skip_reason=skip_reason,
+        suppress_passive_rag=suppress_passive_rag,
+        suppress_extensions_prefilter=suppress_extensions_prefilter,
+        external_tools_primary=external_tools_primary,
+        background_request_kind=background_kind,
+    )
+
+
 def _external_tool_recovery_hints(text: str) -> list[dict[str, str]]:
     lowered = str(text or "").lower()
     hints: list[dict[str, str]] = []
@@ -296,7 +575,7 @@ def _build_summary_block(
     message_count: int,
     tool_count: int,
     tool_result_count: int,
-    latest_user: str,
+    latest_human_utterance: str,
     recent_assistant_actions: list[str],
     recovery_hints: list[dict[str, str]] | None = None,
 ) -> str:
@@ -309,8 +588,8 @@ def _build_summary_block(
         f"clientToolCount: {tool_count}",
         f"toolResultCount: {tool_result_count}",
     ]
-    if latest_user:
-        lines.append(f"latestUserTurn: {_trim_preview(latest_user, max_chars=700)}")
+    if latest_human_utterance:
+        lines.append(f"latestHumanUtterance: {_trim_preview(latest_human_utterance, max_chars=700)}")
     if recent_assistant_actions:
         lines.append("recentAssistantBehavior:")
         for item in recent_assistant_actions[-5:]:
@@ -359,12 +638,16 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
             "clientToolCount": len([item for item in list(cloned.get("tools") or []) if isinstance(item, dict)]),
         },
     )
+    classification = classify_compat_turn("openai", cloned, raw_ref=raw_ref)
 
     tool_result_count = 0
     latest_user = ""
     recent_assistant_actions: list[str] = []
     recovery_hints: list[dict[str, str]] = []
     system_prompt_cleaning: dict[str, Any] | None = None
+    system_reminder_omitted_count = 0
+    system_reminder_omitted_chars = 0
+    background_request_kind = ""
     sanitized_messages: list[dict[str, Any]] = []
     for raw in messages:
         item = dict(raw)
@@ -377,8 +660,22 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
                 system_prompt_cleaning = cleaning_diag
         elif role == "user":
             text = _flatten_openai_content(item.get("content")).strip()
+            cleaned_text, omitted_chars = _strip_external_system_reminder_blocks(text)
+            if omitted_chars:
+                system_reminder_omitted_count += 1
+                system_reminder_omitted_chars += omitted_chars
+                item["content"] = cleaned_text
+                text = cleaned_text
+                if not cleaned_text:
+                    continue
+            elif _is_external_system_reminder_text(text):
+                system_reminder_omitted_count += 1
+                system_reminder_omitted_chars += len(text)
+                continue
             if text:
                 latest_user = text
+                if _is_client_background_request_text(text):
+                    background_request_kind = "claude_code_suggestion"
         elif role == "assistant":
             text = _flatten_openai_content(item.get("content")).strip()
             tool_calls = item.get("tool_calls") or item.get("toolCalls") or []
@@ -410,7 +707,7 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
         message_count=len(messages),
         tool_count=len([item for item in list(cloned.get("tools") or []) if isinstance(item, dict)]),
         tool_result_count=tool_result_count,
-        latest_user=latest_user,
+        latest_human_utterance=classification.latest_human_utterance or latest_user,
         recent_assistant_actions=recent_assistant_actions,
         recovery_hints=recovery_hints,
     )
@@ -426,6 +723,10 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
         "clientToolCount": len([item for item in list(cloned.get("tools") or []) if isinstance(item, dict)]),
         "recoveryHints": recovery_hints[:5],
         "systemPromptCleaning": system_prompt_cleaning or {"applied": False},
+        "systemReminderOmittedCount": system_reminder_omitted_count,
+        "systemReminderOmittedChars": system_reminder_omitted_chars,
+        **classification.as_diagnostics(),
+        "backgroundRequestKind": classification.background_request_kind or background_request_kind or None,
     }
     _remember_ingress_event(diagnostics)
     return CompatIngressResult(
@@ -448,6 +749,7 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
         cloned,
         metadata={"estimatedTokens": payload_tokens, "messageCount": len(messages), "clientToolCount": len(tools)},
     )
+    classification = classify_compat_turn("anthropic", cloned, raw_ref=raw_ref)
 
     system_text = _flatten_anthropic_content(cloned.get("system")).strip()
     system_prompt_cleaning: dict[str, Any] | None = None
@@ -461,6 +763,9 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
     latest_user = ""
     recent_assistant_actions: list[str] = []
     recovery_hints: list[dict[str, str]] = []
+    system_reminder_omitted_count = 0
+    system_reminder_omitted_chars = 0
+    background_request_kind = ""
     sanitized_messages: list[dict[str, Any]] = []
     for raw in messages:
         item = dict(raw)
@@ -483,8 +788,23 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
             new_blocks: list[Any] = []
             for block in content if isinstance(content, list) else [{"type": "text", "text": content}]:
                 if isinstance(block, str):
-                    if block.strip():
-                        latest_user = block
+                    text = block.strip()
+                    cleaned_text, omitted_chars = _strip_external_system_reminder_blocks(block)
+                    if omitted_chars:
+                        system_reminder_omitted_count += 1
+                        system_reminder_omitted_chars += omitted_chars
+                        if not cleaned_text:
+                            continue
+                        block = cleaned_text
+                        text = cleaned_text.strip()
+                    elif _is_external_system_reminder_text(text):
+                        system_reminder_omitted_count += 1
+                        system_reminder_omitted_chars += len(text)
+                        continue
+                    if text:
+                        latest_user = text
+                        if _is_client_background_request_text(text):
+                            background_request_kind = "claude_code_suggestion"
                     new_blocks.append(block)
                     continue
                 if not isinstance(block, dict):
@@ -506,9 +826,27 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
                     continue
                 if block_type == "text":
                     text = str(block.get("text") or "").strip()
+                    cleaned_text, omitted_chars = _strip_external_system_reminder_blocks(text)
+                    if omitted_chars:
+                        system_reminder_omitted_count += 1
+                        system_reminder_omitted_chars += omitted_chars
+                        if not cleaned_text:
+                            continue
+                        new_block = dict(block)
+                        new_block["text"] = cleaned_text
+                        block = new_block
+                        text = cleaned_text.strip()
+                    elif _is_external_system_reminder_text(text):
+                        system_reminder_omitted_count += 1
+                        system_reminder_omitted_chars += len(text)
+                        continue
                     if text:
                         latest_user = text
+                        if _is_client_background_request_text(text):
+                            background_request_kind = "claude_code_suggestion"
                 new_blocks.append(block)
+            if not new_blocks:
+                continue
             item["content"] = new_blocks if isinstance(content, list) else _flatten_anthropic_content(new_blocks)
         sanitized_messages.append(item)
 
@@ -518,7 +856,7 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
         message_count=len(messages),
         tool_count=len(tools),
         tool_result_count=tool_result_count,
-        latest_user=latest_user,
+        latest_human_utterance=classification.latest_human_utterance or latest_user,
         recent_assistant_actions=recent_assistant_actions,
         recovery_hints=recovery_hints,
     )
@@ -534,6 +872,10 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
         "clientToolCount": len(tools),
         "recoveryHints": recovery_hints[:5],
         "systemPromptCleaning": system_prompt_cleaning or {"applied": False},
+        "systemReminderOmittedCount": system_reminder_omitted_count,
+        "systemReminderOmittedChars": system_reminder_omitted_chars,
+        **classification.as_diagnostics(),
+        "backgroundRequestKind": classification.background_request_kind or background_request_kind or None,
     }
     _remember_ingress_event(diagnostics)
     return CompatIngressResult(

@@ -76,6 +76,7 @@ from runtimes.memory.scope_resolution import (
 )
 from core.time_truth import utc_now_iso
 from runtimes.network_supervisor.openai_compat import build_external_tool_alias_maps
+from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
 
 class StreamFilter:
@@ -189,6 +190,15 @@ class ChatRunContext:
     @property
     def is_resume_request(self) -> bool:
         return self.prepared.is_resume_request
+
+
+def _compat_ingress_diagnostics_from_request(request: ChatRequest) -> dict[str, Any]:
+    try:
+        data = getattr(request, "data", None)
+        diagnostics = getattr(data, "compat_ingress_diagnostics", None) if data is not None else None
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    except Exception:
+        return {}
 
     def emit_runtime_event(
         self,
@@ -1623,6 +1633,11 @@ class ChatRuntime:
         request.conversation_id = conversation_id
         request.user_id = user_id
         self._resolve_engine_config(request)
+        latest_user_content = self._latest_user_content(request)
+        compat_diagnostics = _compat_ingress_diagnostics_from_request(request)
+        compat_latest_human = str(compat_diagnostics.get("latestHumanUtterance") or "").strip()
+        if compat_latest_human:
+            latest_user_content = compat_latest_human
 
         return ChatPreparedRequest(
             request=request,
@@ -1631,7 +1646,7 @@ class ChatRuntime:
             conversation_id=conversation_id,
             user_id=user_id,
             is_resume_request=bool(request.resume_run_id),
-            latest_user_content=self._latest_user_content(request),
+            latest_user_content=latest_user_content,
             command_preset_name=(str(command_preset.get("name") or "").strip() or None) if command_preset else None,
             command_preset_hash=(str(command_preset.get("contentHash") or "").strip() or None) if command_preset else None,
             planner_mode=planner_mode,
@@ -2219,10 +2234,25 @@ class ChatRuntime:
         return ctx_config.get("recursion_limit", 500)
 
     async def create_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
+        compat_diagnostics = _compat_ingress_diagnostics_from_request(chat_run.request)
+        current_route_context = {}
+        if compat_diagnostics:
+            current_route_context = {
+                "transport": chat_run.transport,
+                "compatIngressDiagnostics": compat_diagnostics,
+                "compatClientProfile": compat_diagnostics.get("compatClientProfile"),
+                "compatRequestKind": compat_diagnostics.get("compatRequestKind"),
+                "compatExecutionPolicy": compat_diagnostics.get("compatExecutionPolicy"),
+                "latestHumanUtterance": compat_diagnostics.get("latestHumanUtterance"),
+                "suppressPassiveRag": compat_diagnostics.get("suppressPassiveRag"),
+                "suppressExtensionsPrefilter": compat_diagnostics.get("suppressExtensionsPrefilter"),
+                "externalToolsPrimary": compat_diagnostics.get("externalToolsPrimary"),
+            }
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
             messages=chat_run.lc_messages,
             session_id=chat_run.session_id,
+            current_route_context=current_route_context,
             planner_plan=chat_run.prepared.planner_plan,
             engineering_context=chat_run.prepared.engineering_context_pack,
             task_shape_hint=chat_run.prepared.task_shape_hint,
@@ -4932,6 +4962,10 @@ class ChatRuntime:
             if str(approval.get("status") or "").strip().lower() == "pending":
                 return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
         normalized = normalize_provider_error(exc)
+        if isinstance(exc, CompatBridgeHardStop):
+            failure_class = getattr(exc, "failure_class", CompatBridgeHardStop.failure_class)
+            normalized["failureClass"] = failure_class
+            normalized["code"] = failure_class
         if chat_run and normalized.get("code") == "context_window_overflow":
             try:
                 context_config = storage.get_context_config() or {}
@@ -4991,6 +5025,12 @@ class ChatRuntime:
                 )
             try:
                 chat_run.run_handle.fail(normalized["message"], node="run_manager")
+                if isinstance(exc, CompatBridgeHardStop):
+                    failure_class = getattr(exc, "failure_class", CompatBridgeHardStop.failure_class)
+                    run_service.update_metadata(
+                        chat_run.active_run_id,
+                        {"failureClass": failure_class},
+                    )
             except Exception as fail_exc:
                 logging.getLogger("v8chat.chat_runtime").exception(
                     "Failed to persist failed run state for run '%s' during error finalization",

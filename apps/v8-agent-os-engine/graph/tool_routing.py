@@ -65,6 +65,13 @@ async def async_tool_call_wrapper(request, execute):
         _raise_runtime_governance_exception_if_needed(execution_err)
         error_msg = str(execution_err)
         print(f"[ToolWrapper] Tool {tool_name} failed: {error_msg}")
+        if str(tool_name or "").startswith("network_") and "__pregel_scratchpad" in error_msg:
+            from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
+
+            raise CompatBridgeHardStop(
+                f"External client tool bridge hard stop for '{tool_name}': missing LangGraph interrupt context "
+                "(__pregel_scratchpad). The model must not retry this network_* tool in the same run."
+            ) from execution_err
         return apply_tool_surface_budget(
             ToolMessage(
                 content=(

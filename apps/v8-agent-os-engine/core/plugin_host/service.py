@@ -26,8 +26,10 @@ from core.database import db
 from core.models.factory import llm_factory
 from core.models.control_plane import model_control_plane
 from core.llm_tree_prefilter import select_family_keys_with_llm
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.storage import storage
 from core.v8_agent_os_paths import OPENCLAW_DEFAULT_STATE_ROOT, PLUGIN_HOST_ROOT, PLUGIN_INSTALL_LOG_ROOT
+from erc.safety_guardian import safety_guardian
 from core.context.workspace import workspace_resolution_service
 from .catalog import build_install_catalog
 from .health import evaluate_plugin_health
@@ -6615,6 +6617,41 @@ Get-CimInstance Win32_Process |
         params_payload = dict(params or {})
         action = str(params_payload.pop("action", "") or "").strip() or None
         session_key = str(params_payload.pop("sessionKey", "") or "").strip() or None
+        safety_decision = safety_guardian.assess_external_tool_call(
+            tool_name=str(match.get("toolName") or canonical_name),
+            params=params_payload,
+            tool_kind=str(match.get("toolKind") or match.get("kind") or ""),
+            side_effect=str(match.get("sideEffect") or match.get("side_effect") or ""),
+            runtime_context={
+                "runtime_kind": "plugin_host",
+                "trigger_source": "plugin_host_bridge_tool",
+                "pluginId": str(match.get("pluginId") or "").strip() or normalized_plugin_id,
+                "canonicalName": canonical_name,
+            },
+        )
+        safety_guardian.log_decision_event(
+            action="plugin_host_bridge_tool",
+            decision=safety_decision,
+            subject=canonical_name,
+            metadata={"pluginId": normalized_plugin_id},
+        )
+        if safety_decision.is_block():
+            raise RuntimeError(f"Safety Guardian 已阻止 OpenClaw bridge 工具调用：{safety_decision.reason}")
+        if safety_decision.is_review():
+            request_payload = safety_decision.to_interrupt_request(
+                question=(
+                    "Safety Guardian 检测到 Plugin Host 外部工具命中本地系统敏感面，是否允许继续？"
+                    f"\n工具：{canonical_name}"
+                ),
+                tool_call_id="",
+            )
+            raise ModelGovernanceInterventionRequired(
+                f"Safety Guardian 检测到 Plugin Host 工具审批请求：{safety_decision.reason}",
+                approval_kind="safety_review",
+                question=request_payload.get("question") or request_payload.get("prompt") or "需要 Safety 审批。",
+                details={"safety": safety_decision.to_payload()},
+                request_payload=request_payload,
+            )
         body = self._openclaw_gateway_request_json(
             suffix="/plugins/openclaw-v8-bridge/tools/invoke",
             payload={

@@ -163,7 +163,7 @@ def _is_workspace_less_network_transport(state) -> bool:
         or (route_context.get("transport") if isinstance(route_context, dict) else "")
         or ""
     ).strip()
-    if transport != "network_supervisor_openai":
+    if transport not in {"network_supervisor_openai", "network_supervisor_anthropic"}:
         return False
     explicit_workspace_id = str(state.get("workspace_id") or "").strip()
     explicit_workspace_path = _normalize_workspace_path(state.get("workspace_path"))
@@ -267,13 +267,15 @@ def render_network_supervisor_context(state) -> str:
         or route_context.get("triggerSource")
         or ""
     ).strip()
-    if transport != "network_supervisor_openai":
+    if transport not in {"network_supervisor_openai", "network_supervisor_anthropic"}:
         return ""
+    protocol = "Anthropic-compatible" if transport == "network_supervisor_anthropic" else "OpenAI-compatible"
     return (
         "[NETWORK SUPERVISOR CONTEXT]\n"
-        "Surface: OpenAI-compatible API via Admin relay; the caller is an external application, not the V8 phone/web UI.\n"
+        f"Surface: {protocol} API via Admin relay; the caller is an external application, not the V8 phone/web UI.\n"
         "Do not rely on V8-only ask_user interaction cards, artifact cards, runtime cards, planner cards, or swarm cards being visible to the caller.\n"
-        "Prefer network_* tools first: they are client-provided OpenAI function-calling tools. If they are insufficient and the task truly requires V8OS capability, then fall back to V8OS native tools.\n"
+        "Prefer network_* tools first: they are client-provided tools that execute in the external application's workspace and approval UI.\n"
+        "For external-client file operations, do not switch to V8OS internal filesystem or shell tools unless the user explicitly asks V8OS to operate in the V8 workspace.\n"
         "Return externally consumable text, URLs, or standard tool-call results; do not tell the caller to inspect V8 internal panels or cards.\n"
         "[/NETWORK SUPERVISOR CONTEXT]\n"
     )

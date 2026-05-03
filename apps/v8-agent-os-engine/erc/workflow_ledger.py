@@ -144,9 +144,10 @@ class WorkflowLedgerService:
             "completed": "completed",
             "failed": "recoverable_failed",
             "cancelled": "cancelled",
+            "abandoned": "abandoned",
         }.get(run_status, run_status)
 
-        recoverable = workflow_status not in {"completed", "cancelled"}
+        recoverable = workflow_status not in {"completed", "cancelled", "abandoned"}
         step_status = {
             "waiting_approval": "waiting_approval",
             "waiting_external_tool": "waiting_external_tool",
@@ -154,6 +155,7 @@ class WorkflowLedgerService:
             "completed": "completed",
             "failed": "failed",
             "cancelled": "cancelled",
+            "abandoned": "abandoned",
             "interrupted": "interrupted",
             "waiting_input": "repair_pending",
         }.get(run_status, "running")

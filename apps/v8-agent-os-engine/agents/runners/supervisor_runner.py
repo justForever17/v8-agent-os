@@ -60,6 +60,7 @@ class SupervisorAgentRunner:
         self,
         messages,
         *,
+        current_route_context: dict[str, Any] | None = None,
         planner_plan: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
         task_shape_hint: dict[str, Any] | None = None,
@@ -70,6 +71,8 @@ class SupervisorAgentRunner:
         state = AgentState(messages=messages)
         if transport:
             state["transport"] = transport
+        if isinstance(current_route_context, dict) and current_route_context:
+            state["current_route_context"] = dict(current_route_context)
         if isinstance(planner_plan, dict) and planner_plan:
             state["planner_plan"] = planner_plan
         if isinstance(engineering_context, dict) and engineering_context:
@@ -91,6 +94,7 @@ class SupervisorAgentRunner:
         config: EngineConfig,
         messages,
         session_id: str,
+        current_route_context: dict[str, Any] | None = None,
         planner_plan: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
         task_shape_hint: dict[str, Any] | None = None,
@@ -104,6 +108,7 @@ class SupervisorAgentRunner:
             graph=graph,
             payload=self.create_state(
                 messages,
+                current_route_context=current_route_context,
                 planner_plan=planner_plan,
                 engineering_context=engineering_context,
                 task_shape_hint=task_shape_hint,

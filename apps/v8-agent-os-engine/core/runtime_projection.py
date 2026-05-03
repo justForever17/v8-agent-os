@@ -27,6 +27,7 @@ STATUS_LABELS = {
     "waiting_approval": "等待审批",
     "waiting_input": "等待继续",
     "waiting_external_tool": "等待外部工具",
+    "abandoned": "已放弃",
     "paused": "已暂停",
     "recoverable_failed": "可恢复失败",
     "failed": "失败",

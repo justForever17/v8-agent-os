@@ -48,7 +48,8 @@
           ]
         }
       ],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/openai.svg"
     },
     {
       "id": "anthropic",
@@ -156,7 +157,8 @@
           ]
         }
       ],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/gemini-color.svg"
     },
     {
       "id": "gemini",
@@ -222,7 +224,8 @@
           ]
         }
       ],
-      "providerKind": "local_runtime"
+      "providerKind": "local_runtime",
+      "logoAsset": "/model-assets/lobe/geminicli-color.svg"
     },
     {
       "id": "codex",
@@ -266,7 +269,8 @@
           ]
         }
       ],
-      "providerKind": "local_runtime"
+      "providerKind": "local_runtime",
+      "logoAsset": "/model-assets/lobe/openai.svg"
     },
     {
       "id": "openrouter",
@@ -376,7 +380,8 @@
           ]
         }
       ],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/qwen-color.svg"
     },
     {
       "id": "siliconflow",
@@ -419,7 +424,8 @@
       },
       "confidence": "provider_docs",
       "models": [],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/modelscope-color.svg"
     },
     {
       "id": "huggingface-router",
@@ -699,7 +705,8 @@
       },
       "confidence": "official",
       "models": [],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/kimi-color.svg"
     },
     {
       "id": "xiaomi-mimo",
@@ -934,7 +941,8 @@
       "confidence": "provider_docs",
       "models": [],
       "providerKind": "chat",
-      "credentialRealm": "volcengine_ark"
+      "credentialRealm": "volcengine_ark",
+      "logoAsset": "/model-assets/lobe/volcengine-color.svg"
     },
     {
       "id": "tencent-hunyuan",
@@ -955,7 +963,8 @@
       },
       "confidence": "official",
       "models": [],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg"
     },
     {
       "id": "minimax",
@@ -976,7 +985,8 @@
       },
       "confidence": "official",
       "models": [],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/minimax-color.svg"
     },
     {
       "id": "mistral",
@@ -1063,7 +1073,8 @@
       },
       "confidence": "official",
       "models": [],
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/providers/together.svg"
     },
     {
       "id": "ollama",
@@ -1077,7 +1088,8 @@
       "sourceUrl": "https://github.com/ollama/ollama/blob/main/docs/openai.md",
       "confidence": "official",
       "models": [],
-      "providerKind": "local_runtime"
+      "providerKind": "local_runtime",
+      "logoAsset": "/model-assets/lobe/ollama.svg"
     },
     {
       "id": "lmstudio",
@@ -1106,7 +1118,8 @@
       "sourceUrl": "https://docs.vllm.ai",
       "confidence": "official",
       "models": [],
-      "providerKind": "local_runtime"
+      "providerKind": "local_runtime",
+      "logoAsset": "/model-assets/lobe/vllm-color.svg"
     },
     {
       "id": "nexa",
@@ -1120,7 +1133,8 @@
       "sourceUrl": "https://docs.nexaai.com",
       "confidence": "provider_docs",
       "models": [],
-      "providerKind": "local_runtime"
+      "providerKind": "local_runtime",
+      "logoAsset": "/model-assets/providers/nexa.svg"
     },
     {
       "id": "comfyui",
@@ -1154,7 +1168,258 @@
             "workflow": true
           }
         }
+      ],
+      "logoAsset": "/model-assets/lobe/comfyui-color.svg"
+    },
+    {
+      "id": "perplexity",
+      "name": "Perplexity",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.perplexity.ai",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "catalog_only",
+      "sourceUrl": "https://docs.perplexity.ai/api-reference/chat-completions",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://www.perplexity.ai/settings/api"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/perplexity.svg",
+      "providerKind": "chat",
+      "models": [
+        {
+          "id": "sonar",
+          "contextWindow": 128000,
+          "maxOutputTokens": 8000,
+          "capabilities": [
+            "chat",
+            "streaming",
+            "web_search"
+          ]
+        },
+        {
+          "id": "sonar-pro",
+          "contextWindow": 200000,
+          "maxOutputTokens": 8000,
+          "capabilities": [
+            "chat",
+            "streaming",
+            "web_search"
+          ]
+        }
       ]
+    },
+    {
+      "id": "fireworks",
+      "name": "Fireworks AI",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://docs.fireworks.ai/api-reference/introduction",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://fireworks.ai/account/api-keys"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/fireworks.svg",
+      "providerKind": "chat",
+      "models": []
+    },
+    {
+      "id": "cerebras",
+      "name": "Cerebras",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.cerebras.ai/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://inference-docs.cerebras.ai/api-reference/chat-completions",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://cloud.cerebras.ai/platform"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/cerebras.svg",
+      "providerKind": "chat",
+      "models": []
+    },
+    {
+      "id": "nvidia-nim",
+      "name": "NVIDIA NIM",
+      "apiStandard": "openai",
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://docs.api.nvidia.com/nim/reference",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://build.nvidia.com"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/nvidia-nim.svg",
+      "providerKind": "chat",
+      "models": []
+    },
+    {
+      "id": "cohere",
+      "name": "Cohere",
+      "apiStandard": "cohere",
+      "baseUrl": "https://api.cohere.com/v2",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "catalog_only",
+      "sourceUrl": "https://docs.cohere.com/reference/chat",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://dashboard.cohere.com/api-keys"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/lobe/cohere-color.svg",
+      "providerKind": "chat",
+      "models": [
+        {
+          "id": "command-a-03-2025",
+          "contextWindow": 256000,
+          "maxOutputTokens": 8192,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming"
+          ]
+        },
+        {
+          "id": "command-r-plus-08-2024",
+          "contextWindow": 128000,
+          "maxOutputTokens": 4096,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ai21",
+      "name": "AI21 Labs",
+      "apiStandard": "ai21",
+      "baseUrl": "https://api.ai21.com/studio/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "catalog_only",
+      "sourceUrl": "https://docs.ai21.com/reference/jamba-mini-api-ref",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://studio.ai21.com/account/api-key"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/ai21.svg",
+      "providerKind": "chat",
+      "models": [
+        {
+          "id": "jamba-large-1.7",
+          "contextWindow": 256000,
+          "maxOutputTokens": 4096,
+          "capabilities": [
+            "chat",
+            "tools"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "baidu-qianfan",
+      "name": "Baidu Qianfan",
+      "apiStandard": "openai",
+      "baseUrl": "https://qianfan.baidubce.com/v2",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "catalog_only",
+      "sourceUrl": "https://cloud.baidu.com/doc/WENXINWORKSHOP/index.html",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/baidu-qianfan.svg",
+      "providerKind": "chat",
+      "models": []
+    },
+    {
+      "id": "stepfun",
+      "name": "StepFun",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.stepfun.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://platform.stepfun.com/docs/llm/text",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.stepfun.com/account-info"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/stepfun.svg",
+      "providerKind": "chat",
+      "models": []
+    },
+    {
+      "id": "baichuan",
+      "name": "Baichuan AI",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.baichuan-ai.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://platform.baichuan-ai.com/docs/api",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.baichuan-ai.com/console/apikey"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/baichuan.svg",
+      "providerKind": "chat",
+      "models": []
     }
   ]
 }

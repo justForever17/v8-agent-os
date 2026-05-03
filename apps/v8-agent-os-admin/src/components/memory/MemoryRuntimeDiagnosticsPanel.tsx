@@ -40,6 +40,21 @@ interface MaintenanceRun {
     summaryStaleCountAfter?: number;
     touchedRefs?: string[];
 }
+type MemoryRuntimeDiagnosticsData = {
+    extractions?: {
+        summary?: Record<string, number>;
+        recent?: ExtractionRun[];
+    };
+    memoryMap?: {
+        counts?: Record<string, number>;
+        missingRefs?: string[];
+        staleRefs?: string[];
+    };
+    maintenance?: {
+        summary?: Record<string, number>;
+        recent?: MaintenanceRun[];
+    };
+};
 function formatRelativeTimestamp(value: string | null | undefined, locale: "zh-CN" | "en-US") {
     if (!value)
         return "—";
@@ -111,9 +126,8 @@ function formatExtractionOutcome(run: ExtractionRun, t: ReturnType<typeof useT>)
         detail: t("components.memory.MemoryRuntimeDiagnosticsPanel.k2b009000"),
     };
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default function MemoryRuntimeDiagnosticsPanel({ data }: {
-    data: any;
+    data: MemoryRuntimeDiagnosticsData;
 }) {
     const { locale } = useLocale();
     const t = useT();

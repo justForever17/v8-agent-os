@@ -125,6 +125,30 @@ _BASE_TERMS: dict[str, tuple[str, ...]] = {
         "文章",
         "报告",
     ),
+    "research_action": (
+        "research",
+        "search",
+        "lookup",
+        "look up",
+        "find sources",
+        "source-backed",
+        "cite",
+        "citation",
+        "latest",
+        "official docs",
+        "api docs",
+        "调研",
+        "搜索",
+        "检索",
+        "查资料",
+        "查一下",
+        "最新",
+        "官方文档",
+        "引用",
+        "来源",
+        "出处",
+        "联网",
+    ),
 }
 
 _LEXICON_MAP_KEYS = (
@@ -168,6 +192,12 @@ def classify_task_shape(
     media_outputs = _find_terms(combined, term_sets["media_output"])
     media_providers = _find_terms(combined, term_sets["media_provider"])
     writing_actions = _find_terms(combined, term_sets["writing_action"])
+    research_actions = _find_terms(combined, term_sets["research_action"])
+    explicit_writing_actions = [
+        item
+        for item in writing_actions
+        if item not in {"docs", "document", "documentation", "文档", "说明"}
+    ]
 
     primary = "general_chat"
     secondary: list[str] = []
@@ -180,6 +210,7 @@ def classify_task_shape(
     family_scores: dict[str, float] = {
         "engineering": 0.0,
         "creative_media": 0.0,
+        "research": 0.0,
         "writing": 0.0,
     }
 
@@ -195,6 +226,12 @@ def classify_task_shape(
             suggested_families.append("creative_media")
             family_scores["creative_media"] = 0.42 if media_outputs else 0.5
             signals.extend(f"media_secondary:{item}" for item in (media_outputs + media_providers)[:6])
+        if research_actions:
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.48
+            signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
     elif media_providers:
         primary = "creative_media"
         confidence = 0.92
@@ -203,6 +240,12 @@ def classify_task_shape(
         suggested_families = ["creative_media"]
         optional_grants = ["creative_media.core"]
         signals.extend(f"media_provider:{item}" for item in media_providers[:6])
+        if research_actions:
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.46
+            signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
         if code_actions:
             secondary.append("project_coding")
             suggested_families.append("engineering")
@@ -220,13 +263,33 @@ def classify_task_shape(
             secondary.append("creative_media")
             family_scores["creative_media"] = 0.38
             signals.extend(f"media_output:{item}" for item in media_outputs[:4])
-    elif writing_actions:
+        if research_actions:
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.45
+            signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+    elif writing_actions and (not research_actions or explicit_writing_actions):
         primary = "writing"
         confidence = 0.7
         reason = "writing_or_document_terms"
         family_scores["writing"] = 0.7
         suggested_families = ["writing"]
         signals.extend(f"writing_action:{item}" for item in writing_actions[:6])
+        if research_actions:
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.48
+            signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+    elif research_actions:
+        primary = "research"
+        confidence = 0.91
+        reason = "research_or_current_source_terms"
+        family_scores["research"] = 0.91
+        suggested_families = ["research"]
+        optional_grants = ["research.core"]
+        signals.extend(f"research_action:{item}" for item in research_actions[:8])
     elif media_outputs:
         primary = "creative_media"
         confidence = 0.62
@@ -236,6 +299,12 @@ def classify_task_shape(
         optional_grants = ["creative_media.core"]
         ambiguity_flags.append("output_modality_only")
         signals.extend(f"media_output:{item}" for item in media_outputs[:6])
+        if research_actions:
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.44
+            signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
 
     if primary not in secondary:
         secondary = [item for item in secondary if item != primary]

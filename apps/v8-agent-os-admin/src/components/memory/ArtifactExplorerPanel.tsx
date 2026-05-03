@@ -15,281 +15,281 @@ import { useLocale, useT } from "@/components/providers/LocaleProvider";
 type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "file";
 
 interface ArtifactRecord {
-    id?: string;
-    artifactId?: string;
-    artifact_kind?: string;
-    kind?: string;
-    mime_type?: string;
-    mimeType?: string;
-    title?: string;
-    displayLabel?: string;
-    displaySubtitle?: string;
-    session_id?: string;
-    sessionId?: string;
-    run_id?: string;
-    runId?: string;
-    message_id?: string;
-    messageId?: string;
-    source_path?: string;
-    sourcePath?: string;
-    workspace_path?: string;
-    workspacePath?: string;
-    external_url?: string;
-    externalUrl?: string;
-    preview_url?: string;
-    previewUrl?: string;
-    created_at?: string;
-    createdAt?: string;
-    hasPreview?: boolean;
-    origin?: string;
-    artifactOrigin?: string;
-    artifact_origin?: string;
-    metadata?: Record<string, unknown>;
+  id?: string;
+  artifactId?: string;
+  artifact_kind?: string;
+  kind?: string;
+  mime_type?: string;
+  mimeType?: string;
+  title?: string;
+  displayLabel?: string;
+  displaySubtitle?: string;
+  session_id?: string;
+  sessionId?: string;
+  run_id?: string;
+  runId?: string;
+  message_id?: string;
+  messageId?: string;
+  source_path?: string;
+  sourcePath?: string;
+  workspace_path?: string;
+  workspacePath?: string;
+  external_url?: string;
+  externalUrl?: string;
+  preview_url?: string;
+  previewUrl?: string;
+  created_at?: string;
+  createdAt?: string;
+  hasPreview?: boolean;
+  origin?: string;
+  artifactOrigin?: string;
+  artifact_origin?: string;
+  metadata?: Record<string, unknown>;
 }
 
 const ARTIFACT_KINDS: ArtifactKind[] = ["image", "video", "audio", "document", "file"];
 
 function bytesToMb(value?: number) {
-    return Math.round(Number(value || 0) / 1024 / 1024);
+  return Math.round(Number(value || 0) / 1024 / 1024);
 }
 
 function mbToBytes(value: string) {
-    const mb = Number(value || 0);
-    if (!Number.isFinite(mb) || mb <= 0) return 0;
-    return Math.round(mb * 1024 * 1024);
+  const mb = Number(value || 0);
+  if (!Number.isFinite(mb) || mb <= 0) return 0;
+  return Math.round(mb * 1024 * 1024);
 }
 
 function getArtifactKind(artifact: ArtifactRecord): ArtifactKind {
-    return ((artifact.kind || artifact.artifact_kind || "file") as ArtifactKind) || "file";
+  return (artifact.kind || artifact.artifact_kind || "file") as ArtifactKind || "file";
 }
 
 function getArtifactMime(artifact: ArtifactRecord): string {
-    return artifact.mimeType || artifact.mime_type || "application/octet-stream";
+  return artifact.mimeType || artifact.mime_type || "application/octet-stream";
 }
 
 function getArtifactPreview(artifact: ArtifactRecord): string | undefined {
-    return artifact.previewUrl || artifact.preview_url || artifact.externalUrl || artifact.external_url;
+  return artifact.previewUrl || artifact.preview_url || artifact.externalUrl || artifact.external_url;
 }
 
 function getArtifactSource(artifact: ArtifactRecord): string | undefined {
-    return artifact.workspacePath || artifact.workspace_path || artifact.sourcePath || artifact.source_path;
+  return artifact.workspacePath || artifact.workspace_path || artifact.sourcePath || artifact.source_path;
 }
 
 function getArtifactCreatedAt(artifact: ArtifactRecord): string | undefined {
-    return artifact.createdAt || artifact.created_at;
+  return artifact.createdAt || artifact.created_at;
 }
 
 function getArtifactId(artifact: ArtifactRecord): string {
-    return String(artifact.artifactId || artifact.id || "");
+  return String(artifact.artifactId || artifact.id || "");
 }
 
 function getArtifactOrigin(artifact: ArtifactRecord): string {
-    return String(artifact.origin || artifact.artifactOrigin || artifact.artifact_origin || artifact.metadata?.origin || "").trim();
+  return String(artifact.origin || artifact.artifactOrigin || artifact.artifact_origin || artifact.metadata?.origin || "").trim();
 }
 
 function getArtifactIcon(kind: ArtifactKind) {
-    switch (kind) {
-        case "image":
-            return FileImage;
-        case "video":
-            return FileVideo;
-        case "audio":
-            return FileAudio;
-        case "document":
-            return FileText;
-        default:
-            return Link2;
-    }
+  switch (kind) {
+    case "image":
+      return FileImage;
+    case "video":
+      return FileVideo;
+    case "audio":
+      return FileAudio;
+    case "document":
+      return FileText;
+    default:
+      return Link2;
+  }
 }
 
 export function ArtifactExplorerPanel() {
-    const { toast } = useToast();
-    const t = useT();
-    const { locale } = useLocale();
-    const [loading, setLoading] = useState(true);
-    const [detailLoading, setDetailLoading] = useState(false);
-    const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
-    const [selectedId, setSelectedId] = useState<string | null>(null);
-    const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
-    const [query, setQuery] = useState("");
-    const [kindFilter, setKindFilter] = useState<ArtifactKind>("all");
-    const [artifactBudgetMb, setArtifactBudgetMb] = useState("");
-    const [artifactBudgetUsedMb, setArtifactBudgetUsedMb] = useState<number | null>(null);
+  const { toast } = useToast();
+  const t = useT();
+  const { locale } = useLocale();
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
+  const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<ArtifactKind>("all");
+  const [artifactBudgetMb, setArtifactBudgetMb] = useState("");
+  const [artifactBudgetUsedMb, setArtifactBudgetUsedMb] = useState<number | null>(null);
 
-    const artifactLabel = useCallback(
-        (artifact: ArtifactRecord) => artifact.displayLabel || artifact.title || getArtifactId(artifact) || t("components.memory.ArtifactExplorerPanel.kd43de6cf"),
-        [t],
-    );
+  const artifactLabel = useCallback(
+    (artifact: ArtifactRecord) => artifact.displayLabel || artifact.title || getArtifactId(artifact) || t("components.memory.ArtifactExplorerPanel.kd43de6cf"),
+    [t]
+  );
 
-    const artifactSubtitle = useCallback(
-        (artifact: ArtifactRecord) => artifact.displaySubtitle || getArtifactSource(artifact) || getArtifactPreview(artifact) || t("components.memory.ArtifactExplorerPanel.k968c6ea6"),
-        [t],
-    );
+  const artifactSubtitle = useCallback(
+    (artifact: ArtifactRecord) => artifact.displaySubtitle || getArtifactSource(artifact) || getArtifactPreview(artifact) || t("components.memory.ArtifactExplorerPanel.k968c6ea6"),
+    [t]
+  );
 
-    const formatDateTime = useCallback(
-        (value?: string) => {
-            if (!value) return t("components.memory.ArtifactExplorerPanel.k2be56351");
-            const date = new Date(value);
-            if (Number.isNaN(date.getTime())) return value;
-            return date.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
-                hour12: false,
-            });
-        },
-        [locale, t],
-    );
+  const formatDateTime = useCallback(
+    (value?: string) => {
+      if (!value) return t("components.memory.ArtifactExplorerPanel.k2be56351");
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+        hour12: false
+      });
+    },
+    [locale, t]
+  );
 
-    const artifactKindLabel = useCallback(
-        (kind: ArtifactKind) =>
-            kind === "image"
-                ? t("components.memory.ArtifactExplorerPanel.k05527bea")
-                : kind === "video"
-                    ? t("components.memory.ArtifactExplorerPanel.k7512b41f")
-                    : kind === "audio"
-                        ? t("components.memory.ArtifactExplorerPanel.kaeef0707")
-                        : kind === "document"
-                            ? t("components.memory.ArtifactExplorerPanel.k5fc5a6ad")
-                            : t("components.memory.ArtifactExplorerPanel.ka9205a18"),
-        [t],
-    );
+  const artifactKindLabel = useCallback(
+    (kind: ArtifactKind) =>
+    kind === "image" ?
+    t("components.memory.ArtifactExplorerPanel.k05527bea") :
+    kind === "video" ?
+    t("components.memory.ArtifactExplorerPanel.k7512b41f") :
+    kind === "audio" ?
+    t("components.memory.ArtifactExplorerPanel.kaeef0707") :
+    kind === "document" ?
+    t("components.memory.ArtifactExplorerPanel.k5fc5a6ad") :
+    t("components.memory.ArtifactExplorerPanel.ka9205a18"),
+    [t]
+  );
 
-    const loadArtifacts = useCallback(async () => {
-        setLoading(true);
-        try {
-            const response = await fetch("/api/memory/artifacts?limit=160", { cache: "no-store" });
-            if (!response.ok) {
-                throw new Error(`Artifacts failed: ${response.status}`);
-            }
-            const data = await response.json();
-            const list = Array.isArray(data?.artifacts) ? data.artifacts : [];
-            setArtifacts(list);
-            if (!selectedId && list.length > 0) {
-                const firstId = getArtifactId(list[0]);
-                if (firstId) {
-                    setSelectedId(firstId);
-                    setSelectedArtifact(list[0]);
-                }
-            }
-        } catch (error) {
-            console.error("Failed to load artifacts:", error);
-            toast({
-                title: t("components.memory.ArtifactExplorerPanel.k81ef3416"),
-                description: t("components.memory.ArtifactExplorerPanel.k56ba1833"),
-                variant: "destructive",
-            });
-        } finally {
-            setLoading(false);
+  const loadArtifacts = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/memory/artifacts?limit=160", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Artifacts failed: ${response.status}`);
+      }
+      const data = await response.json();
+      const list = Array.isArray(data?.artifacts) ? data.artifacts : [];
+      setArtifacts(list);
+      if (!selectedId && list.length > 0) {
+        const firstId = getArtifactId(list[0]);
+        if (firstId) {
+          setSelectedId(firstId);
+          setSelectedArtifact(list[0]);
         }
-    }, [selectedId, t, toast]);
+      }
+    } catch (error) {
+      console.error("Failed to load artifacts:", error);
+      toast({
+        title: t("components.memory.ArtifactExplorerPanel.k81ef3416"),
+        description: t("components.memory.ArtifactExplorerPanel.k56ba1833"),
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedId, t, toast]);
 
-    const loadArtifactBudget = useCallback(async () => {
-        const response = await fetch("/api/storage-retention/stats", { cache: "no-store" });
-        if (!response.ok) return;
-        const payload = await response.json().catch(() => null);
-        const budget = payload?.budgetComponents?.artifacts || payload?.config?.budgets?.artifacts;
-        if (budget?.maxBytes) setArtifactBudgetMb(String(bytesToMb(Number(budget.maxBytes))));
-        if (budget?.usedBytes != null) setArtifactBudgetUsedMb(bytesToMb(Number(budget.usedBytes)));
-    }, []);
+  const loadArtifactBudget = useCallback(async () => {
+    const response = await fetch("/api/storage-retention/stats", { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json().catch(() => null);
+    const budget = payload?.budgetComponents?.artifacts || payload?.config?.budgets?.artifacts;
+    if (budget?.maxBytes) setArtifactBudgetMb(String(bytesToMb(Number(budget.maxBytes))));
+    if (budget?.usedBytes != null) setArtifactBudgetUsedMb(bytesToMb(Number(budget.usedBytes)));
+  }, []);
 
-    const saveArtifactBudget = useCallback(async () => {
-        if (!window.confirm("确认保存 artifact 空间预算？保存后会影响 Operations 的 dry-run 和容量告警。")) return;
-        const statsResponse = await fetch("/api/storage-retention/stats", { cache: "no-store" });
-        const stats = await statsResponse.json().catch(() => null);
-        const config = stats?.config || {};
-        const budgets = { ...(config.budgets || {}) };
-        budgets.artifacts = { ...(budgets.artifacts || {}), maxBytes: mbToBytes(artifactBudgetMb) };
-        const response = await fetch("/api/storage-retention/config", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...config, budgets }),
-        });
-        if (!response.ok) {
-            toast({
-                title: t("components.memory.ArtifactExplorerPanel.k81ef3416"),
-                description: `Storage config failed: ${response.status}`,
-                variant: "destructive",
-            });
-            return;
-        }
-        toast({
-            title: t("components.memory.ArtifactExplorerPanel.k876e8c06"),
-            description: "Artifact budget saved.",
-        });
-        await loadArtifactBudget();
-    }, [artifactBudgetMb, loadArtifactBudget, t, toast]);
+  const saveArtifactBudget = useCallback(async () => {
+    if (!window.confirm(t("admin.generated.904b788f"))) return;
+    const statsResponse = await fetch("/api/storage-retention/stats", { cache: "no-store" });
+    const stats = await statsResponse.json().catch(() => null);
+    const config = stats?.config || {};
+    const budgets = { ...(config.budgets || {}) };
+    budgets.artifacts = { ...(budgets.artifacts || {}), maxBytes: mbToBytes(artifactBudgetMb) };
+    const response = await fetch("/api/storage-retention/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...config, budgets })
+    });
+    if (!response.ok) {
+      toast({
+        title: t("components.memory.ArtifactExplorerPanel.k81ef3416"),
+        description: `Storage config failed: ${response.status}`,
+        variant: "destructive"
+      });
+      return;
+    }
+    toast({
+      title: t("components.memory.ArtifactExplorerPanel.k876e8c06"),
+      description: "Artifact budget saved."
+    });
+    await loadArtifactBudget();
+  }, [artifactBudgetMb, loadArtifactBudget, t, toast]);
 
-    const loadArtifactDetail = useCallback(async (artifactId: string, fallback?: ArtifactRecord) => {
-        setDetailLoading(true);
-        try {
-            const response = await fetch(`/api/memory/artifacts/${encodeURIComponent(artifactId)}`, { cache: "no-store" });
-            if (!response.ok) {
-                throw new Error(`Artifact detail failed: ${response.status}`);
-            }
-            const data = await response.json();
-            setSelectedArtifact(data);
-        } catch (error) {
-            console.error("Failed to load artifact detail:", error);
-            if (fallback) {
-                setSelectedArtifact(fallback);
-            }
-            toast({
-                title: t("components.memory.ArtifactExplorerPanel.k115ce913"),
-                description: t("components.memory.ArtifactExplorerPanel.k52473537"),
-                variant: "destructive",
-            });
-        } finally {
-            setDetailLoading(false);
-        }
-    }, [t, toast]);
+  const loadArtifactDetail = useCallback(async (artifactId: string, fallback?: ArtifactRecord) => {
+    setDetailLoading(true);
+    try {
+      const response = await fetch(`/api/memory/artifacts/${encodeURIComponent(artifactId)}`, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Artifact detail failed: ${response.status}`);
+      }
+      const data = await response.json();
+      setSelectedArtifact(data);
+    } catch (error) {
+      console.error("Failed to load artifact detail:", error);
+      if (fallback) {
+        setSelectedArtifact(fallback);
+      }
+      toast({
+        title: t("components.memory.ArtifactExplorerPanel.k115ce913"),
+        description: t("components.memory.ArtifactExplorerPanel.k52473537"),
+        variant: "destructive"
+      });
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [t, toast]);
 
-    useEffect(() => {
-        void loadArtifacts();
-        void loadArtifactBudget();
-    }, [loadArtifacts, loadArtifactBudget]);
+  useEffect(() => {
+    void loadArtifacts();
+    void loadArtifactBudget();
+  }, [loadArtifacts, loadArtifactBudget]);
 
-    const filteredArtifacts = useMemo(() => {
-        const normalized = query.trim().toLowerCase();
-        return artifacts.filter((artifact) => {
-            const kind = getArtifactKind(artifact);
-            const keywordHit = !normalized || [
-                artifactLabel(artifact),
-                getArtifactId(artifact),
-                artifact.session_id,
-                artifact.sessionId,
-                artifact.run_id,
-                artifact.runId,
-                artifact.message_id,
-                artifact.messageId,
-                getArtifactSource(artifact),
-                getArtifactPreview(artifact),
-            ]
-                .filter(Boolean)
-                .some((value) => String(value).toLowerCase().includes(normalized));
-            const kindHit = kindFilter === "all" || kind === kindFilter;
-            return keywordHit && kindHit;
-        });
-    }, [artifactLabel, artifacts, kindFilter, query]);
+  const filteredArtifacts = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return artifacts.filter((artifact) => {
+      const kind = getArtifactKind(artifact);
+      const keywordHit = !normalized || [
+      artifactLabel(artifact),
+      getArtifactId(artifact),
+      artifact.session_id,
+      artifact.sessionId,
+      artifact.run_id,
+      artifact.runId,
+      artifact.message_id,
+      artifact.messageId,
+      getArtifactSource(artifact),
+      getArtifactPreview(artifact)].
 
-    const artifactStats = useMemo(() => {
-        const counts: Record<ArtifactKind, number> = {
-            all: artifacts.length,
-            image: 0,
-            video: 0,
-            audio: 0,
-            document: 0,
-            file: 0,
-        };
-        for (const artifact of artifacts) {
-            counts[getArtifactKind(artifact)] += 1;
-        }
-        return counts;
-    }, [artifacts]);
+      filter(Boolean).
+      some((value) => String(value).toLowerCase().includes(normalized));
+      const kindHit = kindFilter === "all" || kind === kindFilter;
+      return keywordHit && kindHit;
+    });
+  }, [artifactLabel, artifacts, kindFilter, query]);
 
-    const selectedPreview = selectedArtifact ? getArtifactPreview(selectedArtifact) : undefined;
-    const selectedKind = selectedArtifact ? getArtifactKind(selectedArtifact) : "file";
-    const SelectedIcon = getArtifactIcon(selectedKind);
+  const artifactStats = useMemo(() => {
+    const counts: Record<ArtifactKind, number> = {
+      all: artifacts.length,
+      image: 0,
+      video: 0,
+      audio: 0,
+      document: 0,
+      file: 0
+    };
+    for (const artifact of artifacts) {
+      counts[getArtifactKind(artifact)] += 1;
+    }
+    return counts;
+  }, [artifacts]);
 
-    return (
-        <div className="space-y-4">
+  const selectedPreview = selectedArtifact ? getArtifactPreview(selectedArtifact) : undefined;
+  const selectedKind = selectedArtifact ? getArtifactKind(selectedArtifact) : "file";
+  const SelectedIcon = getArtifactIcon(selectedKind);
+
+  return (
+    <div className="space-y-4">
             <Card className="border-border/60">
                 <CardHeader className="pb-4">
                     <CardTitle className="flex items-center justify-between gap-3 text-lg">
@@ -316,9 +316,9 @@ export function ArtifactExplorerPanel() {
                             </CardContent>
                         </Card>
                         {ARTIFACT_KINDS.map((kind) => {
-                            const Icon = getArtifactIcon(kind);
-                            return (
-                                <Card key={kind} className="border-border/50 bg-muted/10">
+              const Icon = getArtifactIcon(kind);
+              return (
+                <Card key={kind} className="border-border/50 bg-muted/10">
                                     <CardContent className="p-4">
                                         <div className="flex items-center gap-2">
                                             <Icon className="h-4 w-4 text-primary" />
@@ -327,32 +327,32 @@ export function ArtifactExplorerPanel() {
                                         <p className="mt-3 text-2xl font-semibold">{artifactStats[kind]}</p>
                                         <p className="mt-1 text-xs text-muted-foreground">
                                             {kind === "image" ? t("components.memory.ArtifactExplorerPanel.k83dd3d0f") :
-                                                kind === "video" ? t("components.memory.ArtifactExplorerPanel.kd0d9a483") :
-                                                    kind === "audio" ? t("components.memory.ArtifactExplorerPanel.k05f8fe1a") :
-                                                        kind === "document" ? t("components.memory.ArtifactExplorerPanel.k4b4dd70e") :
-                                                            t("components.memory.ArtifactExplorerPanel.k57ee4cb3")}
+                      kind === "video" ? t("components.memory.ArtifactExplorerPanel.kd0d9a483") :
+                      kind === "audio" ? t("components.memory.ArtifactExplorerPanel.k05f8fe1a") :
+                      kind === "document" ? t("components.memory.ArtifactExplorerPanel.k4b4dd70e") :
+                      t("components.memory.ArtifactExplorerPanel.k57ee4cb3")}
                                         </p>
                                     </CardContent>
-                                </Card>
-                            );
-                        })}
+                                </Card>);
+
+            })}
                     </div>
 
                     <div className="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/10 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
                         <div>
                             <div className="font-medium text-foreground">Artifact space budget</div>
-                            <div>当前使用 {artifactBudgetUsedMb ?? "-"} MB。预算用于 Operations dry-run 和容量告警，不会自动删除产物。</div>
+                            <div>{t("admin.generated.297318c2")} {artifactBudgetUsedMb ?? "-"} {t("admin.generated.dde85c50")}</div>
                         </div>
                         <div className="flex items-center gap-2">
                             <Input
-                                className="h-8 w-32"
-                                type="number"
-                                min={1}
-                                value={artifactBudgetMb}
-                                onChange={(event) => setArtifactBudgetMb(event.target.value)}
-                            />
+                className="h-8 w-32"
+                type="number"
+                min={1}
+                value={artifactBudgetMb}
+                onChange={(event) => setArtifactBudgetMb(event.target.value)} />
+
                             <span>MB</span>
-                            <Button variant="outline" size="sm" onClick={() => void saveArtifactBudget()}>保存</Button>
+                            <Button variant="outline" size="sm" onClick={() => void saveArtifactBudget()}>{t("components.memory.MemoryWorkflowsPanel.save")}</Button>
                         </div>
                     </div>
 
@@ -360,11 +360,11 @@ export function ArtifactExplorerPanel() {
                         <div className="relative flex-1">
                             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                             <Input
-                                value={query}
-                                onChange={(event) => setQuery(event.target.value)}
-                                placeholder={t("components.memory.ArtifactExplorerPanel.k7df1ad7e")}
-                                className="pl-9"
-                            />
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={t("components.memory.ArtifactExplorerPanel.k7df1ad7e")}
+                className="pl-9" />
+
                         </div>
                         <Select value={kindFilter} onValueChange={(value) => setKindFilter(value as ArtifactKind)}>
                             <SelectTrigger className="w-full lg:w-[220px]">
@@ -384,36 +384,36 @@ export function ArtifactExplorerPanel() {
                     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_380px]">
                         <ScrollArea className="h-[720px] rounded-2xl border border-border/60 bg-muted/5">
                             <div className="grid gap-3 p-4 md:grid-cols-2">
-                                {loading ? (
-                                    <div className="col-span-full flex h-40 items-center justify-center text-sm text-muted-foreground">
+                                {loading ?
+                <div className="col-span-full flex h-40 items-center justify-center text-sm text-muted-foreground">
                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                         {t("components.memory.ArtifactExplorerPanel.k0b1aab26")}
-                                    </div>
-                                ) : filteredArtifacts.length === 0 ? (
-                                    <div className="col-span-full rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                                    </div> :
+                filteredArtifacts.length === 0 ?
+                <div className="col-span-full rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
                                         {t("components.memory.ArtifactExplorerPanel.ka6179a25")}
-                                    </div>
-                                ) : (
-                                    filteredArtifacts.map((artifact) => {
-                                        const artifactId = getArtifactId(artifact);
-                                        const kind = getArtifactKind(artifact);
-                                        const Icon = getArtifactIcon(kind);
-                                        const active = selectedId === artifactId;
-                                        return (
-                                            <button
-                                                key={artifactId}
-                                                type="button"
-                                                onClick={() => {
-                                                    setSelectedId(artifactId);
-                                                    setSelectedArtifact(artifact);
-                                                    void loadArtifactDetail(artifactId, artifact);
-                                                }}
-                                                className={`rounded-2xl border p-4 text-left transition-all ${
-                                                    active
-                                                        ? "border-primary/40 bg-primary/5 shadow-lg shadow-primary/5"
-                                                        : "border-border/60 bg-card hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-md"
-                                                }`}
-                                            >
+                                    </div> :
+
+                filteredArtifacts.map((artifact) => {
+                  const artifactId = getArtifactId(artifact);
+                  const kind = getArtifactKind(artifact);
+                  const Icon = getArtifactIcon(kind);
+                  const active = selectedId === artifactId;
+                  return (
+                    <button
+                      key={artifactId}
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(artifactId);
+                        setSelectedArtifact(artifact);
+                        void loadArtifactDetail(artifactId, artifact);
+                      }}
+                      className={`rounded-2xl border p-4 text-left transition-all ${
+                      active ?
+                      "border-primary/40 bg-primary/5 shadow-lg shadow-primary/5" :
+                      "border-border/60 bg-card hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-md"}`
+                      }>
+
                                                 <div className="flex items-start gap-3">
                                                     <div className="rounded-2xl border border-primary/10 bg-primary/5 p-2.5 text-primary">
                                                         <Icon className="h-5 w-5" />
@@ -430,21 +430,21 @@ export function ArtifactExplorerPanel() {
                                                         </p>
                                                         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                                                             <span className="rounded-full border px-2 py-1">{getArtifactMime(artifact)}</span>
-                                                            {(artifact.sessionId || artifact.session_id) ? (
-                                                                <span className="rounded-full border px-2 py-1 font-mono">
+                                                            {artifact.sessionId || artifact.session_id ?
+                            <span className="rounded-full border px-2 py-1 font-mono">
                                                                     {artifact.sessionId || artifact.session_id}
-                                                                </span>
-                                                            ) : null}
+                                                                </span> :
+                            null}
                                                         </div>
                                                         <p className="mt-3 text-[11px] text-muted-foreground/80">
                                                             {formatDateTime(getArtifactCreatedAt(artifact))}
                                                         </p>
                                                     </div>
                                                 </div>
-                                            </button>
-                                        );
-                                    })
-                                )}
+                                            </button>);
+
+                })
+                }
                             </div>
                         </ScrollArea>
 
@@ -459,12 +459,12 @@ export function ArtifactExplorerPanel() {
                                 </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                                {!selectedArtifact ? (
-                                    <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                                {!selectedArtifact ?
+                <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
                                         {t("components.memory.ArtifactExplorerPanel.k4664887c")}
-                                    </div>
-                                ) : (
-                                    <>
+                                    </div> :
+
+                <>
                                         <div className="rounded-2xl border bg-muted/20 p-4">
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="min-w-0">
@@ -479,32 +479,32 @@ export function ArtifactExplorerPanel() {
                                                 <Badge>{artifactKindLabel(selectedKind)}</Badge>
                                                 <Badge variant="secondary">{getArtifactMime(selectedArtifact)}</Badge>
                                                 {getArtifactOrigin(selectedArtifact) ? <Badge variant="outline">{getArtifactOrigin(selectedArtifact)}</Badge> : null}
-                                                {(selectedArtifact.sessionId || selectedArtifact.session_id) ? (
-                                                    <Badge variant="outline">
+                                                {selectedArtifact.sessionId || selectedArtifact.session_id ?
+                      <Badge variant="outline">
                                                         {t("components.memory.ArtifactExplorerPanel.kdd2c7128")} {selectedArtifact.sessionId || selectedArtifact.session_id}
-                                                    </Badge>
-                                                ) : null}
+                                                    </Badge> :
+                      null}
                                             </div>
                                         </div>
 
-                                        {selectedPreview && selectedKind === "image" ? (
-                                            <div className="overflow-hidden rounded-2xl border bg-black/5">
+                                        {selectedPreview && selectedKind === "image" ?
+                  <div className="overflow-hidden rounded-2xl border bg-black/5">
                                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                                 <img src={selectedPreview} alt={artifactLabel(selectedArtifact)} className="max-h-[260px] w-full object-contain" />
-                                            </div>
-                                        ) : null}
+                                            </div> :
+                  null}
 
-                                        {selectedPreview && selectedKind === "video" ? (
-                                            <div className="overflow-hidden rounded-2xl border bg-black/5">
+                                        {selectedPreview && selectedKind === "video" ?
+                  <div className="overflow-hidden rounded-2xl border bg-black/5">
                                                 <video controls className="max-h-[260px] w-full" src={selectedPreview} />
-                                            </div>
-                                        ) : null}
+                                            </div> :
+                  null}
 
-                                        {selectedPreview && selectedKind === "audio" ? (
-                                            <div className="rounded-2xl border p-4">
+                                        {selectedPreview && selectedKind === "audio" ?
+                  <div className="rounded-2xl border p-4">
                                                 <audio controls className="w-full" src={selectedPreview} />
-                                            </div>
-                                        ) : null}
+                                            </div> :
+                  null}
 
                                         <div className="space-y-3 rounded-2xl border bg-muted/15 p-4 text-sm">
                                             <div>
@@ -533,18 +533,18 @@ export function ArtifactExplorerPanel() {
                                             </div>
                                             <div>
                                                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.k711160a4")}</p>
-                                                {selectedPreview ? (
-                                                    <a
-                                                        href={selectedPreview}
-                                                        target="_blank"
-                                                        rel="noreferrer"
-                                                        className="mt-1 block break-all text-xs text-primary underline-offset-4 hover:underline"
-                                                    >
+                                                {selectedPreview ?
+                      <a
+                        href={selectedPreview}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-1 block break-all text-xs text-primary underline-offset-4 hover:underline">
+
                                                         {selectedPreview}
-                                                    </a>
-                                                ) : (
-                                                    <p className="mt-1 text-xs text-foreground/90">{t("components.memory.ArtifactExplorerPanel.k52e119f3")}</p>
-                                                )}
+                                                    </a> :
+
+                      <p className="mt-1 text-xs text-foreground/90">{t("components.memory.ArtifactExplorerPanel.k52e119f3")}</p>
+                      }
                                             </div>
                                         </div>
 
@@ -555,12 +555,12 @@ export function ArtifactExplorerPanel() {
                                             </pre>
                                         </div>
                                     </>
-                                )}
+                }
                             </CardContent>
                         </Card>
                     </div>
                 </CardContent>
             </Card>
-        </div>
-    );
+        </div>);
+
 }

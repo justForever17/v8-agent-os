@@ -9,6 +9,7 @@ _SNAPSHOT_RUNTIME_ORDER = (
     "chat",
     "memory",
     "engineering",
+    "research",
     "creative_media",
     "automation",
     "extensions",
@@ -67,6 +68,11 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     "engineering": {
         "displayName": "EngineeringRuntime",
         "summary": "负责工程任务的 ContextPack、写集治理、Proof Ledger、工作区观测与 workflow hints；它提供执行账本，不替代 Supervisor 编排。",
+        "visibility": "secondary",
+    },
+    "research": {
+        "displayName": "ResearchRuntime",
+        "summary": "负责多源联网调研、来源权威度排序、冲突记录、引用矩阵和 run-scoped evidence bundle；为 Engineering、Creative Media、Writing 等 runtime 提供压缩证据，不执行写入或系统副作用。",
         "visibility": "secondary",
     },
 }

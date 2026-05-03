@@ -6,10 +6,19 @@
       "id": "openai",
       "category": "ai",
       "displayName": "OpenAI",
-      "officialHosts": ["api.openai.com"],
-      "allowedBaseUrls": ["https://api.openai.com/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.openai.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.openai.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://platform.openai.com/docs/api-reference",
       "confidence": "verified_official"
     },
@@ -17,10 +26,19 @@
       "id": "anthropic",
       "category": "ai",
       "displayName": "Anthropic",
-      "officialHosts": ["api.anthropic.com"],
-      "allowedBaseUrls": ["https://api.anthropic.com/v1"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.anthropic.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.anthropic.com/v1"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.anthropic.com/en/api",
       "confidence": "verified_official"
     },
@@ -28,10 +46,22 @@
       "id": "google-ai",
       "category": "ai",
       "displayName": "Google AI / Gemini",
-      "officialHosts": ["generativelanguage.googleapis.com", "aiplatform.googleapis.com"],
-      "allowedBaseUrls": ["https://generativelanguage.googleapis.com/v1beta", "https://aiplatform.googleapis.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "generativelanguage.googleapis.com",
+        "aiplatform.googleapis.com"
+      ],
+      "allowedBaseUrls": [
+        "https://generativelanguage.googleapis.com/v1beta",
+        "https://aiplatform.googleapis.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://ai.google.dev/api",
       "confidence": "verified_official"
     },
@@ -39,10 +69,22 @@
       "id": "azure-openai",
       "category": "ai",
       "displayName": "Azure OpenAI",
-      "officialHosts": ["openai.azure.com", "cognitiveservices.azure.com"],
-      "allowedBaseUrls": ["https://*.openai.azure.com", "https://*.cognitiveservices.azure.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "openai.azure.com",
+        "cognitiveservices.azure.com"
+      ],
+      "allowedBaseUrls": [
+        "https://*.openai.azure.com",
+        "https://*.cognitiveservices.azure.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://learn.microsoft.com/azure/ai-services/openai/reference",
       "confidence": "verified_official",
       "allowSubdomains": true
@@ -51,10 +93,19 @@
       "id": "openrouter",
       "category": "ai",
       "displayName": "OpenRouter",
-      "officialHosts": ["openrouter.ai"],
-      "allowedBaseUrls": ["https://openrouter.ai/api/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "openrouter.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://openrouter.ai/api/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://openrouter.ai/docs/api-reference",
       "confidence": "verified_official"
     },
@@ -62,10 +113,19 @@
       "id": "deepseek",
       "category": "ai",
       "displayName": "DeepSeek",
-      "officialHosts": ["api.deepseek.com"],
-      "allowedBaseUrls": ["https://api.deepseek.com"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.deepseek.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.deepseek.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://api-docs.deepseek.com",
       "confidence": "verified_official"
     },
@@ -73,10 +133,21 @@
       "id": "dashscope",
       "category": "ai",
       "displayName": "Alibaba DashScope / Qwen",
-      "officialHosts": ["dashscope.aliyuncs.com"],
-      "allowedBaseUrls": ["https://dashscope.aliyuncs.com/api/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1"],
-      "credentialTypes": ["bearer_api_key", "api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "dashscope.aliyuncs.com"
+      ],
+      "allowedBaseUrls": [
+        "https://dashscope.aliyuncs.com/api/v1",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://help.aliyun.com/zh/dashscope/developer-reference",
       "confidence": "verified_official"
     },
@@ -84,10 +155,21 @@
       "id": "volcengine-ark",
       "category": "ai",
       "displayName": "Volcengine Ark",
-      "officialHosts": ["ark.cn-beijing.volces.com", "ark.cn-shanghai.volces.com"],
-      "allowedBaseUrls": ["https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-shanghai.volces.com/api/v3"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "ark.cn-beijing.volces.com",
+        "ark.cn-shanghai.volces.com"
+      ],
+      "allowedBaseUrls": [
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "https://ark.cn-shanghai.volces.com/api/v3"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://www.volcengine.com/docs/82379",
       "confidence": "verified_official"
     },
@@ -95,10 +177,19 @@
       "id": "zhipu",
       "category": "ai",
       "displayName": "Zhipu BigModel",
-      "officialHosts": ["open.bigmodel.cn"],
-      "allowedBaseUrls": ["https://open.bigmodel.cn/api/paas/v4"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "open.bigmodel.cn"
+      ],
+      "allowedBaseUrls": [
+        "https://open.bigmodel.cn/api/paas/v4"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.bigmodel.cn",
       "confidence": "verified_official"
     },
@@ -106,10 +197,21 @@
       "id": "moonshot",
       "category": "ai",
       "displayName": "Moonshot / Kimi",
-      "officialHosts": ["api.moonshot.cn", "api.moonshot.ai"],
-      "allowedBaseUrls": ["https://api.moonshot.cn/v1", "https://api.moonshot.ai/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.moonshot.cn",
+        "api.moonshot.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.moonshot.cn/v1",
+        "https://api.moonshot.ai/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://platform.moonshot.cn/docs",
       "confidence": "verified_official"
     },
@@ -117,10 +219,22 @@
       "id": "baidu-qianfan",
       "category": "ai",
       "displayName": "Baidu Qianfan",
-      "officialHosts": ["qianfan.baidubce.com", "aip.baidubce.com"],
-      "allowedBaseUrls": ["https://qianfan.baidubce.com", "https://aip.baidubce.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "qianfan.baidubce.com",
+        "aip.baidubce.com"
+      ],
+      "allowedBaseUrls": [
+        "https://qianfan.baidubce.com",
+        "https://aip.baidubce.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://cloud.baidu.com/doc/WENXINWORKSHOP/index.html",
       "confidence": "verified_official"
     },
@@ -128,10 +242,22 @@
       "id": "tencent-hunyuan",
       "category": "ai",
       "displayName": "Tencent Hunyuan",
-      "officialHosts": ["hunyuan.tencentcloudapi.com", "api.hunyuan.cloud.tencent.com"],
-      "allowedBaseUrls": ["https://hunyuan.tencentcloudapi.com", "https://api.hunyuan.cloud.tencent.com/v1"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "hunyuan.tencentcloudapi.com",
+        "api.hunyuan.cloud.tencent.com"
+      ],
+      "allowedBaseUrls": [
+        "https://hunyuan.tencentcloudapi.com",
+        "https://api.hunyuan.cloud.tencent.com/v1"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://cloud.tencent.com/document/product/1729",
       "confidence": "verified_official"
     },
@@ -139,10 +265,20 @@
       "id": "minimax",
       "category": "ai",
       "displayName": "MiniMax",
-      "officialHosts": ["api.minimax.io"],
-      "allowedBaseUrls": ["https://api.minimax.io", "https://api.minimax.io/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.minimax.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.minimax.io",
+        "https://api.minimax.io/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://platform.minimaxi.com/document",
       "confidence": "verified_official"
     },
@@ -150,10 +286,19 @@
       "id": "xai",
       "category": "ai",
       "displayName": "xAI",
-      "officialHosts": ["api.x.ai"],
-      "allowedBaseUrls": ["https://api.x.ai/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.x.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.x.ai/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.x.ai/docs/api-reference",
       "confidence": "verified_official"
     },
@@ -161,10 +306,19 @@
       "id": "mistral",
       "category": "ai",
       "displayName": "Mistral AI",
-      "officialHosts": ["api.mistral.ai"],
-      "allowedBaseUrls": ["https://api.mistral.ai/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.mistral.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.mistral.ai/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.mistral.ai/api",
       "confidence": "verified_official"
     },
@@ -172,10 +326,19 @@
       "id": "cohere",
       "category": "ai",
       "displayName": "Cohere",
-      "officialHosts": ["api.cohere.com"],
-      "allowedBaseUrls": ["https://api.cohere.com"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.cohere.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.cohere.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.cohere.com/reference/about",
       "confidence": "verified_official"
     },
@@ -183,10 +346,19 @@
       "id": "together",
       "category": "ai",
       "displayName": "Together AI",
-      "officialHosts": ["api.together.xyz"],
-      "allowedBaseUrls": ["https://api.together.xyz/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.together.xyz"
+      ],
+      "allowedBaseUrls": [
+        "https://api.together.xyz/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.together.ai/reference",
       "confidence": "verified_official"
     },
@@ -194,10 +366,19 @@
       "id": "groq",
       "category": "ai",
       "displayName": "Groq",
-      "officialHosts": ["api.groq.com"],
-      "allowedBaseUrls": ["https://api.groq.com/openai/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.groq.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.groq.com/openai/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://console.groq.com/docs/api-reference",
       "confidence": "verified_official"
     },
@@ -205,10 +386,19 @@
       "id": "replicate",
       "category": "ai",
       "displayName": "Replicate",
-      "officialHosts": ["api.replicate.com"],
-      "allowedBaseUrls": ["https://api.replicate.com/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.replicate.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.replicate.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://replicate.com/docs/reference/http",
       "confidence": "verified_official"
     },
@@ -216,10 +406,22 @@
       "id": "huggingface",
       "category": "ai",
       "displayName": "Hugging Face",
-      "officialHosts": ["huggingface.co", "router.huggingface.co", "api-inference.huggingface.co"],
-      "allowedBaseUrls": ["https://router.huggingface.co/v1", "https://api-inference.huggingface.co"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "huggingface.co",
+        "router.huggingface.co",
+        "api-inference.huggingface.co"
+      ],
+      "allowedBaseUrls": [
+        "https://router.huggingface.co/v1",
+        "https://api-inference.huggingface.co"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://huggingface.co/docs/api-inference/index",
       "confidence": "verified_official"
     },
@@ -227,10 +429,19 @@
       "id": "siliconflow",
       "category": "ai",
       "displayName": "SiliconFlow",
-      "officialHosts": ["api.siliconflow.cn"],
-      "allowedBaseUrls": ["https://api.siliconflow.cn/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.siliconflow.cn"
+      ],
+      "allowedBaseUrls": [
+        "https://api.siliconflow.cn/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.siliconflow.cn",
       "confidence": "verified_official"
     },
@@ -238,10 +449,19 @@
       "id": "stability",
       "category": "ai",
       "displayName": "Stability AI",
-      "officialHosts": ["api.stability.ai"],
-      "allowedBaseUrls": ["https://api.stability.ai"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.stability.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.stability.ai"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://platform.stability.ai/docs/api-reference",
       "confidence": "verified_official"
     },
@@ -249,10 +469,20 @@
       "id": "fal",
       "category": "ai",
       "displayName": "fal.ai",
-      "officialHosts": ["fal.run", "queue.fal.run"],
-      "allowedBaseUrls": ["https://queue.fal.run"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "fal.run",
+        "queue.fal.run"
+      ],
+      "allowedBaseUrls": [
+        "https://queue.fal.run"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://fal.ai/docs",
       "confidence": "verified_official"
     },
@@ -260,10 +490,19 @@
       "id": "elevenlabs",
       "category": "ai",
       "displayName": "ElevenLabs",
-      "officialHosts": ["api.elevenlabs.io"],
-      "allowedBaseUrls": ["https://api.elevenlabs.io/v1"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.elevenlabs.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.elevenlabs.io/v1"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://elevenlabs.io/docs/api-reference",
       "confidence": "verified_official"
     },
@@ -271,10 +510,18 @@
       "id": "openweather",
       "category": "weather",
       "displayName": "OpenWeather",
-      "officialHosts": ["api.openweathermap.org"],
-      "allowedBaseUrls": ["https://api.openweathermap.org"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET"],
+      "officialHosts": [
+        "api.openweathermap.org"
+      ],
+      "allowedBaseUrls": [
+        "https://api.openweathermap.org"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET"
+      ],
       "sourceUrl": "https://openweathermap.org/api",
       "confidence": "verified_official"
     },
@@ -282,10 +529,18 @@
       "id": "weatherapi",
       "category": "weather",
       "displayName": "WeatherAPI",
-      "officialHosts": ["api.weatherapi.com"],
-      "allowedBaseUrls": ["https://api.weatherapi.com/v1"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET"],
+      "officialHosts": [
+        "api.weatherapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.weatherapi.com/v1"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET"
+      ],
       "sourceUrl": "https://www.weatherapi.com/docs",
       "confidence": "verified_official"
     },
@@ -293,10 +548,23 @@
       "id": "qweather",
       "category": "weather",
       "displayName": "QWeather",
-      "officialHosts": ["devapi.qweather.com", "api.qweather.com", "geoapi.qweather.com"],
-      "allowedBaseUrls": ["https://devapi.qweather.com", "https://api.qweather.com", "https://geoapi.qweather.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "devapi.qweather.com",
+        "api.qweather.com",
+        "geoapi.qweather.com"
+      ],
+      "allowedBaseUrls": [
+        "https://devapi.qweather.com",
+        "https://api.qweather.com",
+        "https://geoapi.qweather.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://dev.qweather.com/docs",
       "confidence": "verified_official"
     },
@@ -304,10 +572,24 @@
       "id": "google-maps",
       "category": "maps",
       "displayName": "Google Maps Platform",
-      "officialHosts": ["maps.googleapis.com", "routes.googleapis.com", "places.googleapis.com"],
-      "allowedBaseUrls": ["https://maps.googleapis.com", "https://routes.googleapis.com", "https://places.googleapis.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "maps.googleapis.com",
+        "routes.googleapis.com",
+        "places.googleapis.com"
+      ],
+      "allowedBaseUrls": [
+        "https://maps.googleapis.com",
+        "https://routes.googleapis.com",
+        "https://places.googleapis.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developers.google.com/maps/documentation",
       "confidence": "verified_official"
     },
@@ -315,10 +597,22 @@
       "id": "mapbox",
       "category": "maps",
       "displayName": "Mapbox",
-      "officialHosts": ["api.mapbox.com", "events.mapbox.com"],
-      "allowedBaseUrls": ["https://api.mapbox.com", "https://events.mapbox.com"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.mapbox.com",
+        "events.mapbox.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.mapbox.com",
+        "https://events.mapbox.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.mapbox.com/api",
       "confidence": "verified_official"
     },
@@ -326,10 +620,19 @@
       "id": "amap",
       "category": "maps",
       "displayName": "Amap / 高德地图",
-      "officialHosts": ["restapi.amap.com"],
-      "allowedBaseUrls": ["https://restapi.amap.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "restapi.amap.com"
+      ],
+      "allowedBaseUrls": [
+        "https://restapi.amap.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://lbs.amap.com/api",
       "confidence": "verified_official"
     },
@@ -337,10 +640,19 @@
       "id": "baidu-maps",
       "category": "maps",
       "displayName": "Baidu Maps",
-      "officialHosts": ["api.map.baidu.com"],
-      "allowedBaseUrls": ["https://api.map.baidu.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.map.baidu.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.map.baidu.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://lbsyun.baidu.com/index.php?title=webapi",
       "confidence": "verified_official"
     },
@@ -348,10 +660,19 @@
       "id": "tencent-maps",
       "category": "maps",
       "displayName": "Tencent Maps",
-      "officialHosts": ["apis.map.qq.com"],
-      "allowedBaseUrls": ["https://apis.map.qq.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "apis.map.qq.com"
+      ],
+      "allowedBaseUrls": [
+        "https://apis.map.qq.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://lbs.qq.com/service/webService/webServiceGuide/webServiceOverview",
       "confidence": "verified_official"
     },
@@ -359,10 +680,23 @@
       "id": "here",
       "category": "maps",
       "displayName": "HERE",
-      "officialHosts": ["router.hereapi.com", "geocode.search.hereapi.com", "discover.search.hereapi.com"],
-      "allowedBaseUrls": ["https://router.hereapi.com", "https://geocode.search.hereapi.com", "https://discover.search.hereapi.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "router.hereapi.com",
+        "geocode.search.hereapi.com",
+        "discover.search.hereapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://router.hereapi.com",
+        "https://geocode.search.hereapi.com",
+        "https://discover.search.hereapi.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://www.here.com/docs",
       "confidence": "verified_official"
     },
@@ -370,10 +704,19 @@
       "id": "tomtom",
       "category": "maps",
       "displayName": "TomTom",
-      "officialHosts": ["api.tomtom.com"],
-      "allowedBaseUrls": ["https://api.tomtom.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.tomtom.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.tomtom.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developer.tomtom.com",
       "confidence": "verified_official"
     },
@@ -381,10 +724,25 @@
       "id": "google-workspace",
       "category": "docs",
       "displayName": "Google Workspace APIs",
-      "officialHosts": ["www.googleapis.com", "oauth2.googleapis.com"],
-      "allowedBaseUrls": ["https://www.googleapis.com", "https://oauth2.googleapis.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "www.googleapis.com",
+        "oauth2.googleapis.com"
+      ],
+      "allowedBaseUrls": [
+        "https://www.googleapis.com",
+        "https://oauth2.googleapis.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.google.com/workspace",
       "confidence": "verified_official"
     },
@@ -392,10 +750,25 @@
       "id": "microsoft-graph",
       "category": "docs",
       "displayName": "Microsoft Graph",
-      "officialHosts": ["graph.microsoft.com", "login.microsoftonline.com"],
-      "allowedBaseUrls": ["https://graph.microsoft.com/v1.0", "https://graph.microsoft.com/beta", "https://login.microsoftonline.com"],
-      "credentialTypes": ["oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "graph.microsoft.com",
+        "login.microsoftonline.com"
+      ],
+      "allowedBaseUrls": [
+        "https://graph.microsoft.com/v1.0",
+        "https://graph.microsoft.com/beta",
+        "https://login.microsoftonline.com"
+      ],
+      "credentialTypes": [
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://learn.microsoft.com/graph/api/overview",
       "confidence": "verified_official"
     },
@@ -403,10 +776,21 @@
       "id": "notion",
       "category": "docs",
       "displayName": "Notion",
-      "officialHosts": ["api.notion.com"],
-      "allowedBaseUrls": ["https://api.notion.com/v1"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PATCH"],
+      "officialHosts": [
+        "api.notion.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.notion.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH"
+      ],
       "sourceUrl": "https://developers.notion.com/reference/intro",
       "confidence": "verified_official"
     },
@@ -414,10 +798,21 @@
       "id": "dropbox",
       "category": "cloud_storage",
       "displayName": "Dropbox",
-      "officialHosts": ["api.dropboxapi.com", "content.dropboxapi.com"],
-      "allowedBaseUrls": ["https://api.dropboxapi.com", "https://content.dropboxapi.com"],
-      "credentialTypes": ["oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.dropboxapi.com",
+        "content.dropboxapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.dropboxapi.com",
+        "https://content.dropboxapi.com"
+      ],
+      "credentialTypes": [
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://www.dropbox.com/developers/documentation/http/documentation",
       "confidence": "verified_official"
     },
@@ -425,10 +820,23 @@
       "id": "box",
       "category": "cloud_storage",
       "displayName": "Box",
-      "officialHosts": ["api.box.com", "upload.box.com"],
-      "allowedBaseUrls": ["https://api.box.com", "https://upload.box.com"],
-      "credentialTypes": ["oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.box.com",
+        "upload.box.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.box.com",
+        "https://upload.box.com"
+      ],
+      "credentialTypes": [
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.box.com/reference",
       "confidence": "verified_official"
     },
@@ -436,10 +844,23 @@
       "id": "slack",
       "category": "im",
       "displayName": "Slack",
-      "officialHosts": ["slack.com", "api.slack.com", "hooks.slack.com"],
-      "allowedBaseUrls": ["https://slack.com/api", "https://hooks.slack.com"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "slack.com",
+        "api.slack.com",
+        "hooks.slack.com"
+      ],
+      "allowedBaseUrls": [
+        "https://slack.com/api",
+        "https://hooks.slack.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://api.slack.com/web",
       "confidence": "verified_official"
     },
@@ -447,10 +868,23 @@
       "id": "discord",
       "category": "im",
       "displayName": "Discord",
-      "officialHosts": ["discord.com"],
-      "allowedBaseUrls": ["https://discord.com/api"],
-      "credentialTypes": ["bearer_api_key", "bot_token"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "discord.com"
+      ],
+      "allowedBaseUrls": [
+        "https://discord.com/api"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "bot_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://discord.com/developers/docs/reference",
       "confidence": "verified_official"
     },
@@ -458,10 +892,19 @@
       "id": "telegram",
       "category": "im",
       "displayName": "Telegram Bot API",
-      "officialHosts": ["api.telegram.org"],
-      "allowedBaseUrls": ["https://api.telegram.org"],
-      "credentialTypes": ["bot_token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.telegram.org"
+      ],
+      "allowedBaseUrls": [
+        "https://api.telegram.org"
+      ],
+      "credentialTypes": [
+        "bot_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://core.telegram.org/bots/api",
       "confidence": "verified_official"
     },
@@ -469,10 +912,25 @@
       "id": "lark",
       "category": "im",
       "displayName": "Feishu / Lark",
-      "officialHosts": ["open.feishu.cn", "open.larksuite.com"],
-      "allowedBaseUrls": ["https://open.feishu.cn/open-apis", "https://open.larksuite.com/open-apis"],
-      "credentialTypes": ["oauth", "tenant_access_token"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "open.feishu.cn",
+        "open.larksuite.com"
+      ],
+      "allowedBaseUrls": [
+        "https://open.feishu.cn/open-apis",
+        "https://open.larksuite.com/open-apis"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "tenant_access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://open.feishu.cn/document",
       "confidence": "verified_official"
     },
@@ -480,10 +938,22 @@
       "id": "dingtalk",
       "category": "im",
       "displayName": "DingTalk",
-      "officialHosts": ["api.dingtalk.com", "oapi.dingtalk.com"],
-      "allowedBaseUrls": ["https://api.dingtalk.com", "https://oapi.dingtalk.com"],
-      "credentialTypes": ["oauth", "access_token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.dingtalk.com",
+        "oapi.dingtalk.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.dingtalk.com",
+        "https://oapi.dingtalk.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://open.dingtalk.com/document",
       "confidence": "verified_official"
     },
@@ -491,10 +961,21 @@
       "id": "wecom-wechat",
       "category": "im",
       "displayName": "WeCom / WeChat Official Account",
-      "officialHosts": ["qyapi.weixin.qq.com", "api.weixin.qq.com"],
-      "allowedBaseUrls": ["https://qyapi.weixin.qq.com", "https://api.weixin.qq.com"],
-      "credentialTypes": ["access_token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "qyapi.weixin.qq.com",
+        "api.weixin.qq.com"
+      ],
+      "allowedBaseUrls": [
+        "https://qyapi.weixin.qq.com",
+        "https://api.weixin.qq.com"
+      ],
+      "credentialTypes": [
+        "access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developer.work.weixin.qq.com/document/path/90664",
       "confidence": "verified_official"
     },
@@ -502,10 +983,20 @@
       "id": "twilio",
       "category": "im",
       "displayName": "Twilio",
-      "officialHosts": ["api.twilio.com"],
-      "allowedBaseUrls": ["https://api.twilio.com"],
-      "credentialTypes": ["api_key", "basic_auth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.twilio.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.twilio.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "basic_auth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://www.twilio.com/docs/usage/api",
       "confidence": "verified_official"
     },
@@ -513,10 +1004,21 @@
       "id": "sendgrid",
       "category": "email",
       "displayName": "SendGrid",
-      "officialHosts": ["api.sendgrid.com"],
-      "allowedBaseUrls": ["https://api.sendgrid.com/v3"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.sendgrid.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.sendgrid.com/v3"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://www.twilio.com/docs/sendgrid/api-reference",
       "confidence": "verified_official"
     },
@@ -524,10 +1026,21 @@
       "id": "mailgun",
       "category": "email",
       "displayName": "Mailgun",
-      "officialHosts": ["api.mailgun.net"],
-      "allowedBaseUrls": ["https://api.mailgun.net"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.mailgun.net"
+      ],
+      "allowedBaseUrls": [
+        "https://api.mailgun.net"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://documentation.mailgun.com/docs/mailgun/api-reference",
       "confidence": "verified_official"
     },
@@ -535,10 +1048,20 @@
       "id": "stripe",
       "category": "finance",
       "displayName": "Stripe",
-      "officialHosts": ["api.stripe.com"],
-      "allowedBaseUrls": ["https://api.stripe.com/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.stripe.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.stripe.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.stripe.com/api",
       "confidence": "verified_official",
       "mutationRequiresReview": true
@@ -547,10 +1070,23 @@
       "id": "paypal",
       "category": "finance",
       "displayName": "PayPal",
-      "officialHosts": ["api-m.paypal.com", "api-m.sandbox.paypal.com"],
-      "allowedBaseUrls": ["https://api-m.paypal.com", "https://api-m.sandbox.paypal.com"],
-      "credentialTypes": ["oauth"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api-m.paypal.com",
+        "api-m.sandbox.paypal.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api-m.paypal.com",
+        "https://api-m.sandbox.paypal.com"
+      ],
+      "credentialTypes": [
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.paypal.com/api/rest",
       "confidence": "verified_official",
       "mutationRequiresReview": true
@@ -559,10 +1095,18 @@
       "id": "alpha-vantage",
       "category": "finance",
       "displayName": "Alpha Vantage",
-      "officialHosts": ["www.alphavantage.co"],
-      "allowedBaseUrls": ["https://www.alphavantage.co"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET"],
+      "officialHosts": [
+        "www.alphavantage.co"
+      ],
+      "allowedBaseUrls": [
+        "https://www.alphavantage.co"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET"
+      ],
       "sourceUrl": "https://www.alphavantage.co/documentation",
       "confidence": "verified_official"
     },
@@ -570,10 +1114,21 @@
       "id": "runway",
       "category": "ai_video",
       "displayName": "Runway",
-      "officialHosts": ["api.dev.runwayml.com"],
-      "allowedBaseUrls": ["https://api.dev.runwayml.com/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.dev.runwayml.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.dev.runwayml.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.dev.runwayml.com/api/",
       "confidence": "verified_official"
     },
@@ -581,10 +1136,20 @@
       "id": "luma",
       "category": "ai_video",
       "displayName": "Luma AI",
-      "officialHosts": ["api.lumalabs.ai"],
-      "allowedBaseUrls": ["https://api.lumalabs.ai/dream-machine/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.lumalabs.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.lumalabs.ai/dream-machine/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.lumalabs.ai/docs/api",
       "confidence": "verified_official"
     },
@@ -592,10 +1157,20 @@
       "id": "vidu",
       "category": "ai_video",
       "displayName": "Vidu",
-      "officialHosts": ["api.vidu.com"],
-      "allowedBaseUrls": ["https://api.vidu.com/ent/v2"],
-      "credentialTypes": ["bearer_api_key", "token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.vidu.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.vidu.com/ent/v2"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://platform.vidu.com/docs",
       "confidence": "verified_official"
     },
@@ -603,10 +1178,19 @@
       "id": "kling-ai",
       "category": "ai_video",
       "displayName": "Kling AI",
-      "officialHosts": ["api.klingai.com"],
-      "allowedBaseUrls": ["https://api.klingai.com"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.klingai.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.klingai.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://app.klingai.com/global/dev/document-api",
       "confidence": "verified_official"
     },
@@ -614,10 +1198,22 @@
       "id": "heygen",
       "category": "ai_video",
       "displayName": "HeyGen",
-      "officialHosts": ["api.heygen.com"],
-      "allowedBaseUrls": ["https://api.heygen.com/v1", "https://api.heygen.com/v2"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.heygen.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.heygen.com/v1",
+        "https://api.heygen.com/v2"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.heygen.com/reference",
       "confidence": "verified_official"
     },
@@ -625,10 +1221,20 @@
       "id": "synthesia",
       "category": "ai_video",
       "displayName": "Synthesia",
-      "officialHosts": ["api.synthesia.io"],
-      "allowedBaseUrls": ["https://api.synthesia.io/v2"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.synthesia.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.synthesia.io/v2"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.synthesia.io/reference",
       "confidence": "verified_official"
     },
@@ -636,10 +1242,21 @@
       "id": "d-id",
       "category": "ai_video",
       "displayName": "D-ID",
-      "officialHosts": ["api.d-id.com"],
-      "allowedBaseUrls": ["https://api.d-id.com"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.d-id.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.d-id.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.d-id.com/reference",
       "confidence": "verified_official"
     },
@@ -647,10 +1264,21 @@
       "id": "tavus",
       "category": "ai_video",
       "displayName": "Tavus",
-      "officialHosts": ["tavusapi.com"],
-      "allowedBaseUrls": ["https://tavusapi.com/v2"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "tavusapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://tavusapi.com/v2"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.tavus.io/api-reference",
       "confidence": "verified_official"
     },
@@ -658,10 +1286,21 @@
       "id": "shotstack",
       "category": "video",
       "displayName": "Shotstack",
-      "officialHosts": ["api.shotstack.io"],
-      "allowedBaseUrls": ["https://api.shotstack.io"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.shotstack.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.shotstack.io"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://shotstack.io/docs/api/",
       "confidence": "verified_official"
     },
@@ -669,10 +1308,20 @@
       "id": "creatomate",
       "category": "video",
       "displayName": "Creatomate",
-      "officialHosts": ["api.creatomate.com"],
-      "allowedBaseUrls": ["https://api.creatomate.com/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.creatomate.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.creatomate.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://creatomate.com/docs/api/introduction",
       "confidence": "verified_official"
     },
@@ -680,10 +1329,30 @@
       "id": "youtube-data",
       "category": "video",
       "displayName": "YouTube Data API",
-      "officialHosts": ["www.googleapis.com", "youtube.googleapis.com", "youtubeanalytics.googleapis.com", "youtubereporting.googleapis.com"],
-      "allowedBaseUrls": ["https://www.googleapis.com/youtube/v3", "https://www.googleapis.com/upload/youtube/v3", "https://youtube.googleapis.com", "https://youtubeanalytics.googleapis.com", "https://youtubereporting.googleapis.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "www.googleapis.com",
+        "youtube.googleapis.com",
+        "youtubeanalytics.googleapis.com",
+        "youtubereporting.googleapis.com"
+      ],
+      "allowedBaseUrls": [
+        "https://www.googleapis.com/youtube/v3",
+        "https://www.googleapis.com/upload/youtube/v3",
+        "https://youtube.googleapis.com",
+        "https://youtubeanalytics.googleapis.com",
+        "https://youtubereporting.googleapis.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.google.com/youtube/v3",
       "confidence": "verified_official"
     },
@@ -691,10 +1360,25 @@
       "id": "vimeo",
       "category": "video",
       "displayName": "Vimeo",
-      "officialHosts": ["api.vimeo.com", "upload.vimeo.com"],
-      "allowedBaseUrls": ["https://api.vimeo.com", "https://upload.vimeo.com"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.vimeo.com",
+        "upload.vimeo.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.vimeo.com",
+        "https://upload.vimeo.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.vimeo.com/api/reference",
       "confidence": "verified_official"
     },
@@ -702,10 +1386,24 @@
       "id": "mux",
       "category": "video",
       "displayName": "Mux",
-      "officialHosts": ["api.mux.com"],
-      "allowedBaseUrls": ["https://api.mux.com/video/v1", "https://api.mux.com/data/v1"],
-      "credentialTypes": ["basic_auth", "api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.mux.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.mux.com/video/v1",
+        "https://api.mux.com/data/v1"
+      ],
+      "credentialTypes": [
+        "basic_auth",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.mux.com/api-reference",
       "confidence": "verified_official"
     },
@@ -713,10 +1411,23 @@
       "id": "cloudflare-stream",
       "category": "video",
       "displayName": "Cloudflare Stream",
-      "officialHosts": ["api.cloudflare.com"],
-      "allowedBaseUrls": ["https://api.cloudflare.com/client/v4/accounts/*/stream"],
-      "credentialTypes": ["bearer_api_key", "api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.cloudflare.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.cloudflare.com/client/v4/accounts/*/stream"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.cloudflare.com/api/resources/stream/",
       "confidence": "verified_official"
     },
@@ -724,10 +1435,21 @@
       "id": "bunny-stream",
       "category": "video",
       "displayName": "Bunny Stream",
-      "officialHosts": ["video.bunnycdn.com"],
-      "allowedBaseUrls": ["https://video.bunnycdn.com/library"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "video.bunnycdn.com"
+      ],
+      "allowedBaseUrls": [
+        "https://video.bunnycdn.com/library"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.bunny.net/reference/video-library",
       "confidence": "verified_official"
     },
@@ -735,10 +1457,25 @@
       "id": "wistia",
       "category": "video",
       "displayName": "Wistia",
-      "officialHosts": ["api.wistia.com", "upload.wistia.com"],
-      "allowedBaseUrls": ["https://api.wistia.com/v1", "https://upload.wistia.com"],
-      "credentialTypes": ["bearer_api_key", "api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.wistia.com",
+        "upload.wistia.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.wistia.com/v1",
+        "https://upload.wistia.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.wistia.com/reference",
       "confidence": "verified_official"
     },
@@ -746,10 +1483,29 @@
       "id": "brightcove",
       "category": "video",
       "displayName": "Brightcove",
-      "officialHosts": ["oauth.brightcove.com", "cms.api.brightcove.com", "ingest.api.brightcove.com", "playback.api.brightcove.com"],
-      "allowedBaseUrls": ["https://oauth.brightcove.com/v4/access_token", "https://cms.api.brightcove.com/v1", "https://ingest.api.brightcove.com/v1", "https://playback.api.brightcove.com"],
-      "credentialTypes": ["oauth", "bearer_api_key", "basic_auth"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "oauth.brightcove.com",
+        "cms.api.brightcove.com",
+        "ingest.api.brightcove.com",
+        "playback.api.brightcove.com"
+      ],
+      "allowedBaseUrls": [
+        "https://oauth.brightcove.com/v4/access_token",
+        "https://cms.api.brightcove.com/v1",
+        "https://ingest.api.brightcove.com/v1",
+        "https://playback.api.brightcove.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key",
+        "basic_auth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://apis.support.brightcove.com/",
       "confidence": "verified_official"
     },
@@ -757,10 +1513,25 @@
       "id": "jwplayer",
       "category": "video",
       "displayName": "JW Player",
-      "officialHosts": ["api.jwplayer.com", "api.jwplatform.com"],
-      "allowedBaseUrls": ["https://api.jwplayer.com/v2", "https://api.jwplatform.com/v1"],
-      "credentialTypes": ["bearer_api_key", "api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.jwplayer.com",
+        "api.jwplatform.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.jwplayer.com/v2",
+        "https://api.jwplatform.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.jwplayer.com/platform/reference",
       "confidence": "verified_official"
     },
@@ -768,10 +1539,20 @@
       "id": "kaltura",
       "category": "video",
       "displayName": "Kaltura",
-      "officialHosts": ["www.kaltura.com"],
-      "allowedBaseUrls": ["https://www.kaltura.com/api_v3"],
-      "credentialTypes": ["session_token", "api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "www.kaltura.com"
+      ],
+      "allowedBaseUrls": [
+        "https://www.kaltura.com/api_v3"
+      ],
+      "credentialTypes": [
+        "session_token",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developer.kaltura.com/api-docs/",
       "confidence": "verified_official"
     },
@@ -779,10 +1560,27 @@
       "id": "twitch",
       "category": "video",
       "displayName": "Twitch",
-      "officialHosts": ["api.twitch.tv", "id.twitch.tv", "gql.twitch.tv"],
-      "allowedBaseUrls": ["https://api.twitch.tv/helix", "https://id.twitch.tv/oauth2", "https://gql.twitch.tv/gql"],
-      "credentialTypes": ["oauth", "bearer_api_key", "client_id"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.twitch.tv",
+        "id.twitch.tv",
+        "gql.twitch.tv"
+      ],
+      "allowedBaseUrls": [
+        "https://api.twitch.tv/helix",
+        "https://id.twitch.tv/oauth2",
+        "https://gql.twitch.tv/gql"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key",
+        "client_id"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://dev.twitch.tv/docs/api/",
       "confidence": "verified_official"
     },
@@ -790,10 +1588,25 @@
       "id": "tiktok-open",
       "category": "video",
       "displayName": "TikTok Open Platform",
-      "officialHosts": ["open.tiktokapis.com", "business-api.tiktok.com"],
-      "allowedBaseUrls": ["https://open.tiktokapis.com/v2", "https://business-api.tiktok.com/open_api"],
-      "credentialTypes": ["oauth", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "open.tiktokapis.com",
+        "business-api.tiktok.com"
+      ],
+      "allowedBaseUrls": [
+        "https://open.tiktokapis.com/v2",
+        "https://business-api.tiktok.com/open_api"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.tiktok.com/doc/",
       "confidence": "verified_official"
     },
@@ -801,10 +1614,23 @@
       "id": "meta-graph-media",
       "category": "video",
       "displayName": "Meta Graph API Media",
-      "officialHosts": ["graph.facebook.com", "graph.instagram.com"],
-      "allowedBaseUrls": ["https://graph.facebook.com", "https://graph.instagram.com"],
-      "credentialTypes": ["oauth", "access_token"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "graph.facebook.com",
+        "graph.instagram.com"
+      ],
+      "allowedBaseUrls": [
+        "https://graph.facebook.com",
+        "https://graph.instagram.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.facebook.com/docs/graph-api",
       "confidence": "verified_official"
     },
@@ -812,10 +1638,24 @@
       "id": "x-twitter-media",
       "category": "video",
       "displayName": "X / Twitter Media API",
-      "officialHosts": ["api.twitter.com", "upload.twitter.com"],
-      "allowedBaseUrls": ["https://api.twitter.com", "https://upload.twitter.com"],
-      "credentialTypes": ["oauth", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.twitter.com",
+        "upload.twitter.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.twitter.com",
+        "https://upload.twitter.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.x.com/en/docs",
       "confidence": "verified_official"
     },
@@ -823,10 +1663,24 @@
       "id": "zoom",
       "category": "video",
       "displayName": "Zoom",
-      "officialHosts": ["api.zoom.us", "zoom.us"],
-      "allowedBaseUrls": ["https://api.zoom.us/v2", "https://zoom.us/oauth"],
-      "credentialTypes": ["oauth", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.zoom.us",
+        "zoom.us"
+      ],
+      "allowedBaseUrls": [
+        "https://api.zoom.us/v2",
+        "https://zoom.us/oauth"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.zoom.us/docs/api/",
       "confidence": "verified_official"
     },
@@ -834,10 +1688,23 @@
       "id": "webex",
       "category": "video",
       "displayName": "Cisco Webex",
-      "officialHosts": ["webexapis.com"],
-      "allowedBaseUrls": ["https://webexapis.com/v1"],
-      "credentialTypes": ["oauth", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "webexapis.com"
+      ],
+      "allowedBaseUrls": [
+        "https://webexapis.com/v1"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.webex.com/docs/api/v1",
       "confidence": "verified_official"
     },
@@ -845,10 +1712,21 @@
       "id": "agora",
       "category": "video",
       "displayName": "Agora",
-      "officialHosts": ["api.agora.io"],
-      "allowedBaseUrls": ["https://api.agora.io"],
-      "credentialTypes": ["basic_auth", "api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.agora.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.agora.io"
+      ],
+      "credentialTypes": [
+        "basic_auth",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.agora.io/en/restful-api/reference",
       "confidence": "verified_official"
     },
@@ -856,10 +1734,20 @@
       "id": "daily",
       "category": "video",
       "displayName": "Daily",
-      "officialHosts": ["api.daily.co"],
-      "allowedBaseUrls": ["https://api.daily.co/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.daily.co"
+      ],
+      "allowedBaseUrls": [
+        "https://api.daily.co/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.daily.co/reference/rest-api",
       "confidence": "verified_official"
     },
@@ -867,10 +1755,24 @@
       "id": "vonage-video",
       "category": "video",
       "displayName": "Vonage Video API",
-      "officialHosts": ["video.api.vonage.com", "api.nexmo.com"],
-      "allowedBaseUrls": ["https://video.api.vonage.com", "https://api.nexmo.com"],
-      "credentialTypes": ["bearer_api_key", "api_key"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "video.api.vonage.com",
+        "api.nexmo.com"
+      ],
+      "allowedBaseUrls": [
+        "https://video.api.vonage.com",
+        "https://api.nexmo.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.vonage.com/en/video/overview",
       "confidence": "verified_official"
     },
@@ -878,10 +1780,21 @@
       "id": "dolby-io",
       "category": "video",
       "displayName": "Dolby.io",
-      "officialHosts": ["api.dolby.io"],
-      "allowedBaseUrls": ["https://api.dolby.io"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.dolby.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.dolby.io"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.dolby.io/media-apis/reference",
       "confidence": "verified_official"
     },
@@ -889,10 +1802,22 @@
       "id": "api-video",
       "category": "video",
       "displayName": "api.video",
-      "officialHosts": ["ws.api.video"],
-      "allowedBaseUrls": ["https://ws.api.video"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "ws.api.video"
+      ],
+      "allowedBaseUrls": [
+        "https://ws.api.video"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.api.video/reference",
       "confidence": "verified_official"
     },
@@ -900,10 +1825,23 @@
       "id": "google-cloud-video",
       "category": "video",
       "displayName": "Google Cloud Video APIs",
-      "officialHosts": ["videointelligence.googleapis.com", "transcoder.googleapis.com"],
-      "allowedBaseUrls": ["https://videointelligence.googleapis.com", "https://transcoder.googleapis.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "videointelligence.googleapis.com",
+        "transcoder.googleapis.com"
+      ],
+      "allowedBaseUrls": [
+        "https://videointelligence.googleapis.com",
+        "https://transcoder.googleapis.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://cloud.google.com/video-intelligence/docs/reference/rest",
       "confidence": "verified_official"
     },
@@ -911,10 +1849,23 @@
       "id": "azure-video-indexer",
       "category": "video",
       "displayName": "Azure AI Video Indexer",
-      "officialHosts": ["api.videoindexer.ai"],
-      "allowedBaseUrls": ["https://api.videoindexer.ai"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.videoindexer.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.videoindexer.ai"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://learn.microsoft.com/azure/azure-video-indexer/video-indexer-use-apis",
       "confidence": "verified_official"
     },
@@ -922,10 +1873,27 @@
       "id": "aws-media-services",
       "category": "video",
       "displayName": "AWS Media Services",
-      "officialHosts": ["amazonaws.com"],
-      "allowedBaseUrls": ["https://mediaconvert.*.amazonaws.com", "https://medialive.*.amazonaws.com", "https://mediapackage.*.amazonaws.com", "https://ivs.*.amazonaws.com", "https://kinesisvideo.*.amazonaws.com"],
-      "credentialTypes": ["aws_sigv4", "api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "amazonaws.com"
+      ],
+      "allowedBaseUrls": [
+        "https://mediaconvert.*.amazonaws.com",
+        "https://medialive.*.amazonaws.com",
+        "https://mediapackage.*.amazonaws.com",
+        "https://ivs.*.amazonaws.com",
+        "https://kinesisvideo.*.amazonaws.com"
+      ],
+      "credentialTypes": [
+        "aws_sigv4",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.aws.amazon.com/media-services/",
       "confidence": "verified_official"
     },
@@ -933,10 +1901,24 @@
       "id": "tencent-cloud-video",
       "category": "video",
       "displayName": "Tencent Cloud VOD / Live",
-      "officialHosts": ["vod.tencentcloudapi.com", "live.tencentcloudapi.com", "trtc.tencentcloudapi.com"],
-      "allowedBaseUrls": ["https://vod.tencentcloudapi.com", "https://live.tencentcloudapi.com", "https://trtc.tencentcloudapi.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "vod.tencentcloudapi.com",
+        "live.tencentcloudapi.com",
+        "trtc.tencentcloudapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://vod.tencentcloudapi.com",
+        "https://live.tencentcloudapi.com",
+        "https://trtc.tencentcloudapi.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://cloud.tencent.com/document/product/266",
       "confidence": "verified_official"
     },
@@ -944,10 +1926,24 @@
       "id": "aliyun-video",
       "category": "video",
       "displayName": "Alibaba Cloud VOD / Live / ICE",
-      "officialHosts": ["vod.cn-shanghai.aliyuncs.com", "live.aliyuncs.com", "ice.cn-shanghai.aliyuncs.com"],
-      "allowedBaseUrls": ["https://vod.*.aliyuncs.com", "https://live.aliyuncs.com", "https://ice.*.aliyuncs.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "vod.cn-shanghai.aliyuncs.com",
+        "live.aliyuncs.com",
+        "ice.cn-shanghai.aliyuncs.com"
+      ],
+      "allowedBaseUrls": [
+        "https://vod.*.aliyuncs.com",
+        "https://live.aliyuncs.com",
+        "https://ice.*.aliyuncs.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://help.aliyun.com/zh/vod/developer-reference/",
       "confidence": "verified_official"
     },
@@ -955,10 +1951,24 @@
       "id": "volcengine-video",
       "category": "video",
       "displayName": "Volcengine VOD / Live",
-      "officialHosts": ["vod.volcengineapi.com", "live.volcengineapi.com", "open.volcengineapi.com"],
-      "allowedBaseUrls": ["https://vod.volcengineapi.com", "https://live.volcengineapi.com", "https://open.volcengineapi.com"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "vod.volcengineapi.com",
+        "live.volcengineapi.com",
+        "open.volcengineapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://vod.volcengineapi.com",
+        "https://live.volcengineapi.com",
+        "https://open.volcengineapi.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://www.volcengine.com/docs/4",
       "confidence": "verified_official"
     },
@@ -966,10 +1976,24 @@
       "id": "huawei-cloud-video",
       "category": "video",
       "displayName": "Huawei Cloud VOD / Live",
-      "officialHosts": ["vod.myhuaweicloud.com", "live.myhuaweicloud.com"],
-      "allowedBaseUrls": ["https://vod.*.myhuaweicloud.com", "https://live.*.myhuaweicloud.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "vod.myhuaweicloud.com",
+        "live.myhuaweicloud.com"
+      ],
+      "allowedBaseUrls": [
+        "https://vod.*.myhuaweicloud.com",
+        "https://live.*.myhuaweicloud.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://support.huaweicloud.com/api-vod/",
       "confidence": "verified_official"
     },
@@ -977,10 +2001,24 @@
       "id": "baidu-cloud-video",
       "category": "video",
       "displayName": "Baidu Cloud VOD / Live",
-      "officialHosts": ["vod.baidubce.com", "live.baidubce.com", "rtc.baidubce.com"],
-      "allowedBaseUrls": ["https://vod.baidubce.com", "https://live.baidubce.com", "https://rtc.baidubce.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "vod.baidubce.com",
+        "live.baidubce.com",
+        "rtc.baidubce.com"
+      ],
+      "allowedBaseUrls": [
+        "https://vod.baidubce.com",
+        "https://live.baidubce.com",
+        "https://rtc.baidubce.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://cloud.baidu.com/doc/VOD/index.html",
       "confidence": "verified_official"
     },
@@ -988,10 +2026,23 @@
       "id": "qiniu-video",
       "category": "video",
       "displayName": "Qiniu Video / Pili",
-      "officialHosts": ["pili.qiniuapi.com", "api.qiniu.com"],
-      "allowedBaseUrls": ["https://pili.qiniuapi.com", "https://api.qiniu.com"],
-      "credentialTypes": ["api_key", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "pili.qiniuapi.com",
+        "api.qiniu.com"
+      ],
+      "allowedBaseUrls": [
+        "https://pili.qiniuapi.com",
+        "https://api.qiniu.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.qiniu.com/pili",
       "confidence": "verified_official"
     },
@@ -999,10 +2050,25 @@
       "id": "bilibili-open",
       "category": "video",
       "displayName": "Bilibili Open Platform",
-      "officialHosts": ["api.bilibili.com", "member.bilibili.com", "api.live.bilibili.com"],
-      "allowedBaseUrls": ["https://api.bilibili.com", "https://member.bilibili.com", "https://api.live.bilibili.com"],
-      "credentialTypes": ["oauth", "access_token", "cookie"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.bilibili.com",
+        "member.bilibili.com",
+        "api.live.bilibili.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.bilibili.com",
+        "https://member.bilibili.com",
+        "https://api.live.bilibili.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "access_token",
+        "cookie"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://openhome.bilibili.com/doc",
       "confidence": "verified_official"
     },
@@ -1010,10 +2076,24 @@
       "id": "douyin-open",
       "category": "video",
       "displayName": "Douyin Open Platform",
-      "officialHosts": ["open.douyin.com", "openapi.douyin.com", "developer.toutiao.com"],
-      "allowedBaseUrls": ["https://open.douyin.com", "https://openapi.douyin.com", "https://developer.toutiao.com"],
-      "credentialTypes": ["oauth", "access_token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "open.douyin.com",
+        "openapi.douyin.com",
+        "developer.toutiao.com"
+      ],
+      "allowedBaseUrls": [
+        "https://open.douyin.com",
+        "https://openapi.douyin.com",
+        "https://developer.toutiao.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/account-permission",
       "confidence": "verified_official"
     },
@@ -1021,10 +2101,22 @@
       "id": "kuaishou-open",
       "category": "video",
       "displayName": "Kuaishou Open Platform",
-      "officialHosts": ["open.kuaishou.com", "openapi.kuaishou.com"],
-      "allowedBaseUrls": ["https://open.kuaishou.com", "https://openapi.kuaishou.com"],
-      "credentialTypes": ["oauth", "access_token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "open.kuaishou.com",
+        "openapi.kuaishou.com"
+      ],
+      "allowedBaseUrls": [
+        "https://open.kuaishou.com",
+        "https://openapi.kuaishou.com"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://open.kuaishou.com/platform/openApi",
       "confidence": "verified_official"
     },
@@ -1032,10 +2124,19 @@
       "id": "wechat-video-channel",
       "category": "video",
       "displayName": "WeChat Channels / Media",
-      "officialHosts": ["api.weixin.qq.com"],
-      "allowedBaseUrls": ["https://api.weixin.qq.com"],
-      "credentialTypes": ["access_token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.weixin.qq.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.weixin.qq.com"
+      ],
+      "credentialTypes": [
+        "access_token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developers.weixin.qq.com/doc/",
       "confidence": "verified_official"
     },
@@ -1043,10 +2144,22 @@
       "id": "polyv",
       "category": "video",
       "displayName": "POLYV",
-      "officialHosts": ["api.polyv.net", "live.polyv.net"],
-      "allowedBaseUrls": ["https://api.polyv.net", "https://live.polyv.net"],
-      "credentialTypes": ["api_key", "token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.polyv.net",
+        "live.polyv.net"
+      ],
+      "allowedBaseUrls": [
+        "https://api.polyv.net",
+        "https://live.polyv.net"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://dev.polyv.net/",
       "confidence": "verified_official"
     },
@@ -1054,10 +2167,22 @@
       "id": "baijiayun",
       "category": "video",
       "displayName": "Baijiayun",
-      "officialHosts": ["api.baijiayun.com", "www.baijiayun.com"],
-      "allowedBaseUrls": ["https://api.baijiayun.com", "https://www.baijiayun.com/openapi"],
-      "credentialTypes": ["api_key", "token"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.baijiayun.com",
+        "www.baijiayun.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.baijiayun.com",
+        "https://www.baijiayun.com/openapi"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://dev.baijiayun.com/",
       "confidence": "verified_official"
     },
@@ -1065,10 +2190,23 @@
       "id": "wechat-pay",
       "category": "finance",
       "displayName": "WeChat Pay",
-      "officialHosts": ["api.mch.weixin.qq.com"],
-      "allowedBaseUrls": ["https://api.mch.weixin.qq.com"],
-      "credentialTypes": ["api_key", "certificate", "oauth"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.mch.weixin.qq.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.mch.weixin.qq.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "certificate",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://pay.weixin.qq.com/doc/v3/merchant/4012062520",
       "confidence": "verified_official",
       "mutationRequiresReview": true
@@ -1077,10 +2215,26 @@
       "id": "github-api",
       "category": "devops",
       "displayName": "GitHub API",
-      "officialHosts": ["api.github.com", "uploads.github.com"],
-      "allowedBaseUrls": ["https://api.github.com", "https://uploads.github.com"],
-      "credentialTypes": ["bearer_api_key", "token", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.github.com",
+        "uploads.github.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.github.com",
+        "https://uploads.github.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "token",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.github.com/rest",
       "confidence": "verified_official"
     },
@@ -1088,10 +2242,24 @@
       "id": "gitlab",
       "category": "devops",
       "displayName": "GitLab",
-      "officialHosts": ["gitlab.com"],
-      "allowedBaseUrls": ["https://gitlab.com/api/v4"],
-      "credentialTypes": ["bearer_api_key", "token", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "gitlab.com"
+      ],
+      "allowedBaseUrls": [
+        "https://gitlab.com/api/v4"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "token",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.gitlab.com/api/rest/",
       "confidence": "verified_official"
     },
@@ -1099,10 +2267,22 @@
       "id": "bitbucket",
       "category": "devops",
       "displayName": "Bitbucket",
-      "officialHosts": ["api.bitbucket.org"],
-      "allowedBaseUrls": ["https://api.bitbucket.org/2.0"],
-      "credentialTypes": ["oauth", "app_password"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.bitbucket.org"
+      ],
+      "allowedBaseUrls": [
+        "https://api.bitbucket.org/2.0"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "app_password"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.atlassian.com/cloud/bitbucket/rest/",
       "confidence": "verified_official"
     },
@@ -1110,10 +2290,27 @@
       "id": "atlassian",
       "category": "docs",
       "displayName": "Atlassian Cloud",
-      "officialHosts": ["api.atlassian.com", "atlassian.net"],
-      "allowedBaseUrls": ["https://api.atlassian.com", "https://*.atlassian.net/rest/api", "https://*.atlassian.net/wiki/rest/api"],
-      "credentialTypes": ["oauth", "api_key", "basic_auth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.atlassian.com",
+        "atlassian.net"
+      ],
+      "allowedBaseUrls": [
+        "https://api.atlassian.com",
+        "https://*.atlassian.net/rest/api",
+        "https://*.atlassian.net/wiki/rest/api"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "api_key",
+        "basic_auth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.atlassian.com/cloud/",
       "confidence": "verified_official",
       "allowSubdomains": true
@@ -1122,10 +2319,20 @@
       "id": "linear",
       "category": "docs",
       "displayName": "Linear",
-      "officialHosts": ["api.linear.app"],
-      "allowedBaseUrls": ["https://api.linear.app/graphql"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.linear.app"
+      ],
+      "allowedBaseUrls": [
+        "https://api.linear.app/graphql"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developers.linear.app/docs/graphql/working-with-the-graphql-api",
       "confidence": "verified_official"
     },
@@ -1133,10 +2340,22 @@
       "id": "asana",
       "category": "docs",
       "displayName": "Asana",
-      "officialHosts": ["app.asana.com"],
-      "allowedBaseUrls": ["https://app.asana.com/api/1.0"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "app.asana.com"
+      ],
+      "allowedBaseUrls": [
+        "https://app.asana.com/api/1.0"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.asana.com/reference/rest-api-reference",
       "confidence": "verified_official"
     },
@@ -1144,10 +2363,22 @@
       "id": "trello",
       "category": "docs",
       "displayName": "Trello",
-      "officialHosts": ["api.trello.com"],
-      "allowedBaseUrls": ["https://api.trello.com/1"],
-      "credentialTypes": ["api_key", "token"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.trello.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.trello.com/1"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.atlassian.com/cloud/trello/rest/",
       "confidence": "verified_official"
     },
@@ -1155,10 +2386,20 @@
       "id": "monday",
       "category": "docs",
       "displayName": "monday.com",
-      "officialHosts": ["api.monday.com"],
-      "allowedBaseUrls": ["https://api.monday.com/v2"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.monday.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.monday.com/v2"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://developer.monday.com/api-reference/docs",
       "confidence": "verified_official"
     },
@@ -1166,10 +2407,22 @@
       "id": "airtable",
       "category": "docs",
       "displayName": "Airtable",
-      "officialHosts": ["api.airtable.com"],
-      "allowedBaseUrls": ["https://api.airtable.com/v0"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.airtable.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.airtable.com/v0"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://airtable.com/developers/web/api/introduction",
       "confidence": "verified_official"
     },
@@ -1177,10 +2430,25 @@
       "id": "salesforce",
       "category": "crm",
       "displayName": "Salesforce",
-      "officialHosts": ["salesforce.com", "force.com"],
-      "allowedBaseUrls": ["https://*.my.salesforce.com/services/data", "https://*.salesforce.com/services/data", "https://*.my.site.com/services/data"],
-      "credentialTypes": ["oauth", "bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "salesforce.com",
+        "force.com"
+      ],
+      "allowedBaseUrls": [
+        "https://*.my.salesforce.com/services/data",
+        "https://*.salesforce.com/services/data",
+        "https://*.my.site.com/services/data"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/",
       "confidence": "verified_official",
       "allowSubdomains": true
@@ -1189,10 +2457,22 @@
       "id": "hubspot",
       "category": "crm",
       "displayName": "HubSpot",
-      "officialHosts": ["api.hubapi.com"],
-      "allowedBaseUrls": ["https://api.hubapi.com"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.hubapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.hubapi.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.hubspot.com/docs/api/overview",
       "confidence": "verified_official"
     },
@@ -1200,10 +2480,23 @@
       "id": "zendesk",
       "category": "crm",
       "displayName": "Zendesk",
-      "officialHosts": ["zendesk.com"],
-      "allowedBaseUrls": ["https://*.zendesk.com/api/v2"],
-      "credentialTypes": ["oauth", "api_key", "basic_auth"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "zendesk.com"
+      ],
+      "allowedBaseUrls": [
+        "https://*.zendesk.com/api/v2"
+      ],
+      "credentialTypes": [
+        "oauth",
+        "api_key",
+        "basic_auth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.zendesk.com/api-reference/",
       "confidence": "verified_official",
       "allowSubdomains": true
@@ -1212,10 +2505,22 @@
       "id": "intercom",
       "category": "crm",
       "displayName": "Intercom",
-      "officialHosts": ["api.intercom.io"],
-      "allowedBaseUrls": ["https://api.intercom.io"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.intercom.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.intercom.io"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io",
       "confidence": "verified_official"
     },
@@ -1223,10 +2528,23 @@
       "id": "cloudflare-api",
       "category": "cloud",
       "displayName": "Cloudflare API",
-      "officialHosts": ["api.cloudflare.com"],
-      "allowedBaseUrls": ["https://api.cloudflare.com/client/v4"],
-      "credentialTypes": ["bearer_api_key", "api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.cloudflare.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.cloudflare.com/client/v4"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.cloudflare.com/api/",
       "confidence": "verified_official"
     },
@@ -1234,10 +2552,22 @@
       "id": "vercel",
       "category": "cloud",
       "displayName": "Vercel",
-      "officialHosts": ["api.vercel.com"],
-      "allowedBaseUrls": ["https://api.vercel.com"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.vercel.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.vercel.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://vercel.com/docs/rest-api/reference",
       "confidence": "verified_official"
     },
@@ -1245,10 +2575,23 @@
       "id": "netlify",
       "category": "cloud",
       "displayName": "Netlify",
-      "officialHosts": ["api.netlify.com"],
-      "allowedBaseUrls": ["https://api.netlify.com/api/v1"],
-      "credentialTypes": ["bearer_api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.netlify.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.netlify.com/api/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://open-api.netlify.com/",
       "confidence": "verified_official"
     },
@@ -1256,10 +2599,23 @@
       "id": "sentry",
       "category": "observability",
       "displayName": "Sentry",
-      "officialHosts": ["sentry.io"],
-      "allowedBaseUrls": ["https://sentry.io/api/0", "https://*.sentry.io/api/0"],
-      "credentialTypes": ["bearer_api_key", "token"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "sentry.io"
+      ],
+      "allowedBaseUrls": [
+        "https://sentry.io/api/0",
+        "https://*.sentry.io/api/0"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "token"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.sentry.io/api/",
       "confidence": "verified_official",
       "allowSubdomains": true
@@ -1268,10 +2624,31 @@
       "id": "datadog",
       "category": "observability",
       "displayName": "Datadog",
-      "officialHosts": ["api.datadoghq.com", "api.datadoghq.eu", "api.us3.datadoghq.com", "api.us5.datadoghq.com", "api.ap1.datadoghq.com"],
-      "allowedBaseUrls": ["https://api.datadoghq.com", "https://api.datadoghq.eu", "https://api.us3.datadoghq.com", "https://api.us5.datadoghq.com", "https://api.ap1.datadoghq.com"],
-      "credentialTypes": ["api_key", "app_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "officialHosts": [
+        "api.datadoghq.com",
+        "api.datadoghq.eu",
+        "api.us3.datadoghq.com",
+        "api.us5.datadoghq.com",
+        "api.ap1.datadoghq.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.datadoghq.com",
+        "https://api.datadoghq.eu",
+        "https://api.us3.datadoghq.com",
+        "https://api.us5.datadoghq.com",
+        "https://api.ap1.datadoghq.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "app_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.datadoghq.com/api/latest/",
       "confidence": "verified_official"
     },
@@ -1279,10 +2656,25 @@
       "id": "pagerduty",
       "category": "observability",
       "displayName": "PagerDuty",
-      "officialHosts": ["api.pagerduty.com", "events.pagerduty.com"],
-      "allowedBaseUrls": ["https://api.pagerduty.com", "https://events.pagerduty.com"],
-      "credentialTypes": ["api_key", "routing_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.pagerduty.com",
+        "events.pagerduty.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.pagerduty.com",
+        "https://events.pagerduty.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "routing_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developer.pagerduty.com/api-reference/",
       "confidence": "verified_official"
     },
@@ -1290,10 +2682,24 @@
       "id": "plaid",
       "category": "finance",
       "displayName": "Plaid",
-      "officialHosts": ["production.plaid.com", "sandbox.plaid.com", "development.plaid.com"],
-      "allowedBaseUrls": ["https://production.plaid.com", "https://sandbox.plaid.com", "https://development.plaid.com"],
-      "credentialTypes": ["api_key", "client_secret"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "production.plaid.com",
+        "sandbox.plaid.com",
+        "development.plaid.com"
+      ],
+      "allowedBaseUrls": [
+        "https://production.plaid.com",
+        "https://sandbox.plaid.com",
+        "https://development.plaid.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "client_secret"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://plaid.com/docs/api/",
       "confidence": "verified_official",
       "mutationRequiresReview": true
@@ -1302,10 +2708,18 @@
       "id": "polygon",
       "category": "finance",
       "displayName": "Polygon.io",
-      "officialHosts": ["api.polygon.io"],
-      "allowedBaseUrls": ["https://api.polygon.io"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET"],
+      "officialHosts": [
+        "api.polygon.io"
+      ],
+      "allowedBaseUrls": [
+        "https://api.polygon.io"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET"
+      ],
       "sourceUrl": "https://polygon.io/docs",
       "confidence": "verified_official"
     },
@@ -1313,10 +2727,19 @@
       "id": "finnhub",
       "category": "finance",
       "displayName": "Finnhub",
-      "officialHosts": ["finnhub.io"],
-      "allowedBaseUrls": ["https://finnhub.io/api/v1"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "finnhub.io"
+      ],
+      "allowedBaseUrls": [
+        "https://finnhub.io/api/v1"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://finnhub.io/docs/api",
       "confidence": "verified_official"
     },
@@ -1324,10 +2747,23 @@
       "id": "coinbase",
       "category": "finance",
       "displayName": "Coinbase",
-      "officialHosts": ["api.coinbase.com", "api.exchange.coinbase.com"],
-      "allowedBaseUrls": ["https://api.coinbase.com", "https://api.exchange.coinbase.com"],
-      "credentialTypes": ["api_key", "oauth"],
-      "allowedMethods": ["GET", "POST", "DELETE"],
+      "officialHosts": [
+        "api.coinbase.com",
+        "api.exchange.coinbase.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.coinbase.com",
+        "https://api.exchange.coinbase.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
       "sourceUrl": "https://docs.cdp.coinbase.com/",
       "confidence": "verified_official",
       "mutationRequiresReview": true
@@ -1336,10 +2772,27 @@
       "id": "binance",
       "category": "finance",
       "displayName": "Binance",
-      "officialHosts": ["api.binance.com", "api1.binance.com", "fapi.binance.com", "dapi.binance.com"],
-      "allowedBaseUrls": ["https://api.binance.com", "https://api1.binance.com", "https://fapi.binance.com", "https://dapi.binance.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST", "PUT", "DELETE"],
+      "officialHosts": [
+        "api.binance.com",
+        "api1.binance.com",
+        "fapi.binance.com",
+        "dapi.binance.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://fapi.binance.com",
+        "https://dapi.binance.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
       "sourceUrl": "https://developers.binance.com/docs/binance-spot-api-docs/rest-api",
       "confidence": "verified_official",
       "mutationRequiresReview": true
@@ -1348,10 +2801,18 @@
       "id": "brave-search",
       "category": "search",
       "displayName": "Brave Search API",
-      "officialHosts": ["api.search.brave.com"],
-      "allowedBaseUrls": ["https://api.search.brave.com/res/v1"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET"],
+      "officialHosts": [
+        "api.search.brave.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.search.brave.com/res/v1"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET"
+      ],
       "sourceUrl": "https://api-dashboard.search.brave.com/app/documentation",
       "confidence": "verified_official"
     },
@@ -1359,10 +2820,19 @@
       "id": "serpapi",
       "category": "search",
       "displayName": "SerpApi",
-      "officialHosts": ["serpapi.com"],
-      "allowedBaseUrls": ["https://serpapi.com/search"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "serpapi.com"
+      ],
+      "allowedBaseUrls": [
+        "https://serpapi.com/search"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://serpapi.com/search-api",
       "confidence": "verified_official"
     },
@@ -1370,10 +2840,19 @@
       "id": "tavily",
       "category": "search",
       "displayName": "Tavily",
-      "officialHosts": ["api.tavily.com"],
-      "allowedBaseUrls": ["https://api.tavily.com"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.tavily.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.tavily.com"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.tavily.com/documentation/api-reference",
       "confidence": "verified_official"
     },
@@ -1381,10 +2860,19 @@
       "id": "exa",
       "category": "search",
       "displayName": "Exa",
-      "officialHosts": ["api.exa.ai"],
-      "allowedBaseUrls": ["https://api.exa.ai"],
-      "credentialTypes": ["api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.exa.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.exa.ai"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.exa.ai/reference",
       "confidence": "verified_official"
     },
@@ -1392,10 +2880,23 @@
       "id": "jina",
       "category": "search",
       "displayName": "Jina AI",
-      "officialHosts": ["api.jina.ai", "r.jina.ai", "s.jina.ai"],
-      "allowedBaseUrls": ["https://api.jina.ai", "https://r.jina.ai", "https://s.jina.ai"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.jina.ai",
+        "r.jina.ai",
+        "s.jina.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.jina.ai",
+        "https://r.jina.ai",
+        "https://s.jina.ai"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://jina.ai/reader/",
       "confidence": "verified_official"
     },
@@ -1403,10 +2904,19 @@
       "id": "firecrawl",
       "category": "search",
       "displayName": "Firecrawl",
-      "officialHosts": ["api.firecrawl.dev"],
-      "allowedBaseUrls": ["https://api.firecrawl.dev/v1"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.firecrawl.dev"
+      ],
+      "allowedBaseUrls": [
+        "https://api.firecrawl.dev/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.firecrawl.dev/api-reference/introduction",
       "confidence": "verified_official"
     },
@@ -1414,12 +2924,355 @@
       "id": "perplexity",
       "category": "search",
       "displayName": "Perplexity",
-      "officialHosts": ["api.perplexity.ai"],
-      "allowedBaseUrls": ["https://api.perplexity.ai"],
-      "credentialTypes": ["bearer_api_key"],
-      "allowedMethods": ["GET", "POST"],
+      "officialHosts": [
+        "api.perplexity.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.perplexity.ai"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
       "sourceUrl": "https://docs.perplexity.ai/api-reference",
       "confidence": "verified_official"
+    },
+    {
+      "id": "fireworks",
+      "category": "ai",
+      "displayName": "Fireworks AI",
+      "officialHosts": [
+        "api.fireworks.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.fireworks.ai/inference/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.fireworks.ai/api-reference/introduction",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "cerebras",
+      "category": "ai",
+      "displayName": "Cerebras",
+      "officialHosts": [
+        "api.cerebras.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.cerebras.ai/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://inference-docs.cerebras.ai/api-reference",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "nvidia-nim",
+      "category": "ai",
+      "displayName": "NVIDIA NIM",
+      "officialHosts": [
+        "integrate.api.nvidia.com"
+      ],
+      "allowedBaseUrls": [
+        "https://integrate.api.nvidia.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.api.nvidia.com/nim/reference",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "ai21",
+      "category": "ai",
+      "displayName": "AI21 Labs",
+      "officialHosts": [
+        "api.ai21.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.ai21.com/studio/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.ai21.com/reference",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "stepfun",
+      "category": "ai",
+      "displayName": "StepFun",
+      "officialHosts": [
+        "api.stepfun.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.stepfun.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://platform.stepfun.com/docs",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "baichuan",
+      "category": "ai",
+      "displayName": "Baichuan AI",
+      "officialHosts": [
+        "api.baichuan-ai.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.baichuan-ai.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://platform.baichuan-ai.com/docs/api",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "ideogram",
+      "category": "ai_video",
+      "displayName": "Ideogram",
+      "officialHosts": [
+        "api.ideogram.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.ideogram.ai"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://developer.ideogram.ai",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "leonardo",
+      "category": "ai_video",
+      "displayName": "Leonardo AI",
+      "officialHosts": [
+        "cloud.leonardo.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://cloud.leonardo.ai/api/rest/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.leonardo.ai",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "pika",
+      "category": "ai_video",
+      "displayName": "Pika",
+      "officialHosts": [
+        "api.pika.art"
+      ],
+      "allowedBaseUrls": [
+        "https://api.pika.art"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.pika.art",
+      "confidence": "provider_docs"
+    },
+    {
+      "id": "haiper",
+      "category": "ai_video",
+      "displayName": "Haiper",
+      "officialHosts": [
+        "api.haiper.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.haiper.ai"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.haiper.ai",
+      "confidence": "provider_docs"
+    },
+    {
+      "id": "hedra",
+      "category": "ai_video",
+      "displayName": "Hedra",
+      "officialHosts": [
+        "api.hedra.com"
+      ],
+      "allowedBaseUrls": [
+        "https://api.hedra.com"
+      ],
+      "credentialTypes": [
+        "bearer_api_key",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.hedra.com",
+      "confidence": "provider_docs"
+    },
+    {
+      "id": "cartesia",
+      "category": "ai",
+      "displayName": "Cartesia",
+      "officialHosts": [
+        "api.cartesia.ai"
+      ],
+      "allowedBaseUrls": [
+        "https://api.cartesia.ai"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.cartesia.ai",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "playht",
+      "category": "ai",
+      "displayName": "PlayHT",
+      "officialHosts": [
+        "api.play.ht"
+      ],
+      "allowedBaseUrls": [
+        "https://api.play.ht"
+      ],
+      "credentialTypes": [
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.play.ht",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "azure-speech",
+      "category": "ai",
+      "displayName": "Azure AI Speech",
+      "officialHosts": [
+        "tts.speech.microsoft.com",
+        "cognitiveservices.azure.com"
+      ],
+      "allowedBaseUrls": [
+        "https://*.tts.speech.microsoft.com",
+        "https://*.cognitiveservices.azure.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech",
+      "confidence": "verified_official",
+      "allowSubdomains": true
+    },
+    {
+      "id": "amazon-polly",
+      "category": "ai",
+      "displayName": "Amazon Polly",
+      "officialHosts": [
+        "polly.amazonaws.com"
+      ],
+      "allowedBaseUrls": [
+        "https://polly.amazonaws.com",
+        "https://polly.*.amazonaws.com"
+      ],
+      "credentialTypes": [
+        "aws_sigv4",
+        "api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://docs.aws.amazon.com/polly/latest/dg/API_Reference.html",
+      "confidence": "verified_official",
+      "allowSubdomains": true
+    },
+    {
+      "id": "udio",
+      "category": "ai_video",
+      "displayName": "Udio",
+      "officialHosts": [
+        "udio.com",
+        "www.udio.com"
+      ],
+      "allowedBaseUrls": [
+        "https://www.udio.com"
+      ],
+      "credentialTypes": [
+        "api_key",
+        "oauth",
+        "cookie"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://www.udio.com",
+      "confidence": "community_or_inferred"
     }
   ]
 }

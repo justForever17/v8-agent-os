@@ -1144,6 +1144,50 @@ def _trim_broker_text(value: Any, *, limit: int = 2400) -> tuple[str, bool]:
     return normalized[:limit].rstrip(), True
 
 
+def _search_result_quality_hints(url: str) -> dict[str, Any]:
+    host = (urlparse(url).hostname or "").lower()
+    authoritative = any(
+        hint in host or hint in str(url or "").lower()
+        for hint in (
+            "docs.",
+            "developer.",
+            "developers.",
+            "platform.",
+            "api.",
+            "learn.microsoft.com",
+            "cloud.google.com",
+            "docs.aws.amazon.com",
+            "github.com",
+        )
+    )
+    low_quality = any(
+        hint in host or hint in str(url or "").lower()
+        for hint in (
+            "pinterest.",
+            "quora.",
+            "reddit.",
+            "medium.",
+            "zhihu.",
+            "csdn.",
+        )
+    )
+    score = 70 if authoritative else 50
+    if low_quality:
+        score -= 25
+    score = max(0, min(score, 100))
+    signals = []
+    if authoritative:
+        signals.append("authoritative_host_hint")
+    if low_quality:
+        signals.append("low_quality_host_hint")
+    return {
+        "host": host,
+        "authorityScore": score,
+        "tier": "primary" if score >= 70 else ("secondary" if score >= 45 else "weak"),
+        "signals": signals,
+    }
+
+
 def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str, debug: bool) -> dict[str, Any]:
     ok = bool(payload.get("ok"))
     resolved_mode = requested_mode
@@ -1166,13 +1210,26 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             query = _safe_text(payload.get("query"))
             provider = _safe_text(payload.get("provider"))
             results = payload.get("results") if isinstance(payload.get("results"), list) else []
+            ranked_results = []
+            for index, result in enumerate(results, start=1):
+                item = dict(result or {})
+                url = _safe_text(item.get("url"))
+                item["resultRank"] = index
+                item["finalUrl"] = item.get("finalUrl") or url
+                if url:
+                    item["sourceQualityHints"] = _search_result_quality_hints(url)
+                ranked_results.append(item)
             compact.update(
                 {
                     "summary": f"搜索到 {len(results)} 条结果。" if results else "没有找到可用结果。",
                     "query": query,
                     "provider": provider or None,
                     "resultCount": payload.get("resultCount") if payload.get("resultCount") is not None else len(results),
-                    "results": results,
+                    "results": ranked_results,
+                    "omitted": {
+                        "fullSearchHtml": "omitted",
+                        "sourceRanking": "heuristic; use research_broker for multi-source confidence and evidence bundles",
+                    },
                 }
             )
         else:
@@ -1311,6 +1368,9 @@ def web_read(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Read a webpage with Scrapling and return a compact, structured article-style result.
+
+    Use this for a known URL. For research questions that need several sources or confidence scoring, request
+    research.core and use research_broker.
 
     mode:
     - auto: 先走静态抓取，再按需尝试 dynamic / stealth
@@ -1464,7 +1524,11 @@ def web_search(
     referer_url: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Search the public web with a lightweight HTML search page and return structured results."""
+    """Search the public web with a lightweight HTML search page and return structured results.
+
+    For multi-source research, current facts, source confidence, or parallel query decomposition, request
+    research.core and use research_broker instead of doing ad-hoc one-shot searches.
+    """
     requested_provider = str(search_engine or "auto").strip().lower()
     providers = [requested_provider] if requested_provider != "auto" else list(SEARCH_PROVIDER_ORDER)
     attempted_providers: list[dict[str, Any]] = []
@@ -1630,6 +1694,8 @@ def web_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Unified web broker for public-web work: search finds results, fetch auto-routes URL vs query, read returns cleaned page text, and extract returns structured article/links/metadata/media output; add debug=true only for transport diagnostics.
+
+    For multi-source facts, fresh provider/API details, source ranking, or complex research, request research.core and use research_broker. web_broker remains the single-page / single-query utility.
 
     mode:
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search

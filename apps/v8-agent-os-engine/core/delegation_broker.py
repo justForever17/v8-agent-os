@@ -65,6 +65,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "familyHint": "",
         "preferredAgentId": "",
         "preferredWorkerType": "",
+        "researchRefs": [],
     }
 
 
@@ -87,6 +88,7 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "familyHint": str(payload.get("familyHint") or payload.get("family_hint") or payload.get("specialistFamily") or "").strip(),
         "preferredAgentId": str(payload.get("preferredAgentId") or payload.get("preferred_agent_id") or "").strip(),
         "preferredWorkerType": str(payload.get("preferredWorkerType") or payload.get("preferred_worker_type") or "").strip(),
+        "researchRefs": _normalize_scope_values(payload.get("researchRefs") or payload.get("research_refs")),
     }
     for key in ("criticalFiles", "readSet", "verificationMatrix", "proofExpectations"):
         normalized[key] = _normalize_scope_values(payload.get(key) or payload.get(key[0].lower() + key[1:]))
@@ -163,6 +165,9 @@ def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     family_hint = str(task_brief.get("familyHint") or "").strip()
     if family_hint:
         parts.append(f"Family hint: {family_hint}")
+    research_refs = [str(item).strip() for item in list(task_brief.get("researchRefs") or []) if str(item).strip()]
+    if research_refs:
+        parts.append(f"Research refs: {', '.join(research_refs)}")
     acceptance = _stringify_context(task_brief.get("acceptanceContract"))
     if acceptance:
         parts.append(f"Acceptance contract: {acceptance}")

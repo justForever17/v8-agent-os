@@ -11,7 +11,8 @@ export function HydrationSafeClientOnly({ children, fallback = null }: Hydration
     const [mounted, setMounted] = useState(false);
 
     useEffect(() => {
-        setMounted(true);
+        const timer = window.setTimeout(() => setMounted(true), 0);
+        return () => window.clearTimeout(timer);
     }, []);
 
     return mounted ? <>{children}</> : <>{fallback}</>;

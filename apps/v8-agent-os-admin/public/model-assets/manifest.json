@@ -2,95 +2,230 @@
   "version": 1,
   "notes": "Whitelisted provider/model assets for ModelHub. Cherry Studio app.asar was inspected, but no trusted provider/model icon asset paths were found; user data folders are intentionally excluded.",
   "providers": {
+    "3d-ai-studio": {
+      "asset": "/model-assets/providers/3d-ai-studio.svg",
+      "source": "local-textmark",
+      "sha256": "4C61F23290507CAEB38E0EF1AFD98A52C5006843EC45263FDD1DAA1A66D75146"
+    },
+    "ai21": {
+      "asset": "/model-assets/providers/ai21.svg",
+      "source": "local-textmark",
+      "sha256": "8632512A77FA0EF15922AF55707249B818F65C7A025E7004D68FBF54F17D513D"
+    },
+    "amazon-polly": {
+      "asset": "/model-assets/providers/amazon-polly.svg",
+      "source": "local-textmark",
+      "sha256": "FFE4D188BC843660467823257026C1B78A0FD5895CD91461C44638DECE19FDD7"
+    },
     "anthropic": {
       "asset": "/model-assets/providers/anthropic.ico",
       "source": "official-or-whitelisted-static",
       "sha256": "45FA55283B0671B71451D4E067932E3D4AE57EEB7B59582C4C3C1AB21558B0A4"
     },
-    "deepseek": {
-      "asset": "/model-assets/providers/deepseek.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "30A4420E6E4DCB17FD7DE560C5004346C2BC8CD971D2D5F5EE15326603E51321"
-    },
-    "groq": {
-      "asset": "/model-assets/providers/groq.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "945268E4ED2640DCAD9667A598323E572F50A9065928399F465D43CDD0C6AA57"
-    },
-    "huggingface-router": {
-      "asset": "/model-assets/providers/huggingface.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "BD845F3018A6D5C08B9845654BD1C1F6FCF3C8EE016ACDBE90625F431E66648C"
-    },
-    "lmstudio": {
-      "asset": "/model-assets/providers/lmstudio.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "94CE3375C26E76CF76A446FFAD15CC290F4248873A5BCD4FD59D711FA5439724"
-    },
-    "mureka": {
-      "asset": "/model-assets/providers/mureka.svg",
+    "azure-speech": {
+      "asset": "/model-assets/providers/azure-speech.svg",
       "source": "local-textmark",
-      "sha256": "079AE88E6DB833D7004F0F5C10DC4028F7B5C16FCD5EEDBE42542F215FFC75CD"
+      "sha256": "FFA790BA4ACEA918F0203BE22CB5A8CD7CF936FE24A6D9697283DA25D40F8FF1"
     },
-    "hitem3d": {
-      "asset": "/model-assets/providers/hitem3d.svg",
+    "baichuan": {
+      "asset": "/model-assets/providers/baichuan.svg",
       "source": "local-textmark",
-      "sha256": "0AF7B33B0ED62C3974FC4E0F2313C198E7153F795C2A8984E519E23CE20D459F"
+      "sha256": "C9CD5D77DC972BF5CC3A77B9C4439211786B494E1892E993B5AA372F2646060D"
     },
-    "hyper3d": {
-      "asset": "/model-assets/providers/hyper3d.svg",
+    "baidu-qianfan": {
+      "asset": "/model-assets/providers/baidu-qianfan.svg",
       "source": "local-textmark",
-      "sha256": "896653BEB660496A17AA2158CB09F2273A4819C5D70F8E3750E247BEA3D46D05"
-    },
-    "mistral": {
-      "asset": "/model-assets/providers/mistral.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "4D0B6362E4E5B2505F3A5A741B76ADFD31AEE73636F672EF7E80AC4C62C7B2B4"
-    },
-    "openrouter": {
-      "asset": "/model-assets/providers/openrouter.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "9EA97C59357C47DB235D0591B7ED936D40B94E3DD02030A36E26B406671F011D"
-    },
-    "siliconflow": {
-      "asset": "/model-assets/providers/siliconflow.png",
-      "source": "official-or-whitelisted-static",
-      "sha256": "34B69206516F4F999C5FD6B4E41171DD2D356248EC13F6136E098C416319AE68"
-    },
-    "xai": {
-      "asset": "/model-assets/providers/xai.ico",
-      "source": "official-or-whitelisted-static",
-      "sha256": "59FBABD76920F7170CFD1B75C610253DD06B0C45C4C58BF03BDF3F439392F2EE"
-    },
-    "v8-audio": {
-      "asset": "/model-assets/providers/v8-audio.svg",
-      "source": "local-textmark",
-      "sha256": "9DBDB66247BC09A0746D13608E1543918BF4E058A5B653319D49B93CB801F80B"
-    },
-    "fish-audio": {
-      "asset": "/model-assets/providers/fish-audio.svg",
-      "source": "local-textmark",
-      "sha256": "C7BCD5571FD01D8335E7D5B73A8A9687ABB91C0F5F7D03670AE49504ED927D44"
+      "sha256": "AEF1AE5C60F24F0AB36D36C7B9BD49D36CDD4362FDB057CC7E668E51E8D611F3"
     },
     "black-forest-labs": {
       "asset": "/model-assets/providers/black-forest-labs.svg",
       "source": "local-textmark",
       "sha256": "7AE44010E77611F2261E593F07079E3768D6370D581B43502605CBE0640853E0"
     },
-    "meshy": {
-      "asset": "/model-assets/providers/meshy.svg",
+    "cartesia": {
+      "asset": "/model-assets/providers/cartesia.svg",
       "source": "local-textmark",
-      "sha256": "2B2A26807EE660F11F62CD37EDB8FE79435BBD84E5F359D1B9EAAED59BD958FB"
+      "sha256": "255D54EDF7CC8983EADD8642E825CA911B281C9F6C446F3B1E7B85FDEF6F63CC"
+    },
+    "cerebras": {
+      "asset": "/model-assets/providers/cerebras.svg",
+      "source": "local-textmark",
+      "sha256": "A20814123BB734DE0C09C68EE7CCA3C52497A703A755D8CC04A6F35036007BB8"
+    },
+    "creatomate": {
+      "asset": "/model-assets/providers/creatomate.svg",
+      "source": "local-textmark",
+      "sha256": "7B05A97105F4A91456504130029F2A9BFF8ED1A1300149C7BC8A5E58FF2F1FD3"
     },
     "csm": {
       "asset": "/model-assets/providers/csm.svg",
       "source": "local-textmark",
       "sha256": "EF19BC06C66954E84D4D71698D3CD295CEC2C9021AD2211D497B4876A41EA0E2"
     },
-    "3d-ai-studio": {
-      "asset": "/model-assets/providers/3d-ai-studio.svg",
+    "d-id": {
+      "asset": "/model-assets/providers/d-id.svg",
       "source": "local-textmark",
-      "sha256": "4C61F23290507CAEB38E0EF1AFD98A52C5006843EC45263FDD1DAA1A66D75146"
+      "sha256": "A860C52732B721B4EF3FE8E7DF85F31DD3AFF55391DC539F6F247CFFCC964817"
+    },
+    "deepseek": {
+      "asset": "/model-assets/providers/deepseek.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "30A4420E6E4DCB17FD7DE560C5004346C2BC8CD971D2D5F5EE15326603E51321"
+    },
+    "fireworks": {
+      "asset": "/model-assets/providers/fireworks.svg",
+      "source": "local-textmark",
+      "sha256": "3EE85801C62BB22C73E8B404B6D7CB468386C601C25D2B39577E811F521A8699"
+    },
+    "fish-audio": {
+      "asset": "/model-assets/providers/fish-audio.svg",
+      "source": "local-textmark",
+      "sha256": "C7BCD5571FD01D8335E7D5B73A8A9687ABB91C0F5F7D03670AE49504ED927D44"
+    },
+    "groq": {
+      "asset": "/model-assets/providers/groq.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "945268E4ED2640DCAD9667A598323E572F50A9065928399F465D43CDD0C6AA57"
+    },
+    "haiper": {
+      "asset": "/model-assets/providers/haiper.svg",
+      "source": "local-textmark",
+      "sha256": "B3C21AF3002C5A8D58AEACEF88D221074E00006B6DD133BB935112CAC1D2724A"
+    },
+    "hedra": {
+      "asset": "/model-assets/providers/hedra.svg",
+      "source": "local-textmark",
+      "sha256": "A1CFFC50C5737B1405ADCCA519F74B20880F2A98AB52FB2BF24567182C4C4CE7"
+    },
+    "heygen": {
+      "asset": "/model-assets/providers/heygen.svg",
+      "source": "local-textmark",
+      "sha256": "35FC085C916BE18D15BFB27316F3FFEB0FD9B2445B176B073E07A76118420206"
+    },
+    "hitem3d": {
+      "asset": "/model-assets/providers/hitem3d.svg",
+      "source": "local-textmark",
+      "sha256": "0AF7B33B0ED62C3974FC4E0F2313C198E7153F795C2A8984E519E23CE20D459F"
+    },
+    "huggingface-router": {
+      "asset": "/model-assets/providers/huggingface.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "BD845F3018A6D5C08B9845654BD1C1F6FCF3C8EE016ACDBE90625F431E66648C"
+    },
+    "hyper3d": {
+      "asset": "/model-assets/providers/hyper3d.svg",
+      "source": "local-textmark",
+      "sha256": "896653BEB660496A17AA2158CB09F2273A4819C5D70F8E3750E247BEA3D46D05"
+    },
+    "ideogram": {
+      "asset": "/model-assets/providers/ideogram.svg",
+      "source": "local-textmark",
+      "sha256": "B67511441B88E07986A23CE8C1CD8B6B25A4670B058A235207EC544F2D5CF3A4"
+    },
+    "leonardo": {
+      "asset": "/model-assets/providers/leonardo.svg",
+      "source": "local-textmark",
+      "sha256": "8608431428AF32AA128DE7582B97EE294B1829D9122E2CA6E02972D80455C744"
+    },
+    "lmstudio": {
+      "asset": "/model-assets/providers/lmstudio.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "94CE3375C26E76CF76A446FFAD15CC290F4248873A5BCD4FD59D711FA5439724"
+    },
+    "meshy": {
+      "asset": "/model-assets/providers/meshy.svg",
+      "source": "local-textmark",
+      "sha256": "2B2A26807EE660F11F62CD37EDB8FE79435BBD84E5F359D1B9EAAED59BD958FB"
+    },
+    "mistral": {
+      "asset": "/model-assets/providers/mistral.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "4D0B6362E4E5B2505F3A5A741B76ADFD31AEE73636F672EF7E80AC4C62C7B2B4"
+    },
+    "mureka": {
+      "asset": "/model-assets/providers/mureka.svg",
+      "source": "local-textmark",
+      "sha256": "079AE88E6DB833D7004F0F5C10DC4028F7B5C16FCD5EEDBE42542F215FFC75CD"
+    },
+    "nexa": {
+      "asset": "/model-assets/providers/nexa.svg",
+      "source": "local-textmark",
+      "sha256": "F1AFEB50938BA27333AAD90BF7DC39892C853D98448FF8498FB8ADFC920DEAB3"
+    },
+    "nvidia-nim": {
+      "asset": "/model-assets/providers/nvidia-nim.svg",
+      "source": "local-textmark",
+      "sha256": "DA5BF1AFE2607F59CB50C30D370BED30F991790896230AEB420BBA04E1FA7248"
+    },
+    "openrouter": {
+      "asset": "/model-assets/providers/openrouter.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "9EA97C59357C47DB235D0591B7ED936D40B94E3DD02030A36E26B406671F011D"
+    },
+    "perplexity": {
+      "asset": "/model-assets/providers/perplexity.svg",
+      "source": "local-textmark",
+      "sha256": "15EBC457184B3F0E8D1F51C4A780ED90536F450704C686342FD092EF6B7B55C4"
+    },
+    "pika": {
+      "asset": "/model-assets/providers/pika.svg",
+      "source": "local-textmark",
+      "sha256": "BBB05E8DC6752E9E97F2CFEB8343A983B3E763DD2F55D7E166FBD1262E026A2B"
+    },
+    "playht": {
+      "asset": "/model-assets/providers/playht.svg",
+      "source": "local-textmark",
+      "sha256": "72F55C6451E2ED324AC0BA882580288F350768BB4F55A6CE93E3ED3A7F76A2C8"
+    },
+    "shotstack": {
+      "asset": "/model-assets/providers/shotstack.svg",
+      "source": "local-textmark",
+      "sha256": "FDEC95C628E85B9F65A44A39569B63E9807C55CA692930935C4D60017D8331B4"
+    },
+    "siliconflow": {
+      "asset": "/model-assets/providers/siliconflow.png",
+      "source": "official-or-whitelisted-static",
+      "sha256": "34B69206516F4F999C5FD6B4E41171DD2D356248EC13F6136E098C416319AE68"
+    },
+    "stepfun": {
+      "asset": "/model-assets/providers/stepfun.svg",
+      "source": "local-textmark",
+      "sha256": "8B3336E8CBF37D74642B41E3345520C6E122D207A355065463B8E19BD5595E7D"
+    },
+    "synthesia": {
+      "asset": "/model-assets/providers/synthesia.svg",
+      "source": "local-textmark",
+      "sha256": "577708B5C8260DB9473DE32CC757DBC984BF654BB966CAA875C58DAD167C2F7C"
+    },
+    "tavus": {
+      "asset": "/model-assets/providers/tavus.svg",
+      "source": "local-textmark",
+      "sha256": "1520BD94E18CAD82721193693F45448EC99ADFC2B99AEBA1553F232AEEB8C720"
+    },
+    "together": {
+      "asset": "/model-assets/providers/together.svg",
+      "source": "local-textmark",
+      "sha256": "7DA614FD81EC32ED2E5CD3C259752DD8537F81F8807CCE8C3B6F62AEB8F29CA1"
+    },
+    "udio": {
+      "asset": "/model-assets/providers/udio.svg",
+      "source": "local-textmark",
+      "sha256": "75241BB4DD0A2DF0D50EECE9F83FF8916390157C026BAEEB4E108335A7801B1E"
+    },
+    "v8-audio": {
+      "asset": "/model-assets/providers/v8-audio.svg",
+      "source": "local-textmark",
+      "sha256": "9DBDB66247BC09A0746D13608E1543918BF4E058A5B653319D49B93CB801F80B"
+    },
+    "vidu": {
+      "asset": "/model-assets/providers/vidu.svg",
+      "source": "local-textmark",
+      "sha256": "47C1EB5C25CF7CDB6A0A67A0BAD0E36FDD24F1EF6169B656E0F4DCA020F7CA99"
+    },
+    "xai": {
+      "asset": "/model-assets/providers/xai.ico",
+      "source": "official-or-whitelisted-static",
+      "sha256": "59FBABD76920F7170CFD1B75C610253DD06B0C45C4C58BF03BDF3F439392F2EE"
     }
   },
   "models": {}

@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, ShieldCheck } from "lucide-react";
-
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdvancedSection } from "@/components/admin-shell/AdvancedSection";
@@ -19,683 +18,616 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-
+import { INTERNAL_READABLE } from "@/i18n/internal-readable";
 type MachinePosture = "dedicated_runtime_host" | "developer_mixed_host";
-
 type ModelOption = {
+  id?: string;
+  modelRef?: string;
+  providerId?: string;
+  modelId: string;
+  name: string;
+  type: string;
+  provider?: {
     id?: string;
-    modelRef?: string;
-    providerId?: string;
-    modelId: string;
-    name: string;
-    type: string;
-    provider?: { id?: string; name?: string };
-    providerName?: string;
+    name?: string;
+  };
+  providerName?: string;
 };
-
 type SafetyApproval = {
-    id: string;
-    session_id?: string;
-    run_id?: string;
-    approval_kind?: string;
-    status?: string;
-    created_at?: string;
-    question?: string;
-    riskCode?: string;
-    verdict?: string;
-    reason?: string;
-    allowlistCandidate?: Record<string, unknown> | null;
+  id: string;
+  session_id?: string;
+  run_id?: string;
+  approval_kind?: string;
+  status?: string;
+  created_at?: string;
+  question?: string;
+  riskCode?: string;
+  verdict?: string;
+  reason?: string;
+  allowlistCandidate?: Record<string, unknown> | null;
 };
-
 type SkillSafetyReview = {
-    id: string;
-    skill_name?: string;
-    skill_id?: string;
-    skill_path?: string;
-    static_verdict?: string;
-    effective_verdict?: string;
-    user_override?: string | null;
-    disabled?: boolean;
-    reasons?: string[];
-    flaggedFiles?: Array<Record<string, unknown>>;
-    updated_at?: string;
+  id: string;
+  skill_name?: string;
+  skill_id?: string;
+  skill_path?: string;
+  static_verdict?: string;
+  effective_verdict?: string;
+  user_override?: string | null;
+  disabled?: boolean;
+  reasons?: string[];
+  flaggedFiles?: Array<Record<string, unknown>>;
+  updated_at?: string;
 };
-
 type SafetyAllowlistEntry = {
-    id: string;
-    normalized_target_label?: string;
-    path_plane?: string;
-    runtime_source?: string;
-    action?: string;
-    risk_code?: string;
-    enabled?: boolean;
-    updated_at?: string;
+  id: string;
+  normalized_target_label?: string;
+  path_plane?: string;
+  runtime_source?: string;
+  action?: string;
+  risk_code?: string;
+  enabled?: boolean;
+  updated_at?: string;
 };
-
 type SafetyDecisionEvent = {
-    id?: string;
-    timestamp?: string;
-    action?: string;
-    status?: string;
-    verdict?: string;
-    riskCode?: string;
-    runtimeSource?: string;
-    subject?: string;
-    reason?: string;
-    decodedPreview?: unknown;
-    downloadHosts?: string[];
+  id?: string;
+  timestamp?: string;
+  action?: string;
+  status?: string;
+  verdict?: string;
+  riskCode?: string;
+  runtimeSource?: string;
+  subject?: string;
+  reason?: string;
+  decodedPreview?: unknown;
+  downloadHosts?: string[];
 };
-
 type ActiveDefenseIncident = {
-    id: string;
-    riskCode?: string;
-    severity?: string;
-    summary?: string;
-    status?: string;
-    firstSeenAt?: number;
-    lastSeenAt?: number;
-    seenCount?: number;
-    networkToolKey?: string;
-    process?: {
-        pid?: number;
-        name?: string;
-        cpuPercent?: number;
-        memoryPercent?: number;
-        rssMb?: number;
-    };
+  id: string;
+  riskCode?: string;
+  severity?: string;
+  summary?: string;
+  status?: string;
+  firstSeenAt?: number;
+  lastSeenAt?: number;
+  seenCount?: number;
+  networkToolKey?: string;
+  process?: {
+    pid?: number;
+    name?: string;
+    cpuPercent?: number;
+    memoryPercent?: number;
+    rssMb?: number;
+  };
 };
-
 type ActiveDefenseConfig = {
-    enabled?: boolean;
-    sampleIntervalSeconds?: number;
-    injectHostAlerts?: boolean;
-    maxInjectedProcesses?: number;
-    highCpuPercent?: number;
-    highMemoryPercent?: number;
-    highMemoryRssMb?: number;
-    networkTunnelPolicy?: string;
-    knownNetworkTools?: string[];
-    knownListeningPorts?: string[];
+  enabled?: boolean;
+  sampleIntervalSeconds?: number;
+  injectHostAlerts?: boolean;
+  maxInjectedProcesses?: number;
+  highCpuPercent?: number;
+  highMemoryPercent?: number;
+  highMemoryRssMb?: number;
+  networkTunnelPolicy?: string;
+  knownNetworkTools?: string[];
+  knownListeningPorts?: string[];
 };
-
 type ActiveDefenseDashboard = {
-    enabled?: boolean;
-    config?: ActiveDefenseConfig;
-    status?: string;
-    lastSampleAt?: number | null;
-    lastError?: string | null;
-    incidents?: ActiveDefenseIncident[];
-    knownNetworkTools?: string[];
-    knownListeningPorts?: string[];
-    summary?: {
-        activeIncidents?: number;
-        highLoad?: number;
-        networkTunnels?: number;
-        unknownListeningPorts?: number;
-    };
+  enabled?: boolean;
+  config?: ActiveDefenseConfig;
+  status?: string;
+  lastSampleAt?: number | null;
+  lastError?: string | null;
+  incidents?: ActiveDefenseIncident[];
+  knownNetworkTools?: string[];
+  knownListeningPorts?: string[];
+  summary?: {
+    activeIncidents?: number;
+    highLoad?: number;
+    networkTunnels?: number;
+    unknownListeningPorts?: number;
+  };
 };
-
 type SafetyDashboard = {
-    pendingSafetyApprovals?: SafetyApproval[];
-    skillSafetyReviews?: SkillSafetyReview[];
-    allowlistEntries?: SafetyAllowlistEntry[];
-    recentDecisions?: SafetyDecisionEvent[];
-    activeDefense?: ActiveDefenseDashboard;
-    summary?: {
-        pendingSafetyApprovals?: number;
-        skillReviews?: number;
-        activeAllowlist?: number;
-        recentDecisions?: number;
-        verdictCounts?: Record<string, number>;
-        riskCounts?: Record<string, number>;
-        activeDefenseIncidents?: number;
-    };
+  pendingSafetyApprovals?: SafetyApproval[];
+  skillSafetyReviews?: SkillSafetyReview[];
+  allowlistEntries?: SafetyAllowlistEntry[];
+  recentDecisions?: SafetyDecisionEvent[];
+  activeDefense?: ActiveDefenseDashboard;
+  summary?: {
+    pendingSafetyApprovals?: number;
+    skillReviews?: number;
+    activeAllowlist?: number;
+    recentDecisions?: number;
+    verdictCounts?: Record<string, number>;
+    riskCounts?: Record<string, number>;
+    activeDefenseIncidents?: number;
+  };
 };
-
 type SafetyData = {
-    enabled: boolean;
-    machinePosture: MachinePosture;
-    skillRules?: {
-        declarationVerdict?: string;
-        localSecretReadVerdict?: string;
-        browserProfileAccessVerdict?: Record<string, string>;
-        binaryPayloadVerdict?: string;
-        llmReviewEnabledFor?: string[];
-    };
-    networkMutationRules?: {
-        defaultExternalMutationVerdict?: Record<string, string>;
-        sensitivePayloadVerdict?: string;
-        credentialExfiltrationVerdict?: string;
-    };
-    computerUseRules?: {
-        defaultMutationVerdict?: Record<string, string>;
-        hotkeyLifecycleVerdict?: string;
-        destructiveKeywordVerdict?: string;
-    };
-    systemIntegrityRules?: {
-        packageInstallVerdict?: Record<string, string>;
-        destructiveCommandVerdict?: string;
-    };
-    v8IntegrityRules?: {
-        protectedConfigWriteVerdict?: string;
-        protectedRuntimeProcessVerdict?: string;
-    };
-    channelGroupGuard?: {
-        enabled?: boolean;
-        allowlistOnly?: boolean;
-        requireMention?: boolean;
-        auditOnly?: boolean;
-    };
-    modelBindings?: {
-        safetyReviewModel?: string;
-    };
-    governancePolicies?: {
-        machinePosture?: string;
-        governanceTargets?: string[];
-        skillStrategy?: string;
-    };
-    runtimeSummary?: {
-        machinePosture?: string;
-        safetyReviewModel?: string | null;
-        llmBound?: boolean;
-        auditCount?: number;
-        reviewCount?: number;
-        blockCount?: number;
-        verdictDistribution?: Record<string, number>;
-    };
-    skillScanSummary?: {
-        enabled?: boolean;
-        verdictDistribution?: Record<string, number>;
-        recentSkillScans?: Array<{
-            skillName?: string;
-            verdict?: string;
-            confidence?: number;
-            auditId?: string;
-            timestamp?: string;
-            reasons?: string[];
-        }>;
-    };
-    activeDefense?: ActiveDefenseConfig;
+  enabled: boolean;
+  machinePosture: MachinePosture;
+  skillRules?: {
+    declarationVerdict?: string;
+    localSecretReadVerdict?: string;
+    browserProfileAccessVerdict?: Record<string, string>;
+    binaryPayloadVerdict?: string;
+    llmReviewEnabledFor?: string[];
+  };
+  networkMutationRules?: {
+    defaultExternalMutationVerdict?: Record<string, string>;
+    sensitivePayloadVerdict?: string;
+    credentialExfiltrationVerdict?: string;
+  };
+  computerUseRules?: {
+    defaultMutationVerdict?: Record<string, string>;
+    hotkeyLifecycleVerdict?: string;
+    destructiveKeywordVerdict?: string;
+  };
+  systemIntegrityRules?: {
+    packageInstallVerdict?: Record<string, string>;
+    destructiveCommandVerdict?: string;
+  };
+  v8IntegrityRules?: {
+    protectedConfigWriteVerdict?: string;
+    protectedRuntimeProcessVerdict?: string;
+  };
+  channelGroupGuard?: {
+    enabled?: boolean;
+    allowlistOnly?: boolean;
+    requireMention?: boolean;
+    auditOnly?: boolean;
+  };
+  modelBindings?: {
+    safetyReviewModel?: string;
+  };
+  governancePolicies?: {
+    machinePosture?: string;
+    governanceTargets?: string[];
+    skillStrategy?: string;
+  };
+  runtimeSummary?: {
+    machinePosture?: string;
+    safetyReviewModel?: string | null;
+    llmBound?: boolean;
+    auditCount?: number;
+    reviewCount?: number;
+    blockCount?: number;
+    verdictDistribution?: Record<string, number>;
+  };
+  skillScanSummary?: {
+    enabled?: boolean;
+    verdictDistribution?: Record<string, number>;
+    recentSkillScans?: Array<{
+      skillName?: string;
+      verdict?: string;
+      confidence?: number;
+      auditId?: string;
+      timestamp?: string;
+      reasons?: string[];
+    }>;
+  };
+  activeDefense?: ActiveDefenseConfig;
 };
-
-const PRESET_OPTIONS = [
-    {
-        key: "dedicated_runtime_host",
-        title:"app.admin.dashboard.safety.control.page.k5970446a",
-        description:"app.admin.dashboard.safety.control.page.k4b26c5fc",
-    },
-    {
-        key: "developer_mixed_host",
-        title: "developer_mixed_host",
-        description:"app.admin.dashboard.safety.control.page.k6a2115f2",
-    },
-    {
-        key: "locked_down_sensitive",
-        title: "locked_down_sensitive",
-        description:"app.admin.dashboard.safety.control.page.k24c3f9e9",
-    },
-] as const;
-
+const PRESET_OPTIONS = [{
+  key: "dedicated_runtime_host",
+  title: "app.admin.dashboard.safety.control.page.k5970446a",
+  description: "app.admin.dashboard.safety.control.page.k4b26c5fc"
+}, {
+  key: "developer_mixed_host",
+  title: "developer_mixed_host",
+  description: "app.admin.dashboard.safety.control.page.k6a2115f2"
+}, {
+  key: "locked_down_sensitive",
+  title: "locked_down_sensitive",
+  description: "app.admin.dashboard.safety.control.page.k24c3f9e9"
+}] as const;
 function normalizeSafetyData(input: SafetyData): SafetyData {
-    return {
-        ...input,
-        machinePosture: input.machinePosture === "developer_mixed_host" ? "developer_mixed_host" : "dedicated_runtime_host",
-        skillRules: {
-            declarationVerdict: input.skillRules?.declarationVerdict || "audit",
-            localSecretReadVerdict: input.skillRules?.localSecretReadVerdict || "review",
-            browserProfileAccessVerdict: {
-                dedicated_runtime_host: input.skillRules?.browserProfileAccessVerdict?.dedicated_runtime_host || "review",
-                developer_mixed_host: input.skillRules?.browserProfileAccessVerdict?.developer_mixed_host || "block",
-            },
-            binaryPayloadVerdict: input.skillRules?.binaryPayloadVerdict || "review",
-            llmReviewEnabledFor: Array.isArray(input.skillRules?.llmReviewEnabledFor) ? input.skillRules?.llmReviewEnabledFor : ["review"],
-        },
-        networkMutationRules: {
-            defaultExternalMutationVerdict: {
-                dedicated_runtime_host: input.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host || "audit",
-                developer_mixed_host: input.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host || "review",
-            },
-            sensitivePayloadVerdict: input.networkMutationRules?.sensitivePayloadVerdict || "review",
-            credentialExfiltrationVerdict: input.networkMutationRules?.credentialExfiltrationVerdict || "block",
-        },
-        computerUseRules: {
-            defaultMutationVerdict: {
-                dedicated_runtime_host: input.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host || "audit",
-                developer_mixed_host: input.computerUseRules?.defaultMutationVerdict?.developer_mixed_host || "review",
-            },
-            hotkeyLifecycleVerdict: input.computerUseRules?.hotkeyLifecycleVerdict || "review",
-            destructiveKeywordVerdict: input.computerUseRules?.destructiveKeywordVerdict || "block",
-        },
-        systemIntegrityRules: {
-            packageInstallVerdict: {
-                dedicated_runtime_host: input.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host || "audit",
-                developer_mixed_host: input.systemIntegrityRules?.packageInstallVerdict?.developer_mixed_host || "review",
-            },
-            destructiveCommandVerdict: input.systemIntegrityRules?.destructiveCommandVerdict || "block",
-        },
-        v8IntegrityRules: {
-            protectedConfigWriteVerdict: input.v8IntegrityRules?.protectedConfigWriteVerdict || "review",
-            protectedRuntimeProcessVerdict: input.v8IntegrityRules?.protectedRuntimeProcessVerdict || "block",
-        },
-        channelGroupGuard: {
-            enabled: Boolean(input.channelGroupGuard?.enabled),
-            allowlistOnly: Boolean(input.channelGroupGuard?.allowlistOnly),
-            requireMention: Boolean(input.channelGroupGuard?.requireMention),
-            auditOnly: Boolean(input.channelGroupGuard?.auditOnly),
-        },
-        runtimeSummary: {
-            machinePosture: input.runtimeSummary?.machinePosture || input.machinePosture,
-            safetyReviewModel: input.runtimeSummary?.safetyReviewModel || null,
-            llmBound: Boolean(input.runtimeSummary?.llmBound),
-            auditCount: Number(input.runtimeSummary?.auditCount || 0),
-            reviewCount: Number(input.runtimeSummary?.reviewCount || 0),
-            blockCount: Number(input.runtimeSummary?.blockCount || 0),
-            verdictDistribution: input.runtimeSummary?.verdictDistribution || {},
-        },
-        skillScanSummary: {
-            enabled: Boolean(input.skillScanSummary?.enabled),
-            verdictDistribution: input.skillScanSummary?.verdictDistribution || {},
-            recentSkillScans: Array.isArray(input.skillScanSummary?.recentSkillScans) ? input.skillScanSummary?.recentSkillScans : [],
-        },
-        activeDefense: {
-            enabled: Boolean(input.activeDefense?.enabled),
-            sampleIntervalSeconds: Number(input.activeDefense?.sampleIntervalSeconds || 20),
-            injectHostAlerts: input.activeDefense?.injectHostAlerts !== false,
-            maxInjectedProcesses: Number(input.activeDefense?.maxInjectedProcesses || 3),
-            highCpuPercent: Number(input.activeDefense?.highCpuPercent || 85),
-            highMemoryPercent: Number(input.activeDefense?.highMemoryPercent || 25),
-            highMemoryRssMb: Number(input.activeDefense?.highMemoryRssMb || 2048),
-            networkTunnelPolicy: input.activeDefense?.networkTunnelPolicy || "confirm_first",
-            knownNetworkTools: Array.isArray(input.activeDefense?.knownNetworkTools) ? input.activeDefense?.knownNetworkTools : [],
-            knownListeningPorts: Array.isArray(input.activeDefense?.knownListeningPorts) ? input.activeDefense?.knownListeningPorts : ["tcp:9527", "tcp:9528", "tcp:9530"],
-        },
-    };
+  return {
+    ...input,
+    machinePosture: input.machinePosture === "developer_mixed_host" ? "developer_mixed_host" : "dedicated_runtime_host",
+    skillRules: {
+      declarationVerdict: input.skillRules?.declarationVerdict || "audit",
+      localSecretReadVerdict: input.skillRules?.localSecretReadVerdict || "review",
+      browserProfileAccessVerdict: {
+        dedicated_runtime_host: input.skillRules?.browserProfileAccessVerdict?.dedicated_runtime_host || "review",
+        developer_mixed_host: input.skillRules?.browserProfileAccessVerdict?.developer_mixed_host || "block"
+      },
+      binaryPayloadVerdict: input.skillRules?.binaryPayloadVerdict || "review",
+      llmReviewEnabledFor: Array.isArray(input.skillRules?.llmReviewEnabledFor) ? input.skillRules?.llmReviewEnabledFor : ["review"]
+    },
+    networkMutationRules: {
+      defaultExternalMutationVerdict: {
+        dedicated_runtime_host: input.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host || "audit",
+        developer_mixed_host: input.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host || "review"
+      },
+      sensitivePayloadVerdict: input.networkMutationRules?.sensitivePayloadVerdict || "review",
+      credentialExfiltrationVerdict: input.networkMutationRules?.credentialExfiltrationVerdict || "block"
+    },
+    computerUseRules: {
+      defaultMutationVerdict: {
+        dedicated_runtime_host: input.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host || "audit",
+        developer_mixed_host: input.computerUseRules?.defaultMutationVerdict?.developer_mixed_host || "review"
+      },
+      hotkeyLifecycleVerdict: input.computerUseRules?.hotkeyLifecycleVerdict || "review",
+      destructiveKeywordVerdict: input.computerUseRules?.destructiveKeywordVerdict || "block"
+    },
+    systemIntegrityRules: {
+      packageInstallVerdict: {
+        dedicated_runtime_host: input.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host || "audit",
+        developer_mixed_host: input.systemIntegrityRules?.packageInstallVerdict?.developer_mixed_host || "review"
+      },
+      destructiveCommandVerdict: input.systemIntegrityRules?.destructiveCommandVerdict || "block"
+    },
+    v8IntegrityRules: {
+      protectedConfigWriteVerdict: input.v8IntegrityRules?.protectedConfigWriteVerdict || "review",
+      protectedRuntimeProcessVerdict: input.v8IntegrityRules?.protectedRuntimeProcessVerdict || "block"
+    },
+    channelGroupGuard: {
+      enabled: Boolean(input.channelGroupGuard?.enabled),
+      allowlistOnly: Boolean(input.channelGroupGuard?.allowlistOnly),
+      requireMention: Boolean(input.channelGroupGuard?.requireMention),
+      auditOnly: Boolean(input.channelGroupGuard?.auditOnly)
+    },
+    runtimeSummary: {
+      machinePosture: input.runtimeSummary?.machinePosture || input.machinePosture,
+      safetyReviewModel: input.runtimeSummary?.safetyReviewModel || null,
+      llmBound: Boolean(input.runtimeSummary?.llmBound),
+      auditCount: Number(input.runtimeSummary?.auditCount || 0),
+      reviewCount: Number(input.runtimeSummary?.reviewCount || 0),
+      blockCount: Number(input.runtimeSummary?.blockCount || 0),
+      verdictDistribution: input.runtimeSummary?.verdictDistribution || {}
+    },
+    skillScanSummary: {
+      enabled: Boolean(input.skillScanSummary?.enabled),
+      verdictDistribution: input.skillScanSummary?.verdictDistribution || {},
+      recentSkillScans: Array.isArray(input.skillScanSummary?.recentSkillScans) ? input.skillScanSummary?.recentSkillScans : []
+    },
+    activeDefense: {
+      enabled: Boolean(input.activeDefense?.enabled),
+      sampleIntervalSeconds: Number(input.activeDefense?.sampleIntervalSeconds || 20),
+      injectHostAlerts: input.activeDefense?.injectHostAlerts !== false,
+      maxInjectedProcesses: Number(input.activeDefense?.maxInjectedProcesses || 3),
+      highCpuPercent: Number(input.activeDefense?.highCpuPercent || 85),
+      highMemoryPercent: Number(input.activeDefense?.highMemoryPercent || 25),
+      highMemoryRssMb: Number(input.activeDefense?.highMemoryRssMb || 2048),
+      networkTunnelPolicy: input.activeDefense?.networkTunnelPolicy || "confirm_first",
+      knownNetworkTools: Array.isArray(input.activeDefense?.knownNetworkTools) ? input.activeDefense?.knownNetworkTools : [],
+      knownListeningPorts: Array.isArray(input.activeDefense?.knownListeningPorts) ? input.activeDefense?.knownListeningPorts : ["tcp:9527", "tcp:9528", "tcp:9530"]
+    }
+  };
 }
-
 function applyPreset(config: SafetyData, preset: (typeof PRESET_OPTIONS)[number]["key"]): SafetyData {
-    const next = normalizeSafetyData(structuredClone(config));
-    next.enabled = true;
-
-    if (preset === "dedicated_runtime_host") {
-        next.machinePosture = "dedicated_runtime_host";
-        next.skillRules!.declarationVerdict = "audit";
-        next.skillRules!.localSecretReadVerdict = "review";
-        next.networkMutationRules!.defaultExternalMutationVerdict!.dedicated_runtime_host = "audit";
-        next.computerUseRules!.defaultMutationVerdict!.dedicated_runtime_host = "audit";
-        next.networkMutationRules!.sensitivePayloadVerdict = "review";
-        next.v8IntegrityRules!.protectedConfigWriteVerdict = "review";
-        return next;
-    }
-
-    next.machinePosture = "developer_mixed_host";
-    next.networkMutationRules!.defaultExternalMutationVerdict!.developer_mixed_host = "review";
-    next.computerUseRules!.defaultMutationVerdict!.developer_mixed_host = "review";
-    next.skillRules!.browserProfileAccessVerdict!.developer_mixed_host = "block";
-    next.systemIntegrityRules!.packageInstallVerdict!.developer_mixed_host = "review";
-
-    if (preset === "locked_down_sensitive") {
-        next.networkMutationRules!.sensitivePayloadVerdict = "block";
-        next.computerUseRules!.hotkeyLifecycleVerdict = "block";
-        next.v8IntegrityRules!.protectedConfigWriteVerdict = "block";
-    }
-
+  const next = normalizeSafetyData(structuredClone(config));
+  next.enabled = true;
+  if (preset === "dedicated_runtime_host") {
+    next.machinePosture = "dedicated_runtime_host";
+    next.skillRules!.declarationVerdict = "audit";
+    next.skillRules!.localSecretReadVerdict = "review";
+    next.networkMutationRules!.defaultExternalMutationVerdict!.dedicated_runtime_host = "audit";
+    next.computerUseRules!.defaultMutationVerdict!.dedicated_runtime_host = "audit";
+    next.networkMutationRules!.sensitivePayloadVerdict = "review";
+    next.v8IntegrityRules!.protectedConfigWriteVerdict = "review";
     return next;
+  }
+  next.machinePosture = "developer_mixed_host";
+  next.networkMutationRules!.defaultExternalMutationVerdict!.developer_mixed_host = "review";
+  next.computerUseRules!.defaultMutationVerdict!.developer_mixed_host = "review";
+  next.skillRules!.browserProfileAccessVerdict!.developer_mixed_host = "block";
+  next.systemIntegrityRules!.packageInstallVerdict!.developer_mixed_host = "review";
+  if (preset === "locked_down_sensitive") {
+    next.networkMutationRules!.sensitivePayloadVerdict = "block";
+    next.computerUseRules!.hotkeyLifecycleVerdict = "block";
+    next.v8IntegrityRules!.protectedConfigWriteVerdict = "block";
+  }
+  return next;
 }
-
 function detectPreset(config: SafetyData) {
-    if (
-        config.machinePosture === "developer_mixed_host" &&
-        config.networkMutationRules?.sensitivePayloadVerdict === "block" &&
-        config.computerUseRules?.hotkeyLifecycleVerdict === "block" &&
-        config.v8IntegrityRules?.protectedConfigWriteVerdict === "block"
-    ) {
-        return "locked_down_sensitive";
-    }
-    return config.machinePosture;
+  if (config.machinePosture === "developer_mixed_host" && config.networkMutationRules?.sensitivePayloadVerdict === "block" && config.computerUseRules?.hotkeyLifecycleVerdict === "block" && config.v8IntegrityRules?.protectedConfigWriteVerdict === "block") {
+    return "locked_down_sensitive";
+  }
+  return config.machinePosture;
 }
-
 export default function SafetyControlPage() {
-    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SafetyData> | null>(null);
-    const [models, setModels] = useState<ModelOption[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
-    const [saved, setSaved] = useState(false);
-    const [preset, setPreset] = useState<(typeof PRESET_OPTIONS)[number]["key"]>("dedicated_runtime_host");
-    const [dashboard, setDashboard] = useState<SafetyDashboard | null>(null);
-    const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
-    const [rememberAllowlist, setRememberAllowlist] = useState<Record<string, boolean>>({});
-
-    const loadConfig = async () => {
-        setLoading(true);
-        try {
-            const [next, modelList, safetyDashboard] = await Promise.all([
-                fetchConfigDomain<SafetyData>("safety"),
-                fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
-                fetch("/api/safety/dashboard?limit=80", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
-            ]);
-            const normalized = normalizeSafetyData(next.data);
-            setEnvelope({ ...next, data: normalized });
-            setModels(Array.isArray(modelList) ? modelList : []);
-            setDashboard(safetyDashboard && typeof safetyDashboard === "object" ? safetyDashboard : {});
-            setPreset(detectPreset(normalized));
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        void loadConfig();
-    }, []);
-
-    const llmModels = useMemo(
-        () => models.filter((model) => ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes((model.type || "").toUpperCase())),
-        [models],
-    );
-
-    const summary = useMemo(() => {
-        const data = envelope?.data;
-        const runtimeSummary = data?.runtimeSummary || {};
-        const skillScanSummary = data?.skillScanSummary || {};
-        return {
-            posture: data?.machinePosture || "dedicated_runtime_host",
-            reviewModel: data?.modelBindings?.safetyReviewModel || "未绑定",
-            auditCount: Number(runtimeSummary.auditCount || 0),
-            reviewCount: Number(runtimeSummary.reviewCount || 0),
-            blockCount: Number(runtimeSummary.blockCount || 0),
-            skillDistribution: skillScanSummary.verdictDistribution || {},
-            recentSkillScans: skillScanSummary.recentSkillScans || [],
-        };
-    }, [envelope]);
-
-    const saveData = async (nextData: SafetyData) => {
-        if (!envelope) return;
-        setSaving(true);
-        try {
-            const next = await saveConfigDomain<SafetyData>("safety", { data: nextData });
-            const normalized = normalizeSafetyData(next.data);
-            setEnvelope({ ...next, data: normalized });
-            setPreset(detectPreset(normalized));
-            setSaved(true);
-            window.setTimeout(() => setSaved(false), 1800);
-        } finally {
-            setSaving(false);
-        }
-    };
-
-    const handleApprovalAction = async (approvalId: string, approve: boolean) => {
-        const busyKey = `approval:${approve ? "approve" : "reject"}:${approvalId}`;
-        setGovernanceBusy(busyKey);
-        try {
-            const response = await fetch(`/api/approvals/${encodeURIComponent(approvalId)}/${approve ? "approve" : "reject"}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    response: {
-                        approved: approve,
-                        answer: approve ? "Approved from SafetyRuntime governance." : "Rejected from SafetyRuntime governance.",
-                        persistSafetyAllowlist: approve ? Boolean(rememberAllowlist[approvalId]) : false,
-                    },
-                }),
-            });
-            if (!response.ok) {
-                throw new Error(`Approval action failed: ${response.status}`);
-            }
-            await loadConfig();
-        } finally {
-            setGovernanceBusy(null);
-        }
-    };
-
-    const handleSkillSafetyAction = async (reviewId: string, action: "approve" | "disable" | "revoke" | "rescan") => {
-        const busyKey = `skill:${action}:${reviewId}`;
-        setGovernanceBusy(busyKey);
-        try {
-            const response = await fetch(`/api/skills/safety/reviews/${encodeURIComponent(reviewId)}/${action}`, { method: "POST" });
-            if (!response.ok) {
-                throw new Error(`Skill safety action failed: ${response.status}`);
-            }
-            await loadConfig();
-        } finally {
-            setGovernanceBusy(null);
-        }
-    };
-
-    const handleAllowlistRevoke = async (entryId: string) => {
-        const busyKey = `allowlist:revoke:${entryId}`;
-        setGovernanceBusy(busyKey);
-        try {
-            const response = await fetch(`/api/safety/allowlist/${encodeURIComponent(entryId)}/revoke`, { method: "POST" });
-            if (!response.ok) {
-                throw new Error(`Allowlist revoke failed: ${response.status}`);
-            }
-            await loadConfig();
-        } finally {
-            setGovernanceBusy(null);
-        }
-    };
-
-    const handleActiveDefenseIncidentAction = async (incidentId: string, action: "confirm" | "ignore") => {
-        const busyKey = `active-defense:${action}:${incidentId}`;
-        setGovernanceBusy(busyKey);
-        try {
-            const response = await fetch(`/api/safety/active-defense/incidents/${encodeURIComponent(incidentId)}/${action}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ note: `Admin ${action}` }),
-            });
-            if (!response.ok) {
-                throw new Error(`Active defense ${action} failed: ${response.status}`);
-            }
-            await loadConfig();
-        } finally {
-            setGovernanceBusy(null);
-        }
-    };
-
-    if (loading || !envelope) {
-        return (
-            <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-            </div>
-        );
+  const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SafetyData> | null>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [preset, setPreset] = useState<(typeof PRESET_OPTIONS)[number]["key"]>("dedicated_runtime_host");
+  const [dashboard, setDashboard] = useState<SafetyDashboard | null>(null);
+  const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
+  const [rememberAllowlist, setRememberAllowlist] = useState<Record<string, boolean>>({});
+  const loadConfig = async () => {
+    setLoading(true);
+    try {
+      const [next, modelList, safetyDashboard] = await Promise.all([fetchConfigDomain<SafetyData>("safety"), fetch("/api/models", {
+        cache: "no-store"
+      }).then(response => response.json().catch(() => [])), fetch("/api/safety/dashboard?limit=80", {
+        cache: "no-store"
+      }).then(response => response.json().catch(() => ({})))]);
+      const normalized = normalizeSafetyData(next.data);
+      setEnvelope({
+        ...next,
+        data: normalized
+      });
+      setModels(Array.isArray(modelList) ? modelList : []);
+      setDashboard(safetyDashboard && typeof safetyDashboard === "object" ? safetyDashboard : {});
+      setPreset(detectPreset(normalized));
+    } finally {
+      setLoading(false);
     }
-
-    const data = envelope.data;
-    const activePreset = PRESET_OPTIONS.find((item) => item.key === preset) || PRESET_OPTIONS[0];
-
-    return (
-        <AdminPageShell>
-            <AdminPageHeader
-                title="app.admin.dashboard.safety.control.page.k8f467cf5"
-                description="app.admin.dashboard.safety.control.page.k65868ff2"
-                actions={
-                    <div className="flex items-center gap-3">
+  };
+  useEffect(() => {
+    void loadConfig();
+  }, []);
+  const llmModels = useMemo(() => models.filter(model => ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes((model.type || "").toUpperCase())), [models]);
+  const summary = useMemo(() => {
+    const data = envelope?.data;
+    const runtimeSummary = data?.runtimeSummary || {};
+    const skillScanSummary = data?.skillScanSummary || {};
+    return {
+      posture: data?.machinePosture || "dedicated_runtime_host",
+      reviewModel: data?.modelBindings?.safetyReviewModel || INTERNAL_READABLE.k3bf179d8d0,
+      auditCount: Number(runtimeSummary.auditCount || 0),
+      reviewCount: Number(runtimeSummary.reviewCount || 0),
+      blockCount: Number(runtimeSummary.blockCount || 0),
+      skillDistribution: skillScanSummary.verdictDistribution || {},
+      recentSkillScans: skillScanSummary.recentSkillScans || []
+    };
+  }, [envelope]);
+  const saveData = async (nextData: SafetyData) => {
+    if (!envelope) return;
+    setSaving(true);
+    try {
+      const next = await saveConfigDomain<SafetyData>("safety", {
+        data: nextData
+      });
+      const normalized = normalizeSafetyData(next.data);
+      setEnvelope({
+        ...next,
+        data: normalized
+      });
+      setPreset(detectPreset(normalized));
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1800);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const handleApprovalAction = async (approvalId: string, approve: boolean) => {
+    const busyKey = `approval:${approve ? "approve" : "reject"}:${approvalId}`;
+    setGovernanceBusy(busyKey);
+    try {
+      const response = await fetch(`/api/approvals/${encodeURIComponent(approvalId)}/${approve ? "approve" : "reject"}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          response: {
+            approved: approve,
+            answer: approve ? "Approved from SafetyRuntime governance." : "Rejected from SafetyRuntime governance.",
+            persistSafetyAllowlist: approve ? Boolean(rememberAllowlist[approvalId]) : false
+          }
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Approval action failed: ${response.status}`);
+      }
+      await loadConfig();
+    } finally {
+      setGovernanceBusy(null);
+    }
+  };
+  const handleSkillSafetyAction = async (reviewId: string, action: "approve" | "disable" | "revoke" | "rescan") => {
+    const busyKey = `skill:${action}:${reviewId}`;
+    setGovernanceBusy(busyKey);
+    try {
+      const response = await fetch(`/api/skills/safety/reviews/${encodeURIComponent(reviewId)}/${action}`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(`Skill safety action failed: ${response.status}`);
+      }
+      await loadConfig();
+    } finally {
+      setGovernanceBusy(null);
+    }
+  };
+  const handleAllowlistRevoke = async (entryId: string) => {
+    const busyKey = `allowlist:revoke:${entryId}`;
+    setGovernanceBusy(busyKey);
+    try {
+      const response = await fetch(`/api/safety/allowlist/${encodeURIComponent(entryId)}/revoke`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(`Allowlist revoke failed: ${response.status}`);
+      }
+      await loadConfig();
+    } finally {
+      setGovernanceBusy(null);
+    }
+  };
+  const handleActiveDefenseIncidentAction = async (incidentId: string, action: "confirm" | "ignore") => {
+    const busyKey = `active-defense:${action}:${incidentId}`;
+    setGovernanceBusy(busyKey);
+    try {
+      const response = await fetch(`/api/safety/active-defense/incidents/${encodeURIComponent(incidentId)}/${action}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          note: `Admin ${action}`
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Active defense ${action} failed: ${response.status}`);
+      }
+      await loadConfig();
+    } finally {
+      setGovernanceBusy(null);
+    }
+  };
+  if (loading || !envelope) {
+    return <div className="flex min-h-[320px] items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+            </div>;
+  }
+  const data = envelope.data;
+  const activePreset = PRESET_OPTIONS.find(item => item.key === preset) || PRESET_OPTIONS[0];
+  return <AdminPageShell>
+            <AdminPageHeader title="app.admin.dashboard.safety.control.page.k8f467cf5" description="app.admin.dashboard.safety.control.page.k65868ff2" actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />
                         <Button onClick={() => void saveData(data)} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                            立即保存
+                            {INTERNAL_READABLE.k5e4644a2c8}
                         </Button>
-                    </div>
-                }
-            />
+                    </div>} />
+
 
             <div className="space-y-6">
-                <DomainSummaryStrip
-                    items={[
-                        { label: "Machine Posture", value: summary.posture },
-                        { label: "Audit / Review / Block", value: `${summary.auditCount} / ${summary.reviewCount} / ${summary.blockCount}` },
-                        {
-                            label:"app.admin.dashboard.safety.control.page.k87b50116",
-                            value: `audit ${Number(summary.skillDistribution.audit || 0)} · review ${Number(summary.skillDistribution.review || 0)} · block ${Number(summary.skillDistribution.block || 0)}`,
-                        },
-                        { label: "Safety Review Model", value: summary.reviewModel },
-                    ]}
-                />
+                <DomainSummaryStrip items={[{
+        label: "Machine Posture",
+        value: summary.posture
+      }, {
+        label: "Audit / Review / Block",
+        value: `${summary.auditCount} / ${summary.reviewCount} / ${summary.blockCount}`
+      }, {
+        label: "app.admin.dashboard.safety.control.page.k87b50116",
+        value: `audit ${Number(summary.skillDistribution.audit || 0)} · review ${Number(summary.skillDistribution.review || 0)} · block ${Number(summary.skillDistribution.block || 0)}`
+      }, {
+        label: "Safety Review Model",
+        value: summary.reviewModel
+      }]} />
 
-                <StatusNotice
-                    tone={data.machinePosture === "developer_mixed_host" ? "warning" : "success"}
-                    title={data.machinePosture === "developer_mixed_host" ? "当前是开发机混用姿态" : "当前是专用运行机姿态"}
-                    description={
-                        data.machinePosture === "developer_mixed_host"
-                            ? "浏览器 profile、本地 secret 和某些外部 mutating HTTP 会更严格，适合当前这种混有私人日常使用的开发机。"
-                            : "正常依赖安装、正常 API 写操作和声明式 skill 配置默认记 audit，不会被旧的一刀切规则过度阻断。"
-                    }
-                />
+
+                <StatusNotice tone={data.machinePosture === "developer_mixed_host" ? "warning" : "success"} title={data.machinePosture === "developer_mixed_host" ? INTERNAL_READABLE.k0a54999adc : INTERNAL_READABLE.k2de6238fbe} description={data.machinePosture === "developer_mixed_host" ? INTERNAL_READABLE.kfea74a25fa : INTERNAL_READABLE.kc22f677125} />
+
 
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="text-base">Canonical 控制面</CardTitle>
-                        <CardDescription>主页面负责 posture / preset / review model 心智；高级面板只负责细粒度规则编辑。</CardDescription>
+                        <CardTitle className="text-base">{INTERNAL_READABLE.kac3aa53ae3}</CardTitle>
+                        <CardDescription>{INTERNAL_READABLE.ked7bf764bd}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <div className="space-y-2">
                             <Label>Machine Posture</Label>
-                            <Select
-                                value={data.machinePosture}
-                                onValueChange={(next) =>
-                                    setEnvelope((previous) =>
-                                        previous
-                                            ? {
-                                                  ...previous,
-                                                  data: normalizeSafetyData({
-                                                      ...previous.data,
-                                                      machinePosture: next as MachinePosture,
-                                                  }),
-                                              }
-                                            : previous,
-                                    )
-                                }
-                            >
+                            <Select value={data.machinePosture} onValueChange={next => setEnvelope(previous => previous ? {
+              ...previous,
+              data: normalizeSafetyData({
+                ...previous.data,
+                machinePosture: next as MachinePosture
+              })
+            } : previous)}>
+
                                 <SelectTrigger>
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="dedicated_runtime_host">dedicated_runtime_host（推荐）</SelectItem>
+                                    <SelectItem value="dedicated_runtime_host">{INTERNAL_READABLE.ka171f0c349}</SelectItem>
                                     <SelectItem value="developer_mixed_host">developer_mixed_host</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
                         <div className="space-y-2">
                             <Label>Preset</Label>
-                            <Select
-                                value={preset}
-                                onValueChange={(next) => {
-                                    const presetKey = next as (typeof PRESET_OPTIONS)[number]["key"];
-                                    setPreset(presetKey);
-                                    setEnvelope((previous) =>
-                                        previous
-                                            ? {
-                                                  ...previous,
-                                                  data: normalizeSafetyData(applyPreset(previous.data, presetKey)),
-                                              }
-                                            : previous,
-                                    );
-                                }}
-                            >
+                            <Select value={preset} onValueChange={next => {
+              const presetKey = next as (typeof PRESET_OPTIONS)[number]["key"];
+              setPreset(presetKey);
+              setEnvelope(previous => previous ? {
+                ...previous,
+                data: normalizeSafetyData(applyPreset(previous.data, presetKey))
+              } : previous);
+            }}>
+
                                 <SelectTrigger>
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {PRESET_OPTIONS.map((item) => (
-                                        <SelectItem key={item.key} value={item.key}>
+                                    {PRESET_OPTIONS.map(item => <SelectItem key={item.key} value={item.key}>
                                             {item.title}
-                                        </SelectItem>
-                                    ))}
+                                        </SelectItem>)}
                                 </SelectContent>
                             </Select>
                         </div>
                         <div className="space-y-2">
                             <Label>Safety Review Model</Label>
-                            <ModelSelect
-                                models={llmModels}
-                                value={String(data.modelBindings?.safetyReviewModel || "__none__")}
-                                emptyValue="__none__"
-                                emptyLabel="未绑定"
-                                placeholder="未绑定"
-                                onValueChange={(next) =>
-                                    setEnvelope((previous) =>
-                                        previous
-                                            ? {
-                                                  ...previous,
-                                                  data: {
-                                                      ...previous.data,
-                                                      modelBindings: {
-                                                          ...(previous.data.modelBindings || {}),
-                                                          safetyReviewModel: next,
-                                                      },
-                                                  },
-                                              }
-                                            : previous,
-                                    )
-                                }
-                            />
+                            <ModelSelect models={llmModels} value={String(data.modelBindings?.safetyReviewModel || "__none__")} emptyValue="__none__" emptyLabel="Not bound" placeholder="Not bound" onValueChange={next => setEnvelope(previous => previous ? {
+              ...previous,
+              data: {
+                ...previous.data,
+                modelBindings: {
+                  ...(previous.data.modelBindings || {}),
+                  safetyReviewModel: next
+                }
+              }
+            } : previous)} />
+
                         </div>
                         <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                             <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">启用 Safety Guardian</div>
-                                <div className="text-xs leading-5 text-slate-500">关闭后只暂停阻断与审批，不会抹掉当前 posture / rules。</div>
+                                <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k4d4a2abe6e}</div>
+                                <div className="text-xs leading-5 text-slate-500">{INTERNAL_READABLE.ke57511582a}</div>
                             </div>
-                            <Switch
-                                checked={Boolean(data.enabled)}
-                                onCheckedChange={(checked) =>
-                                    setEnvelope((previous) =>
-                                        previous
-                                            ? {
-                                                  ...previous,
-                                                  data: { ...previous.data, enabled: checked },
-                                              }
-                                            : previous,
-                                    )
-                                }
-                            />
+                            <Switch checked={Boolean(data.enabled)} onCheckedChange={checked => setEnvelope(previous => previous ? {
+              ...previous,
+              data: {
+                ...previous.data,
+                enabled: checked
+              }
+            } : previous)} />
+
                         </div>
                     </CardContent>
                 </Card>
 
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="text-base">当前边界摘要</CardTitle>
+                        <CardTitle className="text-base">{INTERNAL_READABLE.k8f7932ff92}</CardTitle>
                         <CardDescription>{activePreset.description}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">Skill 治理</div>
+                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k0fad073470}</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                声明式依赖：<span className="font-medium text-slate-900">{data.skillRules?.declarationVerdict}</span>
+                                {INTERNAL_READABLE.kda13a9cff5}<span className="font-medium text-slate-900">{data.skillRules?.declarationVerdict}</span>
                                 <br />
-                                本地 secret：<span className="font-medium text-slate-900">{data.skillRules?.localSecretReadVerdict}</span>
+                                {INTERNAL_READABLE.k8595ba0815}<span className="font-medium text-slate-900">{data.skillRules?.localSecretReadVerdict}</span>
                                 <br />
-                                浏览器资料（开发机）：<span className="font-medium text-slate-900">{data.skillRules?.browserProfileAccessVerdict?.developer_mixed_host}</span>
+                                {INTERNAL_READABLE.kdda26d8b82}<span className="font-medium text-slate-900">{data.skillRules?.browserProfileAccessVerdict?.developer_mixed_host}</span>
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">网络与外部变更</div>
+                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k3991c727ed}</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                专用机默认：<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host}</span>
+                                {INTERNAL_READABLE.k8b9f7fc0ed}<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host}</span>
                                 <br />
-                                开发机默认：<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host}</span>
+                                {INTERNAL_READABLE.k546f1f657f}<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host}</span>
                                 <br />
-                                敏感 payload：<span className="font-medium text-slate-900">{data.networkMutationRules?.sensitivePayloadVerdict}</span>
+                                {INTERNAL_READABLE.kd9abd67eaa}<span className="font-medium text-slate-900">{data.networkMutationRules?.sensitivePayloadVerdict}</span>
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
                             <div className="text-sm font-medium text-slate-900">Computer Use</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                专用机动作：<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host}</span>
+                                {INTERNAL_READABLE.k9e4884053a}<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host}</span>
                                 <br />
-                                开发机动作：<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.developer_mixed_host}</span>
+                                {INTERNAL_READABLE.k426e3712e7}<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.developer_mixed_host}</span>
                                 <br />
-                                生命周期热键：<span className="font-medium text-slate-900">{data.computerUseRules?.hotkeyLifecycleVerdict}</span>
+                                {INTERNAL_READABLE.k5b4d128734}<span className="font-medium text-slate-900">{data.computerUseRules?.hotkeyLifecycleVerdict}</span>
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">系统 / V8 完整性</div>
+                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k94ba148b3e}</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                依赖安装（专用机）：<span className="font-medium text-slate-900">{data.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host}</span>
+                                {INTERNAL_READABLE.ke64e2476ba}<span className="font-medium text-slate-900">{data.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host}</span>
                                 <br />
-                                配置写入：<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedConfigWriteVerdict}</span>
+                                {INTERNAL_READABLE.k1c9f944a8e}<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedConfigWriteVerdict}</span>
                                 <br />
-                                核心进程：<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedRuntimeProcessVerdict}</span>
+                                {INTERNAL_READABLE.kf5ed0ffb9c}<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedRuntimeProcessVerdict}</span>
                             </div>
                         </div>
                     </CardContent>
@@ -704,33 +636,23 @@ export default function SafetyControlPage() {
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
                         <CardTitle className="text-base">Recent Skill Scan Summary</CardTitle>
-                        <CardDescription>这里展示的是 skill 供应链治理结果，不再把旧 severity 级别或预读阻断当成主故事线。</CardDescription>
+                        <CardDescription>{INTERNAL_READABLE.k3b8428667f}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                        {summary.recentSkillScans.length === 0 ? (
-                            <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">最近没有新的 skill scan 记录。</div>
-                        ) : (
-                            summary.recentSkillScans.map((item, index) => (
-                                <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                        {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k906ff562fc}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
                                     <div className="flex flex-wrap items-center gap-3">
-                                        <div className="text-sm font-medium text-slate-900">{item.skillName || "未知 Skill"}</div>
+                                        <div className="text-sm font-medium text-slate-900">{item.skillName || INTERNAL_READABLE.k233cfa7db1}</div>
                                         <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{item.verdict || "unknown"}</div>
                                         {item.confidence != null ? <div className="text-xs text-slate-500">confidence {item.confidence}</div> : null}
                                     </div>
-                                    {Array.isArray(item.reasons) && item.reasons.length > 0 ? (
-                                        <ul className="mt-3 space-y-1 text-sm leading-6 text-slate-600">
-                                            {item.reasons.map((reason) => (
-                                                <li key={reason}>- {reason}</li>
-                                            ))}
-                                        </ul>
-                                    ) : null}
-                                </div>
-                            ))
-                        )}
+                                    {Array.isArray(item.reasons) && item.reasons.length > 0 ? <ul className="mt-3 space-y-1 text-sm leading-6 text-slate-600">
+                                            {item.reasons.map(reason => <li key={reason}>- {reason}</li>)}
+                                        </ul> : null}
+                                </div>)}
                     </CardContent>
                 </Card>
 
-                <AdvancedSection title="SafetyRuntime 观测与审批" description="真实运行观测、待审批项、Skill ledger 与可撤销长期授权集中在这里；空运行矩阵只保留在本地测试脚本。" defaultOpen={false}>
+                <AdvancedSection title="SafetyRuntime Observability and Approvals" description="Live observations, pending approvals, Skill ledger, and revocable long-term grants are grouped here; dry-run matrices remain in local test scripts." defaultOpen={false}>
                     <div className="space-y-4">
                         <div className="grid gap-3 md:grid-cols-4">
                             <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -757,38 +679,30 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">主动防御哨兵</CardTitle>
-                                <CardDescription>默认关闭；开启后只做轻量采样、记录和短提示，不会自动杀进程、断网或唤醒 Supervisor。</CardDescription>
+                                <CardTitle className="text-base">{INTERNAL_READABLE.k0bd4eb9e51}</CardTitle>
+                                <CardDescription>{INTERNAL_READABLE.k53b0056fae}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 p-4">
                                     <div className="space-y-1">
                                         <div className="text-sm font-medium text-slate-900">
-                                            {data.activeDefense?.enabled ? "已开启哨兵采样" : "哨兵未开启"}
+                                            {data.activeDefense?.enabled ? INTERNAL_READABLE.k938cd2b63d : INTERNAL_READABLE.kb3eb9f1698}
                                         </div>
                                         <div className="text-xs leading-5 text-slate-500">
-                                            采样间隔 {data.activeDefense?.sampleIntervalSeconds || 20}s；Host Alerts 最多注入 {data.activeDefense?.maxInjectedProcesses || 3} 个高占用进程。
+                                            {INTERNAL_READABLE.k01f122f48b} {data.activeDefense?.sampleIntervalSeconds || 20}{INTERNAL_READABLE.k4d7902113a} {data.activeDefense?.maxInjectedProcesses || 3} {INTERNAL_READABLE.k4b584a4a03}
                                         </div>
                                     </div>
-                                    <Switch
-                                        checked={Boolean(data.activeDefense?.enabled)}
-                                        onCheckedChange={(checked) =>
-                                            setEnvelope((previous) =>
-                                                previous
-                                                    ? {
-                                                          ...previous,
-                                                          data: normalizeSafetyData({
-                                                              ...previous.data,
-                                                              activeDefense: {
-                                                                  ...(previous.data.activeDefense || {}),
-                                                                  enabled: checked,
-                                                              },
-                                                          }),
-                                                      }
-                                                    : previous,
-                                            )
-                                        }
-                                    />
+                                    <Switch checked={Boolean(data.activeDefense?.enabled)} onCheckedChange={checked => setEnvelope(previous => previous ? {
+                  ...previous,
+                  data: normalizeSafetyData({
+                    ...previous.data,
+                    activeDefense: {
+                      ...(previous.data.activeDefense || {}),
+                      enabled: checked
+                    }
+                  })
+                } : previous)} />
+
                                 </div>
 
                                 <div className="grid gap-3 md:grid-cols-3">
@@ -810,23 +724,17 @@ export default function SafetyControlPage() {
                                         <div className="text-xs uppercase tracking-[0.18em] text-slate-400">known tunnels</div>
                                         <div className="mt-2 text-sm font-medium text-slate-900">{(dashboard?.activeDefense?.knownNetworkTools || []).length}</div>
                                         <div className="mt-1 line-clamp-2 text-xs text-slate-500">
-                                            {(dashboard?.activeDefense?.knownNetworkTools || []).join(", ") || "尚未确认 VPN / proxy 基线"}
+                                            {(dashboard?.activeDefense?.knownNetworkTools || []).join(", ") || INTERNAL_READABLE.k37be479791}
                                         </div>
                                     </div>
                                 </div>
 
-                                {dashboard?.activeDefense?.lastError ? (
-                                    <StatusNotice tone="warning" title="哨兵采样异常" description={dashboard.activeDefense.lastError} />
-                                ) : null}
+                                {dashboard?.activeDefense?.lastError ? <StatusNotice tone="warning" title="Sentinel sampling error" description={dashboard.activeDefense.lastError} /> : null}
 
-                                {(dashboard?.activeDefense?.incidents || []).length === 0 ? (
-                                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
-                                        暂无未确认主动防御 incident。开启后，未知 VPN / tunnel 首次出现和高占用进程会记录在这里。
-                                    </div>
-                                ) : (
-                                    <div className="space-y-3">
-                                        {(dashboard?.activeDefense?.incidents || []).slice(0, 8).map((incident) => (
-                                            <div key={incident.id} className="rounded-2xl border border-slate-200 p-4">
+                                {(dashboard?.activeDefense?.incidents || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                                        {INTERNAL_READABLE.k8e279a292f}
+                                    </div> : <div className="space-y-3">
+                                        {(dashboard?.activeDefense?.incidents || []).slice(0, 8).map(incident => <div key={incident.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <Badge variant={incident.riskCode === "high_resource_process" ? "secondary" : "outline"}>
                                                         {incident.riskCode || "active_defense"}
@@ -835,85 +743,56 @@ export default function SafetyControlPage() {
                                                     <span className="text-xs text-slate-500">seen {incident.seenCount || 1}</span>
                                                 </div>
                                                 <div className="mt-2 text-sm text-slate-700">{incident.summary || incident.id}</div>
-                                                {incident.process ? (
-                                                    <div className="mt-2 text-xs text-slate-500">
+                                                {incident.process ? <div className="mt-2 text-xs text-slate-500">
                                                         {incident.process.name || "process"}({incident.process.pid || "-"}) CPU {incident.process.cpuPercent ?? "-"}% · Mem {incident.process.rssMb ?? "-"}MB
-                                                    </div>
-                                                ) : null}
+                                                    </div> : null}
                                                 <div className="mt-3 flex justify-end gap-2">
-                                                    {incident.riskCode === "network_tunnel_first_seen" || incident.riskCode === "unknown_listening_port" ? (
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            disabled={governanceBusy === `active-defense:confirm:${incident.id}`}
-                                                            onClick={() => void handleActiveDefenseIncidentAction(incident.id, "confirm")}
-                                                        >
-                                                            确认为本机基线
-                                                        </Button>
-                                                    ) : null}
-                                                    <Button
-                                                        size="sm"
-                                                        variant="ghost"
-                                                        disabled={governanceBusy === `active-defense:ignore:${incident.id}`}
-                                                        onClick={() => void handleActiveDefenseIncidentAction(incident.id, "ignore")}
-                                                    >
-                                                        忽略
-                                                    </Button>
+                                                    {incident.riskCode === "network_tunnel_first_seen" || incident.riskCode === "unknown_listening_port" ? <Button size="sm" variant="outline" disabled={governanceBusy === `active-defense:confirm:${incident.id}`} onClick={() => void handleActiveDefenseIncidentAction(incident.id, "confirm")}>
+                                                            {INTERNAL_READABLE.kaba11b75f9}
+                                                        
+                      </Button> : null}
+                                                    <Button size="sm" variant="ghost" disabled={governanceBusy === `active-defense:ignore:${incident.id}`} onClick={() => void handleActiveDefenseIncidentAction(incident.id, "ignore")}>
+                                                        {INTERNAL_READABLE.kd84129b8be}
+                                                    
+                      </Button>
                                                 </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
+                                            </div>)}
+                                    </div>}
                             </CardContent>
                         </Card>
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">待处理 Safety 审批</CardTitle>
-                                <CardDescription>“记住此授权”会写入强绑定 allowlist；目标、runtime、path plane 或 risk code 变化后不会复用。</CardDescription>
+                                <CardTitle className="text-base">{INTERNAL_READABLE.k207d54bdcb}</CardTitle>
+                                <CardDescription>{INTERNAL_READABLE.k31e671581a}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                {(dashboard?.pendingSafetyApprovals || []).length === 0 ? (
-                                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无待处理 Safety 审批。</div>
-                                ) : (
-                                    (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map((approval) => (
-                                        <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
+                                {(dashboard?.pendingSafetyApprovals || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k8943074568}</div> : (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map(approval => <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant="outline">{approval.approval_kind || "safety_review"}</Badge>
                                                 <Badge variant={approval.verdict === "block" ? "destructive" : "secondary"}>{approval.riskCode || "unknown"}</Badge>
                                                 <span className="text-xs text-slate-500">Run {approval.run_id || "-"}</span>
                                             </div>
-                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{approval.question || approval.reason || "SafetyRuntime 请求人工确认。"}</p>
-                                            {approval.allowlistCandidate ? (
-                                                <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={Boolean(rememberAllowlist[approval.id])}
-                                                        onChange={(event) => setRememberAllowlist((previous) => ({ ...previous, [approval.id]: event.target.checked }))}
-                                                    />
-                                                    记住此授权为长期 allowlist（可撤销，强绑定目标与风险类型）
-                                                </label>
-                                            ) : null}
+                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{approval.question || approval.reason || INTERNAL_READABLE.k82b3e41793}</p>
+                                            {approval.allowlistCandidate ? <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
+                                                    <input type="checkbox" checked={Boolean(rememberAllowlist[approval.id])} onChange={event => setRememberAllowlist(previous => ({
+                    ...previous,
+                    [approval.id]: event.target.checked
+                  }))} />
+                                                    {INTERNAL_READABLE.kfabda685a2}
+                                                
+                  </label> : null}
                                             <div className="mt-3 flex justify-end gap-2">
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    disabled={governanceBusy === `approval:reject:${approval.id}` || governanceBusy === `approval:approve:${approval.id}`}
-                                                    onClick={() => void handleApprovalAction(approval.id, false)}
-                                                >
-                                                    拒绝
-                                                </Button>
-                                                <Button
-                                                    type="button"
-                                                    disabled={governanceBusy === `approval:approve:${approval.id}` || governanceBusy === `approval:reject:${approval.id}`}
-                                                    onClick={() => void handleApprovalAction(approval.id, true)}
-                                                >
-                                                    通过
-                                                </Button>
+                                                <Button type="button" variant="outline" disabled={governanceBusy === `approval:reject:${approval.id}` || governanceBusy === `approval:approve:${approval.id}`} onClick={() => void handleApprovalAction(approval.id, false)}>
+                                                    {INTERNAL_READABLE.k03e210a66d}
+                                                
+                    </Button>
+                                                <Button type="button" disabled={governanceBusy === `approval:approve:${approval.id}` || governanceBusy === `approval:reject:${approval.id}`} onClick={() => void handleApprovalAction(approval.id, true)}>
+                                                    {INTERNAL_READABLE.kdcc4233255}
+                                                
+                    </Button>
                                             </div>
-                                        </div>
-                                    ))
-                                )}
+                                        </div>)}
                             </CardContent>
                         </Card>
 
@@ -921,77 +800,57 @@ export default function SafetyControlPage() {
                             <Card className="rounded-2xl border-slate-200 shadow-sm">
                                 <CardHeader>
                                     <CardTitle className="text-base">Skill Safety Ledger</CardTitle>
-                                    <CardDescription>按内容 hash 复用审查结果；disabled skill 不进入模型候选。</CardDescription>
+                                    <CardDescription>{INTERNAL_READABLE.k0e783e6a82}</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
-                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? (
-                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无 Skill 安全审查记录。</div>
-                                    ) : (
-                                        (dashboard?.skillSafetyReviews || []).slice(0, 8).map((review) => (
-                                            <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k4fd29dc28e}</div> : (dashboard?.skillSafetyReviews || []).slice(0, 8).map(review => <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <span className="font-medium text-slate-950">{review.skill_name || review.skill_id || "Unknown skill"}</span>
                                                     <Badge variant={review.disabled ? "destructive" : "outline"}>{review.disabled ? "disabled" : review.effective_verdict || "unknown"}</Badge>
                                                     {review.user_override ? <Badge variant="secondary">{review.user_override}</Badge> : null}
                                                 </div>
                                                 <div className="mt-2 line-clamp-1 text-xs text-slate-500">{review.skill_path || "-"}</div>
-                                                {Array.isArray(review.reasons) && review.reasons.length ? (
-                                                    <div className="mt-2 text-sm text-slate-600">{review.reasons.slice(0, 2).join(" / ")}</div>
-                                                ) : null}
+                                                {Array.isArray(review.reasons) && review.reasons.length ? <div className="mt-2 text-sm text-slate-600">{review.reasons.slice(0, 2).join(" / ")}</div> : null}
                                                 <div className="mt-3 flex flex-wrap justify-end gap-2">
-                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "approve")}>审批放行</Button>
-                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "disable")}>禁用</Button>
-                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "revoke")}>撤销</Button>
-                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "rescan")}>重扫</Button>
+                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "approve")}>{INTERNAL_READABLE.k0a6f0a30a8}</Button>
+                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "disable")}>{INTERNAL_READABLE.kbe70be5a2e}</Button>
+                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "revoke")}>{INTERNAL_READABLE.k9fcefd8dc8}</Button>
+                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "rescan")}>{INTERNAL_READABLE.kd5847a438e}</Button>
                                                 </div>
-                                            </div>
-                                        ))
-                                    )}
+                                            </div>)}
                                 </CardContent>
                             </Card>
 
                             <Card className="rounded-2xl border-slate-200 shadow-sm">
                                 <CardHeader>
                                     <CardTitle className="text-base">Safety Allowlist</CardTitle>
-                                    <CardDescription>长期有效但可撤销；只按 normalized target hash、path plane、runtime source、action、risk code 命中。</CardDescription>
+                                    <CardDescription>{INTERNAL_READABLE.k24d5d908de}</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
-                                    {(dashboard?.allowlistEntries || []).length === 0 ? (
-                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无长期授权记录。</div>
-                                    ) : (
-                                        (dashboard?.allowlistEntries || []).slice(0, 8).map((entry) => (
-                                            <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.allowlistEntries || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.kc83fd439cd}</div> : (dashboard?.allowlistEntries || []).slice(0, 8).map(entry => <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <Badge variant={entry.enabled ? "secondary" : "outline"}>{entry.enabled ? "active" : "revoked"}</Badge>
                                                     <Badge variant="outline">{entry.risk_code || "unknown"}</Badge>
                                                     <span className="text-xs text-slate-500">{entry.runtime_source || "unknown"} / {entry.path_plane || "unknown"} / {entry.action || "unknown"}</span>
                                                 </div>
                                                 <div className="mt-2 break-all text-sm text-slate-700">{entry.normalized_target_label || entry.id}</div>
-                                                {entry.enabled ? (
-                                                    <div className="mt-3 flex justify-end">
+                                                {entry.enabled ? <div className="mt-3 flex justify-end">
                                                         <Button size="sm" variant="outline" disabled={governanceBusy === `allowlist:revoke:${entry.id}`} onClick={() => void handleAllowlistRevoke(entry.id)}>
-                                                            撤销授权
+                                                            {INTERNAL_READABLE.kb31883bd20}
                                                         </Button>
-                                                    </div>
-                                                ) : null}
-                                            </div>
-                                        ))
-                                    )}
+                                                    </div> : null}
+                                            </div>)}
                                 </CardContent>
                             </Card>
                         </div>
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">最近 Safety 决策</CardTitle>
-                                <CardDescription>只显示脱敏后的 normalized / decoded 摘要，不显示完整 secret。</CardDescription>
+                                <CardTitle className="text-base">{INTERNAL_READABLE.k82e119eb54}</CardTitle>
+                                <CardDescription>{INTERNAL_READABLE.kf3c79e2420}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                {(dashboard?.recentDecisions || []).length === 0 ? (
-                                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无 Safety decision event。</div>
-                                ) : (
-                                    (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => (
-                                        <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                                {(dashboard?.recentDecisions || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k08fd2c0902}</div> : (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant={event.verdict === "block" ? "destructive" : "outline"}>{event.verdict || event.status || "unknown"}</Badge>
                                                 <Badge variant="secondary">{event.riskCode || "unknown"}</Badge>
@@ -999,12 +858,8 @@ export default function SafetyControlPage() {
                                             </div>
                                             {event.subject ? <div className="mt-2 break-all text-sm text-slate-700">{event.subject}</div> : null}
                                             {event.reason ? <div className="mt-2 text-sm text-slate-600">{event.reason}</div> : null}
-                                            {Array.isArray(event.downloadHosts) && event.downloadHosts.length ? (
-                                                <div className="mt-2 text-xs text-slate-500">download hosts: {event.downloadHosts.join(", ")}</div>
-                                            ) : null}
-                                        </div>
-                                    ))
-                                )}
+                                            {Array.isArray(event.downloadHosts) && event.downloadHosts.length ? <div className="mt-2 text-xs text-slate-500">download hosts: {event.downloadHosts.join(", ")}</div> : null}
+                                        </div>)}
                             </CardContent>
                         </Card>
                     </div>
@@ -1016,6 +871,5 @@ export default function SafetyControlPage() {
 
                 <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={envelope.reloadRequired} warnings={envelope.warnings} />
             </div>
-        </AdminPageShell>
-    );
+        </AdminPageShell>;
 }

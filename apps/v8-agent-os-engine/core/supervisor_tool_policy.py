@@ -39,6 +39,7 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "grep_search",
     "download_media_for_vision",
     "web_broker",
+    "research_broker",
     "http_request",
     "s3_broker",
     "wait",

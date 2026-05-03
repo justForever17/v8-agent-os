@@ -91,6 +91,8 @@ _SKILL_AUTHORING_STRONG_TERMS: tuple[str, ...] = (
     "人物skill",
     "人物 skill",
 )
+_SEEDED_GLOBAL_SKILL_NAMES: tuple[str, ...] = ("code-reviewer",)
+_SKILL_SEED_TOMBSTONE_SCHEMA_VERSION = 1
 _ARTIFACT_RULES: dict[str, tuple[str, ...]] = {
     "presentation": (
         "ppt",
@@ -2047,16 +2049,117 @@ class SkillLoader:
         if not repo_skill_root.exists():
             return
 
-        for skill_name in ("code-reviewer",):
+        cls._cleanup_invalid_seed_shells(global_agents_path)
+
+        for skill_name in _SEEDED_GLOBAL_SKILL_NAMES:
             source_dir = repo_skill_root / skill_name
             target_dir = global_agents_path / skill_name
-            if not source_dir.exists() or target_dir.exists():
+            instruction_path = source_dir / "SKILL.md"
+            if (
+                not source_dir.exists()
+                or target_dir.exists()
+                or not instruction_path.exists()
+                or not cls._skill_instruction_has_content(instruction_path)
+                or cls._is_seed_tombstoned(skill_name, source_dir=source_dir)
+            ):
                 continue
             try:
                 shutil.copytree(source_dir, target_dir)
                 print(f"[SkillLoader] Seeded workspace skill '{skill_name}' into {target_dir}")
             except Exception as exc:
                 print(f"[SkillLoader] Failed to seed skill '{skill_name}': {exc}")
+
+    @classmethod
+    def _skill_instruction_has_content(cls, instruction_path: Path) -> bool:
+        try:
+            return bool(instruction_path.read_text(encoding="utf-8", errors="ignore").strip())
+        except Exception:
+            return False
+
+    @classmethod
+    def _skill_seed_tombstone_path(cls) -> Path:
+        return Path.home() / ".v8-agent-os" / "cache" / "extensions" / "skill_seed_tombstones.json"
+
+    @classmethod
+    def _read_skill_seed_tombstones(cls) -> dict[str, Any]:
+        tombstone_path = cls._skill_seed_tombstone_path()
+        try:
+            payload = json.loads(tombstone_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            entries = {}
+        return {
+            "schemaVersion": int(payload.get("schemaVersion") or _SKILL_SEED_TOMBSTONE_SCHEMA_VERSION),
+            "entries": {str(key): value for key, value in entries.items() if isinstance(value, dict)},
+        }
+
+    @classmethod
+    def _write_skill_seed_tombstones(cls, payload: dict[str, Any]) -> None:
+        tombstone_path = cls._skill_seed_tombstone_path()
+        tombstone_path.parent.mkdir(parents=True, exist_ok=True)
+        tombstone_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    @classmethod
+    def _is_seed_tombstoned(cls, skill_name: str, *, source_dir: Path) -> bool:
+        tombstones = cls._read_skill_seed_tombstones()
+        entry = dict((tombstones.get("entries") or {}).get(str(skill_name or "").strip()) or {})
+        if not entry:
+            return False
+        recorded_source = cls._normalize_path(entry.get("sourceRoot"))
+        current_source = cls._normalize_path(source_dir)
+        return not recorded_source or recorded_source == current_source
+
+    @classmethod
+    def _record_skill_seed_tombstone(
+        cls,
+        *,
+        skill_name: str,
+        source_dir: Path | None,
+        target_dir: Path,
+        initiated_by: str,
+    ) -> dict[str, Any]:
+        normalized_name = str(skill_name or "").strip()
+        if not normalized_name:
+            return {}
+        tombstones = cls._read_skill_seed_tombstones()
+        entries = dict(tombstones.get("entries") or {})
+        entry = {
+            "skillName": normalized_name,
+            "sourceRoot": cls._normalize_path(source_dir) if source_dir else "",
+            "targetRoot": cls._normalize_path(target_dir),
+            "deletedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "initiatedBy": str(initiated_by or "admin_extensions_manual_delete").strip() or "admin_extensions_manual_delete",
+        }
+        entries[normalized_name] = entry
+        cls._write_skill_seed_tombstones(
+            {
+                "schemaVersion": _SKILL_SEED_TOMBSTONE_SCHEMA_VERSION,
+                "entries": entries,
+            }
+        )
+        return entry
+
+    @classmethod
+    def _cleanup_invalid_seed_shells(cls, global_agents_path: Path) -> None:
+        for skill_name in _SEEDED_GLOBAL_SKILL_NAMES:
+            target_dir = global_agents_path / skill_name
+            if not target_dir.exists() or not target_dir.is_dir() or (target_dir / "SKILL.md").exists():
+                continue
+            try:
+                has_files = any(item.is_file() for item in target_dir.rglob("*"))
+            except Exception:
+                has_files = True
+            if has_files:
+                continue
+            try:
+                shutil.rmtree(target_dir)
+                print(f"[SkillLoader] Removed invalid seeded skill shell '{skill_name}' at {target_dir}")
+            except Exception as exc:
+                print(f"[SkillLoader] Failed to remove invalid seeded skill shell '{skill_name}': {exc}")
 
     @classmethod
     def _lookup_project_binding_for_workspace(cls, workspace_path: str | None) -> tuple[str | None, str | None]:
@@ -3234,6 +3337,11 @@ class SkillLoader:
             "visibility": skill.get("visibility"),
             "initiatedBy": str(initiated_by or "admin_extensions_manual_delete").strip() or "admin_extensions_manual_delete",
         }
+        seed_source_dir: Path | None = None
+        seed_tombstone: dict[str, Any] = {}
+        if skill_root.name in _SEEDED_GLOBAL_SKILL_NAMES and str(skill.get("visibility") or "").strip().lower() != "scoped":
+            candidate_source = cls._resolve_repo_root() / ".agents" / "skills" / skill_root.name
+            seed_source_dir = candidate_source if candidate_source.exists() else None
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(removed.get("skillName") or skill_root.name)).strip(".-_") or "skill"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup_root = Path.home() / ".v8-agent-os" / "backups" / "skills" / f"{timestamp}-{safe_name}-{hashlib.sha1(str(skill_root).encode('utf-8')).hexdigest()[:8]}"
@@ -3250,6 +3358,18 @@ class SkillLoader:
         except Exception:
             inactive_review_count = 0
         shutil.rmtree(skill_root)
+        if skill_root.name in _SEEDED_GLOBAL_SKILL_NAMES and str(skill.get("visibility") or "").strip().lower() != "scoped":
+            seed_tombstone = cls._record_skill_seed_tombstone(
+                skill_name=skill_root.name,
+                source_dir=seed_source_dir,
+                target_dir=skill_root,
+                initiated_by=str(removed.get("initiatedBy") or ""),
+            )
+            removed["seedTombstoned"] = bool(seed_tombstone)
+            removed["seedSource"] = cls._normalize_path(seed_source_dir) if seed_source_dir else ""
+        else:
+            removed["seedTombstoned"] = False
+            removed["seedSource"] = ""
         try:
             from core.audit_logger import audit_logger
             from core.run_ledger import run_ledger_service
@@ -3281,6 +3401,8 @@ class SkillLoader:
                     "initiatedBy": removed.get("initiatedBy"),
                     "visibility": removed.get("visibility"),
                     "inactiveReviewCount": inactive_review_count,
+                    "seedTombstoned": removed.get("seedTombstoned"),
+                    "seedSource": removed.get("seedSource"),
                 },
             )
         except Exception:

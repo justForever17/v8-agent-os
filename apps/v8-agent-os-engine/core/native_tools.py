@@ -144,6 +144,7 @@ from erc.safety_guardian import SafetyDecision, safety_guardian
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
 from core.tools.media_downloader import download_media_for_vision
+from core.tools.research_broker import research_broker
 from core.tools.s3_tools import s3_broker, s3_download_file, s3_list_objects, s3_upload_file
 from core.tools.vision_media_analyzer import vision_media_analyzer
 from core.tools.web_fetcher import web_broker, web_extract, web_fetch, web_read, web_search
@@ -4526,6 +4527,14 @@ def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[st
                 "count": len(jobs),
                 "limit": effective_limit,
                 "hasMore": len(jobs) > effective_limit,
+                "detailTool": "creative_media_get_job(job_id=...)",
+                "omittedFields": [
+                    "fullRequest",
+                    "prompt",
+                    "providerResponse",
+                    "timeline",
+                    "updatedAt",
+                ],
             },
             ensure_ascii=False,
             indent=2,
@@ -11278,6 +11287,7 @@ NATIVE_TOOLS = [
     web_read,
     web_extract,
     web_search,
+    research_broker,
     delegate_network_task,
     http_request,
     s3_broker,

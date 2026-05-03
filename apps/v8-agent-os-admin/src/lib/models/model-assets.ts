@@ -23,6 +23,33 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     "v8-audio": "/model-assets/providers/v8-audio.svg",
     "fish-audio": "/model-assets/providers/fish-audio.svg",
     "black-forest-labs": "/model-assets/providers/black-forest-labs.svg",
+    perplexity: "/model-assets/providers/perplexity.svg",
+    fireworks: "/model-assets/providers/fireworks.svg",
+    cerebras: "/model-assets/providers/cerebras.svg",
+    "nvidia-nim": "/model-assets/providers/nvidia-nim.svg",
+    ai21: "/model-assets/providers/ai21.svg",
+    "baidu-qianfan": "/model-assets/providers/baidu-qianfan.svg",
+    stepfun: "/model-assets/providers/stepfun.svg",
+    baichuan: "/model-assets/providers/baichuan.svg",
+    together: "/model-assets/providers/together.svg",
+    nexa: "/model-assets/providers/nexa.svg",
+    ideogram: "/model-assets/providers/ideogram.svg",
+    leonardo: "/model-assets/providers/leonardo.svg",
+    vidu: "/model-assets/providers/vidu.svg",
+    pika: "/model-assets/providers/pika.svg",
+    haiper: "/model-assets/providers/haiper.svg",
+    heygen: "/model-assets/providers/heygen.svg",
+    synthesia: "/model-assets/providers/synthesia.svg",
+    "d-id": "/model-assets/providers/d-id.svg",
+    tavus: "/model-assets/providers/tavus.svg",
+    hedra: "/model-assets/providers/hedra.svg",
+    shotstack: "/model-assets/providers/shotstack.svg",
+    creatomate: "/model-assets/providers/creatomate.svg",
+    cartesia: "/model-assets/providers/cartesia.svg",
+    playht: "/model-assets/providers/playht.svg",
+    "azure-speech": "/model-assets/providers/azure-speech.svg",
+    "amazon-polly": "/model-assets/providers/amazon-polly.svg",
+    udio: "/model-assets/providers/udio.svg",
     meshy: "/model-assets/providers/meshy.svg",
     csm: "/model-assets/providers/csm.svg",
     "3d-ai-studio": "/model-assets/providers/3d-ai-studio.svg",
@@ -37,6 +64,25 @@ const LOCAL_MODEL_LOGOS: Record<string, string> = {
     "v8-audio": "/model-assets/providers/v8-audio.svg",
     fish: "/model-assets/providers/fish-audio.svg",
     flux: "/model-assets/providers/black-forest-labs.svg",
+    sonar: "/model-assets/providers/perplexity.svg",
+    jamba: "/model-assets/providers/ai21.svg",
+    ernie: "/model-assets/providers/baidu-qianfan.svg",
+    "baichuan": "/model-assets/providers/baichuan.svg",
+    ideogram: "/model-assets/providers/ideogram.svg",
+    leonardo: "/model-assets/providers/leonardo.svg",
+    vidu: "/model-assets/providers/vidu.svg",
+    pika: "/model-assets/providers/pika.svg",
+    haiper: "/model-assets/providers/haiper.svg",
+    heygen: "/model-assets/providers/heygen.svg",
+    synthesia: "/model-assets/providers/synthesia.svg",
+    tavus: "/model-assets/providers/tavus.svg",
+    hedra: "/model-assets/providers/hedra.svg",
+    shotstack: "/model-assets/providers/shotstack.svg",
+    creatomate: "/model-assets/providers/creatomate.svg",
+    cartesia: "/model-assets/providers/cartesia.svg",
+    playht: "/model-assets/providers/playht.svg",
+    polly: "/model-assets/providers/amazon-polly.svg",
+    udio: "/model-assets/providers/udio.svg",
     meshy: "/model-assets/providers/meshy.svg",
     csm: "/model-assets/providers/csm.svg",
     "3d-ai-studio": "/model-assets/providers/3d-ai-studio.svg",
@@ -128,6 +174,33 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("jina")) candidates.push("jina");
     if (haystack.includes("baai") || haystack.includes("bge")) candidates.push("baai");
     if (haystack.includes("meta") || haystack.includes("llama")) candidates.push("meta-color", "meta");
+    if (haystack.includes("together")) candidates.push("together");
+    if (haystack.includes("nexa")) candidates.push("nexa");
+    if (haystack.includes("perplexity") || haystack.includes("sonar")) candidates.push("perplexity");
+    if (haystack.includes("fireworks")) candidates.push("fireworks");
+    if (haystack.includes("cerebras")) candidates.push("cerebras");
+    if (haystack.includes("nvidia") || haystack.includes("nim")) candidates.push("nvidia-nim");
+    if (haystack.includes("ai21") || haystack.includes("jamba")) candidates.push("ai21");
+    if (haystack.includes("baidu") || haystack.includes("qianfan") || haystack.includes("ernie")) candidates.push("baidu-qianfan");
+    if (haystack.includes("stepfun") || haystack.includes("step-")) candidates.push("stepfun");
+    if (haystack.includes("baichuan")) candidates.push("baichuan");
+    if (haystack.includes("ideogram")) candidates.push("ideogram");
+    if (haystack.includes("leonardo")) candidates.push("leonardo");
+    if (haystack.includes("vidu")) candidates.push("vidu");
+    if (haystack.includes("pika")) candidates.push("pika");
+    if (haystack.includes("haiper")) candidates.push("haiper");
+    if (haystack.includes("heygen")) candidates.push("heygen");
+    if (haystack.includes("synthesia")) candidates.push("synthesia");
+    if (haystack.includes("d-id") || haystack.includes("d id")) candidates.push("d-id");
+    if (haystack.includes("tavus")) candidates.push("tavus");
+    if (haystack.includes("hedra")) candidates.push("hedra");
+    if (haystack.includes("shotstack")) candidates.push("shotstack");
+    if (haystack.includes("creatomate")) candidates.push("creatomate");
+    if (haystack.includes("cartesia")) candidates.push("cartesia");
+    if (haystack.includes("playht") || haystack.includes("play-ht")) candidates.push("playht");
+    if (haystack.includes("azure") && haystack.includes("speech")) candidates.push("azure-speech");
+    if (haystack.includes("amazon") || haystack.includes("polly")) candidates.push("amazon-polly");
+    if (haystack.includes("udio")) candidates.push("udio");
 
     candidates.push(id, name);
     return uniq(candidates);
@@ -183,6 +256,31 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("ollama")) candidates.push("ollama");
     if (id.includes("lmstudio")) candidates.push("lmstudio");
     if (id.includes("vllm")) candidates.push("vllm-color", "vllm");
+    if (id.includes("sonar") || id.includes("perplexity")) candidates.push("perplexity");
+    if (id.includes("fireworks")) candidates.push("fireworks");
+    if (id.includes("cerebras")) candidates.push("cerebras");
+    if (id.includes("nvidia") || id.includes("nim")) candidates.push("nvidia-nim");
+    if (id.includes("jamba") || id.includes("ai21")) candidates.push("ai21");
+    if (id.includes("ernie") || id.includes("qianfan")) candidates.push("baidu-qianfan");
+    if (id.includes("step-") || id.includes("stepfun")) candidates.push("stepfun");
+    if (id.includes("baichuan")) candidates.push("baichuan");
+    if (id.includes("ideogram")) candidates.push("ideogram");
+    if (id.includes("leonardo")) candidates.push("leonardo");
+    if (id.includes("vidu")) candidates.push("vidu");
+    if (id.includes("pika")) candidates.push("pika");
+    if (id.includes("haiper")) candidates.push("haiper");
+    if (id.includes("heygen")) candidates.push("heygen");
+    if (id.includes("synthesia")) candidates.push("synthesia");
+    if (id.includes("d-id")) candidates.push("d-id");
+    if (id.includes("tavus")) candidates.push("tavus");
+    if (id.includes("hedra")) candidates.push("hedra");
+    if (id.includes("shotstack")) candidates.push("shotstack");
+    if (id.includes("creatomate")) candidates.push("creatomate");
+    if (id.includes("cartesia") || id.includes("sonic")) candidates.push("cartesia");
+    if (id.includes("playht") || id.includes("play-ht")) candidates.push("playht");
+    if (id.includes("azure") && id.includes("tts")) candidates.push("azure-speech");
+    if (id.includes("polly")) candidates.push("amazon-polly");
+    if (id.includes("udio")) candidates.push("udio");
 
     candidates.push(id);
     return uniq(candidates);

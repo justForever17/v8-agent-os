@@ -1,0 +1,214 @@
+{
+  "version": 1,
+  "updatedAt": "2026-05-03",
+  "description": "Research source quality catalog. This is not a network allowlist; it ranks public sources by authority and task fit.",
+  "entries": [
+    {
+      "id": "official_vendor_docs",
+      "category": "official_docs",
+      "displayName": "Official Vendor Documentation",
+      "hosts": [
+        "platform.openai.com",
+        "docs.anthropic.com",
+        "ai.google.dev",
+        "cloud.google.com",
+        "learn.microsoft.com",
+        "docs.aws.amazon.com",
+        "docs.nvidia.com",
+        "docs.fireworks.ai",
+        "docs.cerebras.ai",
+        "inference-docs.cerebras.ai",
+        "docs.perplexity.ai",
+        "docs.cohere.com",
+        "docs.mistral.ai",
+        "docs.together.ai",
+        "docs.x.ai",
+        "docs.deepseek.com",
+        "platform.moonshot.cn",
+        "help.aliyun.com",
+        "cloud.baidu.com",
+        "cloud.tencent.com",
+        "www.volcengine.com"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 35,
+      "bestFor": ["api_contract", "model_capability", "pricing", "limits", "authentication", "official_examples"],
+      "notes": "Prefer these for API behavior, model names, limits, breaking changes, and official capability claims."
+    },
+    {
+      "id": "official_provider_blogs",
+      "category": "official_blog",
+      "displayName": "Official Provider Blogs and Release Notes",
+      "hosts": [
+        "openai.com",
+        "anthropic.com",
+        "blog.google",
+        "developers.googleblog.com",
+        "aws.amazon.com",
+        "azure.microsoft.com",
+        "blogs.nvidia.com",
+        "fireworks.ai",
+        "www.cerebras.ai",
+        "mistral.ai",
+        "www.deepseek.com",
+        "www.alibabacloud.com",
+        "www.volcengine.com"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 25,
+      "bestFor": ["release_context", "capability_narrative", "roadmap", "product_positioning"],
+      "notes": "Use with docs when exact API behavior matters."
+    },
+    {
+      "id": "standards_and_specs",
+      "category": "standards",
+      "displayName": "Standards and Specifications",
+      "hosts": [
+        "www.w3.org",
+        "tc39.es",
+        "html.spec.whatwg.org",
+        "datatracker.ietf.org",
+        "www.rfc-editor.org",
+        "spec.openapis.org",
+        "schema.org"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 35,
+      "bestFor": ["protocol", "web_standard", "schema", "interop"],
+      "notes": "Prefer for normative behavior over tutorials."
+    },
+    {
+      "id": "source_code_and_issues",
+      "category": "source_repo",
+      "displayName": "Source Repositories and Issue Trackers",
+      "hosts": [
+        "github.com",
+        "gitlab.com",
+        "bitbucket.org"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 25,
+      "bestFor": ["implementation_truth", "release_tags", "issue_status", "code_examples"],
+      "notes": "Repository source often beats docs for current implementation, but distinguish maintainers from user comments."
+    },
+    {
+      "id": "academic_sources",
+      "category": "academic",
+      "displayName": "Academic and Research Literature",
+      "hosts": [
+        "arxiv.org",
+        "openreview.net",
+        "aclanthology.org",
+        "paperswithcode.com",
+        "scholar.google.com",
+        "pubmed.ncbi.nlm.nih.gov",
+        "www.nature.com",
+        "www.science.org",
+        "dl.acm.org",
+        "ieeexplore.ieee.org"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 25,
+      "bestFor": ["research_claim", "benchmark", "method", "scientific_context"],
+      "notes": "Use publication venue and recency. Papers With Code is useful for leaderboard context, not a primary paper source."
+    },
+    {
+      "id": "developer_community",
+      "category": "developer_community",
+      "displayName": "Developer Community Evidence",
+      "hosts": [
+        "stackoverflow.com",
+        "stackexchange.com",
+        "dev.to",
+        "news.ycombinator.com",
+        "lobste.rs",
+        "reddit.com",
+        "www.reddit.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 5,
+      "bestFor": ["workaround", "field_report", "adoption_signal", "known_issue"],
+      "notes": "Use as supporting evidence only. Prefer high-vote, recent, reproducible reports."
+    },
+    {
+      "id": "video_platform_popularity",
+      "category": "video_platform",
+      "displayName": "Video Platforms with Popularity Signals",
+      "hosts": [
+        "youtube.com",
+        "www.youtube.com",
+        "youtu.be",
+        "bilibili.com",
+        "www.bilibili.com",
+        "vimeo.com",
+        "www.vimeo.com",
+        "tiktok.com",
+        "www.tiktok.com",
+        "douyin.com",
+        "www.douyin.com",
+        "kuaishou.com",
+        "www.kuaishou.com",
+        "x.com",
+        "twitter.com",
+        "www.instagram.com"
+      ],
+      "authorityTier": "popularity",
+      "authorityBoost": 10,
+      "bestFor": ["video_reference", "trend_signal", "style_reference", "audience_preference"],
+      "popularitySignals": ["views", "likes", "favorites", "shares", "comments", "danmaku", "rank", "trending"],
+      "notes": "For video/style research, prefer official channels, playlists, charts, high views/likes, and recent posts. Popularity is not factual authority."
+    },
+    {
+      "id": "creative_showcases",
+      "category": "creative_showcase",
+      "displayName": "Creative Showcases and Design Inspiration",
+      "hosts": [
+        "www.behance.net",
+        "dribbble.com",
+        "www.awwwards.com",
+        "www.producthunt.com",
+        "www.artstation.com",
+        "www.pinterest.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 5,
+      "bestFor": ["visual_reference", "style_scan", "creative_pattern", "market_signal"],
+      "popularitySignals": ["likes", "saves", "upvotes", "featured", "awards"],
+      "notes": "Useful for style and trend discovery, not for factual claims."
+    },
+    {
+      "id": "market_and_finance_primary",
+      "category": "market_finance",
+      "displayName": "Market and Finance Primary Sources",
+      "hosts": [
+        "www.sec.gov",
+        "www.hkexnews.hk",
+        "www.nasdaq.com",
+        "www.nyse.com",
+        "www.londonstockexchange.com",
+        "finance.yahoo.com",
+        "www.investing.com",
+        "www.tradingview.com"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 20,
+      "bestFor": ["filing", "market_data", "company_fact", "exchange_notice"],
+      "notes": "Prefer regulator/exchange/company filings for claims; market portals can support quotes and charts."
+    },
+    {
+      "id": "encyclopedic_background",
+      "category": "background",
+      "displayName": "Background Encyclopedic Sources",
+      "hosts": [
+        "wikipedia.org",
+        "www.wikipedia.org",
+        "britannica.com",
+        "www.britannica.com"
+      ],
+      "authorityTier": "background",
+      "authorityBoost": 0,
+      "bestFor": ["orientation", "terminology", "history"],
+      "notes": "Use for orientation, then verify important claims with primary sources."
+    }
+  ]
+}

@@ -473,6 +473,13 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "exposureMode": "family_cards",
             "families": DEFAULT_SPECIALIST_FAMILIES,
         },
+        "research": {
+            "enabled": True,
+            "defaultShardCount": 10,
+            "maxShardCount": 30,
+            "maxRounds": 5,
+            "evidenceTtlSeconds": 21600,
+        },
     },
     "workspace": {"agent_workspace_path": _default_workspace_path()},
     "hooks": {"hooks": []},
@@ -2284,6 +2291,36 @@ class StorageManager:
         raw["families"] = normalize_specialist_families_config(raw.get("families"))
         return raw
 
+    def _normalize_research_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
+        defaults = dict((STRUCTURED_CONFIG_DEFAULTS["supervisor"] or {}).get("research") or {})
+        raw = self._deep_merge(defaults, data if isinstance(data, dict) else {})
+
+        def _as_bool(value: Any, default: bool) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"1", "true", "yes", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "off"}:
+                    return False
+            if value is None:
+                return default
+            return bool(value)
+
+        def _as_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        raw["enabled"] = _as_bool(raw.get("enabled"), True)
+        raw["defaultShardCount"] = max(1, min(_as_int(raw.get("defaultShardCount"), 10), 30))
+        raw["maxShardCount"] = max(raw["defaultShardCount"], min(_as_int(raw.get("maxShardCount"), 30), 30))
+        raw["maxRounds"] = max(1, min(_as_int(raw.get("maxRounds"), 5), 5))
+        raw["evidenceTtlSeconds"] = max(60, min(_as_int(raw.get("evidenceTtlSeconds"), 21600), 7 * 24 * 60 * 60))
+        return raw
+
     def get_supervisor_config(self) -> Dict[str, Any]:
         self._ensure_legacy_model_bindings_migrated()
         config = self._deep_merge(
@@ -2305,6 +2342,10 @@ class StorageManager:
         if specialist_registry != config.get("specialistRegistry"):
             config["specialistRegistry"] = specialist_registry
             should_save = True
+        research_config = self._normalize_research_config(config.get("research"))
+        if research_config != config.get("research"):
+            config["research"] = research_config
+            should_save = True
         if should_save:
             self.save_supervisor_config(config)
         return config
@@ -2316,6 +2357,7 @@ class StorageManager:
         delegation["externalWorkers"] = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
         next_payload["delegation"] = delegation
         next_payload["specialistRegistry"] = self._normalize_specialist_registry_config(next_payload.get("specialistRegistry"))
+        next_payload["research"] = self._normalize_research_config(next_payload.get("research"))
         payload = self._read_config_payload()
         payload["supervisor"] = next_payload
         self._write_config_payload(payload)

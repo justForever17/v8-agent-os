@@ -3,13 +3,14 @@ import yaml
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-04-29"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-05-03-research"
 DEFAULT_SUBAGENT_IDS = {
     "project-planner",
     "implementation-engineer",
     "frontend-product-engineer",
     "verification-engineer",
     "code-review-architect",
+    "web-research-architect",
     "research-synthesizer",
     "docs-delivery-writer",
     "skill-workflow-curator",
@@ -42,6 +43,12 @@ DEFAULT_SPECIALIST_FAMILIES = [
         "displayName": "Writing",
         "aliases": ["写作", "docs", "documentation"],
         "description": "Documentation, research synthesis, handoff, proposals, and narrative delivery.",
+    },
+    {
+        "familyId": "research",
+        "displayName": "Research",
+        "aliases": ["搜索", "调研", "web_research", "source_quality"],
+        "description": "Web research planning, source ranking, evidence bundles, confidence, and citation synthesis.",
     },
 ]
 
@@ -129,7 +136,7 @@ def build_specialist_family_registry(agents: List[Dict[str, Any]] | None, specia
             },
         )
     result = []
-    for family_id in sorted(by_id, key=lambda key: (0 if key in {"engineering", "creative_media", "writing"} else 1, key)):
+    for family_id in sorted(by_id, key=lambda key: (0 if key in {"engineering", "creative_media", "writing", "research"} else 1, key)):
         entry = dict(by_id[family_id])
         entry["memberCount"] = member_counts.get(family_id, 0)
         result.append(entry)
@@ -330,6 +337,7 @@ def _default_agent(
     verification: str,
     prompt_source_refs: List[str] | None = None,
     extra_guidance: str = "",
+    global_exposure: bool = False,
 ) -> AgentConfig:
     system_prompt = f"""You are {name}, a V8 Agent OS specialist subagent.
 
@@ -371,7 +379,7 @@ Do not pretend to be the supervisor, do not make final user-facing acceptance de
         tools=[],
         tool_mode="contextual_auto",
         createdBy="system",
-        globalExposure=False,
+        globalExposure=global_exposure,
         reflection_enabled=False,
         max_reflections=3,
         capabilitySnapshot=capability_snapshot,
@@ -513,6 +521,33 @@ def default_subagent_configs() -> List[AgentConfig]:
             output_contract="- Findings first, ordered by severity, with file/location when available.\n- Open questions and residual risk.\n- If no findings, state that and name what was not verified.",
             verification="- Cross-check each finding against the actual code path; avoid speculative objections without a plausible failure mode.",
             boundaries="- Do not rewrite code during review unless explicitly delegated.\n- Do not nitpick formatting or personal style.\n- Do not approve claims that lack evidence.",
+        ),
+        _default_agent(
+            agent_id="web-research-architect",
+            name="Web Research Architect",
+            description="Plans high-quality web research, ranks source authority, and orchestrates read-only research shards.",
+            role_label="Research Architect",
+            icon="search-check",
+            capability_snapshot={
+                "agentClass": "research_coordinator",
+                "specialistFamily": "research",
+                "domainTags": ["web_research", "source_quality", "fact_checking", "provider_docs", "parallel_research"],
+                "artifactCapabilities": ["research_plan", "evidence_bundle", "source_matrix", "citation_pack"],
+                "operationCapabilities": ["plan_search", "decompose_queries", "rank_sources", "orchestrate_shards", "synthesize_evidence"],
+                "runtimeAffinities": ["research", "chat", "extensions"],
+                "toolExposurePolicy": "contextual_auto",
+                "plannerSuitability": "high",
+                "externalWorkerSuitability": "low",
+                "confidence": 0.9,
+                "source": "system_default",
+            },
+            mission="- Decide when web research is necessary, design query shards, and turn raw search/read results into compact evidence bundles.\n- Improve factual quality for Engineering, Creative Media, Writing, and Supervisor decisions without leaking shard context into other runtimes.",
+            input_contract="- A research question, freshness need, target decision, source constraints, seed URLs/domains, or runtime brief requesting source-backed evidence.\n- Any hard constraints about official sources, regional coverage, language, recency, or citation format.",
+            operating_protocol="- First define the evidence that would change the answer.\n- Prefer primary, official, or highly authoritative sources; explicitly downgrade weak sources.\n- Use `research_broker` through the brokered `research.core` runtime access for multi-source work instead of ad-hoc one-shot web searches.\n- Split broad work into read-only atomic shards and keep each shard context-isolated.\n- Synthesize only claims supported by the evidence bundle; mark conflicts and missing evidence.",
+            output_contract="- Research plan or evidence bundle summary with sourceMatrix, confidence, authority scores, conflicts, citations, rawRefs, omitted fields, and recommended next action.\n- Include `researchRefs` suitable for Engineering task briefs or Creative Media recipes when the result should feed another runtime.",
+            verification="- Check that source authority, relevance, freshness, and conflicts were assessed before handing evidence to another runtime.",
+            boundaries="- Do not implement code, generate media, mutate files, run shell commands, log into services, or approve actions.\n- Do not spawn arbitrary recursive agents; use only read-only research shards managed by Research Runtime.\n- Do not present search snippets as confirmed facts when pages were not read or cross-checked.",
+            global_exposure=True,
         ),
         _default_agent(
             agent_id="research-synthesizer",

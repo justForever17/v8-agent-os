@@ -189,6 +189,7 @@ def _build_supervisor_domain() -> dict[str, Any]:
                 "externalWorkers": list(delegation.get("externalWorkers") or []),
             },
             "specialistRegistry": dict(supervisor_config.get("specialistRegistry") or {}),
+            "research": dict(supervisor_config.get("research") or {}),
         },
         "source": f"V8_AGENT_OS.md + {_config_source('systemBase.identity')} + {_config_source('supervisor')} + {_config_source('models')}",
         "savePath": [
@@ -248,6 +249,8 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
     if "specialistRegistry" in data and isinstance(data.get("specialistRegistry"), dict):
         supervisor_config["specialistRegistry"] = dict(data.get("specialistRegistry") or {})
+    if "research" in data and isinstance(data.get("research"), dict):
+        supervisor_config["research"] = dict(data.get("research") or {})
 
     storage.save_supervisor_config(supervisor_config)
 

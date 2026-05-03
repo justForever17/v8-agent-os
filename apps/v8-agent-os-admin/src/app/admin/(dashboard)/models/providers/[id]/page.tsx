@@ -12,337 +12,337 @@ import type { ControlPlaneModel, ControlPlanePayload, ProviderOverview } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
-import { getPlatformLoginPresetConfig, inferPlatformLoginPreset, PLATFORM_LOGIN_PRESETS, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
+import { getPlatformLoginPresetConfig, inferPlatformLoginPreset, PLATFORM_LOGIN_PRESETS, type PlatformLoginPreset } from "@/lib/models/provider-admin";
 interface AIModel {
-    id: string;
-    modelRef?: string;
-    providerId: string;
-    modelId: string;
-    type: string;
-    contextWindow: number | null;
-    maxTokens: number | null;
-    isEnabled: boolean;
+  id: string;
+  modelRef?: string;
+  providerId: string;
+  modelId: string;
+  type: string;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  isEnabled: boolean;
 }
 interface AIProvider {
-    id: string;
-    name: string;
-    code: string;
-    description: string | null;
-    icon: string | null;
-    baseUrl: string | null;
-    apiKey: string | null;
-    type: string;
-    apiStandard?: string;
-    isEnabled: boolean;
-    credentialMode?: "apiKey" | "oauthFile";
-    hasCredential?: boolean;
-    oauthPath?: string;
-    oauthPathMasked?: string;
-    models: AIModel[];
+  id: string;
+  name: string;
+  code: string;
+  description: string | null;
+  icon: string | null;
+  baseUrl: string | null;
+  apiKey: string | null;
+  type: string;
+  apiStandard?: string;
+  isEnabled: boolean;
+  credentialMode?: "apiKey" | "oauthFile";
+  hasCredential?: boolean;
+  oauthPath?: string;
+  oauthPathMasked?: string;
+  models: AIModel[];
 }
 type ModelConnectionStatus = {
-    status: "idle" | "testing" | "success" | "error";
-    message?: string;
+  status: "idle" | "testing" | "success" | "error";
+  message?: string;
 };
 const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
 function extractErrorText(value: unknown, fallback: string): string {
-    if (typeof value === "string" && value.trim())
-        return value;
-    if (Array.isArray(value)) {
-        const joined = value
-            .map((item) => extractErrorText(item, ""))
-            .filter(Boolean)
-            .join(" · ");
-        return joined || fallback;
-    }
-    if (value && typeof value === "object") {
-        const record = value as Record<string, unknown>;
-        return (extractErrorText(record.error, "")
-            || extractErrorText(record.message, "")
-            || extractErrorText(record.detail, "")
-            || fallback);
-    }
-    return fallback;
+  if (typeof value === "string" && value.trim())
+  return value;
+  if (Array.isArray(value)) {
+    const joined = value.
+    map((item) => extractErrorText(item, "")).
+    filter(Boolean).
+    join(" · ");
+    return joined || fallback;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return extractErrorText(record.error, "") ||
+    extractErrorText(record.message, "") ||
+    extractErrorText(record.detail, "") ||
+    fallback;
+  }
+  return fallback;
 }
 async function readJsonErrorMessage(response: Response, fallback: string) {
-    const data = await response.json().catch(() => null);
-    const detail = extractErrorText(data?.detail, "") || extractErrorText(data?.error, "");
-    return detail || fallback;
+  const data = await response.json().catch(() => null);
+  const detail = extractErrorText(data?.detail, "") || extractErrorText(data?.error, "");
+  return detail || fallback;
 }
 function describeCapabilityProbe(probe: ProviderOverview["localCapabilityProbe"] | null | undefined): string {
-    if (!probe || typeof probe !== "object")
-        return "";
-    if (probe.status === "supported")
-        return "Local vision ready";
-    if (probe.status === "unsupported")
-        return "Text path works, but local vision is unavailable";
-    if (probe.status === "unknown")
-        return "Text path works, but local vision was not detected";
-    return "";
+  if (!probe || typeof probe !== "object")
+  return "";
+  if (probe.status === "supported")
+  return "Local vision ready";
+  if (probe.status === "unsupported")
+  return "Text path works, but local vision is unavailable";
+  if (probe.status === "unknown")
+  return "Text path works, but local vision was not detected";
+  return "";
 }
-export default function ProviderConfigPage({ params }: {
-    params: Promise<{
-        id: string;
-    }>;
-}) {
-    const { id } = use(params);
-    const router = useRouter();
-    const t = useT();
-    const [provider, setProvider] = useState<AIProvider | null>(null);
-    const [controlPlane, setControlPlane] = useState<ControlPlanePayload | null>(null);
-    const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [isSaving, setIsSaving] = useState(false);
-    const [providerType, setProviderType] = useState<string>("API");
-    const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
-    const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
-    const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("geminiCli");
-    const [providerBaseUrl, setProviderBaseUrl] = useState("");
-    const [providerOauthPath, setProviderOauthPath] = useState("");
-    const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
-    // Model Dialog State
-    const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
-    const [editingModel, setEditingModel] = useState<AIModel | null>(null);
-    const [modelType, setModelType] = useState("TEXT");
-    const { toast } = useToast();
-    const fetchProvider = useCallback(async () => {
-        setIsLoading(true);
-        try {
-            const [providerRes, controlPlaneRes, defaultModelRes] = await Promise.all([
-                fetch(`/api/providers/${id}`),
-                fetch("/api/model-control-plane", { cache: "no-store" }),
-                fetch("/api/settings/default-agent-model"),
-            ]);
-            if (providerRes.ok) {
-                const nextProvider = await providerRes.json();
-                const inferredPreset = inferPlatformLoginPreset({
-                    providerType: nextProvider.type,
-                    apiStandard: nextProvider.apiStandard,
-                    baseUrl: nextProvider.baseUrl,
-                    oauthPath: nextProvider.oauthPath,
-                    code: nextProvider.code,
-                    name: nextProvider.name,
-                });
-                setProvider(nextProvider);
-                setProviderType(nextProvider.type || "API");
-                setCredentialMode(nextProvider.type === "PLATFORM" ? "oauthFile" : (nextProvider.credentialMode || "apiKey"));
-                setApiStandard((nextProvider.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui") || "openai");
-                setPlatformLoginPreset(inferredPreset);
-                setProviderBaseUrl(nextProvider.baseUrl || "");
-                setProviderOauthPath(nextProvider.oauthPath || "");
-            }
-            else {
-                console.error("Failed to fetch provider");
-            }
-            if (controlPlaneRes.ok) {
-                setControlPlane(await controlPlaneRes.json());
-            }
-            if (defaultModelRes.ok) {
-                const data = await defaultModelRes.json();
-                setDefaultModelId(data.modelRef || data.modelId || null);
-            }
-        }
-        catch (error) {
-            console.error("Error fetching provider:", error);
-        }
-        finally {
-            setIsLoading(false);
-        }
-    }, [id]);
-    useEffect(() => {
-        fetchProvider();
-    }, [fetchProvider]);
-    const handleSaveProvider = async (e: React.FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        if (!provider)
-            return;
-        setIsSaving(true);
-        const formData = new FormData(e.currentTarget);
-        const data = Object.fromEntries(formData.entries());
-        try {
-            const res = await fetch(`/api/providers/${id}`, {
-                method: "PUT",
-                body: JSON.stringify({ ...data, isEnabled: provider.isEnabled }),
-                headers: { "Content-Type": "application/json" }
-            });
-            if (res.ok) {
-                await fetchProvider();
-            }
-        }
-        catch (error) {
-            console.error("Error saving provider:", error);
-        }
-        finally {
-            setIsSaving(false);
-        }
-    };
-    const handleSaveModel = async (e: React.FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        const formData = new FormData(e.currentTarget);
-        const data = Object.fromEntries(formData.entries());
-        for (const key of ["contextWindow", "maxTokens"]) {
-            if (data[key] === "") {
-                data[key] = "";
-            }
-        }
-        // Force providerId to current provider
-        data.providerId = id;
-        const url = editingModel
-            ? `/api/models/${encodeURIComponent(editingModel.id)}?providerId=${encodeURIComponent(editingModel.providerId)}`
-            : "/api/models";
-        const method = editingModel ? "PUT" : "POST";
-        const response = await fetch(url, {
-            method,
-            body: JSON.stringify(data),
-            headers: { "Content-Type": "application/json" }
+export default function ProviderConfigPage({ params
+
+
+
+}: {params: Promise<{id: string;}>;}) {
+  const { id } = use(params);
+  const router = useRouter();
+  const t = useT();
+  const [provider, setProvider] = useState<AIProvider | null>(null);
+  const [controlPlane, setControlPlane] = useState<ControlPlanePayload | null>(null);
+  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [providerType, setProviderType] = useState<string>("API");
+  const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
+  const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
+  const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("geminiCli");
+  const [providerBaseUrl, setProviderBaseUrl] = useState("");
+  const [providerOauthPath, setProviderOauthPath] = useState("");
+  const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
+  // Model Dialog State
+  const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
+  const [editingModel, setEditingModel] = useState<AIModel | null>(null);
+  const [modelType, setModelType] = useState("TEXT");
+  const { toast } = useToast();
+  const fetchProvider = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [providerRes, controlPlaneRes, defaultModelRes] = await Promise.all([
+      fetch(`/api/providers/${id}`),
+      fetch("/api/model-control-plane", { cache: "no-store" }),
+      fetch("/api/settings/default-agent-model")]
+      );
+      if (providerRes.ok) {
+        const nextProvider = await providerRes.json();
+        const inferredPreset = inferPlatformLoginPreset({
+          providerType: nextProvider.type,
+          apiStandard: nextProvider.apiStandard,
+          baseUrl: nextProvider.baseUrl,
+          oauthPath: nextProvider.oauthPath,
+          code: nextProvider.code,
+          name: nextProvider.name
         });
-        if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kd2b2caac"));
-            toast({
-                variant: "destructive",
-                title: t("app.admin.dashboard.models.providers.id.page.kd2b2caac"),
-                description: errorMessage,
-            });
-            return;
-        }
-        setIsModelDialogOpen(false);
-        setEditingModel(null);
-        await fetchProvider();
-    };
-    const handleDeleteModel = async (model: {
-        id: string;
-        providerId?: string;
-    }) => {
-        if (!confirm(t("app.admin.dashboard.models.providers.id.page.k6cc23e17")))
-            return;
-        if (!model.providerId) {
-            toast({
-                variant: "destructive",
-                title: t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"),
-                description: t("app.admin.dashboard.models.providers.id.page.k7ef5fb27"),
-            });
-            return;
-        }
-        const pendingToast = toast({
-            title: t("app.admin.dashboard.models.providers.id.page.k80306f42"),
-            description: t("app.admin.dashboard.models.providers.id.page.kd016d9bc", {
-                model_id: model.id
-            }),
-        });
-        try {
-            const response = await fetch(`/api/models/${encodeURIComponent(model.id)}?providerId=${encodeURIComponent(model.providerId)}`, { method: "DELETE" });
-            if (!response.ok) {
-                const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"));
-                pendingToast.update({
-                    id: pendingToast.id,
-                    variant: "destructive",
-                    title: t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"),
-                    description: errorMessage,
-                });
-                return;
-            }
-            setProvider((current) => current
-                ? {
-                    ...current,
-                    models: current.models.filter((item) => !(item.id === model.id && item.providerId === model.providerId)),
-                }
-                : current);
-            pendingToast.update({
-                id: pendingToast.id,
-                title: t("app.admin.dashboard.models.providers.id.page.k55262795"),
-                description: t("app.admin.dashboard.models.providers.id.page.kc353b24a", {
-                    model_id: model.id
-                }),
-            });
-            await fetchProvider();
-        }
-        catch (error) {
-            pendingToast.update({
-                id: pendingToast.id,
-                variant: "destructive",
-                title: t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"),
-                description: error instanceof Error ? error.message : t("app.admin.dashboard.models.providers.id.page.k52d13953"),
-            });
-        }
-    };
-    const handleSetDefaultModel = async (modelRef: string) => {
-        const response = await fetch("/api/settings/default-agent-model", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ modelRef }),
-        });
-        if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kd2b2caac"));
-            toast({ variant: "destructive", title: t("app.admin.dashboard.models.providers.id.page.kd2b2caac"), description: errorMessage });
-            return;
-        }
-        setDefaultModelId(modelRef);
-        await fetchProvider();
-    };
-    const handleTestConnection = async (modelRef: string) => {
-        setConnectionStatusMap((current) => ({
-            ...current,
-            [modelRef]: { status: "testing", message: t("app.admin.dashboard.models.providers.id.page.kdb5dbeb0") },
-        }));
-        try {
-            const target = provider?.models.find((item) => (item.modelRef || item.id) === modelRef);
-            const response = await fetch("/api/models/test-connection", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ modelRef, modelId: target?.modelId, providerId: target?.providerId || provider?.id }),
-            });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                const error = extractErrorText(data?.detail, "")
-                    || extractErrorText(data?.error, "")
-                    || t("app.admin.dashboard.models.providers.id.page.k7520c6bd");
-                setConnectionStatusMap((current) => ({
-                    ...current,
-                    [modelRef]: { status: "error", message: String(error) },
-                }));
-                return;
-            }
-            const successMessage = [
-                `${data.providerName || "Provider"} · ${Math.round(Number(data.latencyMs || 0))}ms`,
-                data?.capabilityChecks && typeof data.capabilityChecks === "object" && Object.values(data.capabilityChecks).some((item) => (item as { status?: string })?.status === "skipped")
-                    ? "基础连接已通过，深度能力未全量探测"
-                    : "",
-                data.message || t("app.admin.dashboard.models.providers.id.page.k163942fe"),
-                describeCapabilityProbe(data.capabilityProbe),
-            ].filter(Boolean).join(" · ");
-            setConnectionStatusMap((current) => ({
-                ...current,
-                [modelRef]: { status: "success", message: successMessage },
-            }));
-        }
-        catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("app.admin.dashboard.models.providers.id.page.k52d13953");
-            setConnectionStatusMap((current) => ({
-                ...current,
-                [modelRef]: { status: "error", message: errorMessage },
-            }));
-        }
-    };
-    if (isLoading)
-        return <div className="p-8">Loading...</div>;
+        setProvider(nextProvider);
+        setProviderType(nextProvider.type || "API");
+        setCredentialMode(nextProvider.type === "PLATFORM" ? "oauthFile" : nextProvider.credentialMode || "apiKey");
+        setApiStandard(nextProvider.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui" || "openai");
+        setPlatformLoginPreset(inferredPreset);
+        setProviderBaseUrl(nextProvider.baseUrl || "");
+        setProviderOauthPath(nextProvider.oauthPath || "");
+      } else
+      {
+        console.error("Failed to fetch provider");
+      }
+      if (controlPlaneRes.ok) {
+        setControlPlane(await controlPlaneRes.json());
+      }
+      if (defaultModelRes.ok) {
+        const data = await defaultModelRes.json();
+        setDefaultModelId(data.modelRef || data.modelId || null);
+      }
+    }
+    catch (error) {
+      console.error("Error fetching provider:", error);
+    } finally
+    {
+      setIsLoading(false);
+    }
+  }, [id]);
+  useEffect(() => {
+    fetchProvider();
+  }, [fetchProvider]);
+  const handleSaveProvider = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
     if (!provider)
-        return <div className="p-8">Provider not found</div>;
-    const platformProviderSelected = providerType === "PLATFORM";
-    const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
-    const oauthHint = platformProviderSelected
-        ? activePlatformPreset.helpText
-        : apiStandard === "gemini"
-            ? t("app.admin.dashboard.models.providers.id.page.k7ab7c579")
-            : t("app.admin.dashboard.models.providers.id.page.k2daf728b");
-    const controlModelsById = new Map<string, ControlPlaneModel>((controlPlane?.models || []).map((item: ControlPlaneModel) => [item.modelRef || item.id, item]));
-    const providerOverviewById = new Map<string, ProviderOverview>((controlPlane?.providersOverview || []).map((item: ProviderOverview) => [item.providerId, item]));
-    const providerHealth = providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null;
-    const localProbe = providerHealth?.localCapabilityProbe;
-    return (<div className="p-8 space-y-8 max-w-5xl mx-auto">
+    return;
+    setIsSaving(true);
+    const formData = new FormData(e.currentTarget);
+    const data = Object.fromEntries(formData.entries());
+    try {
+      const res = await fetch(`/api/providers/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ ...data, isEnabled: provider.isEnabled }),
+        headers: { "Content-Type": "application/json" }
+      });
+      if (res.ok) {
+        await fetchProvider();
+      }
+    }
+    catch (error) {
+      console.error("Error saving provider:", error);
+    } finally
+    {
+      setIsSaving(false);
+    }
+  };
+  const handleSaveModel = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const data = Object.fromEntries(formData.entries());
+    for (const key of ["contextWindow", "maxTokens"]) {
+      if (data[key] === "") {
+        data[key] = "";
+      }
+    }
+    // Force providerId to current provider
+    data.providerId = id;
+    const url = editingModel ?
+    `/api/models/${encodeURIComponent(editingModel.id)}?providerId=${encodeURIComponent(editingModel.providerId)}` :
+    "/api/models";
+    const method = editingModel ? "PUT" : "POST";
+    const response = await fetch(url, {
+      method,
+      body: JSON.stringify(data),
+      headers: { "Content-Type": "application/json" }
+    });
+    if (!response.ok) {
+      const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kd2b2caac"));
+      toast({
+        variant: "destructive",
+        title: t("app.admin.dashboard.models.providers.id.page.kd2b2caac"),
+        description: errorMessage
+      });
+      return;
+    }
+    setIsModelDialogOpen(false);
+    setEditingModel(null);
+    await fetchProvider();
+  };
+  const handleDeleteModel = async (model: {
+    id: string;
+    providerId?: string;
+  }) => {
+    if (!confirm(t("app.admin.dashboard.models.providers.id.page.k6cc23e17")))
+    return;
+    if (!model.providerId) {
+      toast({
+        variant: "destructive",
+        title: t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"),
+        description: t("app.admin.dashboard.models.providers.id.page.k7ef5fb27")
+      });
+      return;
+    }
+    const pendingToast = toast({
+      title: t("app.admin.dashboard.models.providers.id.page.k80306f42"),
+      description: t("app.admin.dashboard.models.providers.id.page.kd016d9bc", {
+        model_id: model.id
+      })
+    });
+    try {
+      const response = await fetch(`/api/models/${encodeURIComponent(model.id)}?providerId=${encodeURIComponent(model.providerId)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"));
+        pendingToast.update({
+          id: pendingToast.id,
+          variant: "destructive",
+          title: t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"),
+          description: errorMessage
+        });
+        return;
+      }
+      setProvider((current) => current ?
+      {
+        ...current,
+        models: current.models.filter((item) => !(item.id === model.id && item.providerId === model.providerId))
+      } :
+      current);
+      pendingToast.update({
+        id: pendingToast.id,
+        title: t("app.admin.dashboard.models.providers.id.page.k55262795"),
+        description: t("app.admin.dashboard.models.providers.id.page.kc353b24a", {
+          model_id: model.id
+        })
+      });
+      await fetchProvider();
+    }
+    catch (error) {
+      pendingToast.update({
+        id: pendingToast.id,
+        variant: "destructive",
+        title: t("app.admin.dashboard.models.providers.id.page.kfdc39ee5"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.models.providers.id.page.k52d13953")
+      });
+    }
+  };
+  const handleSetDefaultModel = async (modelRef: string) => {
+    const response = await fetch("/api/settings/default-agent-model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelRef })
+    });
+    if (!response.ok) {
+      const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kd2b2caac"));
+      toast({ variant: "destructive", title: t("app.admin.dashboard.models.providers.id.page.kd2b2caac"), description: errorMessage });
+      return;
+    }
+    setDefaultModelId(modelRef);
+    await fetchProvider();
+  };
+  const handleTestConnection = async (modelRef: string) => {
+    setConnectionStatusMap((current) => ({
+      ...current,
+      [modelRef]: { status: "testing", message: t("app.admin.dashboard.models.providers.id.page.kdb5dbeb0") }
+    }));
+    try {
+      const target = provider?.models.find((item) => (item.modelRef || item.id) === modelRef);
+      const response = await fetch("/api/models/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelRef, modelId: target?.modelId, providerId: target?.providerId || provider?.id })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = extractErrorText(data?.detail, "") ||
+        extractErrorText(data?.error, "") ||
+        t("app.admin.dashboard.models.providers.id.page.k7520c6bd");
+        setConnectionStatusMap((current) => ({
+          ...current,
+          [modelRef]: { status: "error", message: String(error) }
+        }));
+        return;
+      }
+      const successMessage = [
+      `${data.providerName || "Provider"} · ${Math.round(Number(data.latencyMs || 0))}ms`, t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities"),
+
+
+
+      data.message || t("app.admin.dashboard.models.providers.id.page.k163942fe"),
+      describeCapabilityProbe(data.capabilityProbe)].
+      filter(Boolean).join(" · ");
+      setConnectionStatusMap((current) => ({
+        ...current,
+        [modelRef]: { status: "success", message: successMessage }
+      }));
+    }
+    catch (error) {
+      const errorMessage = error instanceof Error ? error.message : t("app.admin.dashboard.models.providers.id.page.k52d13953");
+      setConnectionStatusMap((current) => ({
+        ...current,
+        [modelRef]: { status: "error", message: errorMessage }
+      }));
+    }
+  };
+  if (isLoading)
+  return <div className="p-8">Loading...</div>;
+  if (!provider)
+  return <div className="p-8">Provider not found</div>;
+  const platformProviderSelected = providerType === "PLATFORM";
+  const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
+  const oauthHint = platformProviderSelected ?
+  activePlatformPreset.helpText :
+  apiStandard === "gemini" ?
+  t("app.admin.dashboard.models.providers.id.page.k7ab7c579") :
+  t("app.admin.dashboard.models.providers.id.page.k2daf728b");
+  const controlModelsById = new Map<string, ControlPlaneModel>((controlPlane?.models || []).map((item: ControlPlaneModel) => [item.modelRef || item.id, item]));
+  const providerOverviewById = new Map<string, ProviderOverview>((controlPlane?.providersOverview || []).map((item: ProviderOverview) => [item.providerId, item]));
+  const providerHealth = providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null;
+  const localProbe = providerHealth?.localCapabilityProbe;
+  return <div className="p-8 space-y-8 max-w-5xl mx-auto">
             {/* Header */}
             <div className="flex items-center gap-4">
                 <Button variant="ghost" size="icon" onClick={() => router.back()}>
-                    <ArrowLeft className="w-4 h-4"/>
+                    <ArrowLeft className="w-4 h-4" />
                 </Button>
                 <div>
                     <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -364,34 +364,34 @@ export default function ProviderConfigPage({ params }: {
                         <form key={`${provider.id}-${providerType}-${credentialMode}-${provider.oauthPath || provider.apiKey || ""}`} onSubmit={handleSaveProvider} className="space-y-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="name">{t("app.admin.dashboard.models.providers.id.page.k6a80aac6")}</Label>
-                                <Input id="name" name="name" defaultValue={provider.name} required/>
+                                <Input id="name" name="name" defaultValue={provider.name} required />
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="code">{t("app.admin.dashboard.models.providers.id.page.kfe66e8fc")}</Label>
-                                <Input id="code" name="code" defaultValue={provider.code} required/>
+                                <Input id="code" name="code" defaultValue={provider.code} required />
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="type">{t("app.admin.dashboard.models.providers.id.page.kc8dc16fa")}</Label>
-                                <input type="hidden" name="type" value={providerType}/>
+                                <input type="hidden" name="type" value={providerType} />
                                 <Select value={providerType} onValueChange={(value) => {
-            setProviderType(value);
-            if (value === "PLATFORM") {
-                const preset = inferPlatformLoginPreset({
+                setProviderType(value);
+                if (value === "PLATFORM") {
+                  const preset = inferPlatformLoginPreset({
                     providerType: value,
                     apiStandard,
                     baseUrl: providerBaseUrl,
                     oauthPath: providerOauthPath,
                     code: provider.code,
-                    name: provider.name,
-                });
-                const config = getPlatformLoginPresetConfig(preset);
-                setCredentialMode("oauthFile");
-                setPlatformLoginPreset(preset);
-                setApiStandard(config.apiStandard);
-                setProviderBaseUrl(config.baseUrl);
-                setProviderOauthPath(providerOauthPath || config.oauthPath);
-            }
-        }}>
+                    name: provider.name
+                  });
+                  const config = getPlatformLoginPresetConfig(preset);
+                  setCredentialMode("oauthFile");
+                  setPlatformLoginPreset(preset);
+                  setApiStandard(config.apiStandard);
+                  setProviderBaseUrl(config.baseUrl);
+                  setProviderOauthPath(providerOauthPath || config.oauthPath);
+                }
+              }}>
                                     <SelectTrigger>
                                         <SelectValue />
                                     </SelectTrigger>
@@ -402,43 +402,43 @@ export default function ProviderConfigPage({ params }: {
                                     </SelectContent>
                                 </Select>
                             </div>
-                            {platformProviderSelected ? (<>
-                                    <input type="hidden" name="platformLoginPreset" value={platformLoginPreset}/>
+                            {platformProviderSelected ? <>
+                                    <input type="hidden" name="platformLoginPreset" value={platformLoginPreset} />
                                     <div className="grid gap-2">
                                         <Label htmlFor="platformLoginPreset">{t("app.admin.dashboard.models.providers.id.page.k1f6f2bda")}</Label>
                                         <Select value={platformLoginPreset} onValueChange={(value: PlatformLoginPreset) => {
-                const config = getPlatformLoginPresetConfig(value);
-                setPlatformLoginPreset(value);
-                setCredentialMode("oauthFile");
-                setApiStandard(config.apiStandard);
-                setProviderBaseUrl(config.baseUrl);
-                setProviderOauthPath(config.oauthPath);
-            }}>
+                  const config = getPlatformLoginPresetConfig(value);
+                  setPlatformLoginPreset(value);
+                  setCredentialMode("oauthFile");
+                  setApiStandard(config.apiStandard);
+                  setProviderBaseUrl(config.baseUrl);
+                  setProviderOauthPath(config.oauthPath);
+                }}>
                                             <SelectTrigger id="platformLoginPreset">
                                                 <SelectValue />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {Object.values(PLATFORM_LOGIN_PRESETS).map((preset) => (<SelectItem key={preset.id} value={preset.id}>
+                                                {Object.values(PLATFORM_LOGIN_PRESETS).map((preset) => <SelectItem key={preset.id} value={preset.id}>
                                                         {preset.label}
-                                                    </SelectItem>))}
+                                                    </SelectItem>)}
                                             </SelectContent>
                                         </Select>
                                         <p className="text-xs text-muted-foreground">{activePlatformPreset.description}</p>
                                     </div>
                                     <div className="grid gap-2">
                                         <Label htmlFor="apiStandardReadonly">{t("app.admin.dashboard.models.providers.id.page.k3a701154")}</Label>
-                                        <Input id="apiStandardReadonly" value={apiStandard === "openai"
-                ? t("app.admin.dashboard.models.providers.id.page.kdab0f774")
-                : apiStandard === "anthropic"
-                    ? t("app.admin.dashboard.models.providers.id.page.k504d12c7")
-                    : apiStandard === "comfyui"
-                        ? "ComfyUI"
-                        : t("app.admin.dashboard.models.providers.id.page.k560df989")} readOnly/>
-                                        <input type="hidden" name="apiStandard" value={apiStandard}/>
+                                        <Input id="apiStandardReadonly" value={apiStandard === "openai" ?
+                t("app.admin.dashboard.models.providers.id.page.kdab0f774") :
+                apiStandard === "anthropic" ?
+                t("app.admin.dashboard.models.providers.id.page.k504d12c7") :
+                apiStandard === "comfyui" ?
+                "ComfyUI" :
+                t("app.admin.dashboard.models.providers.id.page.k560df989")} readOnly />
+                                        <input type="hidden" name="apiStandard" value={apiStandard} />
                                     </div>
-                                </>) : (<div className="grid gap-2">
+                                </> : <div className="grid gap-2">
                                     <Label htmlFor="apiStandard">{t("app.admin.dashboard.models.providers.id.page.k3a701154")}</Label>
-                                    <input type="hidden" name="apiStandard" value={apiStandard}/>
+                                    <input type="hidden" name="apiStandard" value={apiStandard} />
                                     <Select value={apiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini" | "comfyui") => setApiStandard(value)}>
                                         <SelectTrigger>
                                             <SelectValue />
@@ -450,8 +450,8 @@ export default function ProviderConfigPage({ params }: {
                                             <SelectItem value="comfyui">ComfyUI</SelectItem>
                                         </SelectContent>
                                     </Select>
-                                </div>)}
-                            {provider.type === "LOCAL" && localProbe ? (<div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                                </div>}
+                            {provider.type === "LOCAL" && localProbe ? <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
                                     <div className="font-medium text-foreground">{t("app.admin.dashboard.models.providers.id.page.kcfb25f4e")}</div>
                                     <div className="mt-1">{localProbe.message}</div>
                                     <div className="mt-1">
@@ -459,14 +459,14 @@ export default function ProviderConfigPage({ params }: {
                                         {t("app.admin.dashboard.models.providers.id.page.kfcac1949")}{localProbe.contextLength || t("app.admin.dashboard.models.providers.id.page.k76ebff7c")} ·
                                         {t("app.admin.dashboard.models.providers.id.page.k000e492f")}{localProbe.maxContextLength || t("app.admin.dashboard.models.providers.id.page.k76ebff7c")}
                                     </div>
-                                </div>) : null}
+                                </div> : null}
                             <div className="grid gap-2">
                                 <Label htmlFor="baseUrl">{t("app.admin.dashboard.models.providers.id.page.k7cf2d322")}</Label>
-                                <Input id="baseUrl" name="baseUrl" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)} placeholder="https://..."/>
+                                <Input id="baseUrl" name="baseUrl" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)} placeholder="https://..." />
                             </div>
-                            {!platformProviderSelected ? (<div className="grid gap-2">
+                            {!platformProviderSelected ? <div className="grid gap-2">
                                     <Label htmlFor="credentialMode">{t("app.admin.dashboard.models.providers.id.page.k1947a36f")}</Label>
-                                    <input type="hidden" name="credentialMode" value={credentialMode}/>
+                                    <input type="hidden" name="credentialMode" value={credentialMode} />
                                     <Select value={credentialMode} onValueChange={(value: "apiKey" | "oauthFile") => setCredentialMode(value)}>
                                         <SelectTrigger id="credentialMode">
                                             <SelectValue />
@@ -476,25 +476,25 @@ export default function ProviderConfigPage({ params }: {
                                             <SelectItem value="oauthFile">{t("app.admin.dashboard.models.providers.id.page.ke507bb9a")}</SelectItem>
                                         </SelectContent>
                                     </Select>
-                                </div>) : (<input type="hidden" name="credentialMode" value="oauthFile"/>)}
-                            {platformProviderSelected || credentialMode === "oauthFile" ? (<div className="grid gap-2">
+                                </div> : <input type="hidden" name="credentialMode" value="oauthFile" />}
+                            {platformProviderSelected || credentialMode === "oauthFile" ? <div className="grid gap-2">
                                     <Label htmlFor="oauthPath">{t("app.admin.dashboard.models.providers.id.page.k686313b2")}</Label>
                                     <div className="flex items-center rounded-xl border border-input bg-background">
                                         <span className="shrink-0 border-r border-border/60 px-3 text-sm text-muted-foreground">oauth:</span>
-                                        <Input id="oauthPath" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath}/>
+                                        <Input id="oauthPath" name="oauthPath" className="border-0 shadow-none focus-visible:ring-0" value={providerOauthPath} onChange={(event) => setProviderOauthPath(event.target.value)} placeholder={activePlatformPreset.oauthPath} />
                                     </div>
                                     <p className={`text-xs ${(platformProviderSelected ? activePlatformPreset.supportState === "preset-only" : apiStandard === "gemini") ? "text-amber-600" : "text-muted-foreground"}`}>{oauthHint}</p>
-                                </div>) : (<div className="grid gap-2">
+                                </div> : <div className="grid gap-2">
                                     <Label htmlFor="apiKey">API Key</Label>
-                                    <Input id="apiKey" name="apiKey" type="password" defaultValue={provider.apiKey ?? ""} placeholder="sk-..."/>
-                                </div>)}
+                                    <Input id="apiKey" name="apiKey" type="password" defaultValue={provider.apiKey ?? ""} placeholder="sk-..." />
+                                </div>}
                             <div className="grid gap-2">
                                 <Label htmlFor="icon">{t("app.admin.dashboard.models.providers.id.page.kb793f253")}</Label>
-                                <Input id="icon" name="icon" defaultValue={provider.icon ?? ""} placeholder="🤖"/>
+                                <Input id="icon" name="icon" defaultValue={provider.icon ?? ""} placeholder="🤖" />
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="description">{t("app.admin.dashboard.models.providers.id.page.k033e9333")}</Label>
-                                <Input id="description" name="description" defaultValue={provider.description ?? ""}/>
+                                <Input id="description" name="description" defaultValue={provider.description ?? ""} />
                             </div>
                             <Button type="submit" className="w-full" disabled={isSaving}>
                                 {isSaving ? t("app.admin.dashboard.models.providers.id.page.kc225e8a3") : t("app.admin.dashboard.models.providers.id.page.k60f5db7e")}
@@ -507,20 +507,20 @@ export default function ProviderConfigPage({ params }: {
                 <div className="lg:col-span-2 space-y-6">
                     <div className="flex items-center justify-between">
                         <h2 className="text-lg font-semibold">{t("app.admin.dashboard.models.providers.id.page.k42eb512c")} ({provider.models?.length || 0})</h2>
-                        <Button onClick={() => { setEditingModel(null); setModelType("TEXT"); setIsModelDialogOpen(true); }}>
-                            <Plus className="w-4 h-4 mr-2"/>
+                        <Button onClick={() => {setEditingModel(null);setModelType("TEXT");setIsModelDialogOpen(true);}}>
+                            <Plus className="w-4 h-4 mr-2" />
                             {t("app.admin.dashboard.models.providers.id.page.k82b1063c")}
                         </Button>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                        {provider.models?.map((model: any) => (<ModelCardV2 key={model.id} model={{ ...model, provider: { name: provider.name, icon: provider.icon } }} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelId} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} onTestConnection={handleTestConnection} onSetDefault={handleSetDefaultModel}
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        onEdit={(m: any) => { setEditingModel(m); setModelType(m.type || "TEXT"); setIsModelDialogOpen(true); }} onDelete={handleDeleteModel}/>))}
-                        {(!provider.models || provider.models.length === 0) && (<div className="col-span-full text-center py-12 text-muted-foreground bg-muted/30 rounded-lg border border-dashed">
+                        {provider.models?.map((model: any) => <ModelCardV2 key={model.id} model={{ ...model, provider: { name: provider.name, icon: provider.icon } }} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelId} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} onTestConnection={handleTestConnection} onSetDefault={handleSetDefaultModel}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onEdit={(m: any) => {setEditingModel(m);setModelType(m.type || "TEXT");setIsModelDialogOpen(true);}} onDelete={handleDeleteModel} />)}
+                        {(!provider.models || provider.models.length === 0) && <div className="col-span-full text-center py-12 text-muted-foreground bg-muted/30 rounded-lg border border-dashed">
                                 {t("app.admin.dashboard.models.providers.id.page.k90379b26")}
-                            </div>)}
+                            </div>}
                     </div>
                 </div>
             </div>
@@ -532,15 +532,15 @@ export default function ProviderConfigPage({ params }: {
                         <DialogTitle>{editingModel ? t("app.admin.dashboard.models.providers.id.page.k37053cf7") : t("app.admin.dashboard.models.providers.id.page.k82b1063c")}</DialogTitle>
                     </DialogHeader>
                     <form onSubmit={handleSaveModel} className="space-y-4">
-                        <input type="hidden" name="providerId" value={id}/>
+                        <input type="hidden" name="providerId" value={id} />
 
                         <div className="grid gap-2">
                             <Label htmlFor="model-id">{t("app.admin.dashboard.models.providers.id.page.k3edcd0aa")}</Label>
-                            <Input id="model-id" name="modelId" defaultValue={editingModel?.modelId} required placeholder={t("app.admin.dashboard.models.providers.id.page.k8b7ccc0e")}/>
+                            <Input id="model-id" name="modelId" defaultValue={editingModel?.modelId} required placeholder={t("app.admin.dashboard.models.providers.id.page.k8b7ccc0e")} />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="model-type">{t("app.admin.dashboard.models.providers.id.page.kc8dc16fa")}</Label>
-                            <input type="hidden" name="type" value={modelType}/>
+                            <input type="hidden" name="type" value={modelType} />
                             <Select value={modelType} onValueChange={setModelType}>
                                 <SelectTrigger>
                                     <SelectValue />
@@ -550,38 +550,38 @@ export default function ProviderConfigPage({ params }: {
                                     <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.models.providers.id.page.k6223be05")}</SelectItem>
                                     <SelectItem value="EMBEDDING">{t("app.admin.dashboard.models.providers.id.page.k9b398ad1")}</SelectItem>
                                     <SelectItem value="RERANK">{t("app.admin.dashboard.models.providers.id.page.k318b19b4")}</SelectItem>
-                                    <SelectItem value="MEDIA">媒体生成</SelectItem>
+                                    <SelectItem value="MEDIA">{t("admin.generated.da54438b")}</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
-                        {modelType === "TEXT" || modelType === "MULTIMODAL" ? (<div className="grid grid-cols-2 gap-4">
+                        {modelType === "TEXT" || modelType === "MULTIMODAL" ? <div className="grid grid-cols-2 gap-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.k20e21cd2")}</Label>
-                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder="仅用于 V8 预算估算"/>
+                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("admin.generated.9cbd0194")} />
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.k317345b1")}</Label>
-                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder="可选请求上限"/>
+                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.maxTokensPlaceholder")} />
                             </div>
-                        </div>) : RETRIEVAL_MODEL_TYPES.has(modelType) ? (<div className="grid grid-cols-2 gap-4">
+                        </div> : RETRIEVAL_MODEL_TYPES.has(modelType) ? <div className="grid grid-cols-2 gap-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.retrievalInputWindow")}</Label>
-                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.models.providers.id.page.retrievalInputWindowPlaceholder")}/>
+                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.models.providers.id.page.retrievalInputWindowPlaceholder")} />
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.retrievalMaxTokens")}</Label>
-                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.models.providers.id.page.retrievalMaxTokensPlaceholder")}/>
+                                <Input id="maxTokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.models.providers.id.page.retrievalMaxTokensPlaceholder")} />
                             </div>
                             <p className="col-span-2 text-xs text-muted-foreground">
                                 {t("app.admin.dashboard.models.providers.id.page.retrievalInputWindowHelp")}
                             </p>
-                        </div>) : null}
-                        {modelType === "MEDIA" ? (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-muted-foreground">
-                            媒体生成模型使用工作流 / 分辨率 / 时长 / 采样等媒体参数，不使用聊天模型的上下文窗口、最大输出和温度三件套。
-                        </div>) : null}
+                        </div> : null}
+                        {modelType === "MEDIA" ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-muted-foreground">
+                            {t("admin.generated.b0ee49ef")}
+                        </div> : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.models.providers.id.page.kb7dfaded")}</Button>
                     </form>
                 </DialogContent>
             </Dialog>
-        </div>);
+        </div>;
 }

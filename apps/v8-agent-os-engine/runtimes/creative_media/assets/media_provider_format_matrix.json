@@ -375,6 +375,150 @@
         },
         "sourceUrl": "https://replicate.com/docs/reference/http",
         "confidence": "provider_docs"
+      },
+      {
+        "id": "black_forest_labs_image",
+        "displayName": "Black Forest Labs Image",
+        "logoAsset": "/model-assets/providers/black-forest-labs.svg",
+        "modelIds": [
+          "flux-pro-1.1",
+          "flux-dev"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "image.generate"
+        ],
+        "baseUrlDefault": "https://api.us1.bfl.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.bfl.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.bfl.ai",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "ideogram_image",
+        "displayName": "Ideogram Image",
+        "logoAsset": "/model-assets/providers/ideogram.svg",
+        "modelIds": [
+          "ideogram-v3",
+          "ideogram-v2a"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "image.generate"
+        ],
+        "baseUrlDefault": "https://api.ideogram.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://developer.ideogram.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://developer.ideogram.ai",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "leonardo_image",
+        "displayName": "Leonardo AI Image",
+        "logoAsset": "/model-assets/providers/leonardo.svg",
+        "modelIds": [
+          "leonardo-phoenix-1.0",
+          "leonardo-vision-xl"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "image.generate"
+        ],
+        "baseUrlDefault": "https://cloud.leonardo.ai/api/rest/v1",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.leonardo.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.leonardo.ai",
+        "confidence": "provider_docs"
       }
     ],
     "video": [
@@ -890,6 +1034,490 @@
         },
         "sourceUrl": "https://happyhorse.ai/",
         "confidence": "community_or_inferred"
+      },
+      {
+        "id": "vidu_video",
+        "displayName": "Vidu Video",
+        "logoAsset": "/model-assets/providers/vidu.svg",
+        "modelIds": [
+          "vidu-2.0",
+          "vidu-1.5"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.vidu.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://platform.vidu.com/docs"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://platform.vidu.com/docs",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "pika_video",
+        "displayName": "Pika Video",
+        "logoAsset": "/model-assets/providers/pika.svg",
+        "modelIds": [
+          "pika-2.2",
+          "pika-2.1"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.pika.art",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.pika.art"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.pika.art",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "haiper_video",
+        "displayName": "Haiper Video",
+        "logoAsset": "/model-assets/providers/haiper.svg",
+        "modelIds": [
+          "haiper-2.5"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.haiper.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.haiper.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.haiper.ai",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "heygen_video",
+        "displayName": "HeyGen Avatar Video",
+        "logoAsset": "/model-assets/providers/heygen.svg",
+        "modelIds": [
+          "heygen-avatar-video"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.heygen.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.heygen.com"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.heygen.com",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "synthesia_video",
+        "displayName": "Synthesia Avatar Video",
+        "logoAsset": "/model-assets/providers/synthesia.svg",
+        "modelIds": [
+          "synthesia-avatar-video"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.synthesia.io",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.synthesia.io"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.synthesia.io",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "d_id_video",
+        "displayName": "D-ID Video",
+        "logoAsset": "/model-assets/providers/d-id.svg",
+        "modelIds": [
+          "d-id-talks",
+          "d-id-agents"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.d-id.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.d-id.com"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.d-id.com",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "tavus_video",
+        "displayName": "Tavus Video",
+        "logoAsset": "/model-assets/providers/tavus.svg",
+        "modelIds": [
+          "tavus-cvi",
+          "tavus-replica"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://tavusapi.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.tavus.io"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.tavus.io",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "hedra_video",
+        "displayName": "Hedra Character Video",
+        "logoAsset": "/model-assets/providers/hedra.svg",
+        "modelIds": [
+          "hedra-character-3"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.hedra.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.hedra.com"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.hedra.com",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "shotstack_video",
+        "displayName": "Shotstack Video Render",
+        "logoAsset": "/model-assets/providers/shotstack.svg",
+        "modelIds": [
+          "shotstack-edit"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.shotstack.io",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://shotstack.io/docs/api/"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://shotstack.io/docs/api/",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "creatomate_video",
+        "displayName": "Creatomate Video Render",
+        "logoAsset": "/model-assets/providers/creatomate.svg",
+        "modelIds": [
+          "creatomate-render"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video"
+        ],
+        "baseUrlDefault": "https://api.creatomate.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://creatomate.com/docs/api/introduction"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://creatomate.com/docs/api/introduction",
+        "confidence": "provider_docs"
       }
     ],
     "voice": [
@@ -1264,6 +1892,289 @@
         "sourceUrl": "https://www.volcengine.com/docs/82379",
         "confidence": "community_or_inferred",
         "credentialRealm": "volcengine_ark"
+      },
+      {
+        "id": "fish_audio_tts",
+        "displayName": "Fish Audio TTS",
+        "logoAsset": "/model-assets/providers/fish-audio.svg",
+        "modelIds": [
+          "fish-speech-1.5"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://api.fish.audio",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.fish.audio"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.fish.audio",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "cartesia_tts",
+        "displayName": "Cartesia TTS",
+        "logoAsset": "/model-assets/providers/cartesia.svg",
+        "modelIds": [
+          "sonic-2",
+          "sonic"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://api.cartesia.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.cartesia.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.cartesia.ai",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "playht_tts",
+        "displayName": "PlayHT TTS",
+        "logoAsset": "/model-assets/providers/playht.svg",
+        "modelIds": [
+          "playht-2.0-turbo"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://api.play.ht",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.play.ht"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.play.ht",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "azure_speech_tts",
+        "displayName": "Azure AI Speech",
+        "logoAsset": "/model-assets/providers/azure-speech.svg",
+        "modelIds": [
+          "azure-neural-tts"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://*.tts.speech.microsoft.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "google_cloud_tts",
+        "displayName": "Google Cloud Text-to-Speech",
+        "logoAsset": "/model-assets/lobe/google-color.svg",
+        "modelIds": [
+          "google-cloud-tts"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://texttospeech.googleapis.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://cloud.google.com/text-to-speech/docs/reference/rest"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://cloud.google.com/text-to-speech/docs/reference/rest",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "amazon_polly_tts",
+        "displayName": "Amazon Polly",
+        "logoAsset": "/model-assets/providers/amazon-polly.svg",
+        "modelIds": [
+          "amazon-polly-neural"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://polly.amazonaws.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.aws.amazon.com/polly/latest/dg/API_Reference.html"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.aws.amazon.com/polly/latest/dg/API_Reference.html",
+        "confidence": "provider_docs"
       }
     ],
     "music": [
@@ -1392,6 +2303,53 @@
         },
         "sourceUrl": "https://suno.com/",
         "confidence": "placeholder"
+      },
+      {
+        "id": "udio_music",
+        "displayName": "Udio Music",
+        "logoAsset": "/model-assets/providers/udio.svg",
+        "modelIds": [
+          "udio-music"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "music.brief"
+        ],
+        "baseUrlDefault": "https://www.udio.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://www.udio.com"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://www.udio.com",
+        "confidence": "community_or_inferred"
       }
     ],
     "model3d": [
@@ -1603,6 +2561,243 @@
         },
         "sourceUrl": "https://www.tripo3d.ai/",
         "confidence": "placeholder"
+      },
+      {
+        "id": "meshy_3d",
+        "displayName": "Meshy 3D",
+        "logoAsset": "/model-assets/providers/meshy.svg",
+        "modelIds": [
+          "meshy-5",
+          "meshy-4"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://api.meshy.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://docs.meshy.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://docs.meshy.ai",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "hitem3d",
+        "displayName": "Hitem3D",
+        "logoAsset": "/model-assets/providers/hitem3d.svg",
+        "modelIds": [
+          "hitem3d-model"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://api.hitem3d.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://www.hitem3d.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://www.hitem3d.ai",
+        "confidence": "community_or_inferred"
+      },
+      {
+        "id": "hyper3d_rodin",
+        "displayName": "Hyper3D Rodin",
+        "logoAsset": "/model-assets/providers/hyper3d.svg",
+        "modelIds": [
+          "rodin-gen-1"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://hyperhuman.deemos.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://hyperhuman.deemos.com/rodin/api"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://hyperhuman.deemos.com/rodin/api",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "csm_3d",
+        "displayName": "CSM 3D",
+        "logoAsset": "/model-assets/providers/csm.svg",
+        "modelIds": [
+          "csm-cube"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://api.csm.ai",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://www.csm.ai"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://www.csm.ai",
+        "confidence": "community_or_inferred"
+      },
+      {
+        "id": "3d_ai_studio",
+        "displayName": "3D AI Studio",
+        "logoAsset": "/model-assets/providers/3d-ai-studio.svg",
+        "modelIds": [
+          "trellis",
+          "3d-ai-studio-model"
+        ],
+        "apiStandard": "catalog_only",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://www.3daistudio.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://www.3daistudio.com"
+        },
+        "auth": {
+          "type": "api_key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "",
+          "bodyFields": [
+            "model",
+            "prompt"
+          ]
+        },
+        "polling": {
+          "mode": "provider_specific"
+        },
+        "result": {
+          "paths": [
+            "url",
+            "output",
+            "data[].url",
+            "result"
+          ]
+        },
+        "statusMap": {
+          "succeeded": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://www.3daistudio.com",
+        "confidence": "community_or_inferred"
       }
     ]
   }

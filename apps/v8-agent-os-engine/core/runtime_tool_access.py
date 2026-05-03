@@ -60,6 +60,14 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "mem_summary",
         ],
     },
+    "research.core": {
+        "runtimeKind": "research",
+        "label": "Research core",
+        "summary": "按需规划和运行只读 web research shards，返回带置信度、来源排序和引用的 evidence bundle。",
+        "toolNames": [
+            "research_broker",
+        ],
+    },
     "creative_media.core": {
         "runtimeKind": "creative_media",
         "label": "Creative Media core",
@@ -107,6 +115,10 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     "s3_broker",
     "http_request",
     "delegate_network_task",
+    "web_fetch",
+    "web_read",
+    "web_extract",
+    "web_search",
 }
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_")

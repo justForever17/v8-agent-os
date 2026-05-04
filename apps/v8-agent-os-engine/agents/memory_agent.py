@@ -324,6 +324,45 @@ def _safe_json_excerpt(value: Any, *, limit: int = 1200) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
+def _coerce_json_object(text: str) -> dict[str, Any]:
+    try:
+        payload = _extract_json_payload(text)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        try:
+            payload = json.loads(text)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+
+def _clean_required_dict_items(items: Any, required_keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    if not isinstance(items, list):
+        return cleaned
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if all(str(item.get(key) or "").strip() for key in required_keys):
+            cleaned.append(item)
+    return cleaned
+
+
+def _repair_memory_extraction_payload(text: str) -> MemoryExtractionResult:
+    payload = _coerce_json_object(text)
+    if not payload:
+        raise ValueError("memory extraction output did not contain a JSON object")
+    payload["tags"] = [str(item).strip() for item in list(payload.get("tags") or []) if str(item or "").strip()][:8]
+    payload["preferences"] = _clean_required_dict_items(payload.get("preferences"), ("scope", "key", "value"))
+    payload["knowledge"] = _clean_required_dict_items(payload.get("knowledge"), ("fact", "category", "scope"))
+    payload["entities"] = _clean_required_dict_items(payload.get("entities"), ("name", "type"))
+    payload["relations"] = _clean_required_dict_items(payload.get("relations"), ("subject", "predicate", "object"))
+    payload["workflow_episodes"] = [
+        item for item in list(payload.get("workflow_episodes") or []) if isinstance(item, dict) and str(item.get("task_family") or "").strip()
+    ]
+    return MemoryExtractionResult.model_validate(payload)
+
+
 def _looks_like_todo_update(value: Any) -> bool:
     text = _safe_json_excerpt(value, limit=500).lower()
     return "command(update={'todos'" in text or ('"todos"' in text and "task_" in text)
@@ -635,11 +674,9 @@ def _extract_with_llm(
             )
         except OutputParserException as e:
             logger.warning(f"[MemoryAgent] Output parsing failed: {e}. Attempting auto-fix...")
-            from langchain.output_parsers import OutputFixingParser
             parser_error_preview = _safe_json_excerpt(str(e), limit=600)
             try:
-                fixing_parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
-                repaired_result = fixing_parser.parse(str_content)
+                repaired_result = _repair_memory_extraction_payload(str_content)
                 return _build_extraction_attempt(
                     result=repaired_result,
                     extractor_model=extractor_model,
@@ -647,7 +684,7 @@ def _extract_with_llm(
                     parser_error_preview=parser_error_preview,
                 )
             except Exception as repair_error:
-                logger.error(f"[MemoryAgent] Output repair failed: {repair_error}")
+                logger.error(f"[MemoryAgent] Local output repair failed: {repair_error}")
                 return _build_extraction_attempt(
                     failure_stage="repair_parser_failed",
                     failure_reason=str(repair_error),
@@ -705,12 +742,10 @@ async def _synthesize_periodic_summary_payload(*, tier: str, content: str) -> Pe
     try:
         return parser.invoke(text_content)
     except OutputParserException as exc:
-        logger.warning(f"[MemoryAgent] Periodic summary parsing failed: {exc}. Attempting auto-fix...")
-        from langchain.output_parsers import OutputFixingParser
-
+        logger.warning(f"[MemoryAgent] Periodic summary parsing failed: {exc}. Attempting local auto-fix...")
         try:
-            fixing_parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
-            return fixing_parser.parse(text_content)
+            payload = _coerce_json_object(text_content)
+            return PeriodicSummaryPayload.model_validate(payload)
         except Exception as repair_error:
             raise RuntimeError(
                 f"Periodic summary parsing failed after repair. raw={raw_output_preview} error={repair_error}"

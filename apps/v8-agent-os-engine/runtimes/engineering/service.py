@@ -23,7 +23,7 @@ CODE_SIGNAL_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
     ("refactor_or_architecture", ("refactor", "architecture", "migration", "runtime", "重构", "架构", "迁移", "主链")),
     ("verification", ("test", "pytest", "typecheck", "tsc", "build", "lint", "验证", "测试", "构建", "编译", "回归")),
     ("repo_terms", ("repo", "repository", "workspace", "file", "directory", "git", "仓库", "工作区", "文件", "目录")),
-    ("frontend_terms", ("component", "page", "route", "api", "tsx", "react", "next", "组件", "页面", "接口")),
+    ("frontend_terms", ("component", "page", "route", "api", "tsx", "react", "next", "frontend", "front-end", "web app", "web application", "next.js", "组件", "页面", "接口", "前端", "前端界面", "前端页面", "web应用", "web 应用", "网页应用", "应用界面")),
     ("code_media_frameworks", ("remotion", "manim", "ffmpeg", "ffprobe", "three.js", "threejs", "p5.js", "p5js", "processing", "webgl", "canvas")),
 ]
 
@@ -286,13 +286,16 @@ class EngineeringLaneService:
             }
 
         active = bool(signals) and bool(repo.get("repoDetected"))
+        reason = "engineering_signals_and_repo" if active else "no_engineering_signal_or_repo"
+        if signals and not repo.get("repoDetected"):
+            reason = "engineering_signals_without_repo_supervisor_route_choice"
         return {
             "mode": normalized_mode,
             "active": active,
             "matched": bool(signals),
             "signals": signals,
             "repoDetected": bool(repo.get("repoDetected")),
-            "reason": "engineering_signals_and_repo" if active else "no_engineering_signal_or_repo",
+            "reason": reason,
         }
 
     def build_context_pack(
@@ -1897,7 +1900,42 @@ class EngineeringLaneService:
         for name, patterns in CODE_SIGNAL_PATTERNS:
             if any(pattern in raw for pattern in patterns):
                 signals.append(name)
+        if self._detect_project_creation_signal(raw):
+            signals.append("project_creation_candidate")
         return list(dict.fromkeys(signals))
+
+    def _detect_project_creation_signal(self, raw: str) -> bool:
+        action_terms = (
+            "create",
+            "build",
+            "scaffold",
+            "make",
+            "new",
+            "搭建",
+            "创建",
+            "新建",
+            "做一个",
+            "做个",
+            "开发",
+        )
+        artifact_terms = (
+            "web app",
+            "web application",
+            "frontend",
+            "front-end",
+            "application",
+            "project",
+            "前端",
+            "前端界面",
+            "前端页面",
+            "web应用",
+            "web 应用",
+            "网页应用",
+            "应用",
+            "项目",
+            "网站",
+        )
+        return any(term in raw for term in action_terms) and any(term in raw for term in artifact_terms)
 
     def _repo_brief(self, root: Path) -> dict[str, Any]:
         git_root_result = _run_command(["git", "rev-parse", "--show-toplevel"], cwd=root, timeout=3.0)

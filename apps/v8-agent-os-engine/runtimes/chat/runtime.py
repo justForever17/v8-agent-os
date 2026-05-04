@@ -50,6 +50,7 @@ from core.storage import storage
 from core.context_window_guard import context_window_guard
 from core.agents import build_specialist_family_registry, normalize_specialist_family_id
 from core.task_shape_classifier import classify_task_shape
+from core.workspace_capability import build_workspace_binding
 from core.context.workspace import workspace_resolution_service
 from erc.chat_canonical_transcript import (
     CanonicalTranscriptBuilder,
@@ -192,15 +193,6 @@ class ChatRunContext:
     def is_resume_request(self) -> bool:
         return self.prepared.is_resume_request
 
-
-def _compat_ingress_diagnostics_from_request(request: ChatRequest) -> dict[str, Any]:
-    try:
-        data = getattr(request, "data", None)
-        diagnostics = getattr(data, "compat_ingress_diagnostics", None) if data is not None else None
-        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
-    except Exception:
-        return {}
-
     def emit_runtime_event(
         self,
         topic: str,
@@ -221,6 +213,15 @@ def _compat_ingress_diagnostics_from_request(request: ChatRequest) -> dict[str, 
                 agent_id=agent_id,
             ),
         )
+
+
+def _compat_ingress_diagnostics_from_request(request: ChatRequest) -> dict[str, Any]:
+    try:
+        data = getattr(request, "data", None)
+        diagnostics = getattr(data, "compat_ingress_diagnostics", None) if data is not None else None
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    except Exception:
+        return {}
 
 
 class PlannerTaskBriefPayload(BaseModel):
@@ -1041,6 +1042,7 @@ class ChatRuntime:
             "- Define acceptance contracts before execution starts.\n"
             "- Do not pretend work has already been done.\n"
             "- Do not execute tools, browse, or simulate outputs.\n"
+            "- Broad product tasks may require multiple runtime lanes; model them explicitly instead of flattening them into one direct task.\n"
             "Output rules:\n"
             "- executionStrategy must be one of: direct, delegate, mixed.\n"
             "- taskBriefs must align with executionStrategy.\n"
@@ -1049,6 +1051,11 @@ class ChatRuntime:
             "- familyHint may name a specialist family such as engineering or creative_media; it guides delegation_broker selection but does not reveal members or grant runtime tools.\n"
             "- executionLaneHint must be one of: subagent, external_worker, auto.\n"
             "- Keep riskFlags short and concrete.\n"
+            "Research plus implementation discipline:\n"
+            "- If the request combines research/search with building, code, frontend, or app creation, use executionStrategy=mixed.\n"
+            "- Put the research evidence task before implementation; the research task should request source quality, conflicts, citations, and compact evidence refs.\n"
+            "- Put the implementation task in the engineering family when it creates or changes project files, with an explicit tentative writeSet and proof expectations.\n"
+            "- Project scaffolding, dependency installs, and dev servers should be session-observed commands, not blocking sync commands.\n"
             "Engineering lane discipline when EngineeringEvidenceGraph is provided:\n"
             "- Prefer evidenceGraphDigest over raw guessing for critical files, writeSet, and verification choices.\n"
             "- Populate codingPlannerContract with criticalFiles, readSet, writeSet, ownershipPlan, verificationMatrix, mergeOrder, riskFlags, and proofExpectations.\n"
@@ -1060,19 +1067,97 @@ class ChatRuntime:
         latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
         diagnostics = dict(chat_run.prepared.planner_intent_diagnostics or {})
         signals = [str(item).strip() for item in list(diagnostics.get("signals") or []) if str(item).strip()]
+        task_shape_hint = dict(chat_run.prepared.task_shape_hint or {})
+        primary_shape = str(task_shape_hint.get("primaryTaskShape") or "").strip()
+        secondary_shapes = [
+            str(item or "").strip()
+            for item in list(task_shape_hint.get("secondaryTaskShapes") or [])
+            if str(item or "").strip()
+        ]
+        optional_grants = [
+            str(item or "").strip()
+            for item in list(task_shape_hint.get("optionalRuntimeGrants") or [])
+            if str(item or "").strip()
+        ]
         should_delegate = any(signal in {"delegation_or_parallel", "large_implementation"} for signal in signals)
         fallback_context = {
             "source": "planner_fallback",
             "reason": reason,
             "plannerMode": chat_run.prepared.planner_mode,
             "intentSignals": signals,
-            "taskShapeHint": dict(chat_run.prepared.task_shape_hint or {}),
+            "taskShapeHint": task_shape_hint,
         }
         suggested_families = [
             str(item or "").strip()
-            for item in list((chat_run.prepared.task_shape_hint or {}).get("suggestedFamilies") or [])
+            for item in list(task_shape_hint.get("suggestedFamilies") or [])
             if str(item or "").strip()
         ]
+        if primary_shape == "project_coding" and ("research" in secondary_shapes or "research.core" in optional_grants):
+            research_brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-1",
+                    "goal": "Research the external facts needed before implementation.",
+                    "context": fallback_context,
+                    "writeSet": [],
+                    "behaviorScope": ["research", "read_only", "evidence_collection"],
+                    "requiredCapabilities": ["web_research", "source_quality", "citations"],
+                    "acceptanceContract": "Produce a compact evidence bundle with source quality, conflicts, citations, raw refs, and confidence notes before implementation decisions.",
+                    "dependency": [],
+                    "parallelGroup": "research",
+                    "executionLaneHint": "auto",
+                    "familyHint": "research",
+                    "runtimeAccess": ["research.core"],
+                }
+            )
+            implementation_brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-2",
+                    "goal": latest_user_content or "Implement the requested project.",
+                    "context": {
+                        **fallback_context,
+                        "implementationPrerequisite": "Use task-1 evidence refs; do not treat weak ad-hoc search results as implementation truth.",
+                    },
+                    "writeSet": ["<project-workspace>/"],
+                    "behaviorScope": ["implementation", "project_scaffold", "verification"],
+                    "requiredCapabilities": ["project_scaffold", "frontend_implementation", "dependency_management", "verification"],
+                    "acceptanceContract": "Create or modify the project files, use session-observed commands for scaffolding/dependency work, and report touched files, verification commands, and residual risks.",
+                    "dependency": ["task-1"],
+                    "parallelGroup": "",
+                    "executionLaneHint": "auto",
+                    "familyHint": "engineering",
+                    "engineeringTaskCapsule": {
+                        "writeSet": ["<project-workspace>/"],
+                        "proofExpectations": [
+                            "Record scaffold/dependency commands as observable sessions.",
+                            "Run the narrowest available verification and report failures instead of claiming completion.",
+                        ],
+                        "riskFlags": ["planner_fallback_write_set_tentative"],
+                    },
+                },
+                index=1,
+            )
+            briefs = [research_brief, implementation_brief]
+            return {
+                "planId": f"plan_{uuid.uuid4().hex[:10]}",
+                "executionStrategy": "mixed",
+                "planSummary": latest_user_content or "Research first, then implement with engineering proof discipline.",
+                "taskGraph": [
+                    {
+                        "taskBriefId": brief["taskBriefId"],
+                        "title": brief["goal"],
+                        "dependency": list(brief.get("dependency") or []),
+                        "parallelGroup": str(brief.get("parallelGroup") or "").strip(),
+                    }
+                    for brief in briefs
+                ],
+                "taskBriefs": briefs,
+                "globalAcceptanceContract": "Complete the user request through source-backed research, project implementation, and observable verification, or report the exact recoverable blocker.",
+                "riskFlags": ["planner_fallback_used", "mixed_research_engineering_fallback", "tentative_project_write_set"],
+                "qualityFlags": ["planner_fallback_used", "source_quality_required"],
+                "repairCount": 0,
+                "autoDispatchDecision": {},
+                "dispatchEligibilityReason": "",
+            }
         brief = normalize_task_brief(
             {
                 "taskBriefId": "task-1",
@@ -5159,7 +5244,7 @@ class ChatRuntime:
         }
 
     def _runtime_context_kwargs(self, chat_run: ChatRunContext) -> dict[str, Any]:
-        return {
+        context = {
             "runtime_kind": "chat",
             "trigger_source": chat_run.transport,
             "session_id": chat_run.session_id,
@@ -5171,6 +5256,8 @@ class ChatRuntime:
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
         }
+        context["workspace_binding"] = build_workspace_binding(context, runtime_kind="chat").as_dict()
+        return context
 
     async def stream_legacy_events(
         self,

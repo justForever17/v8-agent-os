@@ -2,7 +2,6 @@ import json
 import logging
 import platform
 import uuid
-from pathlib import Path
 from typing import Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -18,12 +17,10 @@ from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
-from core.storage import storage
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
 from core.runtime_tool_access import filter_visible_tools_for_actor, normalize_runtime_access, runtime_tool_names_for_groups
 from core.time_truth import utc_now_iso
-from core.workspace_guard import build_workspace_path_status
-from core.workspace_resolution import workspace_resolution_service
+from core.workspace_capability import build_workspace_binding
 from erc.runtime_context import get_runtime_context
 from .tool_routing import create_routed_tool_node
 from .route_context import merge_route_context
@@ -224,14 +221,16 @@ def _resolve_selected_skills(selectors: list[str], *, state: dict | None = None)
     return matched_ids, matched_names
 
 
-def _resolved_workspace_prompt_path() -> str:
-    raw_workspace_path = str(storage.get_workspace_config().get("agent_workspace_path") or "").strip()
-    if raw_workspace_path:
-        status = build_workspace_path_status(raw_workspace_path)
-        if status.get("isLegacyResidue"):
-            return str(status.get("recommendedPath") or workspace_resolution_service.get_main_workspace_path())
-        return str(Path(raw_workspace_path).expanduser())
-    return workspace_resolution_service.get_main_workspace_path()
+def _resolved_workspace_binding_for_state(state) -> dict:
+    runtime_context = get_runtime_context()
+    context = {
+        "runtime_kind": str(runtime_context.get("runtime_kind") or "chat"),
+        "session_id": (state or {}).get("session_id") or runtime_context.get("session_id"),
+        "workspace_id": (state or {}).get("workspace_id") or runtime_context.get("workspace_id"),
+        "workspace_path": (state or {}).get("workspace_path") or runtime_context.get("workspace_path"),
+        "project_id": (state or {}).get("project_id") or runtime_context.get("project_id"),
+    }
+    return build_workspace_binding(context).as_dict()
 
 
 def _compact_prompt_value(value) -> str:
@@ -512,7 +511,9 @@ def build_agent_node(
         try:
             messages = state["messages"]
 
-            workspace_path = _resolved_workspace_prompt_path()
+            workspace_binding = _resolved_workspace_binding_for_state(state)
+            workspace_path = str(workspace_binding.get("activeWorkspaceRoot") or workspace_binding.get("mainWorkspaceRoot") or "")
+            main_workspace_path = str(workspace_binding.get("mainWorkspaceRoot") or "")
             os_name = platform.system()
             current_time = utc_now_iso()
             host_alerts_line = render_host_alerts_line()
@@ -523,8 +524,10 @@ def build_agent_node(
                 f"Current Time: {current_time}\n"
                 f"{render_host_load_line()}\n"
                 f"{host_alerts_context}"
-                f"Local Workspace Absolute Path: {workspace_path}\n"
-                f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them to the Local Workspace above.\n"
+                f"Active Workspace Root: {workspace_path}\n"
+                f"Main V8 Workspace Store: {main_workspace_path}\n"
+                "The Active Workspace Root is the execution boundary for delegated project work; keep command cwd and file writes inside it unless the supervisor explicitly grants another root.\n"
+                f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them under the Active Workspace Root above.\n"
                 "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "
                 "Reference generated media naturally in prose and rely on the runtime artifact/resource pipeline for rendering.\n"
                 f"</environment>\n"

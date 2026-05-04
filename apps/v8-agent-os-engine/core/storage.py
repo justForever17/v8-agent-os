@@ -316,6 +316,33 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
     normalized = str(content or "")
     for source, target in _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS:
         normalized = normalized.replace(source, target)
+    normalized = normalized.replace(
+        "## Language Protocol\n"
+        "- Think and structure plans in English by default.\n"
+        "- Reply to the user in the language they used most recently.\n"
+        "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n",
+        "## Language Protocol\n"
+        "- Infer the preferred user-visible language from the latest human request and keep Supervisor plans, runtime briefs, tool summaries, and final replies in that language.\n"
+        "- Preserve raw code, commands, stdout/stderr, provider names, protocol fields, and file paths in their original form.\n"
+        "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n",
+    )
+    if "## Multi-Runtime Orchestration" not in normalized and "## Tool Discipline\n" in normalized:
+        orchestration_block = (
+            "## Multi-Runtime Orchestration\n"
+            "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
+            "- For complex or freshness-sensitive research, grant `research.core` and use `research_broker` instead of doing a few ad-hoc web searches and guessing confidence.\n"
+            "- For coding, project creation, or dependency work, route deliberately into Engineering discipline, a brokered engineering subagent, or direct supervisor execution with an explicit write set and verification proof.\n"
+            "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
+            "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
+        )
+        normalized = normalized.replace("## Tool Discipline\n", f"{orchestration_block}## Tool Discipline\n", 1)
+    if "Use command sessions, not sync commands" not in normalized and "## Tool Discipline\n" in normalized:
+        normalized = normalized.replace(
+            "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n",
+            "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n"
+            "- Use command sessions, not sync commands, for scaffolding, dependency installs, dev servers, CLIs that may prompt, and long-running processes.\n\n",
+            1,
+        )
     return normalized
 
 
@@ -863,11 +890,18 @@ class StorageManager:
                 "- Prefer the active runtime card and current route over memorizing every subsystem.\n"
                 "- Treat Memory, Automation, Plugin Host, Computer Use, and RPA as managed execution planes that can be consulted or delegated when needed.\n"
                 "- Only expand deeper runtime detail when the current task truly depends on it.\n\n"
+                "## Multi-Runtime Orchestration\n"
+                "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
+                "- For complex or freshness-sensitive research, grant `research.core` and use `research_broker` instead of doing a few ad-hoc web searches and guessing confidence.\n"
+                "- For coding, project creation, or dependency work, route deliberately into Engineering discipline, a brokered engineering subagent, or direct supervisor execution with an explicit write set and verification proof.\n"
+                "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
+                "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
                 "## Tool Discipline\n"
                 "- Prefer the best runtime-managed path for the current task.\n"
                 "- Use route-selected skills / MCP / plugin_host candidates instead of exploring every tool family at once.\n"
                 "- Use baseline system tools for direct reading, writing, searching, commands, media inspection, and web access only when route-level tools are not enough.\n"
                 "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n"
+                "- Use command sessions, not sync commands, for scaffolding, dependency installs, dev servers, CLIs that may prompt, and long-running processes.\n\n"
                 "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n"
                 "## Delegation Discipline\n"
                 "- If a task is small and local, solve it directly.\n"
@@ -887,8 +921,8 @@ class StorageManager:
                 "- If something is blocked, say what is blocked, what is done, and what should happen next.\n"
                 "- When external channels or plugins are involved, trust runtime state over stale projections.\n\n"
                 "## Language Protocol\n"
-                "- Think and structure plans in English by default.\n"
-                "- Reply to the user in the language they used most recently.\n"
+                "- Infer the preferred user-visible language from the latest human request and keep Supervisor plans, runtime briefs, tool summaries, and final replies in that language.\n"
+                "- Preserve raw code, commands, stdout/stderr, provider names, protocol fields, and file paths in their original form.\n"
                 "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n"
                 "## Collaboration Style\n"
                 "- Be decisive, but do not guess when a runtime fact can be observed.\n"

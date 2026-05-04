@@ -141,6 +141,7 @@ from runtimes.computer_use.primitives import list_computer_use_primitives, primi
 from runtimes.rpa.promotion_gate import draft_environment_signal_summary, draft_timing_signal_summary
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
+from core.workspace_capability import preflight_command_workspace, resolve_workspace_tool_path
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
 from core.tools.media_downloader import download_media_for_vision
@@ -437,11 +438,31 @@ def _detect_interactive_command(command: str) -> str | None:
 
 
 def _detect_session_preferred_command(command: str) -> str | None:
-    lowered = str(command or "").strip().lower()
+    stripped = _strip_leading_shell_cwd(command)
+    lowered = str(stripped or "").strip().lower()
     if not lowered:
         return None
     if lowered.startswith("npx skills "):
         return f"检测到 `{command}` 可能进入 Skills CLI 的交互会话，建议进入 session 模式。"
+    scaffolding_markers = (
+        "npx create-next-app",
+        "npx create-",
+        "npm create",
+        "pnpm create",
+        "yarn create",
+        "bun create",
+        "create-next-app",
+    )
+    if any(marker in lowered for marker in scaffolding_markers):
+        return f"检测到 `{command}` 是项目脚手架命令，必须进入 session 模式以便观察交互、超时和落地状态。"
+    install_patterns = (
+        r"(^|[;&|]\s*)npm\s+(install|i)\b",
+        r"(^|[;&|]\s*)pnpm\s+(install|i)\b",
+        r"(^|[;&|]\s*)yarn\s+(install|add)\b",
+        r"(^|[;&|]\s*)bun\s+(install|add)\b",
+    )
+    if any(re.search(pattern, lowered) for pattern in install_patterns):
+        return f"检测到 `{command}` 是依赖安装类命令，建议进入 session 模式以便轮询、恢复和捕获失败原因。"
     long_running_markers = (
         "uvicorn ",
         "gunicorn ",
@@ -3276,6 +3297,7 @@ def rpa_run_draft(
 @tool
 def execute_system_command(
     command: str,
+    cwd: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Execute a synchronous system command (bash on Linux/Mac, cmd/powershell on Windows) and return its output.
@@ -3284,6 +3306,7 @@ def execute_system_command(
     1. This tool blocks execution. If the command asks for user input (e.g., 'y/n', selecting from a menu), IT WILL HANG AND TIMEOUT.
     2. Therefore, you MUST ALWAYS provide non-interactive flags (like `-y`, `--no-fund`, `--silent`) when using this tool.
     3. If you CANNOT avoid interaction, or if the command is a long-running server/process, you MUST use `run_system_command(mode="session")` instead.
+    4. Do not use this tool for project scaffolding, dependency installs, dev servers, or CLIs that may prompt; use `command_session_broker(mode="start")`.
     
     Arguments:
         command (str): The command to execute natively.
@@ -3296,8 +3319,32 @@ def execute_system_command(
                 "请改用 `command_session_broker(mode=start)` 启动命令会话；"
                 "后续观察、继续输入和终止都统一走 `command_session_broker`。"
             )
+        session_reason = _detect_session_preferred_command(command)
+        if session_reason:
+            return (
+                f"Error: {session_reason}\n"
+                "请改用 `command_session_broker(mode=start)` 启动命令会话；"
+                "脚手架、依赖安装、dev server 和可能交互的 CLI 需要可观察、可恢复的 session。"
+            )
 
         runtime_context = get_runtime_context()
+        workspace_preflight = preflight_command_workspace(command, cwd=cwd or None, runtime_context=runtime_context)
+        if not workspace_preflight.get("ok"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "workspace_boundary_block",
+                    "summary": workspace_preflight.get("summary"),
+                    "error": workspace_preflight.get("error"),
+                    "cwd": cwd or None,
+                    "resolvedCwd": workspace_preflight.get("resolvedCwd"),
+                    "violations": workspace_preflight.get("violations") or [],
+                    "workspaceBinding": workspace_preflight.get("binding"),
+                    "recommendedNextAction": "在当前 Active Workspace Root 内重试，或由用户显式授予额外 workspace/root。",
+                },
+                ensure_ascii=False,
+            )
+        resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
         allowed, error_message = _enforce_safety_decision(
             safety_guardian.assess_system_command(command, runtime_context=runtime_context),
             tool_call_id=tool_call_id,
@@ -3314,6 +3361,7 @@ def execute_system_command(
             text=True,
             encoding="utf-8",
             errors="replace",
+            cwd=resolved_cwd,
             timeout=120  # Prevent infinite hangs
         )
         output = result.stdout or ""
@@ -3330,7 +3378,12 @@ def execute_system_command(
         safety_guardian.observe_post_action(
             action_family="command",
             summary=f"已执行系统命令：{command}",
-            details={"command": command, "return_code": result.returncode},
+            details={
+                "command": command,
+                "cwd": resolved_cwd,
+                "workspaceBinding": workspace_preflight.get("binding"),
+                "return_code": result.returncode,
+            },
             runtime_context=runtime_context,
         )
         if result.returncode == 0:
@@ -3355,9 +3408,25 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
         end_line (int, optional): The 1-indexed line number to stop reading at.
     """
     try:
-        target_path = Path(path)
+        runtime_context = get_runtime_context()
+        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
+        if not path_preflight.get("ok"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "workspace_boundary_block",
+                    "summary": path_preflight.get("summary"),
+                    "error": path_preflight.get("error"),
+                    "inputPath": path,
+                    "resolvedPath": path_preflight.get("resolvedPath"),
+                    "workspaceBinding": path_preflight.get("binding"),
+                    "recommendedNextAction": "使用当前 Active Workspace Root 内的相对路径，或由用户显式授予额外 root 后再读。",
+                },
+                ensure_ascii=False,
+            )
+        target_path = Path(str(path_preflight.get("resolvedPath") or path))
         if not target_path.exists() or not target_path.is_file():
-            return f"Error: File '{path}' does not exist or is not a file."
+            return f"Error: File '{target_path}' does not exist or is not a file."
             
         if is_binary(str(target_path)):
             return (
@@ -3384,7 +3453,7 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
             
         content = "".join(lines[start_idx:end_idx])
         
-        header = f"--- File: {path} (Lines {start_idx + 1} to {end_idx} of {total_lines}) ---\n"
+        header = f"--- File: {target_path} (Lines {start_idx + 1} to {end_idx} of {total_lines}) ---\n"
         footer = "\n--- [TRUNCATED] Read exceeded 2000 lines limit. Use start_line/end_line to read more. ---" if truncated else ""
         
         return header + content + footer
@@ -3461,9 +3530,25 @@ def write_native_file(
     """
     try:
         runtime_context = get_runtime_context()
+        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
+        if not path_preflight.get("ok"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "workspace_boundary_block",
+                    "summary": path_preflight.get("summary"),
+                    "error": path_preflight.get("error"),
+                    "inputPath": path,
+                    "resolvedPath": path_preflight.get("resolvedPath"),
+                    "workspaceBinding": path_preflight.get("binding"),
+                    "recommendedNextAction": "将写入路径改到当前 Active Workspace Root 内，或由用户显式授予额外 root。",
+                },
+                ensure_ascii=False,
+            )
+        target_path = Path(str(path_preflight.get("resolvedPath") or path))
         allowed, error_message = _enforce_safety_decision(
             safety_guardian.assess_file_write(
-                path,
+                str(target_path),
                 append=append,
                 runtime_context=runtime_context,
                 content_preview=str(content or "")[:12000],
@@ -3474,7 +3559,6 @@ def write_native_file(
         if not allowed:
             return error_message or "Safety Guardian 已阻止文件写入。"
 
-        target_path = Path(path)
         mode = 'a' if append else 'w'
         
         # Create parent directories if they don't exist
@@ -3485,12 +3569,18 @@ def write_native_file(
 
         safety_guardian.observe_post_action(
             action_family="file_write",
-            summary=f"已写入文件：{path}",
-            details={"path": str(target_path), "append": append, "content_length": len(content)},
+            summary=f"已写入文件：{target_path}",
+            details={
+                "path": str(target_path),
+                "inputPath": path,
+                "workspaceBinding": path_preflight.get("binding"),
+                "append": append,
+                "content_length": len(content),
+            },
             runtime_context=runtime_context,
         )
         action = "Appended" if append else "Created/Overwritten"
-        return f"Successfully {action} file: {path} ({len(content)} chars written)"
+        return f"Successfully {action} file: {target_path} ({len(content)} chars written)"
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error writing file '{path}': {str(e)}"
@@ -3509,7 +3599,23 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
         ignore_case (bool): Whether the search is case-insensitive.
     """
     try:
-        target_path = Path(path)
+        runtime_context = get_runtime_context()
+        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
+        if not path_preflight.get("ok"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "workspace_boundary_block",
+                    "summary": path_preflight.get("summary"),
+                    "error": path_preflight.get("error"),
+                    "inputPath": path,
+                    "resolvedPath": path_preflight.get("resolvedPath"),
+                    "workspaceBinding": path_preflight.get("binding"),
+                    "recommendedNextAction": "使用当前 Active Workspace Root 内的相对路径，或由用户显式授予额外 root 后再搜索。",
+                },
+                ensure_ascii=False,
+            )
+        target_path = Path(str(path_preflight.get("resolvedPath") or path))
         if not target_path.exists():
             return f"Error: Path '{path}' does not exist."
             
@@ -3573,6 +3679,7 @@ def _launch_background_command(
     *,
     tool_call_id: str = "",
     profile: str = "auto",
+    cwd: str = "",
 ) -> dict[str, Any]:
     interactive_reason = _detect_interactive_command(command)
     resolved_profile, profile_reason = _detect_background_command_profile(command, requested_profile=profile)
@@ -3583,6 +3690,25 @@ def _launch_background_command(
         )
 
     runtime_context = get_runtime_context()
+    workspace_preflight = preflight_command_workspace(command, cwd=cwd or None, runtime_context=runtime_context)
+    if not workspace_preflight.get("ok"):
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "ok": False,
+                    "kind": "workspace_boundary_block",
+                    "summary": workspace_preflight.get("summary"),
+                    "error": workspace_preflight.get("error"),
+                    "cwd": cwd or None,
+                    "resolvedCwd": workspace_preflight.get("resolvedCwd"),
+                    "violations": workspace_preflight.get("violations") or [],
+                    "workspaceBinding": workspace_preflight.get("binding"),
+                    "recommendedNextAction": "在当前 Active Workspace Root 内重试，或由用户显式授予额外 workspace/root。",
+                },
+                ensure_ascii=False,
+            )
+        )
+    resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
     allowed, error_message = _enforce_safety_decision(
         safety_guardian.assess_background_command(command, runtime_context=runtime_context),
         tool_call_id=tool_call_id,
@@ -3599,8 +3725,10 @@ def _launch_background_command(
         interactive=interactive_mode,
         profile=resolved_profile,
         profile_reason=profile_reason,
+        cwd=resolved_cwd,
     )
     bg_proc.command_id = cmd_id
+    bg_proc.workspace_binding = workspace_preflight.get("binding")
     _bg_processes[cmd_id] = bg_proc
 
     initial_chunks = []
@@ -3628,6 +3756,8 @@ def _launch_background_command(
             "interactive": interactive_mode,
             "tty": tty_label,
             "run_id": runtime_context.get("run_id"),
+            "cwd": resolved_cwd,
+            "workspaceBinding": workspace_preflight.get("binding"),
             "profile": resolved_profile,
             "profile_reason": profile_reason,
             "chat_cli_variant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
@@ -3640,6 +3770,8 @@ def _launch_background_command(
         "tty": tty_label,
         "sessionId": runtime_context.get("session_id"),
         "runId": runtime_context.get("run_id"),
+        "cwd": resolved_cwd,
+        "workspaceBinding": workspace_preflight.get("binding"),
         "status": status,
         "interactive": interactive_mode,
         "profile": resolved_profile,
@@ -5510,7 +5642,7 @@ def _extract_command_head(command: str) -> str:
     return str(parts[0] if parts else "").strip()
 
 
-def _build_command_diagnostics_snapshot(command: str) -> dict[str, Any]:
+def _build_command_diagnostics_snapshot(command: str, *, cwd: str | None = None) -> dict[str, Any]:
     command_head = _extract_command_head(command)
     path_value = str(os.environ.get("PATH") or "")
     appdata = str(os.environ.get("APPDATA") or "").strip()
@@ -5546,7 +5678,7 @@ def _build_command_diagnostics_snapshot(command: str) -> dict[str, Any]:
     return {
         "commandHead": command_head,
         "resolvedExecutable": resolved_path or "",
-        "currentWorkingDirectory": os.getcwd(),
+        "currentWorkingDirectory": str(cwd or os.getcwd()),
         "shellPath": str(os.environ.get("COMSPEC") or ""),
         "nodeExecutable": shutil.which("node", path=path_value) or "",
         "preferredEncoding": locale.getpreferredencoding(False),
@@ -6221,8 +6353,10 @@ class BackgroundProcess:
         interactive: bool = False,
         profile: str = "shell",
         profile_reason: str = "",
+        cwd: str | None = None,
     ):
         self.command = command
+        self.cwd = str(cwd or os.getcwd())
         self.session_id = session_id
         self.run_id = run_id
         self.interactive = interactive
@@ -6268,7 +6402,7 @@ class BackgroundProcess:
         self.pending_input_echo = ""
         self.terminal_env_overrides = _build_terminal_env_overrides()
         self.command_diagnostics = _extend_command_diagnostics_for_terminal(
-            _build_command_diagnostics_snapshot(command),
+            _build_command_diagnostics_snapshot(command, cwd=self.cwd),
             env_overrides=self.terminal_env_overrides,
             uses_winpty=bool(sys.platform == "win32" and HAS_WINPTY),
         )
@@ -6279,12 +6413,15 @@ class BackgroundProcess:
             self.pty_win.spawn("cmd.exe /q /d")
             time.sleep(0.5)
             _run_winpty_bootstrap(self.pty_win, self.terminal_env_overrides)
+            _write_winpty_input(self.pty_win, f'cd /d "{self.cwd}"\n')
+            time.sleep(0.2)
             _write_winpty_input(self.pty_win, f"{command}\n")
         elif sys.platform != "win32":
             pid, self.fd = pty.fork()
             if pid == 0:
                 child_env = dict(os.environ)
                 child_env.update(self.terminal_env_overrides)
+                os.chdir(self.cwd)
                 os.execvpe("sh", ["sh", "-c", command], child_env)
             else:
                 self.proc = pid
@@ -6295,7 +6432,7 @@ class BackgroundProcess:
             child_env.update(self.terminal_env_overrides)
             self.proc = subprocess.Popen(
                 command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env, cwd=self.cwd
             )
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
@@ -6683,6 +6820,8 @@ class BackgroundProcess:
         return {
             "command_id": getattr(self, "command_id", None),
             "command": self.command,
+            "cwd": self.cwd,
+            "workspace_binding": dict(getattr(self, "workspace_binding", {}) or {}),
             "session_id": self.session_id,
             "is_running": self.is_running,
             "uses_tty": self.uses_tty,
@@ -6788,6 +6927,8 @@ def list_background_process_snapshots(
             "title": command.splitlines()[0][:96] if command else str(command_id),
             "commandPreview": command_preview,
             "command": command,
+            "cwd": status.get("cwd"),
+            "workspaceBinding": status.get("workspace_binding"),
             "status": process_status,
             "interactive": bool(status.get("interactive")),
             "usesTty": bool(status.get("uses_tty")),
@@ -6825,6 +6966,7 @@ def list_background_process_snapshots(
 def start_background_command(
     command: str,
     profile: str = "auto",
+    cwd: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Start a long-running or interactive system command in the background.
@@ -6844,7 +6986,7 @@ def start_background_command(
         profile (str): auto、chat_cli 或 shell。chat_cli 适用于 AI CLI 的多轮对话语义增量读取。
     """
     try:
-        launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=profile)
+        launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=profile, cwd=cwd)
         guidance = (
             "\nNext step: 使用 `read_background_output` 观察输出；若 CLI 等待输入，使用 "
             "`send_background_input` 发送文本或回车；结束时使用 `terminate_background_command`。"
@@ -6871,6 +7013,7 @@ def run_system_command(
     command: str,
     mode: str = "auto",
     profile: str = "auto",
+    cwd: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run a system command through a unified command surface.
@@ -6878,9 +7021,11 @@ def run_system_command(
     mode=auto:
     - 短命令/非交互命令直接同步执行并返回结果
     - 交互式或长驻命令返回 redirect，要求使用 command_session_broker(mode=start)
+    - 脚手架、依赖安装、dev server、可能等待输入的 CLI 一律推荐 session
 
     mode=sync:
     - 强制同步执行，适合短命令
+    - 不允许用于脚手架、依赖安装、dev server 或可能交互的命令
 
     mode=session:
     - 兼容模式：强制后台/交互模式，建议新调用改用 command_session_broker(mode=start)
@@ -6917,6 +7062,7 @@ def run_system_command(
                             "mode": "start",
                             "command": command,
                             "profile": normalized_profile,
+                            "cwd": cwd,
                         },
                     },
                 },
@@ -6925,11 +7071,32 @@ def run_system_command(
         effective_mode = "sync"
 
     if effective_mode == "sync":
-        return execute_system_command.func(command=command, tool_call_id=tool_call_id)
+        if prefer_session:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "mode": "sync",
+                    "kind": "command_session_required",
+                    "summary": "该命令不能通过阻塞式 sync 执行。",
+                    "reason": interactive_reason or session_reason or "命令需要可观察、可恢复的后台会话",
+                    "recommendedNextAction": "改用 command_session_broker(mode=start)，然后 observe/input/terminate。",
+                    "redirect": {
+                        "tool": "command_session_broker",
+                        "args": {
+                            "mode": "start",
+                            "command": command,
+                            "profile": normalized_profile,
+                            "cwd": cwd,
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            )
+        return execute_system_command.func(command=command, cwd=cwd, tool_call_id=tool_call_id)
 
     if effective_mode == "session":
         try:
-            launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=normalized_profile)
+            launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=normalized_profile, cwd=cwd)
             payload = {
                 "ok": True,
                 "kind": "command_session",
@@ -6939,6 +7106,8 @@ def run_system_command(
                 "interactive": bool(launched["interactive"]),
                 "profile": launched["profile"],
                 "tty": launched["tty"],
+                "cwd": launched.get("cwd"),
+                "workspaceBinding": launched.get("workspaceBinding"),
                 "runId": launched["runId"],
                 "reason": interactive_reason or session_reason or "显式 session 模式",
                 "summary": "已启动后台命令会话。",
@@ -6977,6 +7146,8 @@ def _command_session_state_from_status(status: dict[str, Any]) -> str:
         observation_state = str(status.get("observation_state") or "").strip().lower()
         if observation_state == "render_stalled":
             return "render_stalled"
+        if observation_state == "idle" and float(status.get("seconds_since_output") or 0) >= 90:
+            return "recoverable_stalled"
         return "running"
     return_code = status.get("return_code")
     return "failed" if return_code not in (None, 0, "0") else "completed"
@@ -7002,6 +7173,8 @@ def _command_session_summary_for_state(
         return "终端当前等待输入。"
     if state == "render_stalled":
         return "终端有原始数据，但屏幕尚未稳定刷新。"
+    if state == "recoverable_stalled":
+        return "命令会话长时间无新增输出，处于可恢复停滞状态。"
     if state == "completed":
         return "命令会话已完成。"
     if state == "failed":
@@ -7020,6 +7193,8 @@ def _command_session_recommended_next_action(
         return "none"
     if awaiting_input:
         return "input"
+    if state == "recoverable_stalled":
+        return "observe_or_terminate"
     if has_more or state in {"running", "render_stalled"}:
         return "observe"
     return "wait_then_observe"
@@ -7312,6 +7487,7 @@ def command_session_broker(
     command_id: str = "",
     input_text: str = "",
     profile: str = "auto",
+    cwd: str = "",
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
@@ -7326,6 +7502,7 @@ def command_session_broker(
     Usage guidance:
     - Keep using run_system_command for short synchronous commands; run_system_command(mode=auto) redirects long-running or interactive commands here.
     - Use this broker for long-running tasks, interactive CLIs/REPLs, AI CLIs, and server/dev processes.
+    - Use this broker for project scaffolding and dependency installs even when the command is expected to be non-interactive; observe until it completes or reports the next required input.
     - Treat summary, recommendedNextAction, awaitingInput, hasMore, state/status, and returnCode as the compact truth for the next step.
     - profile=auto may enable chat_cli semantics for known AI CLIs so observe reports the latest semantic delta instead of replaying the whole screen.
     - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
@@ -7372,6 +7549,7 @@ def command_session_broker(
                 normalized_command,
                 tool_call_id=tool_call_id,
                 profile=normalized_profile,
+                cwd=cwd,
             )
             status = dict(launched.get("status") or {})
             state = _command_session_state_from_status(status)
@@ -7405,6 +7583,8 @@ def command_session_broker(
                 interactive=bool(launched.get("interactive")),
                 profile=launched.get("profile"),
                 reason=launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
+                cwd=launched.get("cwd"),
+                workspaceBinding=launched.get("workspaceBinding"),
                 awaitingInput=bool(status.get("awaiting_input")),
                 state=state,
                 initialPreview=initial_preview or None,
@@ -7415,6 +7595,7 @@ def command_session_broker(
                     "sessionId": str(launched.get("commandId") or ""),
                     "chatSessionId": launched.get("sessionId"),
                     "runId": launched.get("runId"),
+                    "cwd": launched.get("cwd"),
                 },
                 runId=launched.get("runId"),
                 debug=debug_payload,
@@ -7506,6 +7687,8 @@ def command_session_broker(
                     has_more=has_more,
                 ),
                 state=state,
+                cwd=status.get("cwd"),
+                workspaceBinding=status.get("workspace_binding"),
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
                 semanticTextTail=semantic_tail or None,
@@ -7620,6 +7803,8 @@ def command_session_broker(
                     has_more=has_more,
                 ),
                 state=state,
+                cwd=status.get("cwd"),
+                workspaceBinding=status.get("workspace_binding"),
                 acceptedInputPreview=input_preview,
                 acceptedInputTruncated=input_truncated if input_preview else None,
                 deltaText=delta_preview or None,
@@ -7664,6 +7849,8 @@ def command_session_broker(
             recommended_next_action="none",
             terminated=True,
             state=_command_session_state_from_status(status),
+            cwd=status.get("cwd"),
+            workspaceBinding=status.get("workspace_binding"),
             returnCode=status.get("return_code"),
             finalPreview=final_preview or None,
             finalPreviewTruncated=final_truncated if final_preview else None,

@@ -12,6 +12,9 @@ from runtimes.memory.scope_resolution import session_scope_binding_service
 
 _SCOPED_WORKSPACE_RUNTIMES = {
     "chat",
+    "engineering",
+    "research",
+    "creative_media",
     "computer_use",
     "rpa",
     "automation",

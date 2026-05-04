@@ -3,7 +3,7 @@
   "version": 1,
   "taskShapeAliases": {
     "code_media_framework": ["remotion", "manim", "ffmpeg", "ffprobe", "three.js", "threejs", "p5.js", "p5js", "processing", "webgl", "react", "tsx", "typescript", "next.js", "vue", "svelte"],
-    "code_action": ["实现", "写代码", "代码", "编程", "构建", "脚本", "项目", "仓库", "工作区", "补丁", "测试", "调试", "修复", "重构", "迁移", "类型检查"],
+    "code_action": ["实现", "写代码", "代码", "编程", "构建", "脚本", "项目", "仓库", "工作区", "补丁", "测试", "调试", "修复", "重构", "迁移", "类型检查", "前端", "前端界面", "前端页面", "前端应用", "web应用", "web 应用", "网页应用", "应用界面"],
     "media_output": ["图片", "图像", "视频", "短视频", "音频", "语音", "音乐", "海报", "镜头", "分镜", "关键帧", "字幕", "渲染"],
     "media_provider": ["seedance", "seedream", "sora", "veo", "kling", "runway", "luma", "comfyui", "mureka", "suno", "tts", "可灵", "即梦", "豆包", "百炼", "火山", "万相", "通义万相"],
     "writing_action": ["写文档", "文档", "说明", "交付", "发布说明", "提案", "总结", "文章", "文案", "报告", "公众号"]

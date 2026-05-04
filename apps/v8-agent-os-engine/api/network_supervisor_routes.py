@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request, WebSocket
@@ -44,6 +47,62 @@ from runtimes.network_supervisor.service import network_supervisor_service
 
 
 router = APIRouter()
+
+COMPAT_SSE_HEARTBEAT_SECONDS = 10.0
+COMPAT_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
+def _sse_comment(message: str) -> bytes:
+    return f": {message}\n\n".encode("utf-8")
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _ms_to_iso(timestamp_ms: int) -> str:
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+
+
+def _mark_engine_yield(event: dict[str, Any]) -> dict[str, Any]:
+    timestamp_ms = _now_ms()
+    diagnostics = dict(event.get("_diagnostics") or {})
+    diagnostics["engineYieldAtMs"] = timestamp_ms
+    diagnostics["engineYieldAt"] = _ms_to_iso(timestamp_ms)
+    event["_diagnostics"] = diagnostics
+    return event
+
+
+async def _with_compat_heartbeat(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    yield _sse_comment(f"v8os-engine-stream-open {_now_ms()}")
+    iterator = source.__aiter__()
+    pending: asyncio.Task[Any] | None = asyncio.create_task(iterator.__anext__())
+    try:
+        while pending is not None:
+            try:
+                item = await asyncio.wait_for(asyncio.shield(pending), timeout=COMPAT_SSE_HEARTBEAT_SECONDS)
+            except (TimeoutError, asyncio.TimeoutError):
+                yield _sse_comment(f"v8os-engine-heartbeat {_now_ms()}")
+                continue
+            except StopAsyncIteration:
+                break
+            yield item
+            pending = asyncio.create_task(iterator.__anext__())
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+
+
+def _compat_streaming_response(source: AsyncIterator[bytes]) -> StreamingResponse:
+    return StreamingResponse(
+        _with_compat_heartbeat(source),
+        media_type="text/event-stream; charset=utf-8",
+        headers=COMPAT_SSE_HEADERS,
+    )
 
 
 def _verify_admin_relay_secret(secret: str | None) -> None:
@@ -206,7 +265,7 @@ async def _stream_openai_background_completion(*, response_model_name: str, text
         for frame in emitter.finish("stop"):
             yield frame
 
-    return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
+    return _compat_streaming_response(_generator())
 
 
 def _anthropic_background_message(*, response_model_name: str, text: str) -> JSONResponse:
@@ -236,7 +295,7 @@ async def _stream_anthropic_background_message(*, response_model_name: str, text
         for frame in emitter.finish("end_turn"):
             yield frame
 
-    return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
+    return _compat_streaming_response(_generator())
 
 
 def _openai_tool_result_ids(payload: dict[str, Any]) -> list[str]:
@@ -360,6 +419,7 @@ async def _stream_openai_chat_completion(
             async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
                 if not isinstance(event, dict):
                     continue
+                event = _mark_engine_yield(event)
                 events.append(event)
                 event_type = str(event.get("type") or "").strip()
                 if event_type == "error":
@@ -510,7 +570,7 @@ async def _stream_openai_chat_completion(
             _record_openai_memory_adapter_status(failed)
             raise
 
-    return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
+    return _compat_streaming_response(_generator())
 
 
 async def _stream_anthropic_message(
@@ -535,6 +595,7 @@ async def _stream_anthropic_message(
             async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_anthropic", run_id=run_id):
                 if not isinstance(event, dict):
                     continue
+                event = _mark_engine_yield(event)
                 event_type = str(event.get("type") or "").strip()
                 if event_type == "error":
                     raise RuntimeError(str(event.get("error") or "Anthropic compat execution failed"))
@@ -600,7 +661,7 @@ async def _stream_anthropic_message(
         except Exception as exc:
             yield emitter.error(str(exc))
 
-    return StreamingResponse(_generator(), media_type="text/event-stream; charset=utf-8")
+    return _compat_streaming_response(_generator())
 
 
 @router.get("/network-supervisor/status")

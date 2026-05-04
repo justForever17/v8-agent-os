@@ -3,6 +3,68 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 const ENGINE_TARGET = `${resolveEngineBaseUrl()}/network-supervisor/openai/chat/completions`;
+const SSE_HEARTBEAT_MS = 10_000;
+
+function compatStreamHeaders(contentType: string) {
+    return {
+        "Content-Type": contentType,
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        Connection: "keep-alive",
+    };
+}
+
+function streamWithHeartbeat(upstream: ReadableStream<Uint8Array> | null) {
+    const encoder = new TextEncoder();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+    return new ReadableStream<Uint8Array>({
+        async start(controller) {
+            controller.enqueue(encoder.encode(`: v8os-admin-proxy-open ${Date.now()}\n\n`));
+            heartbeat = setInterval(() => {
+                try {
+                    controller.enqueue(encoder.encode(`: v8os-admin-proxy-heartbeat ${Date.now()}\n\n`));
+                } catch {
+                    // The stream may already be closed by the client.
+                }
+            }, SSE_HEARTBEAT_MS);
+            reader = upstream?.getReader() || null;
+            if (!reader) {
+                if (heartbeat) {
+                    clearInterval(heartbeat);
+                    heartbeat = null;
+                }
+                controller.close();
+                return;
+            }
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value) controller.enqueue(value);
+                }
+                controller.close();
+            } catch (error) {
+                controller.error(error);
+            } finally {
+                if (heartbeat) {
+                    clearInterval(heartbeat);
+                    heartbeat = null;
+                }
+                reader?.releaseLock();
+                reader = null;
+            }
+        },
+        cancel() {
+            if (heartbeat) {
+                clearInterval(heartbeat);
+                heartbeat = null;
+            }
+            void reader?.cancel().catch(() => undefined);
+        },
+    });
+}
 
 function copyCompatHeaders(req: NextRequest) {
     const headers = new Headers();
@@ -37,13 +99,9 @@ export async function POST(req: NextRequest) {
 
         const contentType = response.headers.get("content-type") || "application/json";
         if (contentType.includes("text/event-stream")) {
-            return new Response(response.body, {
+            return new Response(streamWithHeartbeat(response.body), {
                 status: response.status,
-                headers: {
-                    "Content-Type": contentType,
-                    "Cache-Control": "no-cache, no-transform",
-                    Connection: "keep-alive",
-                },
+                headers: compatStreamHeaders(contentType),
             });
         }
 

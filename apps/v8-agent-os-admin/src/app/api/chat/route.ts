@@ -75,6 +75,7 @@ export async function POST(req: NextRequest) {
             headers: {
                 'Content-Type': 'application/x-ndjson; charset=utf-8',
                 'Cache-Control': 'no-cache, no-transform',
+                'X-Accel-Buffering': 'no',
                 'Connection': 'keep-alive',
                 'x-v8-agent-os-conversation-id': conversationId!
             }

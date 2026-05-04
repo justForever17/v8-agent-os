@@ -11,6 +11,7 @@ import {
     LayoutDashboard,
     MessageSquare,
     Mic,
+    Search,
     ShieldCheck,
     SlidersHorizontal,
     Sparkles,
@@ -132,6 +133,13 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 description: "lib.admin.navigation.creativeMediaDescription",
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
+            {
+                title: "lib.admin.navigation.researchRuntimeTitle",
+                href: "/admin/research-runtime",
+                icon: Search,
+                description: "lib.admin.navigation.researchRuntimeDescription",
+                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
+            },
         ],
     },
     {
@@ -193,6 +201,7 @@ export const ADMIN_REDIRECT_MAP: Record<string, string> = {
     "/admin/system-misc": "/admin/system-base",
     "/admin/agents": "/admin/subagents",
     "/admin/engineering-runtime": "/admin/engineering-lane",
+    "/admin/research": "/admin/research-runtime",
 };
 
 const ALL_ITEMS = ADMIN_NAV_GROUPS.flatMap((group) => group.items);

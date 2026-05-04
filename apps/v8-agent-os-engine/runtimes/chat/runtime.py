@@ -10,6 +10,7 @@ import uuid
 import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, unquote, urlparse
@@ -2344,6 +2345,42 @@ class ChatRuntime:
         return int(time.time() * 1000)
 
     @staticmethod
+    def _timestamp_ms_to_iso(timestamp_ms: int | None) -> str | None:
+        if timestamp_ms is None:
+            return None
+        try:
+            return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+        except Exception:
+            return None
+
+    def _stream_trace_diagnostics(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        kind: str,
+        delta: str,
+        provider_delta_at_ms: int | None = None,
+        canonical_event_at_ms: int | None = None,
+        model_run_id: str = "",
+    ) -> dict[str, Any]:
+        canonical_ms = canonical_event_at_ms or self._now_timestamp_ms()
+        diagnostics: dict[str, Any] = {
+            "streamTraceVersion": 1,
+            "streamKind": kind,
+            "transport": chat_run.transport,
+            "runId": chat_run.active_run_id,
+            "modelRunId": model_run_id,
+            "deltaChars": len(delta or ""),
+            "canonicalEventAtMs": canonical_ms,
+            "canonicalEventAt": self._timestamp_ms_to_iso(canonical_ms),
+        }
+        if provider_delta_at_ms is not None:
+            diagnostics["providerDeltaAtMs"] = provider_delta_at_ms
+            diagnostics["providerDeltaAt"] = self._timestamp_ms_to_iso(provider_delta_at_ms)
+            diagnostics["providerToCanonicalMs"] = max(0, canonical_ms - provider_delta_at_ms)
+        return diagnostics
+
+    @staticmethod
     def _request_client_message_id(request: ChatRequest) -> str:
         direct = str(getattr(request, "client_message_id", "") or "").strip()
         if direct:
@@ -2715,13 +2752,28 @@ class ChatRuntime:
         *,
         model_run_id: str,
         snapshot: str | None = None,
+        provider_delta_at_ms: int | None = None,
+        canonical_event_at_ms: int | None = None,
     ) -> dict[str, Any] | None:
         if not stable_chunk:
             return None
         profile = self._get_agent_profile(stream_state.current_agent)
         run_key = self._normalized_stream_run_id(model_run_id)
         node_content = snapshot or stream_state.text_snapshots_by_run.get(run_key) or stable_chunk
-        text_event = {"type": "text_chunk", "content": stable_chunk, "snapshot": node_content, "timestamp": 0}
+        text_event = {
+            "type": "text_chunk",
+            "content": stable_chunk,
+            "snapshot": node_content,
+            "timestamp": 0,
+            "_diagnostics": self._stream_trace_diagnostics(
+                chat_run,
+                kind="text_delta",
+                delta=stable_chunk,
+                provider_delta_at_ms=provider_delta_at_ms,
+                canonical_event_at_ms=canonical_event_at_ms,
+                model_run_id=model_run_id,
+            ),
+        }
         narrative_node = {
             "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:narrative:{run_key}",
             "kind": "narrative",
@@ -2764,6 +2816,8 @@ class ChatRuntime:
         *,
         model_run_id: str,
         snapshot: str | None = None,
+        provider_delta_at_ms: int | None = None,
+        canonical_event_at_ms: int | None = None,
     ) -> dict[str, Any] | None:
         if not reasoning_delta:
             return None
@@ -2775,6 +2829,14 @@ class ChatRuntime:
             "content": reasoning_delta,
             "snapshot": node_content,
             "timestamp": 0,
+            "_diagnostics": self._stream_trace_diagnostics(
+                chat_run,
+                kind="reasoning_delta",
+                delta=reasoning_delta,
+                provider_delta_at_ms=provider_delta_at_ms,
+                canonical_event_at_ms=canonical_event_at_ms,
+                model_run_id=model_run_id,
+            ),
         }
         reasoning_node = {
             "id": f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:reasoning:{run_key}",
@@ -2817,6 +2879,8 @@ class ChatRuntime:
         *,
         model_run_id: str,
         snapshot: str | None = None,
+        provider_delta_at_ms: int | None = None,
+        canonical_event_at_ms: int | None = None,
     ) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
@@ -2829,6 +2893,8 @@ class ChatRuntime:
                 delta,
                 model_run_id=model_run_id,
                 snapshot=snapshot or self._current_canonical_text(stream_state),
+                provider_delta_at_ms=provider_delta_at_ms,
+                canonical_event_at_ms=canonical_event_at_ms,
             )
             return [text_event] if text_event is not None else []
         for stable_chunk in stream_state.text_aggregator.push(delta):
@@ -2840,6 +2906,8 @@ class ChatRuntime:
                 stable_chunk,
                 model_run_id=model_run_id,
                 snapshot=snapshot or self._current_canonical_text(stream_state),
+                provider_delta_at_ms=provider_delta_at_ms,
+                canonical_event_at_ms=canonical_event_at_ms,
             )
             if text_event is not None:
                 emitted_events.append(text_event)
@@ -3970,12 +4038,14 @@ class ChatRuntime:
         if kind == "on_chat_model_stream":
             if stream_state.active_tool_call_ids:
                 return emitted_events
+            provider_delta_at_ms = self._now_timestamp_ms()
             model_events = canonical_model_event_adapter.normalize_chat_model_stream(
                 event,
                 text_snapshots=stream_state.text_snapshots_by_run,
                 reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
             )
             for model_event in model_events:
+                canonical_event_at_ms = self._now_timestamp_ms()
                 model_run_id = model_event.model_run_id
                 stream_state.streamed_model_run_ids.add(model_run_id)
                 if model_event.event_type == "text_delta":
@@ -4000,6 +4070,8 @@ class ChatRuntime:
                             text_delta,
                             model_run_id=model_run_id,
                             snapshot=self._current_canonical_text(stream_state),
+                            provider_delta_at_ms=provider_delta_at_ms,
+                            canonical_event_at_ms=canonical_event_at_ms,
                         )
                     )
                 elif model_event.event_type == "reasoning_delta":
@@ -4019,6 +4091,8 @@ class ChatRuntime:
                         reasoning_delta,
                         model_run_id=model_run_id,
                         snapshot=model_event.snapshot,
+                        provider_delta_at_ms=provider_delta_at_ms,
+                        canonical_event_at_ms=canonical_event_at_ms,
                     )
                     if reasoning_event is not None:
                         emitted_events.append(reasoning_event)
@@ -4027,6 +4101,7 @@ class ChatRuntime:
         if kind == "on_chat_model_end":
             if stream_state.active_tool_call_ids:
                 return emitted_events
+            provider_delta_at_ms = self._now_timestamp_ms()
             model_run_id = (event.get("run_id") or "").strip()
             model_events = canonical_model_event_adapter.normalize_chat_model_end(
                 event,
@@ -4039,6 +4114,7 @@ class ChatRuntime:
             if final_snapshot:
                 stream_state.authoritative_final_text = final_snapshot
             for model_event in model_events:
+                canonical_event_at_ms = self._now_timestamp_ms()
                 if model_event.event_type == "text_delta":
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
@@ -4061,6 +4137,8 @@ class ChatRuntime:
                             text_delta,
                             model_run_id=model_event.model_run_id,
                             snapshot=self._current_canonical_text(stream_state),
+                            provider_delta_at_ms=provider_delta_at_ms,
+                            canonical_event_at_ms=canonical_event_at_ms,
                         )
                     )
                 elif model_event.event_type == "reasoning_delta":
@@ -4080,6 +4158,8 @@ class ChatRuntime:
                         reasoning_delta,
                         model_run_id=model_event.model_run_id,
                         snapshot=model_event.snapshot,
+                        provider_delta_at_ms=provider_delta_at_ms,
+                        canonical_event_at_ms=canonical_event_at_ms,
                     )
                     if reasoning_event is not None:
                         emitted_events.append(reasoning_event)

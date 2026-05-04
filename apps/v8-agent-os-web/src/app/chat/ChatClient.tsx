@@ -18,6 +18,14 @@ import {
     mergeRuntimeTimeline,
     normalizeRuntimeTimeline,
 } from "@/lib/runtime-stage";
+import {
+    markStreamClientCommit,
+    markStreamClientRender,
+    readStreamDiagnostics,
+    recordReceivedStreamDelta,
+    type PendingStreamDiagnostic,
+    type StreamLatencyStats,
+} from "@/lib/streaming-diagnostics";
 import { Message } from "@/store/chat-types";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -205,6 +213,23 @@ function hasRenderableWebMessagePayload(message: Message | null | undefined) {
             || (Array.isArray(message.images) && message.images.length > 0)
         ),
     );
+}
+
+function attachSseEventId(payload: unknown, event: MessageEvent) {
+    const eventId = String(event.lastEventId || "").trim();
+    if (!eventId || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return payload;
+    }
+    const record = payload as Record<string, unknown>;
+    return {
+        ...record,
+        _diagnostics: {
+            ...((record._diagnostics && typeof record._diagnostics === "object")
+                ? record._diagnostics as Record<string, unknown>
+                : {}),
+            sseEventId: eventId,
+        },
+    };
 }
 
 function mergeWebMessagePayload(base: Message, incoming: Message): Message {
@@ -517,6 +542,8 @@ export default function ChatClient() {
     const latestRealtimeSeqRef = useRef<number>(0);
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
+    const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const boundProject = useMemo(
         () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
         [projects, scopeBinding?.projectId],
@@ -1215,6 +1242,16 @@ export default function ChatClient() {
                 };
             });
         }
+        const pendingDiagnostic = recordReceivedStreamDelta({
+            surface: "web/realtime",
+            event: normalizedEvent,
+            diagnostics: readStreamDiagnostics(rawEvent),
+            receivedAtMs: Date.now(),
+            statsByKey: streamLatencyStatsRef.current,
+        });
+        if (pendingDiagnostic) {
+            pendingStreamDiagnosticRef.current = pendingDiagnostic;
+        }
         queueSessionRealtimeRuntimeEvent(realtimeMessageStateRef.current, normalizedEvent);
 
         const flush = () => {
@@ -1236,6 +1273,20 @@ export default function ChatClient() {
 
             messagesRef.current = nextState.messages;
             setMessages(nextState.messages);
+            const pendingStreamDiagnostic = pendingStreamDiagnosticRef.current;
+            pendingStreamDiagnosticRef.current = null;
+            if (pendingStreamDiagnostic) {
+                const committedAtMs = Date.now();
+                markStreamClientCommit(streamLatencyStatsRef.current, pendingStreamDiagnostic, committedAtMs);
+                const markRendered = () => {
+                    markStreamClientRender(streamLatencyStatsRef.current, pendingStreamDiagnostic, Date.now());
+                };
+                if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+                    window.requestAnimationFrame(markRendered);
+                } else {
+                    setTimeout(markRendered, 0);
+                }
+            }
         };
 
         if (runtimeFlushFrameRef.current !== null || runtimeFlushTimerRef.current) {
@@ -1250,6 +1301,8 @@ export default function ChatClient() {
     }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, setMessages]);
 
     useEffect(() => {
+        const streamLatencyStats = streamLatencyStatsRef.current;
+        const realtimeMessageState = realtimeMessageStateRef.current;
         return () => {
             if (runtimeFlushFrameRef.current !== null && typeof window !== "undefined") {
                 window.cancelAnimationFrame(runtimeFlushFrameRef.current);
@@ -1257,7 +1310,8 @@ export default function ChatClient() {
             if (runtimeFlushTimerRef.current) {
                 clearTimeout(runtimeFlushTimerRef.current);
             }
-            realtimeMessageStateRef.current.pendingRuntimeEvents = [];
+            streamLatencyStats.clear();
+            realtimeMessageState.pendingRuntimeEvents = [];
         };
     }, []);
 
@@ -1451,8 +1505,14 @@ export default function ChatClient() {
 
         const handleSnapshot = (event: MessageEvent) => {
             try {
-                const data = JSON.parse(event.data);
+                const data = attachSseEventId(JSON.parse(event.data), event) as Record<string, unknown>;
                 const snapshotPayload = (data?.payload && typeof data.payload === "object") ? data.payload : data;
+                const snapshotRecord = snapshotPayload && typeof snapshotPayload === "object"
+                    ? snapshotPayload as Record<string, unknown>
+                    : {};
+                const nestedSnapshot = snapshotRecord.snapshot && typeof snapshotRecord.snapshot === "object"
+                    ? snapshotRecord.snapshot as Record<string, unknown>
+                    : {};
                 if (isLegacyChatUnsupportedPayload(snapshotPayload)) {
                     setLegacyChatUnsupported(true);
                 }
@@ -1477,10 +1537,10 @@ export default function ChatClient() {
                 if (Array.isArray(nextView?.processes) && nextView.processes.length > 0) {
                     applySessionProcessSurface(nextView.processes);
                 }
-                if (!localStreamActive && Array.isArray(snapshotPayload?.snapshot?.messages)) {
+                if (!localStreamActive && Array.isArray(nestedSnapshot.messages)) {
                     applyProjectedSnapshot(
-                        snapshotPayload.snapshot.messages,
-                        Number(snapshotPayload.latestSeq || snapshotPayload.snapshot?.latest_seq || 0),
+                        nestedSnapshot.messages,
+                        Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0),
                     );
                 }
             } catch (error) {
@@ -1490,7 +1550,7 @@ export default function ChatClient() {
 
         const handleRuntime = (event: MessageEvent) => {
             try {
-                const rawEvent = JSON.parse(event.data);
+                const rawEvent = attachSseEventId(JSON.parse(event.data), event);
                 applyRemoteRuntimeEvent(rawEvent);
             } catch (error) {
                 console.warn("[ChatClient] Failed to parse runtime SSE payload:", error);

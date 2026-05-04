@@ -10,6 +10,14 @@ import {
 } from '@/lib/chat-stream-state';
 import { createClientId } from '@/lib/id';
 import { normalizeRealtimeEvent } from '@/lib/realtime';
+import {
+    markStreamClientCommit,
+    markStreamClientRender,
+    readStreamDiagnostics,
+    recordReceivedStreamDelta,
+    type PendingStreamDiagnostic,
+    type StreamLatencyStats,
+} from '@/lib/streaming-diagnostics';
 import { Message } from '@/store/chat-types';
 import { useChatStore } from '@/store/chat-store';
 import {
@@ -89,6 +97,8 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
     const pendingMessagesRef = useRef<Message[] | null>(null);
     const commitFrameRef = useRef<number | null>(null);
     const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
+    const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const messagesRef = useRef<Message[]>(messages);
     const realtimeMessageStateRef = useRef(
         createInitialSessionRealtimeMessageState<Message>(messages, WEB_STREAM_LIFECYCLE_OPTIONS),
@@ -122,6 +132,20 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         messagesRef.current = snapshot;
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(snapshot, WEB_STREAM_LIFECYCLE_OPTIONS);
         setMessages(snapshot);
+        const pendingStreamDiagnostic = pendingStreamDiagnosticRef.current;
+        pendingStreamDiagnosticRef.current = null;
+        if (pendingStreamDiagnostic) {
+            const committedAtMs = Date.now();
+            markStreamClientCommit(streamLatencyStatsRef.current, pendingStreamDiagnostic, committedAtMs);
+            const markRendered = () => {
+                markStreamClientRender(streamLatencyStatsRef.current, pendingStreamDiagnostic, Date.now());
+            };
+            if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+                window.requestAnimationFrame(markRendered);
+            } else {
+                setTimeout(markRendered, 0);
+            }
+        }
     }, [setMessages]);
 
     const scheduleMessagesCommit = useCallback((nextMessages: Message[]) => {
@@ -172,6 +196,8 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
     const streamNdjson = useCallback(async (requestBody: any, initialMessages: Message[]) => {
         const abortController = new AbortController();
         abortControllerRef.current = { abort: () => abortController.abort() };
+        streamLatencyStatsRef.current.clear();
+        pendingStreamDiagnosticRef.current = null;
 
         const response = await fetch(apiEndpoint, {
             method: 'POST',
@@ -232,6 +258,16 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                     const rawEvent = JSON.parse(line);
                     const event = normalizeRealtimeEvent(rawEvent);
                     if (!event) continue;
+                    const pendingDiagnostic = recordReceivedStreamDelta({
+                        surface: 'web/local-ndjson',
+                        event,
+                        diagnostics: readStreamDiagnostics(rawEvent),
+                        receivedAtMs: Date.now(),
+                        statsByKey: streamLatencyStatsRef.current,
+                    });
+                    if (pendingDiagnostic) {
+                        pendingStreamDiagnosticRef.current = pendingDiagnostic;
+                    }
 
                     applyStreamEvent(event);
                 } catch (e) {
@@ -247,6 +283,16 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 const rawEvent = JSON.parse(buffer);
                 const event = normalizeRealtimeEvent(rawEvent);
                 if (event) {
+                    const pendingDiagnostic = recordReceivedStreamDelta({
+                        surface: 'web/local-ndjson',
+                        event,
+                        diagnostics: readStreamDiagnostics(rawEvent),
+                        receivedAtMs: Date.now(),
+                        statsByKey: streamLatencyStatsRef.current,
+                    });
+                    if (pendingDiagnostic) {
+                        pendingStreamDiagnosticRef.current = pendingDiagnostic;
+                    }
                     applyStreamEvent(event);
                     flushRuntimeEvents();
                 }
@@ -417,7 +463,7 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             setIsLoading(false);
             abortControllerRef.current = null;
         }
-    }, [flushPendingMessages, messages, setIsLoading, streamNdjson, tryResyncConversation]);
+    }, [flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, tryResyncConversation]);
 
     const resolveApproval = useCallback(async (approvalId: string, answer: string, approve = true) => {
         const endpoint = approve ? `/api/approvals/${approvalId}/approve` : `/api/approvals/${approvalId}/reject`;

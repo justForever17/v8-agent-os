@@ -1682,7 +1682,7 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <WorkerConfigLabel label={t("admin.generated.3ce5c87e")} tooltip={t("admin.generated.734fe4f1")} />
+                                        <WorkerConfigLabel label={t("admin.generated.3ce5c87e")} tooltip={t("admin.generated.734fe4f1", { task_brief_b64: "{task_brief_b64}" })} />
 
                                         <Textarea value={externalWorkerForm.commandTemplate} onChange={event => setExternalWorkerForm(current => ({
                     ...current,

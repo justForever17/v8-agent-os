@@ -14,6 +14,7 @@ export type AdminUserRecord = {
   createdAt: string;
   updatedAt?: string;
 };
+export const MAX_NON_ADMIN_USERS = 2;
 type AdminUsersPayload = {
   users: AdminUserRecord[];
 };
@@ -97,13 +98,17 @@ export function createUserRecord(input: {
 }) {
   const payload = readUsersPayload();
   assertUniqueLogin(input.login);
+  const role = input.role || "USER";
+  if (role === "USER" && payload.users.filter(user => user.role === "USER").length >= MAX_NON_ADMIN_USERS) {
+    throw new Error(`Ordinary user limit reached: max ${MAX_NON_ADMIN_USERS} USER accounts.`);
+  }
   const now = new Date().toISOString();
   const nextUser: AdminUserRecord = {
     id: uuidv4(),
     login: String(input.login || "").trim(),
     email: String(input.email || "").trim() || undefined,
     name: String(input.name || "").trim(),
-    role: input.role || "USER",
+    role,
     password: input.password || "",
     image: String(input.image || "").trim(),
     mustChangePassword: Boolean(input.mustChangePassword),
@@ -128,7 +133,11 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
     target.name = patch.name.trim();
   }
   if (patch.role) {
-    target.role = normalizeRole(patch.role);
+    const nextRole = normalizeRole(patch.role);
+    if (nextRole === "USER" && target.role !== "USER" && payload.users.filter(user => user.role === "USER").length >= MAX_NON_ADMIN_USERS) {
+      throw new Error(`Ordinary user limit reached: max ${MAX_NON_ADMIN_USERS} USER accounts.`);
+    }
+    target.role = nextRole;
   }
   if (typeof patch.password === "string" && patch.password) {
     target.password = patch.password;

@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
@@ -24,6 +24,7 @@ import type { PhoneUiTimelineNode } from "@/src/types/admin";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
+import { resolveTextLayoutEngine, shouldUseStreamingPlainTextRenderer } from "@/src/lib/text-layout-engine";
 import { coerceAdminResourceRef } from "@v8/session-realtime";
 
 function stringifyPayload(value: unknown) {
@@ -272,48 +273,17 @@ function isPublicPreviewUrl(url: string) {
     }
 }
 
-function sliceByCodePoint(value: string, length: number) {
-    return Array.from(value).slice(0, length).join("");
+function useStreamingRevealContent(content: string, _enabled: boolean) {
+    return content;
 }
 
-function useStreamingRevealContent(content: string, enabled: boolean) {
-    const [visibleContent, setVisibleContent] = useState(() => (
-        enabled ? sliceByCodePoint(content, Math.min(Array.from(content).length, 8)) : content
-    ));
-
-    useEffect(() => {
-        if (!enabled) {
-            setVisibleContent(content);
-            return undefined;
-        }
-
-        setVisibleContent((current) => {
-            if (!current || !content.startsWith(current)) {
-                return sliceByCodePoint(content, Math.min(Array.from(content).length, 8));
-            }
-            return current;
-        });
-
-        const timer = setInterval(() => {
-            setVisibleContent((current) => {
-                if (current === content) {
-                    return current;
-                }
-                if (!content.startsWith(current)) {
-                    return content;
-                }
-                const currentLength = Array.from(current).length;
-                const targetLength = Array.from(content).length;
-                const remaining = targetLength - currentLength;
-                const step = Math.max(3, Math.min(14, Math.ceil(remaining / 5)));
-                return sliceByCodePoint(content, Math.min(targetLength, currentLength + step));
-            });
-        }, 26);
-
-        return () => clearInterval(timer);
-    }, [content, enabled]);
-
-    return visibleContent;
+function StreamingPlainTextBlock({ content }: { content: string }) {
+    const { colors } = useUiPrefs();
+    return (
+        <Text selectable style={[styles.streamingText, { color: colors.textMuted }]}>
+            {content}
+        </Text>
+    );
 }
 
 export const MessageBlockItem = memo(function MessageBlockItem({
@@ -331,6 +301,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 }) {
     const { adminBaseUrl } = useAppSession();
     const { colors, t } = useUiPrefs();
+    const textLayoutEngine = resolveTextLayoutEngine();
     const blockContent = String(block?.content || "");
     const revealedBlockContent = useStreamingRevealContent(
         blockContent,
@@ -645,6 +616,10 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         );
     }
 
+    if (shouldUseStreamingPlainTextRenderer(textLayoutEngine, resolvedStreaming)) {
+        return <StreamingPlainTextBlock content={revealedBlockContent} />;
+    }
+
     return <MarkdownRenderer content={revealedBlockContent} />;
 });
 
@@ -677,6 +652,10 @@ const styles = StyleSheet.create({
         alignItems: "center",
         flexWrap: "wrap",
         gap: 8,
+    },
+    streamingText: {
+        fontSize: 15,
+        lineHeight: 22,
     },
     unresolvedCard: {
         borderRadius: radii.lg,

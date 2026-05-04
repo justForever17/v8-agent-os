@@ -9,17 +9,19 @@ from runtimes.network_supervisor.anthropic_compat import build_anthropic_message
 from runtimes.network_supervisor.openai_compat import build_openai_completion_response
 
 
-def openai_sse_frame(payload: dict[str, object] | str) -> bytes:
+def openai_sse_frame(payload: dict[str, object] | str, *, event_id: str | None = None) -> bytes:
     if isinstance(payload, str):
         data = payload
     else:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"data: {data}\n\n".encode("utf-8")
+    prefix = f"id: {event_id}\n" if event_id else ""
+    return f"{prefix}data: {data}\n\n".encode("utf-8")
 
 
-def anthropic_sse_frame(event: str, payload: dict[str, object]) -> bytes:
+def anthropic_sse_frame(event: str, payload: dict[str, object], *, event_id: str | None = None) -> bytes:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+    prefix = f"id: {event_id}\n" if event_id else ""
+    return f"{prefix}event: {event}\ndata: {data}\n\n".encode("utf-8")
 
 
 class OpenAIStreamTimelineEmitter:
@@ -35,6 +37,11 @@ class OpenAIStreamTimelineEmitter:
         self.model_name = model_name
         self.created = int(created or time.time())
         self._role_emitted = False
+        self._event_counter = 0
+
+    def _next_event_id(self) -> str:
+        self._event_counter += 1
+        return f"{self.response_id}:{self._event_counter}"
 
     def _chunk(self, delta: dict[str, Any], *, finish_reason: str | None = None) -> bytes:
         return openai_sse_frame(
@@ -44,7 +51,8 @@ class OpenAIStreamTimelineEmitter:
                 "created": self.created,
                 "model": self.model_name,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-            }
+            },
+            event_id=self._next_event_id(),
         )
 
     def ensure_role(self) -> list[bytes]:
@@ -93,7 +101,7 @@ class OpenAIStreamTimelineEmitter:
         return self.text_delta(notice)
 
     def finish(self, finish_reason: str) -> list[bytes]:
-        return [*self.ensure_role(), self._chunk({}, finish_reason=finish_reason), openai_sse_frame("[DONE]")]
+        return [*self.ensure_role(), self._chunk({}, finish_reason=finish_reason), openai_sse_frame("[DONE]", event_id=self._next_event_id())]
 
 
 class AnthropicStreamTimelineEmitter:
@@ -110,9 +118,17 @@ class AnthropicStreamTimelineEmitter:
         self._next_block_index = 0
         self._active_block_index: int | None = None
         self._active_block_type = ""
+        self._event_counter = 0
+
+    def _next_event_id(self) -> str:
+        self._event_counter += 1
+        return f"{self.response_id}:{self._event_counter}"
+
+    def _frame(self, event: str, payload: dict[str, object]) -> bytes:
+        return anthropic_sse_frame(event, payload, event_id=self._next_event_id())
 
     def message_start(self) -> bytes:
-        return anthropic_sse_frame(
+        return self._frame(
             "message_start",
             {
                 "type": "message_start",
@@ -135,7 +151,7 @@ class AnthropicStreamTimelineEmitter:
         block_index = self._active_block_index
         self._active_block_index = None
         self._active_block_type = ""
-        return [anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index})]
+        return [self._frame("content_block_stop", {"type": "content_block_stop", "index": block_index})]
 
     def _ensure_block(self, block_type: str, content_block: dict[str, Any]) -> tuple[list[bytes], int]:
         if self._active_block_index is not None and self._active_block_type == block_type:
@@ -146,7 +162,7 @@ class AnthropicStreamTimelineEmitter:
         self._active_block_index = block_index
         self._active_block_type = block_type
         frames.append(
-            anthropic_sse_frame(
+            self._frame(
                 "content_block_start",
                 {"type": "content_block_start", "index": block_index, "content_block": content_block},
             )
@@ -158,7 +174,7 @@ class AnthropicStreamTimelineEmitter:
             return []
         frames, block_index = self._ensure_block("text", {"type": "text", "text": ""})
         frames.append(
-            anthropic_sse_frame(
+            self._frame(
                 "content_block_delta",
                 {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": content}},
             )
@@ -170,7 +186,7 @@ class AnthropicStreamTimelineEmitter:
             return []
         frames, block_index = self._ensure_block("thinking", {"type": "thinking", "thinking": "", "signature": ""})
         frames.append(
-            anthropic_sse_frame(
+            self._frame(
                 "content_block_delta",
                 {"type": "content_block_delta", "index": block_index, "delta": {"type": "thinking_delta", "thinking": content}},
             )
@@ -184,7 +200,7 @@ class AnthropicStreamTimelineEmitter:
         block_index = self._next_block_index
         self._next_block_index += 1
         frames.append(
-            anthropic_sse_frame(
+            self._frame(
                 "content_block_start",
                 {
                     "type": "content_block_start",
@@ -194,7 +210,7 @@ class AnthropicStreamTimelineEmitter:
             )
         )
         frames.append(
-            anthropic_sse_frame(
+            self._frame(
                 "content_block_delta",
                 {
                     "type": "content_block_delta",
@@ -203,7 +219,7 @@ class AnthropicStreamTimelineEmitter:
                 },
             )
         )
-        frames.append(anthropic_sse_frame("content_block_stop", {"type": "content_block_stop", "index": block_index}))
+        frames.append(self._frame("content_block_stop", {"type": "content_block_stop", "index": block_index}))
         return frames
 
     def approval_notice(self, notice: str) -> list[bytes]:
@@ -212,7 +228,7 @@ class AnthropicStreamTimelineEmitter:
     def finish(self, stop_reason: str) -> list[bytes]:
         return [
             *self._close_active_block(),
-            anthropic_sse_frame(
+            self._frame(
                 "message_delta",
                 {
                     "type": "message_delta",
@@ -220,11 +236,11 @@ class AnthropicStreamTimelineEmitter:
                     "usage": {"output_tokens": 0},
                 },
             ),
-            anthropic_sse_frame("message_stop", {"type": "message_stop"}),
+            self._frame("message_stop", {"type": "message_stop"}),
         ]
 
     def error(self, message: str) -> bytes:
-        return anthropic_sse_frame("error", {"type": "error", "error": {"type": "api_error", "message": message}})
+        return self._frame("error", {"type": "error", "error": {"type": "api_error", "message": message}})
 
 
 class CompatWireEmitter:

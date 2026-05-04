@@ -141,6 +141,8 @@ type RunLedgerPayload = {
   }>;
 };
 type DoctorPayload = {
+  id?: string;
+  generatedAt?: string;
   summary?: {
     status?: string;
     counts?: Record<string, number>;
@@ -161,8 +163,11 @@ type DoctorPayload = {
   };
 };
 type ConfigMigrationPlan = {
+  target?: string;
   status?: string;
   reason?: string;
+  reversible?: boolean;
+  runtimeImpact?: string[];
   changes?: Array<{
     path?: string;
     before?: unknown;
@@ -184,6 +189,14 @@ function fieldNumber(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
+function apiErrorMessage(payload: unknown, status: number) {
+  const record = asRecord(payload);
+  const detail = record.detail;
+  const error = record.error;
+  const message = typeof detail === "string" ? detail : typeof error === "string" ? error : JSON.stringify(record || {});
+  return `HTTP ${status}${message && message !== "{}" ? ` · ${message}` : ""}`;
+}
+
 function formatBytes(value?: number) {
   const bytes = Number(value || 0);
   if (bytes <= 0) return "0 MB";
@@ -198,6 +211,7 @@ function mbToBytes(value: string) {
   return Math.round(mb * 1024 * 1024);
 }
 function StorageRetentionPanel() {
+  const t = useT();
   const [stats, setStats] = useState<StorageRetentionPayload | null>(null);
   const [lastResult, setLastResult] = useState<JsonRecord | null>(null);
   const [budgetDraft, setBudgetDraft] = useState<Record<string, string>>({});
@@ -282,7 +296,7 @@ function StorageRetentionPanel() {
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">Storage Retention</div>
+                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.storageRetention.title")}</div>
                     <div className="text-xs leading-5 text-slate-500">
                         {INTERNAL_READABLE.ka0d7a179bf}
                     </div>
@@ -290,33 +304,33 @@ function StorageRetentionPanel() {
                 <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
                         {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                        Refresh
+                        {t("app.admin.dashboard.operations.center.advanced.refresh")}
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => void run("dry-run")} disabled={loading}>Dry run</Button>
-                    <Button size="sm" onClick={() => void run("prune")} disabled={loading}>Prune</Button>
+                    <Button variant="outline" size="sm" onClick={() => void run("dry-run")} disabled={loading}>{t("app.admin.dashboard.operations.center.advanced.dryRun")}</Button>
+                    <Button size="sm" onClick={() => void run("prune")} disabled={loading}>{t("app.admin.dashboard.operations.center.advanced.prune")}</Button>
                     <Button variant="outline" size="sm" onClick={() => void saveBudgets()} disabled={loading}>{INTERNAL_READABLE.kf8d9ddff2f}</Button>
                 </div>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">Governed</div>
+                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.governed")}</div>
                     <div className="font-semibold text-slate-900">{formatBytes(stats?.totalGovernedBytes)}</div>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">Cap</div>
+                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.cap")}</div>
                     <div className="font-semibold text-slate-900">{formatBytes(stats?.maxBytes)}</div>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">Over cap</div>
+                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.overCap")}</div>
                     <div className={Number(stats?.overCapBytes || 0) > 0 ? "font-semibold text-amber-700" : "font-semibold text-emerald-700"}>{formatBytes(stats?.overCapBytes)}</div>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">Last action</div>
+                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.lastAction")}</div>
                     <div className="font-semibold text-slate-900">{fieldText(lastResult?.status || stats?.recentRetentionEvents?.[0]?.status, "none")}</div>
                 </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-3">
-                <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Budgets</div>
+                <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.budgets")}</div>
                 <div className="grid gap-3 md:grid-cols-2">
                     {Object.entries(budgetComponents).map(([key, value]) => {
           const used = Number(value.usedBytes || 0);
@@ -327,7 +341,7 @@ function StorageRetentionPanel() {
                                     <div>
                                         <div className="font-semibold text-slate-900">{value.label || key}</div>
                                         <div className="text-slate-500">
-                                            used {formatBytes(used)} · {value.mode || "warn_only"}{value.retentionDays ? ` · ${value.retentionDays}d` : ""}
+                                            {t("app.admin.dashboard.operations.center.advanced.used")} {formatBytes(used)} · {value.mode || "warn_only"}{value.retentionDays ? ` · ${value.retentionDays}d` : ""}
                                         </div>
                                     </div>
                                     <div className={ratio >= 1 ? "text-amber-700" : "text-slate-500"}>{Math.round(ratio * 100)}%</div>
@@ -354,21 +368,38 @@ function StorageRetentionPanel() {
                     </div>)}
             </div>
             {lastResult ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
-                    Result: {fieldText(lastResult.status, "unknown")} · actions {actionCount} · before {formatBytes(fieldNumber(lastResult.beforeBytes))} · after {formatBytes(fieldNumber(lastResult.afterBytes))}
+                    {t("app.admin.dashboard.operations.center.advanced.resultSummary", {
+            status: fieldText(lastResult.status, "unknown"),
+            actionCount,
+            before: formatBytes(fieldNumber(lastResult.beforeBytes)),
+            after: formatBytes(fieldNumber(lastResult.afterBytes))
+          })}
                 </div> : null}
         </div>;
 }
 function SystemDoctorPanel() {
+  const t = useT();
   const [payload, setPayload] = useState<DoctorPayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const load = async () => {
     setLoading(true);
+    setError(null);
     try {
       const response = await fetch("/api/system/doctor", {
-        cache: "no-store"
+        cache: "no-store",
+        credentials: "same-origin"
       });
       const data = await response.json().catch(() => null);
-      if (response.ok) setPayload(data);
+      if (response.ok) {
+        setPayload(data);
+      } else {
+        setPayload(null);
+        setError(apiErrorMessage(data, response.status));
+      }
+    } catch (err) {
+      setPayload(null);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -378,38 +409,67 @@ function SystemDoctorPanel() {
   }, []);
   const checks = payload?.checks || [];
   const actions = payload?.repairPlan?.actions || [];
+  const visibleChecks = checks.some(check => check.status !== "ok") ? checks.filter(check => check.status !== "ok").slice(0, 8) : checks.slice(0, 8);
+  const statusLabels: Record<string, string> = {
+    ok: t("app.admin.dashboard.operations.center.advanced.status.ok"),
+    warning: t("app.admin.dashboard.operations.center.advanced.status.warning"),
+    error: t("app.admin.dashboard.operations.center.advanced.status.error"),
+    info: t("app.admin.dashboard.operations.center.advanced.status.info")
+  };
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">System Doctor</div>
+                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")}</div>
                     <div className="text-xs leading-5 text-slate-500">{INTERNAL_READABLE.k6e8c71c3b5}</div>
+                    <div className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+                        {t("app.admin.dashboard.operations.center.advanced.systemDoctor.description")}
+                    </div>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
                     {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                    Refresh
+                    {t("app.admin.dashboard.operations.center.advanced.refresh")}
                 </Button>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">Status</div>
-                    <div className={payload?.summary?.status === "ok" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>{payload?.summary?.status || "unknown"}</div>
+                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.status")}</div>
+                    <div className={payload?.summary?.status === "ok" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>{payload?.summary?.status ? statusLabels[payload.summary.status] || payload.summary.status : t("app.admin.dashboard.operations.center.advanced.status.unavailable")}</div>
                 </div>
                 {["ok", "warning", "error"].map(key => <div key={key} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                        <div className="text-xs text-slate-500">{key}</div>
+                        <div className="text-xs text-slate-500">{statusLabels[key] || key}</div>
                         <div className="font-semibold text-slate-900">{payload?.summary?.counts?.[key] ?? 0}</div>
                     </div>)}
             </div>
+            {payload?.generatedAt ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-500">
+                    {t("app.admin.dashboard.operations.center.advanced.systemDoctor.lastRun", {
+          generatedAt: payload.generatedAt,
+          checkCount: checks.length
+        })}
+                </div> : null}
+            {error ? <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700">
+                    {t("app.admin.dashboard.operations.center.advanced.systemDoctor.loadFailed", {
+          error
+        })}
+                </div> : null}
+            {!error && !loading && payload && !checks.length ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                    {t("app.admin.dashboard.operations.center.advanced.systemDoctor.noChecks")}
+                </div> : null}
             <div className="grid gap-2 md:grid-cols-2">
-                {checks.slice(0, 12).map(check => <div key={check.id} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+                {visibleChecks.map(check => <div key={check.id} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
                         <div className="flex items-center justify-between gap-3">
                             <span className="font-semibold text-slate-900">{check.title || check.id}</span>
-                            <span className={check.status === "ok" ? "text-emerald-700" : check.status === "error" ? "text-red-700" : "text-amber-700"}>{check.status || "info"}</span>
+                            <span className={check.status === "ok" ? "text-emerald-700" : check.status === "error" ? "text-red-700" : "text-amber-700"}>{statusLabels[String(check.status || "info")] || check.status || "info"}</span>
                         </div>
                         <div className="text-slate-500">{check.summary}</div>
                     </div>)}
             </div>
+            {checks.length > visibleChecks.length ? <div className="text-xs text-slate-500">
+                    {t("app.admin.dashboard.operations.center.advanced.systemDoctor.omittedChecks", {
+          omittedCount: checks.length - visibleChecks.length
+        })}
+                </div> : null}
             {actions.length ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
-                    <div className="mb-2 font-semibold text-slate-900">Repair plan</div>
+                    <div className="mb-2 font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.repairPlan")}</div>
                     {actions.map(action => <div key={action.id} className="mb-2">
                             <span className="font-medium text-slate-900">{action.title}</span>
                             <span className="text-slate-500"> · {action.requiresConfirmation ? INTERNAL_READABLE.k9deb52e20d : INTERNAL_READABLE.k6530601635}</span>
@@ -419,21 +479,40 @@ function SystemDoctorPanel() {
         </div>;
 }
 function ConfigMigrationPanel() {
+  const t = useT();
   const [plan, setPlan] = useState<ConfigMigrationPlan | null>(null);
   const [ledger, setLedger] = useState<{
+    ledgerPath?: string;
     migrations?: JsonRecord[];
   } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lastApplyResult, setLastApplyResult] = useState<JsonRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const load = async () => {
     setLoading(true);
+    setError(null);
     try {
       const [planResponse, ledgerResponse] = await Promise.all([fetch("/api/config/migrations/plan?target=storage_retention_balanced", {
-        cache: "no-store"
+        cache: "no-store",
+        credentials: "same-origin"
       }), fetch("/api/config/migrations", {
-        cache: "no-store"
+        cache: "no-store",
+        credentials: "same-origin"
       })]);
-      if (planResponse.ok) setPlan(await planResponse.json().catch(() => null));
-      if (ledgerResponse.ok) setLedger(await ledgerResponse.json().catch(() => null));
+      const planPayload = await planResponse.json().catch(() => null);
+      const ledgerPayload = await ledgerResponse.json().catch(() => null);
+      if (planResponse.ok) {
+        setPlan(planPayload);
+      } else {
+        setPlan(null);
+        setError(apiErrorMessage(planPayload, planResponse.status));
+      }
+      if (ledgerResponse.ok) {
+        setLedger(ledgerPayload);
+      }
+    } catch (err) {
+      setPlan(null);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -441,9 +520,11 @@ function ConfigMigrationPanel() {
   const apply = async () => {
     if (!window.confirm(INTERNAL_READABLE.k42be496f31)) return;
     setLoading(true);
+    setError(null);
     try {
-      await fetch("/api/config/migrations/apply", {
+      const response = await fetch("/api/config/migrations/apply", {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json"
         },
@@ -452,6 +533,13 @@ function ConfigMigrationPanel() {
           reason: "admin_apply_storage_budget_defaults"
         })
       });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(apiErrorMessage(payload, response.status));
+        return;
+      } else {
+        setLastApplyResult(payload);
+      }
       await load();
     } finally {
       setLoading(false);
@@ -462,24 +550,62 @@ function ConfigMigrationPanel() {
   }, []);
   const changes = plan?.changes || [];
   const migrations = ledger?.migrations || [];
+  const planStatus = String(plan?.status || "");
+  const migrationReady = planStatus === "ready";
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">Config Migration</div>
+                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.configMigration.title")}</div>
                     <div className="text-xs leading-5 text-slate-500">{INTERNAL_READABLE.k10851755fd}</div>
                 </div>
                 <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{INTERNAL_READABLE.k38108eaa1d}</Button>
-                    <Button size="sm" onClick={() => void apply()} disabled={loading || plan?.status !== "ready"}>{INTERNAL_READABLE.k458914f447}</Button>
+                    <Button size="sm" onClick={() => void apply()} disabled={loading || !migrationReady}>{INTERNAL_READABLE.k458914f447}</Button>
                 </div>
             </div>
-            <div className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
-                <div className="font-semibold text-slate-900">storage_retention_balanced · {plan?.status || "unknown"}</div>
-                <div className="text-slate-500">{plan?.reason}</div>
-                <div className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-50 p-2 font-mono text-[11px] text-slate-600">
-                    {changes.length ? changes.slice(0, 40).map(item => <div key={item.path}>{item.path}: {JSON.stringify(item.before)} → {JSON.stringify(item.after)}</div>) : "no changes"}
-                </div>
-            </div>
+            {error ? <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700">
+                    {t("app.admin.dashboard.operations.center.advanced.configMigration.loadFailed", {
+          error
+        })}
+                </div> : null}
+            {plan ? <div className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="font-semibold text-slate-900">{plan.target || "storage_retention_balanced"} · {plan.status}</div>
+                        <div className={migrationReady ? "rounded-full bg-amber-50 px-2 py-1 font-medium text-amber-700" : "rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700"}>
+                            {migrationReady ? t("app.admin.dashboard.operations.center.advanced.configMigration.ready") : t("app.admin.dashboard.operations.center.advanced.configMigration.noActionNeeded")}
+                        </div>
+                    </div>
+                    <div className="mt-2 text-slate-500">{plan.reason}</div>
+                    <div className="mt-2 grid gap-2 md:grid-cols-3">
+                        <div className="rounded-lg bg-slate-50 p-2">
+                            <div className="text-slate-500">{t("app.admin.dashboard.operations.center.advanced.configMigration.changeCount")}</div>
+                            <div className="font-semibold text-slate-900">{changes.length}</div>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-2">
+                            <div className="text-slate-500">{t("app.admin.dashboard.operations.center.advanced.configMigration.reversible")}</div>
+                            <div className="font-semibold text-slate-900">{plan.reversible ? t("app.admin.dashboard.operations.center.page.k2ae24b34") : t("app.admin.dashboard.operations.center.page.k8d9f05ae")}</div>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-2">
+                            <div className="text-slate-500">{t("app.admin.dashboard.operations.center.advanced.configMigration.impact")}</div>
+                            <div className="font-semibold text-slate-900">{(plan.runtimeImpact || []).join(", ") || "-"}</div>
+                        </div>
+                    </div>
+                    <div className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-50 p-2 font-mono text-[11px] text-slate-600">
+                        {changes.length ? changes.slice(0, 40).map(item => <div key={item.path}>{item.path}: {JSON.stringify(item.before)} → {JSON.stringify(item.after)}</div>) : t("app.admin.dashboard.operations.center.advanced.configMigration.currentlyTargetState")}
+                    </div>
+                </div> : !loading && !error ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                    {t("app.admin.dashboard.operations.center.advanced.configMigration.noPlan")}
+                </div> : null}
+            {lastApplyResult ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs leading-5 text-emerald-700">
+                    {t("app.admin.dashboard.operations.center.advanced.configMigration.applyResult", {
+          status: fieldText(lastApplyResult.status, "-")
+        })}
+                </div> : null}
+            {ledger?.ledgerPath ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-500">
+                    {t("app.admin.dashboard.operations.center.advanced.configMigration.ledgerPath", {
+          ledgerPath: ledger.ledgerPath
+        })}
+                </div> : null}
             <div className="grid gap-2 md:grid-cols-2">
                 {migrations.slice(0, 6).map(item => <div key={String(item.id)} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
                         <div className="font-semibold text-slate-900">{String(item.id)}</div>
@@ -787,8 +913,8 @@ function EvidencePanel() {
       })} placeholder={t("app.admin.dashboard.operations.center.evidence.runtimeKind")} />
             </div>
 
-            <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-                <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="grid min-h-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+                <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-sm xl:max-h-[680px]">
                     {items.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.empty")}</div> : items.map(item => <button key={item.id || item.rawRef} type="button" onClick={() => setSelected(item)} className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition ${selected?.id === item.id ? "border-slate-900 bg-slate-950 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300"}`}>
 
                             <div className="flex items-center justify-between gap-2">
@@ -803,7 +929,7 @@ function EvidencePanel() {
                         </Button> : null}
                 </div>
 
-                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="min-w-0 space-y-4 overflow-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:max-h-[680px]">
                     {selected ? <>
                             <div className="grid gap-2 text-xs md:grid-cols-3">
                                 <div className="rounded-xl border border-slate-200 p-3">
@@ -820,8 +946,8 @@ function EvidencePanel() {
                                 </div>
                             </div>
                             <div className="grid gap-2 text-xs md:grid-cols-2">
-                                <pre className="max-h-44 overflow-auto rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
-                                <pre className="max-h-44 overflow-auto rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
+                                <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
+                                <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
                             </div>
                             <div className="rounded-xl border border-slate-200 p-3 text-xs">
                                 <div className="font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.relatedCompactions")}</div>
@@ -848,7 +974,7 @@ function EvidencePanel() {
                                         </Button>
                                     </div>
                                 </div>
-                                <pre className="max-h-[440px] overflow-auto whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-800">{selected.preview || ""}</pre>
+                                <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-800">{selected.preview || ""}</pre>
                                 <div className="mt-2 text-xs text-slate-500">
                                     {t("app.admin.dashboard.operations.center.evidence.omitted", {
                 omitted_chars: selected.omittedChars || 0,
@@ -1119,13 +1245,13 @@ export default function OperationsCenterPage() {
                 </TabsContent>
 
                 <TabsContent value="advanced">
-                    <AdvancedSection title="System Doctor" defaultOpen>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")} defaultOpen>
                         <SystemDoctorPanel />
                     </AdvancedSection>
-                    <AdvancedSection title="Config Migration" defaultOpen={false}>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.configMigration.title")} defaultOpen={false}>
                         <ConfigMigrationPanel />
                     </AdvancedSection>
-                    <AdvancedSection title="Storage Retention" defaultOpen={false}>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.storageRetention.title")} defaultOpen={false}>
                         <StorageRetentionPanel />
                     </AdvancedSection>
                     <AdvancedSection title={t("app.admin.dashboard.operations.center.logs.title")} defaultOpen>

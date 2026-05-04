@@ -57,22 +57,28 @@ export async function GET(
             let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
             let snapshotInflight = false;
             let snapshotPending = false;
+            let eventCounter = 0;
 
             const sendSse = (event: unknown, eventName = "message") => {
                 if (closed) return;
                 const adminForwardedAt = new Date().toISOString();
+                const proxyFlushAt = new Date().toISOString();
+                eventCounter += 1;
+                const eventId = `${id}:${eventCounter}`;
                 const payload = event && typeof event === "object"
                     ? {
                         ...(event as Record<string, unknown>),
                         _diagnostics: {
                             ...asRecord((event as Record<string, unknown>)._diagnostics),
                             adminForwardedAt,
+                            proxyFlushAt,
+                            proxyEventId: eventId,
                         },
                     }
                     : event;
                 lastForwardedAt = Date.now();
                 controller.enqueue(
-                    encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`)
+                    encoder.encode(`id: ${eventId}\nevent: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`)
                 );
             };
 
@@ -259,6 +265,7 @@ export async function GET(
         headers: {
             "Content-Type": "text/event-stream; charset=utf-8",
             "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         }
     });

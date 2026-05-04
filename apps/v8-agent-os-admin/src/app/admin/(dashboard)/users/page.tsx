@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 import { EditUserDialog } from "@/components/admin/EditUserDialog";
 import { createTranslator, parseLocale } from "@/lib/locale";
+import { MAX_NON_ADMIN_USERS } from "@/lib/users";
 
 // ... imports ...
 
@@ -21,6 +22,8 @@ export default async function UsersPage() {
     const locale = parseLocale((await cookies()).get("v8-agent-os-locale")?.value) || "zh-CN";
     const t = createTranslator(locale);
     const users = await getUsers();
+    const ordinaryUserCount = users.filter((user) => user.role === "USER").length;
+    const ordinaryUserLimitReached = ordinaryUserCount >= MAX_NON_ADMIN_USERS;
 
     return (
         <div className="space-y-6">
@@ -33,6 +36,12 @@ export default async function UsersPage() {
                     <CardTitle>{t("app.admin.dashboard.users.page.k80e8c9c4")}</CardTitle>
                 </CardHeader>
                 <CardContent>
+                    <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
+                        {t("app.admin.dashboard.users.page.ordinaryUserLimit", {
+                            count: ordinaryUserCount,
+                            max: MAX_NON_ADMIN_USERS,
+                        })}
+                    </div>
                     <form action={createUser} className="grid gap-4 lg:grid-cols-5">
                         <div className="grid w-full max-w-sm items-center gap-1.5">
                             <label htmlFor="login" className="text-sm font-medium">{t("app.admin.dashboard.users.page.k27ba7ff8")}</label>
@@ -51,11 +60,17 @@ export default async function UsersPage() {
                             <select
                                 id="role"
                                 name="role"
+                                defaultValue={ordinaryUserLimitReached ? "ADMIN" : "USER"}
                                 className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                                <option value="USER">{t("app.admin.dashboard.users.page.k4dd15429")}</option>
+                                <option value="USER" disabled={ordinaryUserLimitReached}>{t("app.admin.dashboard.users.page.k4dd15429")}</option>
                                 <option value="ADMIN">{t("app.admin.dashboard.users.page.kf2e17f9d")}</option>
                             </select>
+                            {ordinaryUserLimitReached ? (
+                                <div className="text-xs leading-5 text-amber-700">
+                                    {t("app.admin.dashboard.users.page.ordinaryUserLimitReached")}
+                                </div>
+                            ) : null}
                         </div>
                         <div className="flex items-center gap-3">
                             <label className="flex items-center gap-2 text-sm text-muted-foreground">

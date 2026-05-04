@@ -9,6 +9,7 @@ import { MermaidRenderer } from "./MermaidRenderer";
 import { VoiceCard } from "./VoiceCard";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { useChatStore } from "@/store/chat-store";
+import { resolveTextLayoutEngine, shouldUseStreamingPlainTextRenderer } from "@/lib/text-layout-engine";
 
 const ModelViewer = dynamic(
     () => import("./ModelViewer").then((mod) => mod.ModelViewer),
@@ -28,6 +29,7 @@ interface MessageBlockItemProps {
 
 export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
     const setActiveArtifactId = useChatStore(s => s.setActiveArtifactId);
+    const textLayoutEngine = resolveTextLayoutEngine();
     if (block.type === 'file-ppt') {
         return <PPTCard url={block.data?.url || ''} filename={block.data?.filename} />;
     }
@@ -62,6 +64,13 @@ export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
     }
     if (block.type === 'voice') {
         return <VoiceCard content={block.content} isStreaming={Boolean(block.isStreaming)} />;
+    }
+    if (block.type === 'text' && shouldUseStreamingPlainTextRenderer(textLayoutEngine, Boolean(block.isStreaming))) {
+        return (
+            <div className="whitespace-pre-wrap break-words text-[15px] leading-7 text-foreground/95">
+                {block.content}
+            </div>
+        );
     }
     return <MarkdownRenderer content={block.content} />;
 });

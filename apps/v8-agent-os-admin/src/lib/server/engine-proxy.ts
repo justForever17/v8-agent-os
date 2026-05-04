@@ -28,7 +28,11 @@ export async function proxyEngineJson(
     path: string,
     init?: RequestInit,
 ) {
-    const response = await fetch(`${resolveEngineBaseUrl()}${path}`, {
+    const engineBaseUrl = resolveEngineBaseUrl();
+    const normalizedPath = engineBaseUrl.endsWith("/v1") && path.startsWith("/v1/")
+        ? path.slice(3)
+        : path;
+    const response = await fetch(`${engineBaseUrl}${normalizedPath}`, {
         cache: "no-store",
         ...init,
     });

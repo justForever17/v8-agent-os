@@ -3,6 +3,24 @@ import { translateCurrent } from "@/src/lib/locale";
 
 type StreamEventHandler = (eventName: string, payload: unknown) => void;
 
+function attachSseEventId(payload: unknown, eventId: string) {
+    const normalizedEventId = String(eventId || "").trim();
+    if (!normalizedEventId || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return payload;
+    }
+    const record = payload as Record<string, unknown>;
+    const diagnostics = record._diagnostics && typeof record._diagnostics === "object" && !Array.isArray(record._diagnostics)
+        ? record._diagnostics as Record<string, unknown>
+        : {};
+    return {
+        ...record,
+        _diagnostics: {
+            ...diagnostics,
+            sseEventId: normalizedEventId,
+        },
+    };
+}
+
 export function normalizeAdminBaseUrl(value: string) {
     const trimmed = String(value || "").trim();
     if (!trimmed) return "";
@@ -113,11 +131,16 @@ export async function streamSse(
         for (const chunk of chunks) {
             const lines = chunk.split("\n");
             let eventName = "message";
+            let eventId = "";
             const dataLines: string[] = [];
 
             for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
+                if (trimmed.startsWith("id:")) {
+                    eventId = trimmed.slice("id:".length).trim();
+                    continue;
+                }
                 if (trimmed.startsWith("event:")) {
                     eventName = trimmed.slice("event:".length).trim() || "message";
                     continue;
@@ -130,7 +153,7 @@ export async function streamSse(
             if (!dataLines.length) continue;
             const rawPayload = dataLines.join("\n");
             try {
-                onEvent(eventName, JSON.parse(rawPayload));
+                onEvent(eventName, attachSseEventId(JSON.parse(rawPayload), eventId));
             } catch {
                 onEvent(eventName, rawPayload);
             }
@@ -192,11 +215,16 @@ export async function streamSseWithXmlHttpRequest(options: {
         for (const chunk of chunks) {
             const lines = chunk.split("\n");
             let eventName = "message";
+            let eventId = "";
             const dataLines: string[] = [];
 
             for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
+                if (trimmed.startsWith("id:")) {
+                    eventId = trimmed.slice("id:".length).trim();
+                    continue;
+                }
                 if (trimmed.startsWith("event:")) {
                     eventName = trimmed.slice("event:".length).trim() || "message";
                     continue;
@@ -209,7 +237,7 @@ export async function streamSseWithXmlHttpRequest(options: {
             if (!dataLines.length) continue;
             const rawPayload = dataLines.join("\n");
             try {
-                onEvent(eventName, JSON.parse(rawPayload));
+                onEvent(eventName, attachSseEventId(JSON.parse(rawPayload), eventId));
             } catch {
                 onEvent(eventName, rawPayload);
             }

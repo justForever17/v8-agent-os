@@ -174,7 +174,8 @@ export async function proxyClientAdminStream(
             status: response.status,
             headers: buildPassthroughHeaders(response, {
                 "Content-Type": response.headers.get("Content-Type") || defaultContentType,
-                "Cache-Control": response.headers.get("Cache-Control") || "no-store",
+                "Cache-Control": response.headers.get("Cache-Control") || "no-cache, no-transform",
+                "X-Accel-Buffering": response.headers.get("X-Accel-Buffering") || "no",
                 "Connection": response.headers.get("Connection") || "keep-alive",
             }),
         });

@@ -24,13 +24,14 @@ KNOWN_RUNTIME_FAMILIES = (
     "network_supervisor",
     "engineering",
     "creative_media",
+    "research",
     "plugin_host",
     "computer_use",
     "rpa",
     "desktop_live",
 )
 DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
-    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor", "engineering", "creative_media"),
+    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor", "engineering", "creative_media", "research"),
     "desktop": (
         "chat",
         "memory",
@@ -39,6 +40,7 @@ DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
         "network_supervisor",
         "engineering",
         "creative_media",
+        "research",
         "plugin_host",
         "computer_use",
         "rpa",
@@ -60,6 +62,9 @@ _FEATURE_RUNTIME_FAMILY = {
     "proof_ledger": "engineering",
     "workset": "engineering",
     "creative_media": "creative_media",
+    "research": "research",
+    "research_broker": "research",
+    "web_research": "research",
     "plugin_host": "plugin_host",
     "network_supervisor": "network_supervisor",
     "computer_use": "computer_use",
@@ -88,6 +93,8 @@ _RUNTIME_CLUSTER_COMPAT_ORDER = (
     ("proofledger", "engineering"),
     ("workset", "engineering"),
     ("creativemediaruntime", "creative_media"),
+    ("researchruntime", "research"),
+    ("webresearch", "research"),
     ("desktopcluster", "computer_use"),
 )
 _RUNTIME_REGISTRY_MIGRATION_LOCK = threading.Lock()

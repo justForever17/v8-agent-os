@@ -1513,6 +1513,55 @@ function debugRealtimeTrace(stage: string, payload: Record<string, unknown>) {
     }
 }
 
+type StreamLatencyStats = {
+    count: number;
+    deltaChars: number[];
+    interDeltaMs: number[];
+    proxyLagMs: number[];
+    clientCommitLagMs: number[];
+    renderLagMs: number[];
+    firstProviderDeltaAtMs?: number;
+    firstPhoneReceiveAtMs?: number;
+    lastPhoneReceiveAtMs?: number;
+};
+
+function toEpochMs(value: unknown) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+        const parsed = Date.parse(value);
+        return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
+}
+
+function percentile(values: number[], percentileValue: number) {
+    const sorted = values.filter((item) => Number.isFinite(item)).sort((a, b) => a - b);
+    if (!sorted.length) {
+        return 0;
+    }
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((percentileValue / 100) * sorted.length) - 1));
+    return Math.round(sorted[index]);
+}
+
+function summarizeStreamLatencyStats(stats: StreamLatencyStats) {
+    const firstTokenMs = stats.firstProviderDeltaAtMs !== undefined && stats.firstPhoneReceiveAtMs !== undefined
+        ? Math.max(0, Math.round(stats.firstPhoneReceiveAtMs - stats.firstProviderDeltaAtMs))
+        : 0;
+    return {
+        count: stats.count,
+        firstTokenMs,
+        interDeltaP50: percentile(stats.interDeltaMs, 50),
+        interDeltaP95: percentile(stats.interDeltaMs, 95),
+        deltaCharsP50: percentile(stats.deltaChars, 50),
+        deltaCharsP95: percentile(stats.deltaChars, 95),
+        proxyLagP95: percentile(stats.proxyLagMs, 95),
+        clientCommitLagP95: percentile(stats.clientCommitLagMs, 95),
+        renderLagP95: percentile(stats.renderLagMs, 95),
+    };
+}
+
 function buildRealtimeEventDedupKey(event: PhoneRealtimeUiEvent) {
     const eventId = String((event as Record<string, unknown>).event_id || "").trim();
     if (eventId) {
@@ -1671,6 +1720,7 @@ export default function ChatScreen() {
     const lastRealtimeSnapshotAtRef = useRef(0);
     const seenRealtimeEventKeysRef = useRef<Set<string>>(new Set());
     const pendingRealtimeRenderDiagnosticRef = useRef<Record<string, unknown> | null>(null);
+    const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const messagesRef = useRef<ChatMessage[]>([]);
     const messageConversationIdRef = useRef<string | null>(activeConversationId);
     const todosRef = useRef<SessionTodoItem[]>([]);
@@ -1678,6 +1728,7 @@ export default function ChatScreen() {
         createInitialSessionRealtimeMessageState<ChatMessage>([], PHONE_STREAM_LIFECYCLE_OPTIONS),
     );
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const activeRunIdRef = useRef<string>("");
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
@@ -1836,6 +1887,23 @@ export default function ChatScreen() {
         }
         const diagnostic = pendingRealtimeRenderDiagnosticRef.current;
         pendingRealtimeRenderDiagnosticRef.current = null;
+        const streamMetricKey = String(diagnostic.streamMetricKey || "").trim();
+        if (__DEV__ && streamMetricKey) {
+            const stats = streamLatencyStatsRef.current.get(streamMetricKey);
+            const phoneCommitAtMs = toEpochMs(diagnostic.phoneCommitAt);
+            const phoneReceivedAtMs = toEpochMs(diagnostic.phoneReceivedAt);
+            const phoneRenderedAtMs = Date.now();
+            if (stats && phoneCommitAtMs !== undefined && phoneReceivedAtMs !== undefined) {
+                stats.clientCommitLagMs.push(Math.max(0, phoneCommitAtMs - phoneReceivedAtMs));
+                stats.renderLagMs.push(Math.max(0, phoneRenderedAtMs - phoneReceivedAtMs));
+                if (stats.count % 20 === 0) {
+                    debugRealtimeTrace("stream-summary", {
+                        streamMetricKey,
+                        ...summarizeStreamLatencyStats(stats),
+                    });
+                }
+            }
+        }
         debugRealtimeTrace("render", {
             ...diagnostic,
             phoneRenderedAt: new Date().toISOString(),
@@ -1865,6 +1933,13 @@ export default function ChatScreen() {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
         }
+        if (runtimeFlushFrameRef.current !== null) {
+            if (typeof cancelAnimationFrame === "function") {
+                cancelAnimationFrame(runtimeFlushFrameRef.current);
+            }
+            runtimeFlushFrameRef.current = null;
+        }
+        streamLatencyStatsRef.current.clear();
     }, []);
 
     const applySessionProcessSurface = useCallback((incoming: AdminProcessRef[], options?: { forceClear?: boolean }) => {
@@ -1920,6 +1995,12 @@ export default function ChatScreen() {
     }, []);
 
     const flushPendingRuntimeEvents = useCallback(() => {
+        if (runtimeFlushFrameRef.current !== null) {
+            if (typeof cancelAnimationFrame === "function") {
+                cancelAnimationFrame(runtimeFlushFrameRef.current);
+            }
+            runtimeFlushFrameRef.current = null;
+        }
         if (runtimeFlushTimerRef.current) {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
@@ -1935,6 +2016,12 @@ export default function ChatScreen() {
         realtimeMessageStateRef.current = nextState.state;
         if (!nextState.changed) {
             return;
+        }
+        if (pendingRealtimeRenderDiagnosticRef.current) {
+            pendingRealtimeRenderDiagnosticRef.current = {
+                ...pendingRealtimeRenderDiagnosticRef.current,
+                phoneCommitAt: new Date().toISOString(),
+            };
         }
         const fingerprint = buildMessagesFingerprint(nextState.messages);
         if (fingerprint === lastMessageFingerprintRef.current) {
@@ -1952,13 +2039,20 @@ export default function ChatScreen() {
             flushPendingRuntimeEvents();
             return;
         }
-        if (runtimeFlushTimerRef.current) {
+        if (runtimeFlushFrameRef.current !== null || runtimeFlushTimerRef.current) {
+            return;
+        }
+        if (typeof requestAnimationFrame === "function") {
+            runtimeFlushFrameRef.current = requestAnimationFrame(() => {
+                runtimeFlushFrameRef.current = null;
+                flushPendingRuntimeEvents();
+            });
             return;
         }
         runtimeFlushTimerRef.current = setTimeout(() => {
             runtimeFlushTimerRef.current = null;
             flushPendingRuntimeEvents();
-        }, 48);
+        }, 16);
     }, [flushPendingRuntimeEvents]);
 
     const patchAssistantTaskShell = useCallback((
@@ -2833,7 +2927,8 @@ export default function ChatScreen() {
 
     const handleRealtimeEvent = useCallback((eventName: string, payload: unknown) => {
         const upstreamDiagnostics = readRealtimeDiagnostics(payload);
-        const phoneReceivedAt = new Date().toISOString();
+        const phoneReceivedAtMs = Date.now();
+        const phoneReceivedAt = new Date(phoneReceivedAtMs).toISOString();
         if (eventName === "snapshot" && payload && typeof payload === "object") {
             pendingRealtimeRenderDiagnosticRef.current = {
                 eventName,
@@ -2874,6 +2969,36 @@ export default function ChatScreen() {
         if (normalized.seq) {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
         }
+        let streamMetricKey = "";
+        if (__DEV__ && (normalized.type === "text_chunk" || normalized.type === "reasoning_chunk")) {
+            const runId = String(normalized.run_id || upstreamDiagnostics.runId || "unknown-run").trim();
+            const transport = String(upstreamDiagnostics.transport || normalized.data?.transport || "unknown-transport").trim();
+            streamMetricKey = `${runId}:${transport}`;
+            const stats = streamLatencyStatsRef.current.get(streamMetricKey) || {
+                count: 0,
+                deltaChars: [],
+                interDeltaMs: [],
+                proxyLagMs: [],
+                clientCommitLagMs: [],
+                renderLagMs: [],
+            };
+            const providerDeltaAtMs = toEpochMs(upstreamDiagnostics.providerDeltaAtMs) ?? toEpochMs(upstreamDiagnostics.providerDeltaAt);
+            const proxyFlushAtMs = toEpochMs(upstreamDiagnostics.proxyFlushAt) ?? toEpochMs(upstreamDiagnostics.adminForwardedAt);
+            if (stats.count === 0) {
+                stats.firstProviderDeltaAtMs = providerDeltaAtMs;
+                stats.firstPhoneReceiveAtMs = phoneReceivedAtMs;
+            }
+            if (stats.lastPhoneReceiveAtMs !== undefined) {
+                stats.interDeltaMs.push(Math.max(0, phoneReceivedAtMs - stats.lastPhoneReceiveAtMs));
+            }
+            if (proxyFlushAtMs !== undefined) {
+                stats.proxyLagMs.push(Math.max(0, phoneReceivedAtMs - proxyFlushAtMs));
+            }
+            stats.deltaChars.push(Number(upstreamDiagnostics.deltaChars || String(normalized.content || "").length) || 0);
+            stats.lastPhoneReceiveAtMs = phoneReceivedAtMs;
+            stats.count += 1;
+            streamLatencyStatsRef.current.set(streamMetricKey, stats);
+        }
         pendingRealtimeRenderDiagnosticRef.current = {
             eventName,
             eventType: normalized.type,
@@ -2882,7 +3007,12 @@ export default function ChatScreen() {
             seq: normalized.seq,
             engineEmittedAt: normalized.ts,
             adminForwardedAt: upstreamDiagnostics.adminForwardedAt,
+            proxyFlushAt: upstreamDiagnostics.proxyFlushAt,
+            providerDeltaAt: upstreamDiagnostics.providerDeltaAt,
+            canonicalEventAt: upstreamDiagnostics.canonicalEventAt,
+            engineYieldAt: upstreamDiagnostics.engineYieldAt,
             phoneReceivedAt,
+            streamMetricKey,
         };
         debugRealtimeTrace("receive", {
             eventName,
@@ -2954,8 +3084,6 @@ export default function ChatScreen() {
 
         if (shouldApplyRuntimeEventToMessage(normalized)) {
             const shouldFlushImmediately = normalized.type === "agent_start"
-                || normalized.type === "reasoning_chunk"
-                || normalized.type === "text_chunk"
                 || normalized.type === "tool_start"
                 || normalized.type === "tool_result"
                 || normalized.type === "done"

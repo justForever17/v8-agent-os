@@ -1,6 +1,8 @@
 import json
 import asyncio
 import uuid
+import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -25,6 +27,23 @@ from runtimes.chat.runtime import chat_runtime
 
 
 router = APIRouter()
+
+
+def _engine_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _engine_ms_to_iso(timestamp_ms: int) -> str:
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+
+
+def _mark_engine_yield(event: dict) -> dict:
+    timestamp_ms = _engine_now_ms()
+    diagnostics = dict(event.get("_diagnostics") or {})
+    diagnostics["engineYieldAtMs"] = timestamp_ms
+    diagnostics["engineYieldAt"] = _engine_ms_to_iso(timestamp_ms)
+    event["_diagnostics"] = diagnostics
+    return event
 
 
 async def _send_json_safe(websocket: WebSocket, payload: dict) -> None:
@@ -94,6 +113,8 @@ runtime_command_router.configure(schedule_chat_run=_schedule_chat_run)
 async def iter_chat_events(request: ChatRequest, transport: str = "http", run_id: str | None = None):
     try:
         async for event in chat_runtime.stream_legacy_events(request, transport=transport, run_id=run_id):
+            if isinstance(event, dict):
+                event = _mark_engine_yield(event)
             yield event
     except ScopeBindingConflictError as exc:
         yield build_runtime_event(

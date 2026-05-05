@@ -277,6 +277,7 @@ class ChatStreamState:
     streamed_model_run_ids: set[str] = field(default_factory=set)
     text_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     text_node_snapshots_by_run: dict[str, str] = field(default_factory=dict)
+    text_segment_seq_by_run: dict[str, int] = field(default_factory=dict)
     reasoning_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     last_text_delta: str = ""
     last_text_delta_run_id: str = ""
@@ -289,6 +290,7 @@ class ChatStreamState:
     text_raw_chars: int = 0
     text_emitted_chunks: int = 0
     text_timer_flushes: int = 0
+    text_timer_deferrals: int = 0
     text_final_flush_chars: int = 0
     watchdog: GraphStreamWatchdogState = field(default_factory=GraphStreamWatchdogState)
     interrupted_signal: dict[str, Any] | None = None
@@ -3015,6 +3017,7 @@ class ChatRuntime:
         snapshot: str | None = None,
         provider_delta_at_ms: int | None = None,
         canonical_event_at_ms: int | None = None,
+        partial: bool = False,
     ) -> dict[str, Any] | None:
         if not stable_chunk:
             return None
@@ -3022,20 +3025,30 @@ class ChatRuntime:
         run_key = self._normalized_stream_run_id(model_run_id)
         owner = self._resolve_event_owner(stream_state)
         owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
-        stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:text:{run_key}"
         topic = "run.text.delta" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.text.delta"
         if bool(owner.get("displayInMessage")):
-            previous_node_content = stream_state.text_node_snapshots_by_run.get(run_key, "")
-            node_content = f"{previous_node_content}{stable_chunk}"
-            stream_state.text_node_snapshots_by_run[run_key] = node_content
+            segment_seq = int(stream_state.text_segment_seq_by_run.get(run_key) or 0) + 1
+            stream_state.text_segment_seq_by_run[run_key] = segment_seq
+            stream_run_key = f"{owner_runtime_id}:{stream_state.current_agent}:text:{run_key}"
+            stream_key = f"{stream_run_key}:segment:{segment_seq}"
+            node_content = stable_chunk
             stream_state.last_text_delta_at_ms = self._now_timestamp_ms()
             self._maybe_note_delegation_claim(stream_state, node_content)
         else:
+            segment_seq = int(stream_state.text_segment_seq_by_run.get(run_key) or 0) + 1
+            stream_state.text_segment_seq_by_run[run_key] = segment_seq
+            stream_run_key = f"{owner_runtime_id}:{stream_state.current_agent}:text:{run_key}"
+            stream_key = f"{stream_run_key}:segment:{segment_seq}"
             node_content = snapshot or stream_state.text_snapshots_by_run.get(run_key) or stable_chunk
         text_event = {
             "type": "text_chunk",
             "content": stable_chunk,
             "snapshot": node_content,
+            "streamRunKey": stream_run_key,
+            "segmentKey": stream_key,
+            "segmentSeq": segment_seq,
+            "finalized": True,
+            "partial": bool(partial),
             "timestamp": 0,
             "_diagnostics": self._stream_trace_diagnostics(
                 chat_run,
@@ -3059,6 +3072,8 @@ class ChatRuntime:
             "agentName": profile["name"],
             "agentAvatar": profile["avatar"],
             "agentRoleLabel": profile["roleLabel"],
+            "finalized": True,
+            "partial": bool(partial),
         }
         runtime_event = self._emit_owner_scoped_runtime_event(
             chat_run,
@@ -3249,8 +3264,15 @@ class ChatRuntime:
         *,
         from_timer: bool = False,
         final: bool = False,
+        ready_only: bool = False,
     ) -> list[dict[str, Any]]:
         self._clear_text_flush_deadline(stream_state)
+        flush_ready = stream_state.text_aggregator.should_flush_now()
+        if (from_timer or ready_only) and not flush_ready:
+            if from_timer:
+                stream_state.text_timer_deferrals += 1
+            self._schedule_text_flush_deadline(stream_state)
+            return []
         final_chunk = stream_state.text_aggregator.flush()
         if not final_chunk:
             return []
@@ -3265,6 +3287,7 @@ class ChatRuntime:
             final_chunk,
             model_run_id=stream_state.last_text_delta_run_id,
             snapshot=None,
+            partial=bool(final and not flush_ready),
         )
         return [text_event] if text_event is not None else []
 
@@ -3273,6 +3296,7 @@ class ChatRuntime:
             stream_state.text_raw_chars <= 0
             and stream_state.text_emitted_chunks <= 0
             and stream_state.text_timer_flushes <= 0
+            and stream_state.text_timer_deferrals <= 0
             and stream_state.text_final_flush_chars <= 0
         ):
             return
@@ -3282,6 +3306,7 @@ class ChatRuntime:
                 "rawTextChars": stream_state.text_raw_chars,
                 "emittedTextChunkCount": stream_state.text_emitted_chunks,
                 "timerFlushCount": stream_state.text_timer_flushes,
+                "timerDeferralCount": stream_state.text_timer_deferrals,
                 "finalFlushChars": stream_state.text_final_flush_chars,
                 "flushIntervalMs": int(self.TEXT_FLUSH_INTERVAL_SECONDS * 1000),
             },
@@ -4444,6 +4469,13 @@ class ChatRuntime:
                         )
                     )
                 elif model_event.event_type == "reasoning_delta":
+                    emitted_events.extend(
+                        await self._flush_pending_text_aggregator(
+                            chat_run,
+                            stream_state,
+                            ready_only=True,
+                        )
+                    )
                     reasoning_delta = self._suppress_neighbor_duplicate_delta(
                         stream_state,
                         delta=model_event.delta,
@@ -4514,6 +4546,13 @@ class ChatRuntime:
                         )
                     )
                 elif model_event.event_type == "reasoning_delta":
+                    emitted_events.extend(
+                        await self._flush_pending_text_aggregator(
+                            chat_run,
+                            stream_state,
+                            ready_only=True,
+                        )
+                    )
                     reasoning_delta = self._suppress_neighbor_duplicate_delta(
                         stream_state,
                         delta=model_event.delta,
@@ -4538,6 +4577,13 @@ class ChatRuntime:
             return emitted_events
 
         if kind == "on_tool_start":
+            emitted_events.extend(
+                await self._flush_pending_text_aggregator(
+                    chat_run,
+                    stream_state,
+                    ready_only=True,
+                )
+            )
             raw_inputs = data.get("input", {})
             inputs = self._compact_tool_display_args(name, raw_inputs)
             if str(name or "").strip().lower() == "delegation_broker":

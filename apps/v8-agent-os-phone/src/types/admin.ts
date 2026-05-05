@@ -151,12 +151,19 @@ export type PhoneUiTimelineNodeBase = {
     agentAvatar?: string;
     agentRoleLabel?: string;
     agentType?: "supervisor" | "agent" | "user";
+    ownerRuntimeId?: string;
+    ownerAgentKind?: string;
+    ownerAgentId?: string;
+    ownerStreamKey?: string;
+    displayInMessage?: boolean;
 };
 
 export type PhoneUiNarrativeNode = PhoneUiTimelineNodeBase & {
     kind: "narrative";
     role: "user" | "assistant" | "system";
     content: string;
+    finalized?: boolean;
+    partial?: boolean;
 };
 
 export type PhoneUiExecutionNode = PhoneUiTimelineNodeBase & {

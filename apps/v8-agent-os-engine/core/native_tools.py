@@ -560,12 +560,13 @@ def _workspace_inventory_block_payload(runtime_context: dict[str, Any] | None, *
 
 def _suggest_npx_yes_command(command: str) -> str | None:
     stripped = str(command or "").strip()
-    lowered = stripped.lower()
-    if not re.search(r"(?i)(^|[;&|]\s*)npx\s+create-", stripped):
-        return None
     if re.search(r"(?i)(^|\s)(--yes|-y)(\s|$)", stripped):
         return None
-    return re.sub(r"(?i)\bnpx\s+", "npx --yes ", stripped, count=1)
+    if re.search(r"(?i)(^|[;&|]\s*)npx\s+create-", stripped):
+        return re.sub(r"(?i)\bnpx\s+", "npx --yes ", stripped, count=1)
+    if re.search(r"(?i)(^|[;&|]\s*)npm\s+(?:create|init)\s+(?:vite|create-vite)", stripped):
+        return re.sub(r"(?i)\bnpm\s+(create|init)\s+", r"npm \1 --yes ", stripped, count=1)
+    return None
 
 
 def _normalize_background_input(data: str) -> str:
@@ -599,6 +600,74 @@ def _decode_background_input_escapes(data: str) -> str:
     return normalized
 
 
+def _normalize_terminal_key_name(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    token = token.replace("-", "").replace("_", "").replace(" ", "")
+    return {
+        "arrowup": "up",
+        "uparrow": "up",
+        "arrowdown": "down",
+        "downarrow": "down",
+        "↓": "down",
+        "arrowleft": "left",
+        "leftarrow": "left",
+        "←": "left",
+        "arrowright": "right",
+        "rightarrow": "right",
+        "→": "right",
+        "↑": "up",
+        "newline": "enter",
+        "submit": "enter",
+    }.get(token, token)
+
+
+def _terminal_keys_from_text(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if all(char in "↑↓←→ \t\r\n" for char in text):
+        return [_normalize_terminal_key_name(char) for char in text if char in "↑↓←→"]
+    normalized = re.sub(r"[,，、+/]+", " ", text)
+    parts = [part for part in normalized.split() if part]
+    if not parts:
+        return []
+    keys = [_normalize_terminal_key_name(part) for part in parts]
+    if all(key in _TERMINAL_KEY_ALIASES for key in keys):
+        return keys
+    return []
+
+
+def _terminal_key_sequence(
+    *,
+    input_text: str,
+    keys: list[str] | None,
+    submit: bool,
+) -> tuple[str, list[str], bool, bool]:
+    explicit_keys = [_normalize_terminal_key_name(item) for item in (keys or []) if _normalize_terminal_key_name(item)]
+    inferred_keys = explicit_keys or _terminal_keys_from_text(input_text)
+    if not inferred_keys:
+        return "", [], False, False
+    accepted_keys = [key for key in inferred_keys if key in _TERMINAL_KEY_ALIASES]
+    if len(accepted_keys) != len(inferred_keys):
+        return "", [], False, False
+    submitted_enter = False
+    if submit and "enter" not in accepted_keys and "return" not in accepted_keys and "回车" not in accepted_keys:
+        accepted_keys = [*accepted_keys, "enter"]
+        submitted_enter = True
+    sequence = "".join(_TERMINAL_KEY_ALIASES[key] for key in accepted_keys)
+    return sequence, accepted_keys, submitted_enter, True
+
+
+def _terminal_input_bytes_preview(data: str, *, limit: int = 160) -> str:
+    raw = str(data or "").encode("utf-8", errors="replace")
+    preview = raw[:limit].hex(" ")
+    if len(raw) > limit:
+        preview += f" ... (+{len(raw) - limit} bytes)"
+    return preview
+
+
 def _write_winpty_input(pty_win: Any, data: str) -> None:
     """Feed Windows PTY input in a way that mimics a user pressing Enter.
 
@@ -610,9 +679,22 @@ def _write_winpty_input(pty_win: Any, data: str) -> None:
     segments = normalized.split("\n")
     last_index = len(segments) - 1
 
+    def _write_segment(segment: str) -> None:
+        cursor = 0
+        while cursor < len(segment):
+            if segment.startswith("\x1b[", cursor) and cursor + 2 < len(segment):
+                sequence = segment[cursor:cursor + 3]
+                pty_win.write(sequence)
+                time.sleep(0.05)
+                cursor += 3
+                continue
+            pty_win.write(segment[cursor])
+            cursor += 1
+            time.sleep(0.005)
+
     for index, segment in enumerate(segments):
         if segment:
-            pty_win.write(segment)
+            _write_segment(segment)
             # Give Ink/TUI input handlers a moment to commit the typed content
             # before we inject Enter.
             time.sleep(0.03)
@@ -3946,7 +4028,7 @@ def _launch_background_command(
                 {
                     "ok": False,
                     "kind": "scaffold_requires_noninteractive_confirmation",
-                    "summary": "`npx create-*` 缺少 --yes，可能卡在 Ok to proceed? (y)。请使用 suggestedCommand 重试。",
+                    "summary": "脚手架命令缺少 --yes，可能卡在 Ok to proceed? (y)。请使用 suggestedCommand 重试。",
                     "command": command,
                     "suggestedCommand": suggested_command,
                     "recommendedNextAction": "用 suggestedCommand 重新启动 command_session_broker(mode=\"start\")。",
@@ -5485,6 +5567,10 @@ _PROMPT_HINT_PATTERN = re.compile(
     r"((^|\n)\s*(?:[>$#»❯]\s*|输入您的消息|Type your message|Press \? for shortcuts|按 \? 查看快捷键)|Ok to proceed\?\s*\(y\)|Proceed\?\s*(?:\([YyNn]/?[Nn]?\)|\[Y/n\]|\(y\))?|\[Y/n\]|Press Enter(?:\s+to\s+\w+)?)",
     re.IGNORECASE,
 )
+_TERMINAL_MENU_HINT_PATTERN = re.compile(
+    r"(Current directory is not empty|Please choose how to proceed|Use arrow-keys|Use arrow keys|Select an option|Choose an option|^\s*[│|]\s*[●○]\s+.+$|^\s*[◆?]\s+.+$)",
+    re.IGNORECASE | re.MULTILINE,
+)
 _BUSY_HINT_PATTERN = re.compile(
     r"(thinking|generating|loading|connecting|initializing|authorizing|处理中|思考中|生成中|连接中|esc to cancel|pressing 'a' to continue|i'm feeling lucky|channeling the force|magic smoke|\.\.\.|⋯|█)",
     re.IGNORECASE,
@@ -5497,6 +5583,27 @@ _SPACED_CJK_SEQUENCE_PATTERN = re.compile(r"(?:[\u3400-\u9fff]\s){4,}[\u3400-\u9
 _REPEATED_CJK_PATTERN = re.compile(r"([\u3400-\u9fff])\1{7,}")
 _BOX_DRAWING_ONLY_LINE_PATTERN = re.compile(r"^[\s┌┐└┘├┤┬┴┼─│╭╮╰╯═║╔╗╚╝╠╣╦╩╬]+$")
 _BACKGROUND_COMMAND_PROFILES = {"auto", "chat_cli", "shell"}
+_TERMINAL_KEY_ALIASES = {
+    "up": "\x1b[A",
+    "arrowup": "\x1b[A",
+    "↑": "\x1b[A",
+    "down": "\x1b[B",
+    "arrowdown": "\x1b[B",
+    "↓": "\x1b[B",
+    "left": "\x1b[D",
+    "arrowleft": "\x1b[D",
+    "←": "\x1b[D",
+    "right": "\x1b[C",
+    "arrowright": "\x1b[C",
+    "→": "\x1b[C",
+    "enter": "\r",
+    "return": "\r",
+    "回车": "\r",
+    "confirm": "\r",
+    "tab": "\t",
+    "escape": "\x1b",
+    "esc": "\x1b",
+}
 _CHAT_CLI_VARIANT_ALIASES = {
     "qwen": "qwen",
     "claude": "claude",
@@ -6144,6 +6251,26 @@ def _terminal_snapshot_looks_like_prompt(snapshot: str) -> bool:
         return False
     tail = "\n".join(normalized.splitlines()[-4:])
     return bool(_PROMPT_HINT_PATTERN.search(tail))
+
+
+def _terminal_snapshot_looks_like_menu(snapshot: str) -> bool:
+    normalized = str(snapshot or "").strip()
+    if not normalized:
+        return False
+    tail = "\n".join(normalized.splitlines()[-10:])
+    return bool(_TERMINAL_MENU_HINT_PATTERN.search(tail))
+
+
+def _terminal_menu_suggested_keys(snapshot: str) -> list[str]:
+    text = str(snapshot or "")
+    lowered = text.lower()
+    if "current directory is not empty" in lowered and "ignore files and continue" in lowered:
+        return ["down", "down", "enter"]
+    if "remove existing files and continue" in lowered:
+        return ["down", "enter"]
+    if _terminal_snapshot_looks_like_menu(text):
+        return ["enter"]
+    return []
 
 
 def _terminal_snapshot_looks_busy(snapshot: str) -> bool:
@@ -7032,7 +7159,7 @@ class BackgroundProcess:
         return _strip_terminal_bootstrap_noise(self._compute_screen_snapshot(), self.terminal_env_overrides)
 
     def _derive_observation_state(self) -> str:
-        if not (self.interactive and self.is_running):
+        if not self.is_running:
             return "idle"
         snapshot = self._render_screen_snapshot()
         now = time.time()
@@ -7041,8 +7168,13 @@ class BackgroundProcess:
         raw_recent = since_raw <= 0.9
         screen_recent = since_screen <= 0.9
 
-        if _terminal_snapshot_looks_like_prompt(snapshot) and not _terminal_snapshot_looks_busy(snapshot):
+        if (
+            _terminal_snapshot_looks_like_prompt(snapshot)
+            or _terminal_snapshot_looks_like_menu(snapshot)
+        ) and not _terminal_snapshot_looks_busy(snapshot):
             return "awaiting_input"
+        if not self.interactive:
+            return "idle"
         if raw_recent and not screen_recent:
             return "render_stalled"
         if raw_recent or screen_recent:
@@ -7059,6 +7191,7 @@ class BackgroundProcess:
         observation_state = self._derive_observation_state()
         screen_snapshot = self._render_screen_snapshot()
         stable_screen_snapshot = _build_stable_terminal_snapshot(screen_snapshot)
+        suggested_keys = _terminal_menu_suggested_keys(stable_screen_snapshot or screen_snapshot)
         encoding_state, encoding_notes, text_encoding = _derive_terminal_encoding_status(
             screen_snapshot=screen_snapshot,
             raw_preview=self.last_raw_frame_preview,
@@ -7092,6 +7225,10 @@ class BackgroundProcess:
             "alternate_screen": bool(self.screen.alternate_screen) if self.uses_tty else False,
             "awaiting_input": observation_state == "awaiting_input",
             "observation_state": observation_state,
+            "terminal_menu": {
+                "detected": bool(suggested_keys or _terminal_snapshot_looks_like_menu(stable_screen_snapshot or screen_snapshot)),
+                "suggested_keys": suggested_keys,
+            },
             "text_encoding": text_encoding,
             "encoding_state": encoding_state,
             "encoding_notes": encoding_notes,
@@ -7733,6 +7870,7 @@ def command_session_broker(
     session_id: str = "",
     command_id: str = "",
     input_text: str = "",
+    keys: list[str] | None = None,
     submit: bool = True,
     profile: str = "auto",
     cwd: str = "",
@@ -7745,6 +7883,7 @@ def command_session_broker(
     - start: launch a long-running or interactive command session
     - observe: read the latest delta and detect whether input is needed
     - input: send input into the active session; submit=true appends Enter when input_text has no newline
+      or when keys do not already include Enter.
     - terminate: stop the session
 
     Usage guidance:
@@ -7754,6 +7893,7 @@ def command_session_broker(
     - Treat summary, recommendedNextAction, awaitingInput, hasMore, state/status, and returnCode as the compact truth for the next step.
     - profile=auto may enable chat_cli semantics for known AI CLIs so observe reports the latest semantic delta instead of replaying the whole screen.
     - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
+    - For TUI menus, prefer keys=["down","down","enter"]. Common shorthand like input_text="↓↓" maps to arrow keys and appends Enter by default.
     - Use debug=true only for raw terminal diagnostics such as screenPreview, rawFramePreview, render_stalled, or encodingState/mojibake.
     """
     normalized_mode = str(mode or "observe").strip().lower()
@@ -7800,6 +7940,7 @@ def command_session_broker(
                 cwd=cwd,
             )
             status = dict(launched.get("status") or {})
+            terminal_menu = status.get("terminal_menu") if isinstance(status.get("terminal_menu"), dict) and status.get("terminal_menu", {}).get("detected") else {}
             state = _command_session_state_from_status(status)
             initial_preview, initial_truncated = _command_session_preview_text(
                 str(launched.get("initialOutput") or "").strip()
@@ -7834,6 +7975,7 @@ def command_session_broker(
                 cwd=launched.get("cwd"),
                 workspaceBinding=launched.get("workspaceBinding"),
                 awaitingInput=bool(status.get("awaiting_input")),
+                terminalMenu=terminal_menu or None,
                 state=state,
                 initialPreview=initial_preview or None,
                 initialPreviewTruncated=initial_truncated if initial_preview else None,
@@ -7867,6 +8009,7 @@ def command_session_broker(
         if normalized_mode == "observe":
             new_output = bg_proc.get_new_output()
             status = bg_proc.status_snapshot()
+            terminal_menu = status.get("terminal_menu") if isinstance(status.get("terminal_menu"), dict) and status.get("terminal_menu", {}).get("detected") else {}
             screen_changed = bool(bg_proc.has_unreported_screen_change())
             raw_changed = bool(bg_proc.has_unreported_raw_frame_change())
             delta_text = str(new_output or "").strip()
@@ -7945,6 +8088,7 @@ def command_session_broker(
                 workerResultBlock=worker_result_block or None,
                 noiseFilteredLineCount=noise_filtered_count or None,
                 awaitingInput=bool(status.get("awaiting_input")),
+                terminalMenu=terminal_menu or None,
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
                 debug=debug_payload,
@@ -7964,7 +8108,12 @@ def command_session_broker(
                     returnCode=status.get("return_code"),
                     error="session_not_running",
                 )
-            normalized_input = _decode_background_input_escapes(input_text)
+            key_input, accepted_keys, key_submitted_enter, used_key_input = _terminal_key_sequence(
+                input_text=input_text,
+                keys=keys,
+                submit=submit,
+            )
+            normalized_input = key_input if used_key_input else _decode_background_input_escapes(input_text)
             if not normalized_input:
                 return _command_session_payload(
                     mode=normalized_mode,
@@ -7975,8 +8124,8 @@ def command_session_broker(
                     recommended_next_action="none",
                     error="missing_input_text",
                 )
-            submitted_enter = False
-            if submit and "\n" not in normalized_input and "\r" not in normalized_input:
+            submitted_enter = key_submitted_enter
+            if not used_key_input and submit and "\n" not in normalized_input and "\r" not in normalized_input:
                 normalized_input = f"{normalized_input}\n"
                 submitted_enter = True
             previous_status = bg_proc.status_snapshot()
@@ -7988,6 +8137,7 @@ def command_session_broker(
             time.sleep(0.5)
             new_output = bg_proc.get_new_output()
             status = bg_proc.status_snapshot()
+            terminal_menu = status.get("terminal_menu") if isinstance(status.get("terminal_menu"), dict) and status.get("terminal_menu", {}).get("detected") else {}
             screen_changed = int(status.get("screen_version") or 0) > previous_screen_version
             raw_changed = int(status.get("raw_frame_version") or 0) > previous_raw_frame_version
             delta_text = str(new_output or "").strip()
@@ -8010,7 +8160,13 @@ def command_session_broker(
                 bg_proc.mark_raw_frame_reported()
             state = _command_session_state_from_status(status)
             delta_preview, delta_truncated = _command_session_preview_text(delta_text)
-            input_preview, input_truncated = _command_session_preview_text(normalized_input, limit=200)
+            input_label = f"keys:{','.join(accepted_keys)}" if used_key_input else normalized_input
+            input_preview, input_truncated = _command_session_preview_text(input_label, limit=200)
+            input_bytes_preview = _terminal_input_bytes_preview(normalized_input)
+            screen_after_preview, screen_after_truncated = _command_session_preview_text(
+                str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
+                limit=1000,
+            )
             semantic_text = str(bg_proc.current_turn_text or semantic_state.get("semantic_view") or "").strip()
             semantic_tail, semantic_tail_truncated = _command_session_preview_text(semantic_text, limit=2000)
             marker_source = "\n".join(
@@ -8060,6 +8216,10 @@ def command_session_broker(
                 acceptedInputPreview=input_preview,
                 acceptedInputTruncated=input_truncated if input_preview else None,
                 submittedEnter=submitted_enter,
+                acceptedKeys=accepted_keys or None,
+                inputBytesPreview=input_bytes_preview or None,
+                screenAfterInput=screen_after_preview or None,
+                screenAfterInputTruncated=screen_after_truncated if screen_after_preview else None,
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
                 semanticTextTail=semantic_tail or None,
@@ -8068,6 +8228,7 @@ def command_session_broker(
                 workerResultBlock=worker_result_block or None,
                 noiseFilteredLineCount=noise_filtered_count or None,
                 awaitingInput=bool(status.get("awaiting_input")),
+                terminalMenu=terminal_menu or None,
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
                 debug=debug_payload,

@@ -18,16 +18,18 @@ class TextChunkAggregator:
         self._buffer += delta
         flushed: List[str] = []
 
-        if len(self._buffer) >= self.hard_limit:
+        if self.should_flush_now():
             flushed.append(self._flush())
             return flushed
-
-        if len(self._buffer) >= self.soft_limit and self._ends_with_boundary(self._buffer):
-            flushed.append(self._flush())
 
         return flushed
 
     def flush(self) -> str:
+        return self._flush()
+
+    def flush_if_ready(self) -> str:
+        if not self.should_flush_now():
+            return ""
         return self._flush()
 
     def has_buffered_content(self) -> bool:
@@ -36,9 +38,22 @@ class TextChunkAggregator:
     def buffered_length(self) -> int:
         return len(self._buffer)
 
+    def should_flush_now(self) -> bool:
+        if not self._buffer:
+            return False
+        if len(self._buffer) >= self.hard_limit:
+            return True
+        if self._ends_with_strong_boundary(self._buffer):
+            return True
+        return len(self._buffer) >= self.soft_limit and self._ends_with_boundary(self._buffer)
+
     @staticmethod
     def _ends_with_boundary(text: str) -> bool:
         return text.endswith(("\n", "\r", "。", "！", "？", ".", "!", "?", "；", ";", "：", ":", "，", ",", "、", " "))
+
+    @staticmethod
+    def _ends_with_strong_boundary(text: str) -> bool:
+        return text.endswith(("\n", "\r", "。", "！", "？", ".", "!", "?"))
 
     def _flush(self) -> str:
         if not self._buffer:

@@ -9,6 +9,11 @@ export interface UiTimelineNodeBase {
     agentAvatar?: string;
     agentRoleLabel?: string;
     agentType?: 'supervisor' | 'agent' | 'user';
+    ownerRuntimeId?: string;
+    ownerAgentKind?: string;
+    ownerAgentId?: string;
+    ownerStreamKey?: string;
+    displayInMessage?: boolean;
 }
 
 // --- Narrative (User text, Supervisor replies) ---
@@ -16,6 +21,8 @@ export interface UiNarrativeNode extends UiTimelineNodeBase {
     kind: 'narrative';
     role: 'user' | 'assistant' | 'system';
     content: string; // Markdown text
+    finalized?: boolean;
+    partial?: boolean;
 }
 
 // --- Execution (Tool calls, reasoning, runtime steps) ---

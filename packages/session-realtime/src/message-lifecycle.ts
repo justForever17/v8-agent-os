@@ -71,6 +71,8 @@ export type SessionStreamNarrativeNode = {
   ownerAgentId?: string;
   ownerStreamKey?: string;
   displayInMessage?: boolean;
+  finalized?: boolean;
+  partial?: boolean;
 };
 
 export type SessionStreamExecutionNode = {
@@ -533,6 +535,10 @@ function narrativeStreamKeyMatches(
   return !existingKey;
 }
 
+function timelineNodeFinalized(node: SessionStreamTimelineNode | undefined) {
+  return Boolean(node && "finalized" in node && (node as { finalized?: boolean }).finalized === true);
+}
+
 function canMergeNarrativeNode(
   node: SessionStreamTimelineNode | undefined,
   profile: SessionAgentProfile,
@@ -542,6 +548,7 @@ function canMergeNarrativeNode(
     node
     && node.kind === "narrative"
     && node.role === "assistant"
+    && !timelineNodeFinalized(node)
     && node.agentName === profile.agentName
     && narrativeStreamKeyMatches(node, nodeOptions),
   );
@@ -573,8 +580,24 @@ function upsertTimelineNode(message: SessionStreamMessage, node: SessionStreamTi
   if (nodeId) {
     const existingIndex = nodes.findIndex((candidate) => String(candidate.id || "").trim() === nodeId);
     if (existingIndex >= 0) {
+      const existing = nodes[existingIndex];
+      if (timelineNodeFinalized(existing) && existing.kind === "narrative" && node.kind === "narrative") {
+        const existingContent = String((existing as SessionStreamNarrativeNode).content || "");
+        const incomingContent = String((node as SessionStreamNarrativeNode).content || "");
+        if (existingContent === incomingContent) {
+          return existing;
+        }
+        const appendOnlyNode = {
+          ...node,
+          id: `${nodeId}:append:${nodes.length}`,
+        } as SessionStreamTimelineNode;
+        nodes.push(appendOnlyNode);
+        message.nodes = nodes;
+        message.timestamp = Date.now();
+        return appendOnlyNode;
+      }
       nodes[existingIndex] = {
-        ...nodes[existingIndex],
+        ...existing,
         ...node,
       } as SessionStreamTimelineNode;
       message.nodes = nodes;
@@ -874,19 +897,24 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const eventData = asRecord(event.data);
     const content = String(event.content || "");
     const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
+    const narrativeLifecycle = {
+      finalized: eventData.finalized === true || eventData.isFinal === true,
+      partial: eventData.partial === true,
+    };
     const explicitNode = event.node_id
       ? (Array.isArray(current.nodes)
         ? current.nodes.find((node): node is SessionStreamNarrativeNode =>
           String(node.id || "").trim() === event.node_id
           && node.kind === "narrative"
-          && node.role === "assistant",
+          && node.role === "assistant"
+          && !timelineNodeFinalized(node)
         )
         : undefined)
       : undefined;
     const lastNode = explicitNode || (Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined);
     const narrativeNode = explicitNode || (canMergeNarrativeNode(lastNode, nextActiveAgentProfile, ownerFields) ? lastNode : undefined);
     if (narrativeNode) {
-      Object.assign(narrativeNode, ownerFields);
+      Object.assign(narrativeNode, ownerFields, narrativeLifecycle);
       if (snapshot !== undefined) {
         narrativeNode.content = snapshot;
         current.content = deriveNarrativeContentFromNodes(current);
@@ -906,6 +934,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
         ...ownerFields,
+        ...narrativeLifecycle,
       });
       current.content = snapshot !== undefined
         ? deriveNarrativeContentFromNodes(current)

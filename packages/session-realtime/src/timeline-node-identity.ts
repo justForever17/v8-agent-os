@@ -21,6 +21,8 @@ export type TimelineLikeNode = {
   toolName?: string | null;
   topic?: string | null;
   label?: string | null;
+  ownerStreamKey?: string | null;
+  finalized?: boolean | null;
   governanceType?: string | null;
   reason?: string | null;
   status?: string | null;
@@ -66,6 +68,10 @@ function mergeNarrativeContent(current: unknown, incoming: unknown) {
 
 function isAssistantNarrativeNode(node: TimelineLikeNode | null | undefined) {
   return normalizeText(node?.kind) === "narrative" && normalizeText(node?.role) === "assistant";
+}
+
+function isFinalizedAssistantNarrativeNode(node: TimelineLikeNode | null | undefined) {
+  return isAssistantNarrativeNode(node) && node?.finalized === true;
 }
 
 function buildArtifactKey(artifact: TimelineLikeArtifact | null | undefined) {
@@ -120,8 +126,15 @@ export function buildSemanticTimelineNodeKey(node: TimelineLikeNode | null | und
       return "";
     }
     if (role === "assistant") {
-      const lane = normalizeText(node.agentName || node.agentRoleLabel || "assistant");
-      return `narrative:${role}:${lane}`;
+      const streamKey = normalizeText(node.ownerStreamKey);
+      if (streamKey) {
+        return `narrative:${role}:${streamKey}`;
+      }
+      if (normalizeText(node.id)) {
+        return "";
+      }
+      const content = normalizeText(node.content);
+      return content ? `narrative:${role}:${content}` : "";
     }
     const content = normalizeText(node.content);
     return content ? `narrative:${role}:${content}` : `narrative:${role}`;
@@ -164,6 +177,27 @@ export function mergeTimelineNodesByIdentity<TNode extends TimelineLikeNode>(bas
     }
 
     const existingNode = merged[existingIndex];
+    if (
+      isFinalizedAssistantNarrativeNode(existingNode)
+      && isAssistantNarrativeNode(node)
+      && String(existingNode.content || "") !== String(node.content || "")
+    ) {
+      const appendedNode = {
+        ...node,
+        id: nodeId ? `${nodeId}:append:${merged.length}` : node.id,
+      };
+      const nextIndex = merged.length;
+      merged.push(appendedNode);
+      const appendedId = String(appendedNode.id || "").trim();
+      if (appendedId) {
+        indexByKey.set(`id:${appendedId}`, nextIndex);
+      }
+      const appendedSemanticKey = buildSemanticTimelineNodeKey(appendedNode);
+      if (appendedSemanticKey) {
+        indexByKey.set(`semantic:${appendedSemanticKey}`, nextIndex);
+      }
+      continue;
+    }
     merged[existingIndex] = {
       ...existingNode,
       ...node,

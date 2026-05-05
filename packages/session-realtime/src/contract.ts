@@ -7,6 +7,7 @@ export const SESSION_RUNTIME_IDS = [
   "automation",
   "extensions",
   "creative_media",
+  "research",
   "network_supervisor",
   "plugin_host_tool",
   "plugin_host_channel",
@@ -220,6 +221,11 @@ export type NormalizedSessionRuntimeEvent = {
   name?: SessionRuntimeEventName | string;
   topic?: string;
   runtimeId?: SessionRuntimeId;
+  ownerRuntimeId?: SessionRuntimeId;
+  ownerAgentKind?: "supervisor" | "runtime" | "subagent" | "shard" | string;
+  ownerAgentId?: string;
+  ownerStreamKey?: string;
+  surfaceTargets?: SessionRuntimeEventTarget[];
   scope: SessionRuntimeScope;
   visibility: SessionRuntimeVisibility;
   targets: SessionRuntimeEventTarget[];

@@ -82,6 +82,15 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Tracks creative media recipes, jobs, assets, and delivery state.",
     },
   },
+  research: {
+    id: "research",
+    label: { zh: "调研运行", en: "Research runtime" },
+    shortLabel: { zh: "调研", en: "Research" },
+    description: {
+      zh: "承接多源联网调研、来源质量排序、证据包和只读分片状态。",
+      en: "Tracks multi-source web research, source ranking, evidence bundles, and read-only shard state.",
+    },
+  },
   network_supervisor: {
     id: "network_supervisor",
     label: { zh: "网络监督", en: "Network supervisor" },
@@ -152,6 +161,7 @@ export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "planner_lane",
   "engineering",
   "extensions",
+  "research",
   "creative_media",
   "computer_use",
   "rpa",
@@ -228,6 +238,17 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
     || normalized.includes("media_runtime")
   ) {
     return "creative_media";
+  }
+  if (
+    normalized === "research"
+    || normalized === "research_runtime"
+    || normalized.includes("research_broker")
+    || normalized.includes("web_research")
+    || normalized.includes("research_runtime")
+    || normalized.includes("source_quality")
+    || normalized.includes("evidence_bundle")
+  ) {
+    return "research";
   }
   if (
     normalized === "plugin_host_channel"

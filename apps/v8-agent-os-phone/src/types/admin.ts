@@ -244,9 +244,15 @@ export type UploadedWorkspaceFile = {
     publicUrl?: string;
     path?: string;
     workspacePath?: string;
+    workspaceRelativePath?: string;
+    workspaceRoot?: string;
+    workspaceId?: string;
+    projectId?: string;
     type?: string;
     size?: number;
     createdAt?: string;
+    previewUrl?: string;
+    resourceRef?: AdminResourceRef | null;
     localUri?: string;
     previewUri?: string;
     previewKind?: "image" | "video" | "file";

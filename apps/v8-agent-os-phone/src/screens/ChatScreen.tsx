@@ -409,18 +409,20 @@ async function buildLocalUploadedFileDraft(
     return draft;
 }
 
-function buildUploadTransportError(asset: DocumentPicker.DocumentPickerAsset, error: unknown) {
+function buildUploadTransportError(asset: DocumentPicker.DocumentPickerAsset, error: unknown, adminBaseUrl?: string | null) {
     const rawMessage = error instanceof Error ? String(error.message || "").trim() : "";
     const lowered = rawMessage.toLowerCase();
     const label = asset.name ? `“${asset.name}”` : translateCurrent("shared.upload.file_fallback_label");
-    if (lowered.includes("network request failed")) {
-        return new Error(translateCurrent("shared.upload.request_interrupted", { label }));
+    const adminHint = adminBaseUrl ? `Admin: ${adminBaseUrl}` : "Admin URL 未配置";
+    const networkHint = `${rawMessage || "无法连接 Admin 上传代理"}；${adminHint}；候选地址请优先使用电脑局域网 IP:9528，避免 localhost/127.0.0.1；请确认手机与电脑在同一网络、Admin 9528 端口可访问。`;
+    if (lowered.includes("network request failed") || lowered.includes("upload body") || rawMessage.includes("上传体发送失败")) {
+        return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: networkHint }));
     }
-    if (lowered.includes("failed to fetch") || lowered.includes("fetch failed")) {
-        return new Error(translateCurrent("shared.upload.transport_failed_check_admin", { label }));
+    if (lowered.includes("failed to fetch") || lowered.includes("fetch failed") || rawMessage.includes("上传 transport")) {
+        return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: networkHint }));
     }
     if (rawMessage.toLowerCase().includes("unable to reach admin") || rawMessage.includes("Admin")) {
-        return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: rawMessage }));
+        return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: networkHint }));
     }
     return error instanceof Error ? error : new Error(translateCurrent("shared.upload.generic_failed", { label }));
 }
@@ -484,6 +486,8 @@ function buildUploadedFileAttachments(files: UploadedWorkspaceFile[]) {
                 url: url || undefined,
                 publicUrl: String(file.publicUrl || file.url || "").trim() || undefined,
                 workspacePath: workspacePath || undefined,
+                workspaceRelativePath: file.workspaceRelativePath,
+                resourceRef: file.resourceRef || undefined,
                 mimeType: file.type,
                 size: file.size,
                 source: "os_phone_upload",
@@ -499,6 +503,7 @@ function buildUploadedFileStableKey(file: UploadedWorkspaceFile) {
         || file.url
         || file.publicUrl
         || file.workspacePath
+        || file.workspaceRelativePath
         || file.path
         || `${file.name || "file"}:${file.createdAt || ""}`,
     ).trim();
@@ -4148,6 +4153,12 @@ export default function ChatScreen() {
                         uri: normalizedAsset.uri,
                         name: normalizedAsset.name,
                         type: normalizedAsset.mimeType || "application/octet-stream",
+                    }, {
+                        sessionId: activeConversationIdRef.current,
+                        conversationId: activeConversationIdRef.current,
+                        workspaceId: scopeBinding?.workspaceId,
+                        workspacePath: scopeBinding?.workspacePath,
+                        projectId: scopeBinding?.projectId,
                     });
                     uploaded.push({
                         ...previewDraft,
@@ -4159,7 +4170,7 @@ export default function ChatScreen() {
                         durationLabel: previewDraft.durationLabel,
                     });
                 } catch (error) {
-                    throw buildUploadTransportError(normalizedAsset, error);
+                    throw buildUploadTransportError(normalizedAsset, error, adminBaseUrl);
                 }
             }
 
@@ -4325,7 +4336,7 @@ export default function ChatScreen() {
             }, 30000);
             setApprovals((current) => current.filter((item) => String(item.id || item.approval_id || "") !== approvalId));
         }
-    }, [authorizedFetch]);
+    }, [adminBaseUrl, authorizedFetch, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath]);
 
     const handleRunCommand = useCallback(async (command: "interrupt" | "retry") => {
         const runId = String(activeRunIdRef.current || "").trim();

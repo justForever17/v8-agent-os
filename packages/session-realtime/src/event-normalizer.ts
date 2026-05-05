@@ -178,14 +178,14 @@ function withTranscriptTargetFields(
       ? Number.parseInt(transcriptVersionRaw, 10)
       : undefined;
 
-  return {
+  return applyOwnerFields({
     ...event,
     message_id: messageId || event.message_id,
     node_id: nodeId || event.node_id,
     transcript_version: Number.isFinite(transcriptVersion || NaN)
       ? transcriptVersion
       : event.transcript_version,
-  };
+  }, payload);
 }
 
 function withEnvelopeFields(event: NormalizedSessionRuntimeEvent, envelope: RuntimeEnvelope): NormalizedSessionRuntimeEvent {
@@ -206,6 +206,108 @@ function withEnvelopeFields(event: NormalizedSessionRuntimeEvent, envelope: Runt
 
 function normalizeString(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9._:-]+/g, "_");
+}
+
+function normalizeTargets(value: unknown): SessionRuntimeEventTarget[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const allowed = new Set<SessionRuntimeEventTarget>([
+    "message",
+    "runtime_card",
+    "runtime_timeline",
+    "hud",
+    "todos_hud",
+    "approval",
+    "artifact",
+    "terminal",
+    "process",
+    "context",
+    "history",
+  ]);
+  const normalized = value
+    .map((item) => String(item || "").trim() as SessionRuntimeEventTarget)
+    .filter((item) => allowed.has(item));
+  return normalized.length ? normalized : null;
+}
+
+function resolveExplicitTargets(payload: JsonRecord, fallback?: unknown): SessionRuntimeEventTarget[] | null {
+  return normalizeTargets(payload.targets)
+    || normalizeTargets(payload.surfaceTargets)
+    || normalizeTargets(payload.surface_targets)
+    || normalizeTargets(fallback);
+}
+
+function resolveExplicitRuntimeId(payload: JsonRecord): SessionRuntimeId | null {
+  return normalizeRuntimeId(
+    typeof payload.runtimeId === "string"
+      ? payload.runtimeId
+      : typeof payload.runtime_id === "string"
+        ? payload.runtime_id
+        : typeof payload.ownerRuntimeId === "string"
+          ? payload.ownerRuntimeId
+          : typeof payload.owner_runtime_id === "string"
+            ? payload.owner_runtime_id
+            : typeof payload.runtime === "string"
+              ? payload.runtime
+              : typeof payload.runtimeKind === "string"
+                ? payload.runtimeKind
+                : typeof payload.runtime_kind === "string"
+                  ? payload.runtime_kind
+                  : "",
+  );
+}
+
+function applyOwnerFields(
+  event: NormalizedSessionRuntimeEvent,
+  payload: JsonRecord,
+): NormalizedSessionRuntimeEvent {
+  const ownerRuntimeId = resolveExplicitRuntimeId({
+    runtimeId: payload.ownerRuntimeId,
+    runtime_id: payload.owner_runtime_id,
+  });
+  const surfaceTargets = resolveExplicitTargets({
+    targets: payload.surfaceTargets,
+    surface_targets: payload.surface_targets,
+  });
+  const nextData = asRecord(event.data);
+  return {
+    ...event,
+    ownerRuntimeId: ownerRuntimeId || event.ownerRuntimeId,
+    ownerAgentKind:
+      (typeof payload.ownerAgentKind === "string" && payload.ownerAgentKind)
+      || (typeof payload.owner_agent_kind === "string" && payload.owner_agent_kind)
+      || event.ownerAgentKind,
+    ownerAgentId:
+      (typeof payload.ownerAgentId === "string" && payload.ownerAgentId)
+      || (typeof payload.owner_agent_id === "string" && payload.owner_agent_id)
+      || event.ownerAgentId,
+    ownerStreamKey:
+      (typeof payload.ownerStreamKey === "string" && payload.ownerStreamKey)
+      || (typeof payload.owner_stream_key === "string" && payload.owner_stream_key)
+      || event.ownerStreamKey,
+    surfaceTargets: surfaceTargets || event.surfaceTargets,
+    data: {
+      ...nextData,
+      ownerRuntimeId: ownerRuntimeId || event.ownerRuntimeId || nextData.ownerRuntimeId,
+      ownerAgentKind:
+        (typeof payload.ownerAgentKind === "string" && payload.ownerAgentKind)
+        || (typeof payload.owner_agent_kind === "string" && payload.owner_agent_kind)
+        || event.ownerAgentKind
+        || nextData.ownerAgentKind,
+      ownerAgentId:
+        (typeof payload.ownerAgentId === "string" && payload.ownerAgentId)
+        || (typeof payload.owner_agent_id === "string" && payload.owner_agent_id)
+        || event.ownerAgentId
+        || nextData.ownerAgentId,
+      ownerStreamKey:
+        (typeof payload.ownerStreamKey === "string" && payload.ownerStreamKey)
+        || (typeof payload.owner_stream_key === "string" && payload.owner_stream_key)
+        || event.ownerStreamKey
+        || nextData.ownerStreamKey,
+      surfaceTargets: surfaceTargets || event.surfaceTargets || nextData.surfaceTargets,
+    },
+  };
 }
 
 function resolveSource(envelope: RuntimeEnvelope, payload?: Record<string, unknown> | null): SessionRuntimeEventSource | undefined {
@@ -802,21 +904,23 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
     const directPayload = direct as unknown as JsonRecord;
     const normalizedType = normalizeTypedEventType(direct.type);
     const directEventName = typeof direct.name === "string" ? direct.name : "";
+    const explicitRuntimeId = resolveExplicitRuntimeId(directPayload);
+    const directMatrixEntry = typeof direct.topic === "string" ? resolveMatrixEntry(direct.topic, directPayload) : null;
     const typedRuntimeId =
-      resolveTypedEventRuntimeId(normalizedType, directEventName, directPayload)
-      || (typeof direct.topic === "string" ? resolveRuntimeId(direct.topic, directPayload, source) : null);
+      explicitRuntimeId
+      || (typeof direct.topic === "string" ? resolveRuntimeId(direct.topic, directPayload, source) : null)
+      || directMatrixEntry?.runtimeId
+      || resolveTypedEventRuntimeId(normalizedType, directEventName, directPayload);
     const normalizedRuntimeId = normalizeRuntimeId(
-      typeof direct.runtimeId === "string"
-        ? direct.runtimeId
-        : typedRuntimeId
-          ? typedRuntimeId
-          : typeof direct.topic === "string"
-            ? direct.topic
-            : typeof direct.name === "string"
-              ? direct.name
-              : "",
+      typedRuntimeId
+      || (typeof direct.topic === "string"
+        ? direct.topic
+        : typeof direct.name === "string"
+          ? direct.name
+          : ""),
     );
     const typedTargets = resolveTypedEventTargets(normalizedType, directEventName);
+    const explicitTargets = resolveExplicitTargets(directPayload, direct.targets);
     const typedVisibility = resolveTypedEventVisibility(normalizedType, directEventName);
     return applySurfaceVisibilityOverrides(withTranscriptTargetFields({
       ...direct,
@@ -826,7 +930,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       source: source || direct.source,
       scope: direct.scope || (typeof direct.topic === "string" ? resolveScope(direct.topic, direct as unknown as JsonRecord) : "active_run"),
       visibility: direct.visibility || typedVisibility || (typeof direct.topic === "string" ? resolveVisibility(direct.topic, direct as unknown as JsonRecord) : "visible"),
-      targets: Array.isArray(direct.targets) ? direct.targets : typedTargets || (typeof direct.topic === "string" ? resolveTargets(direct.topic, direct as unknown as JsonRecord) : ["runtime_card"]),
+      targets: explicitTargets || typedTargets || (typeof direct.topic === "string" ? resolveTargets(direct.topic, direct as unknown as JsonRecord) : ["runtime_card"]),
       actorLabel: direct.actorLabel || (normalizedRuntimeId ? resolveActorLabel(normalizedRuntimeId, options.locale) : undefined),
       raw: asRecord(direct.raw || direct),
     }, directPayload), directPayload);
@@ -844,12 +948,15 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
     const matrixEntry = resolveMatrixEntry(topic, payload);
     const normalizedType = normalizeTypedEventType(payload.type);
     const typedEventName = typeof payload.name === "string" ? payload.name : "";
+    const explicitRuntimeId = resolveExplicitRuntimeId(payload);
     const baseRuntimeId =
-      resolveRuntimeId(topic, payload, source)
-      || resolveTypedEventRuntimeId(normalizedType, typedEventName, payload)
+      explicitRuntimeId
+      || resolveRuntimeId(topic, payload, source)
       || matrixEntry?.runtimeId
+      || resolveTypedEventRuntimeId(normalizedType, typedEventName, payload)
       || null;
     const typedTargets = resolveTypedEventTargets(normalizedType, typedEventName);
+    const explicitTargets = resolveExplicitTargets(payload);
     const typedVisibility = resolveTypedEventVisibility(normalizedType, typedEventName);
     return applySurfaceVisibilityOverrides(withTranscriptTargetFields(withEnvelopeFields({
       ...(payload as unknown as NormalizedSessionRuntimeEvent),
@@ -858,7 +965,7 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
       tool: extractToolPayload(payload),
       scope: resolveScope(topic, payload),
       visibility: typedVisibility || (topic ? resolveVisibility(topic, payload) : "visible"),
-      targets: typedTargets || (topic ? resolveTargets(topic, payload) : ["runtime_card"]),
+      targets: explicitTargets || typedTargets || (topic ? resolveTargets(topic, payload) : ["runtime_card"]),
       actorLabel: resolveActorLabel(baseRuntimeId, options.locale),
       source,
       raw: asRecord(raw),
@@ -866,10 +973,10 @@ export function normalizeSessionRuntimeEvent(raw: unknown, options: NormalizeRun
   }
 
   const matrixEntry = resolveMatrixEntry(topic, payload);
-  const runtimeId = resolveRuntimeId(topic, payload, source) || matrixEntry?.runtimeId || null;
+  const runtimeId = resolveExplicitRuntimeId(payload) || resolveRuntimeId(topic, payload, source) || matrixEntry?.runtimeId || null;
   const scope = resolveScope(topic, payload);
   const visibility = resolveVisibility(topic, payload);
-  const targets = resolveTargets(topic, payload);
+  const targets = resolveExplicitTargets(payload) || resolveTargets(topic, payload);
   const actorLabel = resolveActorLabel(runtimeId, options.locale);
 
   if (topic === "ask_user.requested") {

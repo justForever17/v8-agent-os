@@ -141,7 +141,7 @@ from runtimes.computer_use.primitives import list_computer_use_primitives, primi
 from runtimes.rpa.promotion_gate import draft_environment_signal_summary, draft_timing_signal_summary
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import SafetyDecision, safety_guardian
-from core.workspace_capability import preflight_command_workspace, resolve_workspace_tool_path
+from core.workspace_capability import build_workspace_binding, preflight_command_workspace, resolve_workspace_tool_path
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
 from core.tools.media_downloader import download_media_for_vision
@@ -453,7 +453,7 @@ def _detect_session_preferred_command(command: str) -> str | None:
         "bun create",
         "create-next-app",
     )
-    if any(marker in lowered for marker in scaffolding_markers):
+    if any(marker in lowered for marker in scaffolding_markers) or re.search(r"(^|[;&|]\s*)npx\s+(?:--yes\s+|-y\s+)?create-", lowered):
         return f"检测到 `{command}` 是项目脚手架命令，必须进入 session 模式以便观察交互、超时和落地状态。"
     install_patterns = (
         r"(^|[;&|]\s*)npm\s+(install|i)\b",
@@ -482,6 +482,90 @@ def _detect_session_preferred_command(command: str) -> str | None:
     if any(marker in lowered for marker in long_running_markers):
         return f"检测到 `{command}` 更像长驻进程，建议进入 session 模式以便轮询和中断。"
     return None
+
+
+_SCAFFOLD_INSTALL_PATTERN = re.compile(
+    r"(?i)(?:^|[;&|]\s*)(?:npx\s+(?:--yes\s+|-y\s+)?create-[\w@./-]+|create-[\w@./-]+|npm\s+create\b|pnpm\s+create\b|yarn\s+create\b|bun\s+create\b|npm\s+(?:install|i)\b|pnpm\s+(?:install|i)\b|yarn\s+(?:install|add)\b|bun\s+(?:install|add)\b)"
+)
+_BULK_WRITE_PATH_MARKERS = {
+    "package.json",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "tsconfig.json",
+    "next.config.js",
+    "next.config.mjs",
+    "vite.config.ts",
+    "src/",
+    "app/",
+}
+_workspace_inventory_tokens: dict[str, dict[str, Any]] = {}
+
+
+def _current_run_inventory_key(runtime_context: dict[str, Any] | None, workspace_root: str) -> str:
+    context = dict(runtime_context or {})
+    run_id = str(context.get("run_id") or context.get("runId") or "").strip() or "no_run"
+    session_id = str(context.get("session_id") or context.get("sessionId") or "").strip() or "no_session"
+    return f"{session_id}:{run_id}:{str(workspace_root or '').strip().lower()}"
+
+
+def _workspace_has_existing_items(workspace_root: Path) -> bool:
+    try:
+        return any(item.name not in {".git"} for item in workspace_root.iterdir())
+    except Exception:
+        return False
+
+
+def _workspace_inventory_gate_required(command_or_path: str, *, workspace_root: str | None = None) -> bool:
+    text = str(command_or_path or "").strip().replace("\\", "/")
+    lowered = text.lower()
+    if workspace_root and not _workspace_has_existing_items(Path(workspace_root)):
+        return False
+    if _SCAFFOLD_INSTALL_PATTERN.search(lowered):
+        return True
+    if any(marker in lowered for marker in _BULK_WRITE_PATH_MARKERS):
+        return True
+    return False
+
+
+def _workspace_inventory_status(runtime_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    binding = build_workspace_binding(runtime_context)
+    workspace_root = Path(binding.active_workspace_root)
+    token_key = _current_run_inventory_key(runtime_context, str(workspace_root))
+    token = _workspace_inventory_tokens.get(token_key)
+    return {
+        "binding": binding.as_dict(),
+        "workspaceRoot": str(workspace_root),
+        "hasInventoryToken": bool(token),
+        "inventoryToken": token,
+        "tokenKey": token_key,
+        "nonEmpty": _workspace_has_existing_items(workspace_root),
+    }
+
+
+def _workspace_inventory_block_payload(runtime_context: dict[str, Any] | None, *, operation: str, subject: str) -> dict[str, Any]:
+    status = _workspace_inventory_status(runtime_context)
+    return {
+        "ok": False,
+        "kind": "workspace_inventory_required",
+        "summary": "当前 Active Workspace Root 非空或操作会创建/安装项目，必须先盘点工作区再继续。",
+        "operation": operation,
+        "subject": subject,
+        "workspaceBinding": status.get("binding"),
+        "workspaceRoot": status.get("workspaceRoot"),
+        "recommendedNextAction": "先调用 workspace_broker(mode=\"inspect\")，再根据已有项目选择继续现有目录、新建明确子目录或询问用户。",
+        "detailTool": "workspace_broker",
+    }
+
+
+def _suggest_npx_yes_command(command: str) -> str | None:
+    stripped = str(command or "").strip()
+    lowered = stripped.lower()
+    if not re.search(r"(?i)(^|[;&|]\s*)npx\s+create-", stripped):
+        return None
+    if re.search(r"(?i)(^|\s)(--yes|-y)(\s|$)", stripped):
+        return None
+    return re.sub(r"(?i)\bnpx\s+", "npx --yes ", stripped, count=1)
 
 
 def _normalize_background_input(data: str) -> str:
@@ -3514,6 +3598,136 @@ def share_workspace_file(path: str, mode: str = "auto") -> dict[str, Any]:
         }
 
 
+def _workspace_tree_preview(root: Path, *, max_entries: int = 80, depth: int = 2) -> tuple[list[dict[str, Any]], bool]:
+    items: list[dict[str, Any]] = []
+    omitted = False
+
+    def walk(base: Path, level: int) -> None:
+        nonlocal omitted
+        if level > depth or len(items) >= max_entries:
+            omitted = True
+            return
+        try:
+            children = sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+        except Exception:
+            return
+        for child in children:
+            if child.name in {".git", "node_modules", ".next", "dist", "build", ".turbo", ".v8-agent-os"}:
+                continue
+            if len(items) >= max_entries:
+                omitted = True
+                return
+            try:
+                relative = child.relative_to(root).as_posix()
+            except Exception:
+                relative = child.name
+            item: dict[str, Any] = {"path": relative, "type": "dir" if child.is_dir() else "file"}
+            if child.is_file():
+                try:
+                    item["size"] = child.stat().st_size
+                except Exception:
+                    pass
+            items.append(item)
+            if child.is_dir():
+                walk(child, level + 1)
+
+    walk(root, 1)
+    return items, omitted
+
+
+def _workspace_project_markers(root: Path) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for pattern in ("package.json", "pyproject.toml", "Cargo.toml", "pnpm-workspace.yaml", "vite.config.*", "next.config.*"):
+        for path in root.glob(f"**/{pattern}"):
+            if any(part in {"node_modules", ".git", ".next", "dist", "build"} for part in path.parts):
+                continue
+            try:
+                relative = path.relative_to(root).as_posix()
+            except Exception:
+                relative = str(path)
+            markers.append({"path": relative, "kind": path.name})
+            if len(markers) >= 40:
+                return markers
+    return markers
+
+
+@tool
+def workspace_broker(
+    mode: str = "inspect",
+    path: str = ".",
+    depth: int = 2,
+    max_entries: int = 80,
+) -> str:
+    """Inspect the active workspace and mint a run-scoped inventory token before scaffold/install/bulk-write operations."""
+    normalized_mode = str(mode or "inspect").strip().lower()
+    if normalized_mode != "inspect":
+        return json.dumps(
+            {
+                "ok": False,
+                "kind": "unsupported_mode",
+                "summary": "workspace_broker 当前只支持 mode=inspect。",
+                "mode": normalized_mode,
+            },
+            ensure_ascii=False,
+        )
+    runtime_context = get_runtime_context()
+    path_preflight = resolve_workspace_tool_path(path or ".", runtime_context=runtime_context)
+    if not path_preflight.get("ok"):
+        return json.dumps(
+            {
+                "ok": False,
+                "kind": "workspace_boundary_block",
+                "summary": path_preflight.get("summary"),
+                "error": path_preflight.get("error"),
+                "inputPath": path,
+                "resolvedPath": path_preflight.get("resolvedPath"),
+                "workspaceBinding": path_preflight.get("binding"),
+            },
+            ensure_ascii=False,
+        )
+    root = Path(str(path_preflight.get("resolvedPath") or path)).resolve(strict=False)
+    if root.is_file():
+        root = root.parent
+    binding = build_workspace_binding(runtime_context)
+    workspace_root = Path(binding.active_workspace_root)
+    bounded_depth = max(1, min(int(depth or 2), 4))
+    bounded_entries = max(20, min(int(max_entries or 80), 200))
+    items, omitted = _workspace_tree_preview(root, max_entries=bounded_entries, depth=bounded_depth)
+    markers = _workspace_project_markers(root)
+    token = {
+        "token": uuid.uuid4().hex[:16],
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "workspaceRoot": str(workspace_root),
+        "inspectedPath": str(root),
+        "itemCount": len(items),
+        "projectMarkerCount": len(markers),
+        "nonEmpty": bool(items),
+    }
+    _workspace_inventory_tokens[_current_run_inventory_key(runtime_context, str(workspace_root))] = token
+    potential_conflicts = [
+        item
+        for item in items
+        if item.get("type") == "dir" and re.search(r"(?i)(werewolf|ai[-_]?werewolf|game|app)", str(item.get("path") or ""))
+    ][:12]
+    return json.dumps(
+        {
+            "ok": True,
+            "kind": "workspace_inventory",
+            "summary": "已完成当前工作区盘点；后续脚手架/依赖安装/批量写入需要基于该结果选择目标目录。",
+            "workspaceBinding": binding.as_dict(),
+            "workspaceRoot": str(workspace_root),
+            "inspectedPath": str(root),
+            "token": token,
+            "items": items,
+            "omitted": {"entries": omitted, "maxEntries": bounded_entries, "depth": bounded_depth},
+            "projectMarkers": markers,
+            "potentialConflicts": potential_conflicts,
+            "recommendedNextAction": "若已有目标项目，继续该目录；若要新建，请明确子目录名；若冲突不清楚，先询问用户。",
+        },
+        ensure_ascii=False,
+    )
+
+
 @tool
 def write_native_file(
     path: str,
@@ -3546,6 +3760,15 @@ def write_native_file(
                 ensure_ascii=False,
             )
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
+        inventory_status = _workspace_inventory_status(runtime_context)
+        if (
+            not inventory_status.get("hasInventoryToken")
+            and _workspace_inventory_gate_required(str(target_path), workspace_root=str(inventory_status.get("workspaceRoot") or ""))
+        ):
+            return json.dumps(
+                _workspace_inventory_block_payload(runtime_context, operation="file_write", subject=str(target_path)),
+                ensure_ascii=False,
+            )
         allowed, error_message = _enforce_safety_decision(
             safety_guardian.assess_file_write(
                 str(target_path),
@@ -3682,8 +3905,9 @@ def _launch_background_command(
     cwd: str = "",
 ) -> dict[str, Any]:
     interactive_reason = _detect_interactive_command(command)
+    session_reason = _detect_session_preferred_command(command)
     resolved_profile, profile_reason = _detect_background_command_profile(command, requested_profile=profile)
-    interactive_mode = interactive_reason is not None
+    interactive_mode = interactive_reason is not None or session_reason is not None
     if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
         raise RuntimeError(
             "当前 Windows 环境缺少 `winpty/PTY` 适配层，无法稳定自动化交互式 CLI。"
@@ -3708,6 +3932,29 @@ def _launch_background_command(
                 ensure_ascii=False,
             )
         )
+    inventory_status = _workspace_inventory_status(runtime_context)
+    if (
+        not inventory_status.get("hasInventoryToken")
+        and inventory_status.get("nonEmpty")
+        and _workspace_inventory_gate_required(command, workspace_root=str(inventory_status.get("workspaceRoot") or ""))
+    ):
+        raise RuntimeError(json.dumps(_workspace_inventory_block_payload(runtime_context, operation="command", subject=command), ensure_ascii=False))
+    suggested_command = _suggest_npx_yes_command(command)
+    if suggested_command:
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "ok": False,
+                    "kind": "scaffold_requires_noninteractive_confirmation",
+                    "summary": "`npx create-*` 缺少 --yes，可能卡在 Ok to proceed? (y)。请使用 suggestedCommand 重试。",
+                    "command": command,
+                    "suggestedCommand": suggested_command,
+                    "recommendedNextAction": "用 suggestedCommand 重新启动 command_session_broker(mode=\"start\")。",
+                    "workspaceBinding": inventory_status.get("binding"),
+                },
+                ensure_ascii=False,
+            )
+        )
     resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
     allowed, error_message = _enforce_safety_decision(
         safety_guardian.assess_background_command(command, runtime_context=runtime_context),
@@ -3724,7 +3971,7 @@ def _launch_background_command(
         run_id=runtime_context.get("run_id"),
         interactive=interactive_mode,
         profile=resolved_profile,
-        profile_reason=profile_reason,
+        profile_reason=profile_reason or session_reason,
         cwd=resolved_cwd,
     )
     bg_proc.command_id = cmd_id
@@ -5235,7 +5482,7 @@ def update_todo(index: int, status: str, tool_call_id: Annotated[str, InjectedTo
 _BACKGROUND_PROCESS_RETENTION_SECONDS = 300
 _SKILLS_ADD_COMMAND_PATTERN = re.compile(r"(?i)(?:^|[;&|]\s*)npx\s+skills\s+add\b")
 _PROMPT_HINT_PATTERN = re.compile(
-    r"(^|\n)\s*(?:[>$#»❯]\s*|输入您的消息|Type your message|Press \? for shortcuts|按 \? 查看快捷键)",
+    r"((^|\n)\s*(?:[>$#»❯]\s*|输入您的消息|Type your message|Press \? for shortcuts|按 \? 查看快捷键)|Ok to proceed\?\s*\(y\)|Proceed\?\s*(?:\([YyNn]/?[Nn]?\)|\[Y/n\]|\(y\))?|\[Y/n\]|Press Enter(?:\s+to\s+\w+)?)",
     re.IGNORECASE,
 )
 _BUSY_HINT_PATTERN = re.compile(
@@ -7486,6 +7733,7 @@ def command_session_broker(
     session_id: str = "",
     command_id: str = "",
     input_text: str = "",
+    submit: bool = True,
     profile: str = "auto",
     cwd: str = "",
     debug: bool = False,
@@ -7496,7 +7744,7 @@ def command_session_broker(
     Modes:
     - start: launch a long-running or interactive command session
     - observe: read the latest delta and detect whether input is needed
-    - input: send input into the active session
+    - input: send input into the active session; submit=true appends Enter when input_text has no newline
     - terminate: stop the session
 
     Usage guidance:
@@ -7727,6 +7975,10 @@ def command_session_broker(
                     recommended_next_action="none",
                     error="missing_input_text",
                 )
+            submitted_enter = False
+            if submit and "\n" not in normalized_input and "\r" not in normalized_input:
+                normalized_input = f"{normalized_input}\n"
+                submitted_enter = True
             previous_status = bg_proc.status_snapshot()
             previous_screen_version = int(previous_status.get("screen_version") or 0)
             previous_raw_frame_version = int(previous_status.get("raw_frame_version") or 0)
@@ -7807,6 +8059,7 @@ def command_session_broker(
                 workspaceBinding=status.get("workspace_binding"),
                 acceptedInputPreview=input_preview,
                 acceptedInputTruncated=input_truncated if input_preview else None,
+                submittedEnter=submitted_enter,
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
                 semanticTextTail=semantic_tail or None,
@@ -7859,14 +8112,36 @@ def command_session_broker(
     except Exception as exc:
         _raise_runtime_governance_exception_if_needed(exc)
         normalized_session = str(command_id or session_id or "").strip()
+        error_text = str(exc)
+        structured_error: dict[str, Any] | None = None
+        try:
+            parsed_error = json.loads(error_text)
+            if isinstance(parsed_error, dict):
+                structured_error = parsed_error
+        except Exception:
+            structured_error = None
+        if structured_error:
+            return _command_session_payload(
+                mode=normalized_mode,
+                session_id=normalized_session,
+                command_id=normalized_session,
+                ok=False,
+                summary=str(structured_error.get("summary") or structured_error.get("error") or error_text),
+                recommended_next_action=str(structured_error.get("recommendedNextAction") or "none"),
+                error=str(structured_error.get("error") or structured_error.get("kind") or error_text),
+                kind=structured_error.get("kind"),
+                suggestedCommand=structured_error.get("suggestedCommand"),
+                workspaceBinding=structured_error.get("workspaceBinding"),
+                detailTool=structured_error.get("detailTool"),
+            )
         return _command_session_payload(
             mode=normalized_mode,
             session_id=normalized_session,
             command_id=normalized_session,
             ok=False,
-            summary=str(exc),
+            summary=error_text,
             recommended_next_action="none",
-            error=str(exc),
+            error=error_text,
         )
 
 
@@ -11466,6 +11741,7 @@ NATIVE_TOOLS = [
     computer_use_execute_plan,
     read_native_file,
     share_workspace_file,
+    workspace_broker,
     write_native_file,
     grep_search,
     download_media_for_vision,

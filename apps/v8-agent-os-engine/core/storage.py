@@ -318,7 +318,7 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
         normalized = normalized.replace(source, target)
     normalized = normalized.replace(
         "## Language Protocol\n"
-        "- Think and structure plans in English by default.\n"
+        "- Think and structure plans in the latest user's preferred language for user-visible orchestration; keep raw code, commands, stdout/stderr, provider names, protocol fields, and file paths unchanged.\n"
         "- Reply to the user in the language they used most recently.\n"
         "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n",
         "## Language Protocol\n"
@@ -333,6 +333,7 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
             "- For complex or freshness-sensitive research, grant `research.core` and use `research_broker` instead of doing a few ad-hoc web searches and guessing confidence.\n"
             "- For coding, project creation, or dependency work, route deliberately into Engineering discipline, a brokered engineering subagent, or direct supervisor execution with an explicit write set and verification proof.\n"
             "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
+            "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"
             "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
         )
         normalized = normalized.replace("## Tool Discipline\n", f"{orchestration_block}## Tool Discipline\n", 1)
@@ -895,6 +896,7 @@ class StorageManager:
                 "- For complex or freshness-sensitive research, grant `research.core` and use `research_broker` instead of doing a few ad-hoc web searches and guessing confidence.\n"
                 "- For coding, project creation, or dependency work, route deliberately into Engineering discipline, a brokered engineering subagent, or direct supervisor execution with an explicit write set and verification proof.\n"
                 "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
+                "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"
                 "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
                 "## Tool Discipline\n"
                 "- Prefer the best runtime-managed path for the current task.\n"

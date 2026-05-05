@@ -1,15 +1,20 @@
 import json
 import asyncio
+import mimetypes
+import re
 import uuid
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from .models import ChatRequest
 from core.database import db
 from core.json_safe import to_jsonable
+from core.scoped_workspace_resource import build_workspace_resource_ref
+from core.workspace_capability import build_workspace_binding
 from core.realtime_protocol import (
     build_runtime_event,
     format_ndjson,
@@ -27,6 +32,7 @@ from runtimes.chat.runtime import chat_runtime
 
 
 router = APIRouter()
+_UPLOAD_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
 def _engine_now_ms() -> int:
@@ -135,6 +141,108 @@ async def iter_chat_events(request: ChatRequest, transport: str = "http", run_id
 async def event_generator(request: ChatRequest, run_id: str):
     async for event in iter_chat_events(request, transport="http", run_id=run_id):
         yield format_ndjson(event)
+
+
+def _safe_upload_filename(value: str | None) -> str:
+    raw = Path(str(value or "").strip()).name or f"upload-{uuid.uuid4().hex[:8]}"
+    safe = _UPLOAD_FILENAME_SAFE_RE.sub("_", raw).strip(" .")
+    return safe[:140] or f"upload-{uuid.uuid4().hex[:8]}"
+
+
+def _form_text(form: object, *names: str) -> str:
+    getter = getattr(form, "get", None)
+    if not callable(getter):
+        return ""
+    for name in names:
+        value = getter(name)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+@router.post("/chat/upload")
+async def chat_upload(request: Request):
+    form = await request.form()
+    upload = form.get("file") if hasattr(form, "get") else None
+    if not upload or not hasattr(upload, "read"):
+        raise HTTPException(status_code=400, detail="缺少上传文件。")
+
+    filename = _safe_upload_filename(getattr(upload, "filename", "") or None)
+    session_id = _form_text(form, "sessionId", "session_id", "conversationId", "conversation_id")
+    workspace_id = _form_text(form, "workspaceId", "workspace_id")
+    workspace_path = _form_text(form, "workspacePath", "workspace_path")
+    project_id = _form_text(form, "projectId", "project_id")
+    binding = build_workspace_binding(
+        {
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "workspace_path": workspace_path,
+            "project_id": project_id,
+        },
+        runtime_kind="chat",
+    )
+    workspace_root = binding.active_workspace_root.resolve(strict=False)
+    if not workspace_root.exists() or not workspace_root.is_dir():
+        raise HTTPException(status_code=404, detail=f"Active Workspace Root 不存在或不是目录: {workspace_root}")
+
+    upload_dir = workspace_root / ".v8" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    resolved_upload_dir = upload_dir.resolve(strict=False)
+    try:
+        resolved_upload_dir.relative_to(workspace_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="上传目录越过当前工作区边界，已拒绝。") from exc
+
+    unique_filename = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}-{filename}"
+    target = (resolved_upload_dir / unique_filename).resolve(strict=False)
+    try:
+        target.relative_to(workspace_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="上传目标越过当前工作区边界，已拒绝。") from exc
+
+    content = await upload.read()
+    if not isinstance(content, (bytes, bytearray)):
+        raise HTTPException(status_code=400, detail="上传文件内容不可读取。")
+    target.write_bytes(bytes(content))
+
+    workspace_relative_path = target.relative_to(workspace_root).as_posix()
+    content_type = str(getattr(upload, "content_type", "") or "").strip() or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    resource_ref = build_workspace_resource_ref(
+        workspace_relative_path=workspace_relative_path,
+        path_plane="workspace_download",
+        workspace_root=workspace_root,
+        workspace_id=binding.workspace_id or None,
+        project_id=binding.project_id or None,
+        mime_type=content_type,
+        display_label=filename,
+        previewable=content_type.startswith(("image/", "video/", "audio/", "text/")),
+        downloadable=True,
+        surface_visible=True,
+    )
+    admin_path = str(resource_ref.get("adminPath") or "")
+    return {
+        "id": f"upload_{uuid.uuid4().hex[:16]}",
+        "name": filename,
+        "url": admin_path,
+        "publicUrl": admin_path,
+        "previewUrl": admin_path,
+        "path": workspace_relative_path,
+        "workspacePath": str(target),
+        "workspaceRelativePath": workspace_relative_path,
+        "workspaceRoot": str(workspace_root),
+        "workspaceId": binding.workspace_id or None,
+        "projectId": binding.project_id or None,
+        "type": content_type,
+        "size": len(content),
+        "createdAt": utc_now_iso(),
+        "resourceRef": resource_ref,
+        "metadata": {
+            "sessionId": session_id or None,
+            "source": "os_phone_upload",
+            "workspaceBinding": binding.as_dict(),
+        },
+    }
 
 
 @router.post("/chat/stream")

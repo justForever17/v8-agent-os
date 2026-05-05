@@ -66,6 +66,11 @@ export type SessionStreamNarrativeNode = {
   agentAvatar?: string;
   agentRoleLabel?: string;
   agentType?: "supervisor" | "agent" | "user";
+  ownerRuntimeId?: string;
+  ownerAgentKind?: string;
+  ownerAgentId?: string;
+  ownerStreamKey?: string;
+  displayInMessage?: boolean;
 };
 
 export type SessionStreamExecutionNode = {
@@ -87,6 +92,11 @@ export type SessionStreamExecutionNode = {
   topic?: string;
   label?: string;
   data?: Record<string, unknown>;
+  ownerRuntimeId?: string;
+  ownerAgentKind?: string;
+  ownerAgentId?: string;
+  ownerStreamKey?: string;
+  displayInMessage?: boolean;
 };
 
 export type SessionStreamGovernanceNode = {
@@ -107,6 +117,11 @@ export type SessionStreamGovernanceNode = {
   topic?: string;
   status?: string;
   reason?: string;
+  ownerRuntimeId?: string;
+  ownerAgentKind?: string;
+  ownerAgentId?: string;
+  ownerStreamKey?: string;
+  displayInMessage?: boolean;
 };
 
 export type SessionStreamArtifactNode = {
@@ -118,6 +133,11 @@ export type SessionStreamArtifactNode = {
   agentRoleLabel?: string;
   agentType?: "supervisor" | "agent" | "user";
   artifact: SessionStreamArtifact;
+  ownerRuntimeId?: string;
+  ownerAgentKind?: string;
+  ownerAgentId?: string;
+  ownerStreamKey?: string;
+  displayInMessage?: boolean;
 };
 
 export type SessionStreamTimelineNode =
@@ -183,6 +203,62 @@ function nextId(prefix: string, createId?: (prefix: string) => string) {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function eventTargetsMessage(event: Pick<SessionStreamUiEvent, "targets" | "data">) {
+  const targets = Array.isArray(event.targets) ? event.targets : [];
+  if (targets.includes("message")) {
+    return true;
+  }
+  const data = asRecord(event.data);
+  const surfaceTargets = Array.isArray(data.surfaceTargets) ? data.surfaceTargets : [];
+  return surfaceTargets.includes("message");
+}
+
+function eventDisplayInMessage(event: Pick<SessionStreamUiEvent, "targets" | "data">) {
+  const data = asRecord(event.data);
+  if (data.displayInMessage === false || data.display_in_message === false) {
+    return false;
+  }
+  if (data.displayInMessage === true || data.display_in_message === true) {
+    return true;
+  }
+  return eventTargetsMessage(event);
+}
+
+function ownerFieldsFromEvent(event: Pick<SessionStreamUiEvent, "runtimeId" | "data" | "targets">) {
+  const data = asRecord(event.data);
+  return {
+    ownerRuntimeId:
+      typeof data.ownerRuntimeId === "string"
+        ? data.ownerRuntimeId
+        : typeof data.owner_runtime_id === "string"
+          ? data.owner_runtime_id
+          : event.runtimeId,
+    ownerAgentKind:
+      typeof data.ownerAgentKind === "string"
+        ? data.ownerAgentKind
+        : typeof data.owner_agent_kind === "string"
+          ? data.owner_agent_kind
+          : undefined,
+    ownerAgentId:
+      typeof data.ownerAgentId === "string"
+        ? data.ownerAgentId
+        : typeof data.owner_agent_id === "string"
+          ? data.owner_agent_id
+          : undefined,
+    ownerStreamKey:
+      typeof data.ownerStreamKey === "string"
+        ? data.ownerStreamKey
+        : typeof data.owner_stream_key === "string"
+          ? data.owner_stream_key
+          : undefined,
+    displayInMessage: eventDisplayInMessage(event),
+  };
+}
+
+function nodeDisplayInMessage(node: SessionStreamTimelineNode) {
+  return node.displayInMessage !== false;
 }
 
 function resolveDefaultAgentProfile(options?: SessionStreamLifecycleOptions) {
@@ -416,19 +492,21 @@ function appendNarrativeContent(
   content: string,
   profile: SessionAgentProfile,
   options?: SessionStreamLifecycleOptions,
+  nodeOptions?: Pick<SessionStreamNarrativeNode, "ownerRuntimeId" | "ownerAgentKind" | "ownerAgentId" | "ownerStreamKey" | "displayInMessage">,
 ) {
+  if (nodeOptions?.displayInMessage === false) {
+    return;
+  }
   const normalizedContent = String(content || "").trim();
   if (!normalizedContent) {
     return;
   }
   const lastNode = Array.isArray(message.nodes) ? message.nodes[message.nodes.length - 1] : undefined;
   if (
-    lastNode
-    && lastNode.kind === "narrative"
-    && lastNode.role === "assistant"
-    && lastNode.agentName === profile.agentName
+    canMergeNarrativeNode(lastNode, profile, nodeOptions)
   ) {
     lastNode.content = `${String(lastNode.content || "")}${normalizedContent}`;
+    Object.assign(lastNode, nodeOptions || {});
   } else {
     appendNode(message, {
       id: nextId("node", options?.createId),
@@ -437,9 +515,48 @@ function appendNarrativeContent(
       content: normalizedContent,
       timestamp: Date.now(),
       ...profile,
+      ...nodeOptions,
     });
   }
   message.content = `${String(message.content || "")}${normalizedContent}`;
+}
+
+function narrativeStreamKeyMatches(
+  node: Pick<SessionStreamNarrativeNode, "ownerStreamKey"> | undefined,
+  nodeOptions?: Pick<SessionStreamNarrativeNode, "ownerStreamKey">,
+) {
+  const incomingKey = String(nodeOptions?.ownerStreamKey || "").trim();
+  const existingKey = String(node?.ownerStreamKey || "").trim();
+  if (incomingKey) {
+    return existingKey === incomingKey;
+  }
+  return !existingKey;
+}
+
+function canMergeNarrativeNode(
+  node: SessionStreamTimelineNode | undefined,
+  profile: SessionAgentProfile,
+  nodeOptions?: Pick<SessionStreamNarrativeNode, "ownerStreamKey">,
+): node is SessionStreamNarrativeNode {
+  return Boolean(
+    node
+    && node.kind === "narrative"
+    && node.role === "assistant"
+    && node.agentName === profile.agentName
+    && narrativeStreamKeyMatches(node, nodeOptions),
+  );
+}
+
+function executionStreamKeyMatches(
+  node: Pick<SessionStreamExecutionNode, "ownerStreamKey"> | undefined,
+  nodeOptions?: Pick<SessionStreamExecutionNode, "ownerStreamKey">,
+) {
+  const incomingKey = String(nodeOptions?.ownerStreamKey || "").trim();
+  const existingKey = String(node?.ownerStreamKey || "").trim();
+  if (incomingKey) {
+    return existingKey === incomingKey;
+  }
+  return !existingKey;
 }
 
 function findMessageById<TMessage extends SessionStreamMessage>(localMessages: TMessage[], messageId?: string) {
@@ -483,7 +600,7 @@ function applyTranscriptVersion(message: SessionStreamMessage, event: SessionStr
 
 function deriveNarrativeContentFromNodes(message: SessionStreamMessage): string {
   return (Array.isArray(message.nodes) ? message.nodes : [])
-    .filter((node): node is SessionStreamNarrativeNode => node.kind === "narrative" && node.role === "assistant")
+    .filter((node): node is SessionStreamNarrativeNode => node.kind === "narrative" && node.role === "assistant" && nodeDisplayInMessage(node))
     .map((node) => String(node.content || ""))
     .join("");
 }
@@ -625,15 +742,28 @@ export function shouldApplyRuntimeEventToMessage(
   if (!shouldForwardRuntimeEventToRealtimeSurface(event)) {
     return false;
   }
+  const targets = Array.isArray(event.targets) ? event.targets : [];
+  const messageScopedTypes = new Set(["agent_start", "text_chunk", "reasoning_chunk", "tool_start", "tool_result", "done", "error"]);
+  if (messageScopedTypes.has(event.type) && !targets.includes("message")) {
+    return false;
+  }
   if (
     event.runtimeId === "subagent_swarm"
     || event.runtimeId === "planner_lane"
     || event.runtimeId === "engineering"
     || event.runtimeId === "engineering_lane"
+    || event.runtimeId === "research"
+    || event.runtimeId === "creative_media"
+    || event.runtimeId === "computer_use"
+    || event.runtimeId === "rpa"
     || String(event.topic || "").startsWith("subagent.")
     || String(event.topic || "").startsWith("planner.")
     || String(event.topic || "").startsWith("engineering.")
     || String(event.topic || "").startsWith("engineering_lane.")
+    || String(event.topic || "").startsWith("research.")
+    || String(event.topic || "").startsWith("creative_media.")
+    || String(event.topic || "").startsWith("computer_use.")
+    || String(event.topic || "").startsWith("rpa.")
     || String(event.topic || "").startsWith("chat.planner_mode.")
     || String(event.topic || "").startsWith("chat.task_planning_mode.")
   ) {
@@ -653,7 +783,6 @@ export function shouldApplyRuntimeEventToMessage(
   if (event.type !== "custom_event") {
     return false;
   }
-  const targets = Array.isArray(event.targets) ? event.targets : [];
   return targets.includes("message")
     || event.name === "artifact_recorded"
     || event.name === "ask_user";
@@ -673,6 +802,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
   const runtimeCoalesceTopics = new Set(options?.coalescedRuntimeTopics || DEFAULT_COALESCED_RUNTIME_TOPICS);
   let nextActiveAgentProfile = activeAgentProfile;
   const eventData = asRecord(event.data);
+  const ownerFields = ownerFieldsFromEvent(event);
+  if (!shouldApplyRuntimeEventToMessage(event)) {
+    return {
+      currentAiMsg: nextCurrentAiMsg,
+      activeAgentProfile: nextActiveAgentProfile,
+    };
+  }
   const todoToolEvent = (event.type === "tool_start" || event.type === "tool_result") && isTodoToolRuntimePayload({
     ...eventData,
     toolName: event.tool?.toolName || eventData.toolName || eventData.tool_name,
@@ -740,18 +876,24 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
     const explicitNode = event.node_id
       ? (Array.isArray(current.nodes)
-        ? current.nodes.find((node) => String(node.id || "").trim() === event.node_id)
+        ? current.nodes.find((node): node is SessionStreamNarrativeNode =>
+          String(node.id || "").trim() === event.node_id
+          && node.kind === "narrative"
+          && node.role === "assistant",
+        )
         : undefined)
       : undefined;
     const lastNode = explicitNode || (Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined);
-    if (lastNode && lastNode.kind === "narrative" && lastNode.role === "assistant" && lastNode.agentName === nextActiveAgentProfile.agentName) {
+    const narrativeNode = explicitNode || (canMergeNarrativeNode(lastNode, nextActiveAgentProfile, ownerFields) ? lastNode : undefined);
+    if (narrativeNode) {
+      Object.assign(narrativeNode, ownerFields);
       if (snapshot !== undefined) {
-        lastNode.content = snapshot;
+        narrativeNode.content = snapshot;
         current.content = deriveNarrativeContentFromNodes(current);
       } else {
-        const suffix = computeStreamingSuffix(String(lastNode.content || ""), content);
+        const suffix = computeStreamingSuffix(String(narrativeNode.content || ""), content);
         if (suffix) {
-          lastNode.content = `${String(lastNode.content || "")}${suffix}`;
+          narrativeNode.content = `${String(narrativeNode.content || "")}${suffix}`;
           current.content = `${String(current.content || "")}${suffix}`;
         }
       }
@@ -763,10 +905,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         content: snapshot ?? content,
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
+        ...ownerFields,
       });
       current.content = snapshot !== undefined
         ? deriveNarrativeContentFromNodes(current)
-        : `${String(current.content || "")}${content}`;
+        : ownerFields.displayInMessage === false
+          ? deriveNarrativeContentFromNodes(current)
+          : `${String(current.content || "")}${content}`;
     }
     appendEventArtifactIfPresent(current);
   } else if (event.type === "reasoning_chunk") {
@@ -781,7 +926,14 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         : undefined)
       : undefined;
     const lastNode = explicitNode || (Array.isArray(current.nodes) ? current.nodes[current.nodes.length - 1] : undefined);
-    if (lastNode && lastNode.kind === "execution" && lastNode.executionType === "reasoning" && !lastNode.time) {
+    if (
+      lastNode
+      && lastNode.kind === "execution"
+      && lastNode.executionType === "reasoning"
+      && !lastNode.time
+      && executionStreamKeyMatches(lastNode, ownerFields)
+    ) {
+      Object.assign(lastNode, ownerFields);
       if (snapshot !== undefined) {
         lastNode.content = snapshot;
       } else {
@@ -800,6 +952,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         startTime: Date.now(),
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
+        ...ownerFields,
       });
     }
   } else if (event.type === "tool_start") {
@@ -827,9 +980,10 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       args: event.tool?.args ?? eventData.args ?? asRecord(eventData.tool).args,
       timestamp: Date.now(),
       ...nextActiveAgentProfile,
+      ...ownerFields,
     });
     if (narrativeContent) {
-      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options, ownerFields);
     }
     appendEventArtifactIfPresent(current);
   } else if (event.type === "tool_result") {
@@ -859,6 +1013,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         result: event.tool?.result ?? eventData.result,
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
+        ...ownerFields,
       });
     } else {
       const existingToolCall = (current.nodes || []).find((node) =>
@@ -869,6 +1024,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
 
       if (existingToolCall) {
         existingToolCall.result = event.tool?.result ?? eventData.result;
+        Object.assign(existingToolCall, ownerFields);
         existingToolCall.toolName = existingToolCall.toolName
           || event.tool?.toolName
           || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
@@ -883,11 +1039,12 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
           result: event.tool?.result ?? eventData.result,
           timestamp: Date.now(),
           ...nextActiveAgentProfile,
+          ...ownerFields,
         });
       }
     }
     if (narrativeContent) {
-      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options);
+      appendNarrativeContent(current, narrativeContent, nextActiveAgentProfile, options, ownerFields);
     }
     appendEventArtifactIfPresent(current);
   } else if (event.type === "custom_event" && event.name === "artifact_recorded") {

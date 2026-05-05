@@ -34,10 +34,16 @@ export const RUNTIME_PROJECTION_MATRIX: RuntimeProjectionMatrixEntry[] = [
     targets: ["runtime_card", "artifact", "process"],
   },
   {
+    runtimeId: "research",
+    eventPrefix: "research.",
+    surfaces: ["admin", "phone", "web"],
+    targets: ["runtime_card", "runtime_timeline", "hud", "artifact"],
+  },
+  {
     runtimeId: "computer_use",
     eventPrefix: "computer_use.",
     surfaces: ["admin", "phone", "web"],
-    targets: ["message", "runtime_card", "terminal", "process"],
+    targets: ["runtime_card", "runtime_timeline", "terminal", "process"],
   },
   {
     runtimeId: "network_supervisor",

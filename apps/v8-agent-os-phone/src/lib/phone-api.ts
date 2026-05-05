@@ -160,6 +160,7 @@ export async function uploadUserAvatar(
 export async function uploadAttachment(
     authorizedFetch: AuthorizedFetch,
     file: { uri: string; name?: string; type?: string },
+    scope?: { sessionId?: string | null; conversationId?: string | null; workspaceId?: string | null; workspacePath?: string | null; projectId?: string | null },
 ) {
     try {
         const form = new FormData();
@@ -168,6 +169,17 @@ export async function uploadAttachment(
             name: file.name || `upload-${Date.now()}`,
             type: file.type || "application/octet-stream",
         } as unknown as Blob);
+        const sessionId = String(scope?.sessionId || scope?.conversationId || "").trim();
+        if (sessionId) {
+            form.append("sessionId", sessionId);
+            form.append("conversationId", sessionId);
+        }
+        const workspaceId = String(scope?.workspaceId || "").trim();
+        if (workspaceId) form.append("workspaceId", workspaceId);
+        const workspacePath = String(scope?.workspacePath || "").trim();
+        if (workspacePath) form.append("workspacePath", workspacePath);
+        const projectId = String(scope?.projectId || "").trim();
+        if (projectId) form.append("projectId", projectId);
         const response = await authorizedFetch("/api/client/upload", {
             method: "POST",
             body: form,

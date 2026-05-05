@@ -116,9 +116,11 @@ class ChatAttachment(BaseModel):
     url: Optional[str] = None
     public_url: Optional[str] = Field(default=None, alias="publicUrl")
     workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
+    workspace_relative_path: Optional[str] = Field(default=None, alias="workspaceRelativePath")
     mime_type: Optional[str] = Field(default=None, alias="mimeType")
     size: Optional[int] = None
     source: Optional[str] = None
+    resource_ref: Optional[Dict[str, Any]] = Field(default=None, alias="resourceRef")
 
 
 class ChatRequestData(BaseModel):

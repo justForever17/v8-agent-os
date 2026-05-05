@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { fetchClientAdmin } from "@/lib/server/client-proxy";
+import { fetchClientEngine } from "@/lib/server/client-proxy";
 
 export async function POST(req: NextRequest) {
     try {
         const formData = await req.formData();
-        const response = await fetchClientAdmin(req, "/upload", {
+        const response = await fetchClientEngine(req, "/chat/upload", {
             method: "POST",
             body: formData,
         });

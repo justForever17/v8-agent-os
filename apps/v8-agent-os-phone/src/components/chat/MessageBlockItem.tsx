@@ -280,7 +280,7 @@ function useStreamingRevealContent(content: string, _enabled: boolean) {
 function StreamingPlainTextBlock({ content }: { content: string }) {
     const { colors } = useUiPrefs();
     return (
-        <Text selectable style={[styles.streamingText, { color: colors.textMuted }]}>
+        <Text selectable style={[styles.streamingText, { color: colors.text }]}>
             {content}
         </Text>
     );

@@ -87,13 +87,18 @@ function TraceGroup({
                 style={[
                     styles.traceToggle,
                     isExpanded && styles.traceToggleExpanded,
-                    { borderColor, backgroundColor },
                 ]}
                 onPress={onToggle}
             >
-                <Text style={[styles.traceToggleText, { color: textColor }]}>
-                    {isExpanded ? "⌄" : ">"}
-                </Text>
+                <MaterialCommunityIcons
+                    name="chevron-right"
+                    size={15}
+                    color={textColor}
+                    style={[
+                        styles.traceToggleIcon,
+                        { transform: [{ rotate: isExpanded ? "90deg" : "0deg" }] },
+                    ]}
+                />
             </Pressable>
             {isExpanded ? (
                 <View style={styles.traceGroupContent}>
@@ -1207,30 +1212,29 @@ const styles = StyleSheet.create({
     },
     traceGroup: {
         width: "100%",
-        gap: 6,
+        gap: 3,
         alignItems: "flex-start",
     },
     traceToggle: {
-        minWidth: 20,
-        height: 20,
-        borderRadius: 10,
-        borderWidth: 1,
+        minWidth: 16,
+        height: 14,
+        borderRadius: 0,
+        borderWidth: 0,
         alignItems: "center",
         justifyContent: "center",
-        paddingHorizontal: 6,
-        opacity: 0.72,
+        paddingHorizontal: 0,
+        opacity: 0.58,
+        backgroundColor: "transparent",
     },
     traceToggleExpanded: {
-        opacity: 0.9,
+        opacity: 0.76,
     },
-    traceToggleText: {
-        fontSize: 13,
-        lineHeight: 16,
-        fontWeight: "900",
+    traceToggleIcon: {
+        opacity: 0.82,
     },
     traceGroupContent: {
         width: "100%",
-        gap: 6,
+        gap: 3,
     },
     assistantText: {
         fontSize: 14,

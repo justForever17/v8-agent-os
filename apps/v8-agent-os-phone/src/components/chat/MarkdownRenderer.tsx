@@ -250,7 +250,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                                 <Text
                                     key={`${lineIndex}:${line.slice(0, 12)}`}
                                     selectable
-                                    style={[styles.text, { color: colors.textMuted }]}
+                                    style={[styles.text, { color: colors.text }]}
                                 >
                                     {bulletMatch ? <Text style={{ color: colors.text }}>• </Text> : null}
                                     {tokens.map((token, tokenIndex) => {
@@ -260,7 +260,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                                                 return (
                                                     <Text
                                                         key={`${token.href}:${tokenIndex}`}
-                                                        style={{ color: colors.textMuted }}
+                                                        style={{ color: colors.text }}
                                                     >
                                                         {label}
                                                     </Text>

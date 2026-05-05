@@ -5,6 +5,7 @@ import json
 import re
 import time
 import uuid
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -16,10 +17,23 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 
 from core.storage import storage
+from core.tools.research_ledger import (
+    get_evidence_bundle,
+    get_experience_pack,
+    list_evidence_bundles,
+    promote_experience_pack,
+    research_ledger_summary,
+    search_experience_packs,
+    store_evidence_bundle,
+)
+from core.tools.tool_execution_envelope import ToolExecutionEnvelope, classify_failure
 from core.tools.web_fetcher import web_read, web_search
 
 
 _EVIDENCE_TTL_SECONDS = 6 * 60 * 60
+_RESEARCH_TOOL_DEADLINE_MS = 120_000
+_RESEARCH_SHARD_DEADLINE_MS = 45_000
+_RESEARCH_SOURCE_READ_DEADLINE_MS = 35_000
 _EVIDENCE_LEDGER: dict[str, dict[str, Any]] = {}
 _AUTHORITATIVE_HOST_HINTS = (
     "docs.",
@@ -273,7 +287,7 @@ def _store_evidence(bundle: dict[str, Any], *, state: dict[str, Any] | None) -> 
         "_expiresAt": time.time() + config["evidenceTtlSeconds"],
     }
     _EVIDENCE_LEDGER[bundle_id] = stored
-    return stored
+    return store_evidence_bundle(stored, ttl_seconds=config["evidenceTtlSeconds"], scope=scope)
 
 
 def _visible_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -380,6 +394,61 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
     return json.dumps(fallback, ensure_ascii=False, indent=2)
 
 
+def _deadline_failure(
+    *,
+    tool_name: str,
+    family: str,
+    deadline_ms: int,
+    summary: str,
+    failure_class: str,
+    error: str,
+    recommended_next_action: str,
+) -> dict[str, Any]:
+    with ToolExecutionEnvelope(tool_name=tool_name, family=family, deadline_ms=deadline_ms, retry_limit=1) as envelope:
+        return envelope.failure_payload(
+            summary=summary,
+            failure_class=failure_class,
+            error=error,
+            retryable=False,
+            recommended_next_action=recommended_next_action,
+        )
+
+
+def _call_with_deadline(
+    func,
+    *,
+    deadline_ms: int,
+    tool_name: str,
+    family: str,
+    recommended_next_action: str,
+) -> dict[str, Any]:
+    with ToolExecutionEnvelope(tool_name=tool_name, family=family, deadline_ms=deadline_ms, retry_limit=1) as envelope:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"v8-{tool_name}")
+        future = executor.submit(func)
+        try:
+            return _parse_tool_json(future.result(timeout=max(deadline_ms / 1000.0, 0.1)))
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            return envelope.failure_payload(
+                summary=f"{tool_name} exceeded its deadline.",
+                failure_class="deadline_exceeded",
+                error=f"{tool_name} exceeded {deadline_ms}ms deadline",
+                retryable=False,
+                recommended_next_action=recommended_next_action,
+            )
+        except Exception as exc:
+            failure_class = classify_failure(exc)
+            return envelope.failure_payload(
+                summary=f"{tool_name} failed.",
+                failure_class=failure_class,
+                error=str(exc),
+                retryable=False if failure_class in {"network_timeout", "provider_error", "auth_failed", "blocked_by_safety", "policy_reject", "unsupported_operation"} else True,
+                recommended_next_action=recommended_next_action,
+            )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+
 def _run_search_shard(
     shard: dict[str, Any],
     *,
@@ -391,8 +460,8 @@ def _run_search_shard(
 ) -> dict[str, Any]:
     query = _safe_text(shard.get("query"))
     video_research = _is_video_research(query, source_policy, shard.get("kind"))
-    search_payload = _parse_tool_json(
-        web_search.func(
+    search_payload = _call_with_deadline(
+        lambda: web_search.func(
             query=query,
             limit=5,
             search_engine="auto",
@@ -400,8 +469,23 @@ def _run_search_shard(
             referer_mode="none",
             referer_url="",
             tool_call_id=tool_call_id,
-        )
+        ),
+        deadline_ms=min(_RESEARCH_SHARD_DEADLINE_MS, 45_000),
+        tool_name="web_search",
+        family="research",
+        recommended_next_action="换关键词、限定权威域名，或保留该 shard 为 failed_source。",
     )
+    if search_payload.get("kind") == "tool_deadline_envelope":
+        return {
+            **shard,
+            "ok": False,
+            "provider": None,
+            "resultCount": 0,
+            "results": [],
+            "fetchedTopSources": [],
+            "errors": [_safe_text(search_payload.get("error")) or "search_deadline_exceeded"],
+            "toolExecution": search_payload.get("toolExecution"),
+        }
     raw_results = search_payload.get("results") if isinstance(search_payload.get("results"), list) else []
     results: list[dict[str, Any]] = []
     for index, result in enumerate(raw_results, start=1):
@@ -438,15 +522,19 @@ def _run_search_shard(
             url = _safe_text(result.get("url"))
             if not url:
                 continue
-            read_payload = _parse_tool_json(
-                web_read.func(
+            read_payload = _call_with_deadline(
+                lambda: web_read.func(
                     url=url,
                     mode="auto",
                     headless=True,
                     referer_mode="none",
                     referer_url="",
                     tool_call_id=tool_call_id,
-                )
+                ),
+                deadline_ms=_RESEARCH_SOURCE_READ_DEADLINE_MS,
+                tool_name="web_read",
+                family="research",
+                recommended_next_action="标记该 source unavailable，换可访问来源或降低置信度。",
             )
             text = _safe_text(read_payload.get("text") or read_payload.get("textPreview"))
             fetched.append(
@@ -458,6 +546,8 @@ def _run_search_shard(
                     "textPreview": text[:360],
                     "omittedChars": max(0, len(text) - 360),
                     "warnings": read_payload.get("warnings") if isinstance(read_payload.get("warnings"), list) else [],
+                    "failureClass": read_payload.get("failureClass") or (read_payload.get("toolExecution") or {}).get("failureClass"),
+                    "toolExecution": read_payload.get("toolExecution"),
                 }
             )
     return {
@@ -496,12 +586,28 @@ def _run_search_shards(
             ): index
             for index, shard in enumerate(shards)
         }
-        for future in as_completed(futures):
-            index = futures[future]
-            shard = shards[index]
-            try:
-                completed[index] = future.result()
-            except Exception as exc:
+        try:
+            for future in as_completed(futures, timeout=max(_RESEARCH_TOOL_DEADLINE_MS / 1000.0, 1.0)):
+                index = futures[future]
+                shard = shards[index]
+                try:
+                    completed[index] = future.result()
+                except Exception as exc:
+                    completed[index] = {
+                        **shard,
+                        "ok": False,
+                        "provider": None,
+                        "resultCount": 0,
+                        "results": [],
+                        "fetchedTopSources": [],
+                        "errors": [str(exc) or "research_shard_failed"],
+                    }
+        except TimeoutError:
+            for future, index in futures.items():
+                if future.done():
+                    continue
+                future.cancel()
+                shard = shards[index]
                 completed[index] = {
                     **shard,
                     "ok": False,
@@ -509,7 +615,16 @@ def _run_search_shards(
                     "resultCount": 0,
                     "results": [],
                     "fetchedTopSources": [],
-                    "errors": [str(exc) or "research_shard_failed"],
+                    "errors": ["research_shard_deadline_exceeded"],
+                    "toolExecution": _deadline_failure(
+                        tool_name="research_broker",
+                        family="research",
+                        deadline_ms=_RESEARCH_TOOL_DEADLINE_MS,
+                        summary="Research shard exceeded total tool deadline.",
+                        failure_class="deadline_exceeded",
+                        error="research_broker total shard execution deadline exceeded",
+                        recommended_next_action="Use partial evidence, narrow the query, or run another focused research pass.",
+                    ).get("toolExecution"),
                 }
     return [item for item in completed if item is not None]
 
@@ -601,6 +716,7 @@ def _synthesize_bundle(
 def research_broker(
     mode: str = "plan",
     question: str = "",
+    query: str = "",
     researchIntent: str = "",
     freshness: str = "auto",
     sourcePolicy: str = "authoritative",
@@ -611,24 +727,30 @@ def research_broker(
     maxRounds: int | None = None,
     deliverable: str = "evidence_bundle",
     evidenceBundleId: str = "",
+    experiencePackId: str = "",
+    title: str = "",
+    tags: list[str] | str | None = None,
+    minConfidence: str = "",
+    limit: int = 20,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """Plan and run read-only web research as isolated, run-scoped shards.
+    """Plan and run read-only web research as isolated shards with persistent evidence.
 
     Use this instead of ad-hoc web_search for multi-source facts, current provider/API details, source confidence,
-    or research that benefits from parallel query decomposition. Shards are read-only, context-isolated, and return
-    a compact evidence bundle for coding, creative media, writing, or supervisor decisions.
+    or research that benefits from parallel query decomposition. Search experience packs first for repeat topics;
+    run new research only when prior packs are missing, stale, low confidence, or conflict with the current need.
     """
     config = _research_config()
     normalized_mode = _safe_text(mode).lower() or "plan"
-    if normalized_mode not in {"plan", "run", "observe", "get_evidence"}:
+    supported_modes = {"plan", "run", "observe", "get_evidence", "search_experience", "get_experience", "promote_experience"}
+    if normalized_mode not in supported_modes:
         return _render_payload(
             {
                 "ok": False,
                 "mode": normalized_mode,
                 "summary": f"Unsupported research_broker mode: {normalized_mode}",
-                "recommendedNextAction": "use plan, run, observe, or get_evidence",
+                "recommendedNextAction": "use plan, search_experience, get_experience, run, observe, get_evidence, or promote_experience",
             }
         )
     if not config["enabled"] and normalized_mode in {"plan", "run"}:
@@ -641,19 +763,16 @@ def research_broker(
             }
         )
 
-    _cleanup_ledger()
     scope = _ledger_scope(state)
     if normalized_mode == "observe":
-        items = [
-            _visible_bundle(entry)
-            for entry in _EVIDENCE_LEDGER.values()
-            if str(entry.get("scope") or "") == scope or scope == "global"
-        ]
+        items = list_evidence_bundles(scope=scope, limit=limit)
+        summary = research_ledger_summary(scope=scope)
         return _render_payload(
             {
                 "ok": True,
                 "mode": normalized_mode,
-                "summary": f"{len(items)} research evidence bundle(s) are available in scope {scope}.",
+                "summary": f"{len(items)} research evidence bundle(s) are available in persistent scope {scope}.",
+                "counts": summary.get("counts") or {},
                 "items": [
                     {
                         "evidenceBundleId": item.get("evidenceBundleId"),
@@ -664,20 +783,96 @@ def research_broker(
                     }
                     for item in items
                 ],
-                "recommendedNextAction": "get_evidence" if items else "run",
+                "detailTool": "research_broker(mode='get_evidence', evidenceBundleId=...)",
+                "recommendedNextAction": "get_evidence" if items else "search_experience_then_run",
             }
         )
 
     if normalized_mode == "get_evidence":
-        bundle = _EVIDENCE_LEDGER.get(_safe_text(evidenceBundleId))
+        bundle = get_evidence_bundle(_safe_text(evidenceBundleId))
         return _render_payload(
             {
                 "ok": bool(bundle),
                 "mode": normalized_mode,
-                "summary": "Evidence bundle found." if bundle else "Evidence bundle not found or expired.",
-                **({"item": _visible_bundle(bundle)} if bundle else {}),
-                "recommendedNextAction": "use_evidence_bundle" if bundle else "run",
+                "summary": "Evidence bundle found in persistent research ledger." if bundle else "Evidence bundle not found or expired.",
+                **({"item": bundle} if bundle else {}),
+                "detailTool": "research_broker(mode='get_experience', experiencePackId=...)",
+                "recommendedNextAction": "use_evidence_bundle" if bundle else "search_experience_then_run",
             }
+        )
+
+    if normalized_mode == "search_experience":
+        clean_query = _safe_text(query) or _safe_text(question)
+        if not clean_query:
+            return _render_payload(
+                {
+                    "ok": False,
+                    "mode": normalized_mode,
+                    "summary": "search_experience requires query or question.",
+                    "recommendedNextAction": "provide_query",
+                }
+            )
+        packs = search_experience_packs(
+            query=clean_query,
+            scope=scope,
+            tags=_as_list(tags),
+            min_confidence=minConfidence,
+            limit=limit,
+        )
+        return _render_payload(
+            {
+                "ok": True,
+                "mode": normalized_mode,
+                "kind": "research_experience_search",
+                "summary": f"Found {len(packs)} reusable research experience pack(s) for scope {scope}.",
+                "query": clean_query,
+                "items": [
+                    {
+                        "experiencePackId": item.get("experiencePackId"),
+                        "title": item.get("title"),
+                        "status": item.get("status"),
+                        "confidence": item.get("confidence"),
+                        "authorityScore": item.get("authorityScore"),
+                        "usageCount": item.get("usageCount"),
+                        "lastUsedAt": item.get("lastUsedAt"),
+                        "tags": item.get("tags") or [],
+                        "sourceMatrixDigest": list(item.get("sourceMatrixDigest") or [])[:4],
+                    }
+                    for item in packs
+                ],
+                "detailTool": "research_broker(mode='get_experience', experiencePackId=...)",
+                "omitted": {"fullExperiencePack": "use get_experience for the selected pack"},
+                "recommendedNextAction": "get_experience" if packs else "run",
+            }
+        )
+
+    if normalized_mode == "get_experience":
+        pack = get_experience_pack(_safe_text(experiencePackId))
+        return _render_payload(
+            {
+                "ok": bool(pack),
+                "mode": normalized_mode,
+                "kind": "research_experience_pack",
+                "summary": "Experience pack found." if pack else "Experience pack not found.",
+                **({"item": pack} if pack else {}),
+                "detailTool": "research_broker(mode='get_evidence', evidenceBundleId=item.createdFromBundleId)",
+                "recommendedNextAction": "reuse_experience" if pack else "search_experience_then_run",
+            },
+            max_chars=8000,
+        )
+
+    if normalized_mode == "promote_experience":
+        pack = promote_experience_pack(_safe_text(evidenceBundleId), title=title, tags=_as_list(tags))
+        return _render_payload(
+            {
+                "ok": bool(pack),
+                "mode": normalized_mode,
+                "kind": "research_experience_promotion",
+                "summary": "Evidence bundle promoted to reusable experience pack." if pack else "Evidence bundle not found; no experience pack promoted.",
+                **({"item": pack} if pack else {}),
+                "recommendedNextAction": "get_experience" if pack else "observe_or_run",
+            },
+            max_chars=8000,
         )
 
     clean_question = _safe_text(question)
@@ -716,10 +911,17 @@ def research_broker(
             "freshness": freshness,
             "sourcePolicy": sourcePolicy,
             "sourceCatalogRef": "research_source_quality_catalog:v1",
+            "experienceFirstPolicy": {
+                "summary": "Before running new research, search reusable experience packs for repeat topics.",
+                "searchTool": "research_broker(mode='search_experience', query=question)",
+                "reuseWhen": ["confidence is medium/high", "scope and freshness still fit", "no material conflict"],
+            },
             "shardDefaults": {
                 "contextIsolation": "atomic_brief_only",
                 "allowedTools": ["web_search", "web_read"],
                 "sideEffects": "read_only",
+                "deadlineMs": _RESEARCH_SHARD_DEADLINE_MS,
+                "sourceReadDeadlineMs": _RESEARCH_SOURCE_READ_DEADLINE_MS,
             },
             "limits": {
                 "defaultShardCount": config["defaultShardCount"],
@@ -727,9 +929,10 @@ def research_broker(
                 "effectiveMaxShards": shard_cap,
                 "hardMaxShardCount": config["maxShardCount"],
                 "effectiveMaxRounds": round_cap,
+                "toolDeadlineMs": _RESEARCH_TOOL_DEADLINE_MS,
             },
             "shards": shards,
-            "recommendedNextAction": "run",
+            "recommendedNextAction": "search_experience_then_run",
         }
         return _render_payload(plan)
 

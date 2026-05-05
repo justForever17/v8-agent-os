@@ -23,6 +23,7 @@ from core.audio.tts_provider import TTSManager
 from core.database import db
 from core.model_control_plane import model_control_plane
 from core.storage import storage
+from core.tools.tool_execution_envelope import ToolExecutionEnvelope
 from erc.runtime_registry import runtime_registry
 
 from .catalog import (
@@ -2108,7 +2109,7 @@ class CreativeMediaRuntime:
             else:
                 raise ValueError(f"Unsupported video adapter: {adapter}")
             if bool(request.get("wait", False)):
-                timeout_seconds = max(15, min(int(request.get("timeoutSeconds") or request.get("timeout_seconds") or 240), 600))
+                timeout_seconds = max(15, min(int(request.get("timeoutSeconds") or request.get("timeout_seconds") or 240), 60))
                 poll_interval = max(2, min(int(request.get("pollIntervalSeconds") or request.get("poll_interval_seconds") or 8), 30))
                 deadline = asyncio.get_event_loop().time() + timeout_seconds
                 while job.get("status") not in {"succeeded", "failed", "cancelled"} and asyncio.get_event_loop().time() < deadline:
@@ -2118,6 +2119,14 @@ class CreativeMediaRuntime:
                         job = refreshed
                 if job.get("status") not in {"succeeded", "failed", "cancelled"}:
                     job["status"] = "running"
+                    with ToolExecutionEnvelope(tool_name="creative_media_create_job", family="creative_media", deadline_ms=timeout_seconds * 1000, retry_limit=1) as envelope:
+                        job["toolExecution"] = envelope.payload(
+                            ok=False,
+                            failure_class="deadline_exceeded",
+                            retryable=False,
+                            recommended_next_action="返回 running job；使用 creative_media_get_job 或 creative_media_list_jobs 观察后续状态。",
+                        )
+                    job["recommendedNextAction"] = "observe_job"
                     self._save_job(job)
             return job
         except Exception as exc:
@@ -2762,7 +2771,7 @@ class CreativeMediaRuntime:
         return headers
 
     async def _request_json(self, method: str, url: str, *, headers: Optional[dict[str, str]] = None, json: Optional[dict[str, Any]] = None, timeout: float = 120.0) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=min(float(timeout or 60.0), 60.0)) as client:
             response = await client.request(method, url, headers=headers, json=json)
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
@@ -2778,7 +2787,7 @@ class CreativeMediaRuntime:
         files: Optional[dict[str, Any]] = None,
         timeout: float = 120.0,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=min(float(timeout or 60.0), 60.0)) as client:
             response = await client.request(method, url, headers=headers, data=data, files=files)
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")

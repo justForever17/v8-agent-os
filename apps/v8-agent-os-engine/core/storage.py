@@ -330,7 +330,7 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
         orchestration_block = (
             "## Multi-Runtime Orchestration\n"
             "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
-            "- For complex or freshness-sensitive research, grant `research.core` and use `research_broker` instead of doing a few ad-hoc web searches and guessing confidence.\n"
+            "- For complex or freshness-sensitive research, grant `research.core` and first call `research_broker(mode=\"search_experience\")` for reusable experience packs; run new `research_broker(mode=\"run\")` only when packs are missing, stale, low-confidence, or conflicting.\n"
             "- For coding, project creation, dependency work, or broad multi-file changes, prefer Engineering discipline or a brokered engineering subagent; direct Supervisor execution is only for small 1-10 step work with an explicit write set and verification proof.\n"
             "- If direct execution grows beyond 10 tool steps or more than 3 project file writes, stop and choose delegation_broker / Engineering proof-workset / an explicit user-facing reason to continue direct.\n"
             "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
@@ -894,7 +894,7 @@ class StorageManager:
                 "- Only expand deeper runtime detail when the current task truly depends on it.\n\n"
                 "## Multi-Runtime Orchestration\n"
                 "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
-                "- For complex or freshness-sensitive research, grant `research.core` and use `research_broker` instead of doing a few ad-hoc web searches and guessing confidence.\n"
+                "- For complex or freshness-sensitive research, grant `research.core` and first call `research_broker(mode=\"search_experience\")` for reusable experience packs; run new `research_broker(mode=\"run\")` only when packs are missing, stale, low-confidence, or conflicting.\n"
                 "- For coding, project creation, or dependency work, route deliberately into Engineering discipline, a brokered engineering subagent, or direct supervisor execution with an explicit write set and verification proof.\n"
                 "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
                 "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"

@@ -225,6 +225,7 @@ export type NormalizedSessionRuntimeEvent = {
   ownerAgentKind?: "supervisor" | "runtime" | "subagent" | "shard" | string;
   ownerAgentId?: string;
   ownerStreamKey?: string;
+  traceGroupId?: string;
   surfaceTargets?: SessionRuntimeEventTarget[];
   scope: SessionRuntimeScope;
   visibility: SessionRuntimeVisibility;

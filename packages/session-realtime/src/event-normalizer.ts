@@ -271,6 +271,10 @@ function applyOwnerFields(
     surface_targets: payload.surface_targets,
   });
   const nextData = asRecord(event.data);
+  const traceGroupId =
+    (typeof payload.traceGroupId === "string" && payload.traceGroupId)
+    || (typeof payload.trace_group_id === "string" && payload.trace_group_id)
+    || event.traceGroupId;
   return {
     ...event,
     ownerRuntimeId: ownerRuntimeId || event.ownerRuntimeId,
@@ -286,6 +290,7 @@ function applyOwnerFields(
       (typeof payload.ownerStreamKey === "string" && payload.ownerStreamKey)
       || (typeof payload.owner_stream_key === "string" && payload.owner_stream_key)
       || event.ownerStreamKey,
+    traceGroupId,
     surfaceTargets: surfaceTargets || event.surfaceTargets,
     data: {
       ...nextData,
@@ -305,6 +310,7 @@ function applyOwnerFields(
         || (typeof payload.owner_stream_key === "string" && payload.owner_stream_key)
         || event.ownerStreamKey
         || nextData.ownerStreamKey,
+      traceGroupId: traceGroupId || nextData.traceGroupId,
       surfaceTargets: surfaceTargets || event.surfaceTargets || nextData.surfaceTargets,
     },
   };

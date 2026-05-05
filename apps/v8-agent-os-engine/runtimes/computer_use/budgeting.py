@@ -121,7 +121,7 @@ def resolve_step_budget(
         source = feedback_source
     return ComputerUseStepBudget(
         time_budget_ms=max(1000, base["time"]),
-        retry_budget=max(1, base["retry"]),
+        retry_budget=1,
         vision_budget=max(0, base["vision"]),
         token_budget=max(0, base["token"]),
         fallback_budget=max(0, base["fallback"]),

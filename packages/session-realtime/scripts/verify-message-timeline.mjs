@@ -38,7 +38,7 @@ apply(state, {
   targets: ["message"],
   content: "先判断。",
   node_id: "reasoning-1",
-  data: { ownerStreamKey: "trace-1" },
+  data: { ownerStreamKey: "trace-1", traceGroupId: "stable-trace-1" },
 });
 
 apply(state, {
@@ -58,7 +58,7 @@ apply(state, {
   targets: ["message"],
   node_id: "tool-1",
   tool: { toolCallId: "call_1", toolName: "web_broker", args: { mode: "search" } },
-  data: { ownerStreamKey: "trace-2" },
+  data: { ownerStreamKey: "trace-2", traceGroupId: "stable-trace-2" },
 });
 
 apply(state, {
@@ -124,6 +124,8 @@ assert.deepEqual(segments.map((segment) => segment.kind), [
 ]);
 assert.equal(segments[0].collapsedByDefault, true, "completed trace before text should collapse");
 assert.equal(segments[2].collapsedByDefault, true, "completed tool trace before text should collapse");
+assert.equal(segments[0].id, "stable-trace-1", "explicit traceGroupId should be stable");
+assert.equal(segments[2].id, "stable-trace-2", "explicit traceGroupId should be stable");
 
 const activeSegments = buildMessageTimelineSegments([
   { id: "text-final", kind: "narrative", content: "正文。", timestamp: 1 },

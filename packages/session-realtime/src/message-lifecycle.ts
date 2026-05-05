@@ -70,6 +70,7 @@ export type SessionStreamNarrativeNode = {
   ownerAgentKind?: string;
   ownerAgentId?: string;
   ownerStreamKey?: string;
+  traceGroupId?: string;
   displayInMessage?: boolean;
   finalized?: boolean;
   partial?: boolean;
@@ -98,6 +99,7 @@ export type SessionStreamExecutionNode = {
   ownerAgentKind?: string;
   ownerAgentId?: string;
   ownerStreamKey?: string;
+  traceGroupId?: string;
   displayInMessage?: boolean;
 };
 
@@ -123,6 +125,7 @@ export type SessionStreamGovernanceNode = {
   ownerAgentKind?: string;
   ownerAgentId?: string;
   ownerStreamKey?: string;
+  traceGroupId?: string;
   displayInMessage?: boolean;
 };
 
@@ -139,6 +142,7 @@ export type SessionStreamArtifactNode = {
   ownerAgentKind?: string;
   ownerAgentId?: string;
   ownerStreamKey?: string;
+  traceGroupId?: string;
   displayInMessage?: boolean;
 };
 
@@ -254,6 +258,12 @@ function ownerFieldsFromEvent(event: Pick<SessionStreamUiEvent, "runtimeId" | "d
         ? data.ownerStreamKey
         : typeof data.owner_stream_key === "string"
           ? data.owner_stream_key
+          : undefined,
+    traceGroupId:
+      typeof data.traceGroupId === "string"
+        ? data.traceGroupId
+        : typeof data.trace_group_id === "string"
+          ? data.trace_group_id
           : undefined,
     displayInMessage: eventDisplayInMessage(event),
   };

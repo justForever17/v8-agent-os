@@ -278,6 +278,10 @@ class ChatStreamState:
     text_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     text_node_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     text_segment_seq_by_run: dict[str, int] = field(default_factory=dict)
+    output_text_by_run: dict[str, str] = field(default_factory=dict)
+    output_text_run_order: list[str] = field(default_factory=list)
+    trace_group_seq: int = 0
+    active_trace_group_id: str | None = None
     reasoning_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     last_text_delta: str = ""
     last_text_delta_run_id: str = ""
@@ -312,10 +316,11 @@ class ChatStreamState:
     delegation_claim_samples: list[str] = field(default_factory=list)
     delegation_dispatch_seen: bool = False
     delegation_claim_diagnostic_emitted: bool = False
-    reasoning_reclassified_count: int = 0
+    reasoning_suppressed_count: int = 0
     supervisor_tool_step_count: int = 0
     supervisor_project_write_count: int = 0
     supervisor_direct_scope_exceeded_emitted: bool = False
+    supervisor_direct_scope_gate_active: bool = False
 
 
 canonical_transcript_builder = CanonicalTranscriptBuilder()
@@ -2848,6 +2853,14 @@ class ChatRuntime:
         state: str = "streaming",
         finalize: bool = False,
     ) -> dict[str, Any]:
+        trace_group_id: str | None = None
+        if bool(owner.get("displayInMessage")) and event_kind in {"reasoning_chunk", "tool_start", "tool_result"}:
+            if not stream_state.active_trace_group_id:
+                stream_state.trace_group_seq += 1
+                message_id = stream_state.assistant_message_id or self._ensure_assistant_canonical_message(chat_run, stream_state)
+                stream_state.active_trace_group_id = f"{message_id}:trace:{stream_state.trace_group_seq}"
+            trace_group_id = stream_state.active_trace_group_id
+            payload = {**payload, "traceGroupId": trace_group_id}
         enriched_payload = self._apply_event_owner_fields(
             payload,
             owner,
@@ -2862,6 +2875,8 @@ class ChatRuntime:
                 "ownerStreamKey": stream_key,
                 "displayInMessage": bool(owner.get("displayInMessage")),
             }
+            if trace_group_id:
+                owner_node_fields["traceGroupId"] = trace_group_id
             node = {**node, **owner_node_fields}
         if bool(owner.get("displayInMessage")):
             return self._emit_message_targeted_runtime_event(
@@ -3070,6 +3085,7 @@ class ChatRuntime:
         if not exceeded_reasons:
             return
         stream_state.supervisor_direct_scope_exceeded_emitted = True
+        stream_state.supervisor_direct_scope_gate_active = True
         chat_run.emit_runtime_event(
             "supervisor.direct_scope.exceeded",
             {
@@ -3084,6 +3100,58 @@ class ChatRuntime:
             agent_id=stream_state.current_agent,
             node="supervisor_direct_scope_guard",
         )
+
+    def _enforce_supervisor_direct_scope_gate(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        tool_name: str,
+        owner: dict[str, Any],
+    ) -> None:
+        normalized_tool = str(tool_name or "").strip()
+        if normalized_tool == "delegation_broker":
+            stream_state.supervisor_direct_scope_gate_active = False
+            return
+        if not stream_state.supervisor_direct_scope_gate_active:
+            return
+        if not bool(owner.get("displayInMessage")) or str(owner.get("ownerAgentKind") or "") != "supervisor":
+            return
+        allowed_escape_tools = {"delegation_broker", "runtime_broker", "ask_user", "write_todos", "update_todo"}
+        if normalized_tool in allowed_escape_tools:
+            return
+        gated_tools = {
+            "run_system_command",
+            "command_session_broker",
+            "write_native_file",
+            "replace_native_file",
+            "edit_native_file",
+            "delete_native_file",
+            "creative_media_create_job",
+            "creative_media_retry_job",
+            "computer_use_execute",
+            "computer_use_click",
+            "computer_use_type_text",
+            "computer_use_drag",
+        }
+        if normalized_tool not in gated_tools and not normalized_tool.startswith(("creative_media_", "computer_use_")):
+            return
+        payload = {
+            "riskCode": "supervisor_direct_scope_blocked",
+            "summary": "Supervisor direct 执行已进入硬门禁；复杂任务后续可变更/长耗时工具必须先进入 delegation、Engineering discipline 或用户批准 direct exception。",
+            "blockedTool": normalized_tool,
+            "toolStepCount": stream_state.supervisor_tool_step_count,
+            "projectWriteCount": stream_state.supervisor_project_write_count,
+            "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
+            "recommendedNextAction": "调用 delegation_broker 派发 engineering family/external worker，或请求用户批准继续 direct exception。",
+        }
+        chat_run.emit_runtime_event(
+            "supervisor.direct_scope.blocked",
+            payload,
+            agent_id=stream_state.current_agent,
+            node="supervisor_direct_scope_guard",
+        )
+        raise RuntimeError(json.dumps(payload, ensure_ascii=False))
 
     def _schedule_text_flush_deadline(self, stream_state: ChatStreamState) -> None:
         if not stream_state.text_aggregator.has_buffered_content():
@@ -3171,6 +3239,8 @@ class ChatRuntime:
             stream_key=stream_key,
             node=narrative_node,
         )
+        if bool(owner.get("displayInMessage")):
+            stream_state.active_trace_group_id = None
         payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
         if isinstance(payload, dict):
             text_event["message_id"] = payload.get("message_id")
@@ -3565,7 +3635,33 @@ class ChatRuntime:
 
     @staticmethod
     def _current_canonical_text(stream_state: ChatStreamState) -> str:
+        if stream_state.output_text_run_order:
+            return "".join(
+                stream_state.output_text_by_run.get(run_key, "")
+                for run_key in stream_state.output_text_run_order
+            )
         return "".join(stream_state.output_buffer)
+
+    def _append_message_output_text(
+        self,
+        stream_state: ChatStreamState,
+        *,
+        model_run_id: str,
+        delta: str = "",
+        replacement_snapshot: str | None = None,
+    ) -> None:
+        run_key = self._normalized_stream_run_id(model_run_id)
+        if run_key not in stream_state.output_text_run_order:
+            stream_state.output_text_run_order.append(run_key)
+            stream_state.output_text_by_run.setdefault(run_key, "")
+        if replacement_snapshot is not None:
+            stream_state.output_text_by_run[run_key] = replacement_snapshot
+        elif delta:
+            stream_state.output_text_by_run[run_key] = stream_state.output_text_by_run.get(run_key, "") + delta
+        stream_state.output_buffer = [
+            stream_state.output_text_by_run.get(item, "")
+            for item in stream_state.output_text_run_order
+        ]
 
     @staticmethod
     def _has_started_narrative_output(stream_state: ChatStreamState, *, raw_text: str = "") -> bool:
@@ -4526,20 +4622,6 @@ class ChatRuntime:
                 model_run_id = model_event.model_run_id
                 stream_state.streamed_model_run_ids.add(model_run_id)
                 if model_event.event_type == "text_delta":
-                    if model_event.diagnostics.get("reasoningReclassifiedAsText"):
-                        stream_state.reasoning_reclassified_count += 1
-                        if stream_state.reasoning_reclassified_count <= 3:
-                            chat_run.emit_runtime_event(
-                                "run.reasoning.reclassified_as_text",
-                                {
-                                    "count": stream_state.reasoning_reclassified_count,
-                                    "reason": model_event.diagnostics.get("reason"),
-                                    "modelRunId": model_run_id,
-                                    "preview": str(model_event.delta or "")[:160],
-                                },
-                                agent_id=stream_state.current_agent,
-                                node="canonical_model_event_adapter",
-                            )
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
                     owner = self._resolve_event_owner(stream_state)
@@ -4555,7 +4637,11 @@ class ChatRuntime:
                         continue
                     stream_state.watchdog.note_text_progress()
                     if display_in_message:
-                        stream_state.output_buffer.append(text_delta)
+                        self._append_message_output_text(
+                            stream_state,
+                            model_run_id=model_run_id,
+                            delta=text_delta,
+                        )
                     stream_state.narrative_started_model_run_ids.add(self._normalized_stream_run_id(model_run_id))
                     emitted_events.extend(
                         await self._emit_text_delta(
@@ -4568,6 +4654,22 @@ class ChatRuntime:
                             canonical_event_at_ms=canonical_event_at_ms,
                         )
                     )
+                elif model_event.event_type == "reasoning_suppressed":
+                    stream_state.reasoning_suppressed_count += 1
+                    if stream_state.reasoning_suppressed_count <= 3:
+                        chat_run.emit_runtime_event(
+                            "run.reasoning.suppressed",
+                            {
+                                "count": stream_state.reasoning_suppressed_count,
+                                "reason": model_event.diagnostics.get("reason") or "untrusted_reasoning_payload",
+                                "surface": model_event.diagnostics.get("surface") or "hidden",
+                                "looksLikeProgress": bool(model_event.diagnostics.get("looksLikeProgress")),
+                                "modelRunId": model_run_id,
+                                "preview": str(model_event.delta or "")[:160],
+                            },
+                            agent_id=stream_state.current_agent,
+                            node="canonical_model_event_adapter",
+                        )
                 elif model_event.event_type == "reasoning_delta":
                     emitted_events.extend(
                         await self._flush_pending_text_aggregator(
@@ -4617,20 +4719,6 @@ class ChatRuntime:
             for model_event in model_events:
                 canonical_event_at_ms = self._now_timestamp_ms()
                 if model_event.event_type == "text_delta":
-                    if model_event.diagnostics.get("reasoningReclassifiedAsText"):
-                        stream_state.reasoning_reclassified_count += 1
-                        if stream_state.reasoning_reclassified_count <= 3:
-                            chat_run.emit_runtime_event(
-                                "run.reasoning.reclassified_as_text",
-                                {
-                                    "count": stream_state.reasoning_reclassified_count,
-                                    "reason": model_event.diagnostics.get("reason"),
-                                    "modelRunId": model_event.model_run_id,
-                                    "preview": str(model_event.delta or "")[:160],
-                                },
-                                agent_id=stream_state.current_agent,
-                                node="canonical_model_event_adapter",
-                            )
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
                     owner = self._resolve_event_owner(stream_state)
@@ -4646,7 +4734,19 @@ class ChatRuntime:
                         continue
                     stream_state.watchdog.note_text_progress()
                     if display_in_message:
-                        stream_state.output_buffer.append(text_delta)
+                        if model_event.diagnostics.get("terminalTextCorrection"):
+                            stream_state.text_aggregator.flush()
+                            self._append_message_output_text(
+                                stream_state,
+                                model_run_id=model_event.model_run_id,
+                                replacement_snapshot=model_event.snapshot,
+                            )
+                        else:
+                            self._append_message_output_text(
+                                stream_state,
+                                model_run_id=model_event.model_run_id,
+                                delta=text_delta,
+                            )
                     stream_state.narrative_started_model_run_ids.add(self._normalized_stream_run_id(model_event.model_run_id))
                     emitted_events.extend(
                         await self._emit_text_delta(
@@ -4659,6 +4759,22 @@ class ChatRuntime:
                             canonical_event_at_ms=canonical_event_at_ms,
                         )
                     )
+                elif model_event.event_type == "reasoning_suppressed":
+                    stream_state.reasoning_suppressed_count += 1
+                    if stream_state.reasoning_suppressed_count <= 3:
+                        chat_run.emit_runtime_event(
+                            "run.reasoning.suppressed",
+                            {
+                                "count": stream_state.reasoning_suppressed_count,
+                                "reason": model_event.diagnostics.get("reason") or "untrusted_reasoning_payload",
+                                "surface": model_event.diagnostics.get("surface") or "hidden",
+                                "looksLikeProgress": bool(model_event.diagnostics.get("looksLikeProgress")),
+                                "modelRunId": model_event.model_run_id,
+                                "preview": str(model_event.delta or "")[:160],
+                            },
+                            agent_id=stream_state.current_agent,
+                            node="canonical_model_event_adapter",
+                        )
                 elif model_event.event_type == "reasoning_delta":
                     emitted_events.extend(
                         await self._flush_pending_text_aggregator(
@@ -4730,6 +4846,12 @@ class ChatRuntime:
             stream_state.active_tool_call_ids.add(active_tool_key)
             owner = self._resolve_event_owner(stream_state, tool_name=str(name or ""))
             self._maybe_emit_supervisor_direct_scope_diagnostic(
+                chat_run,
+                stream_state,
+                tool_name=str(name or ""),
+                owner=owner,
+            )
+            self._enforce_supervisor_direct_scope_gate(
                 chat_run,
                 stream_state,
                 tool_name=str(name or ""),

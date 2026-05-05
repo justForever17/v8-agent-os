@@ -130,6 +130,45 @@ function formatPercent(value: number | null | undefined) {
     return `${Math.round(Number(value) * 1000) / 10}%`;
 }
 
+function normalizeDashboardData(payload: unknown): { data: DashboardData; error?: string } {
+    if (!payload || typeof payload !== "object") {
+        return { data: EMPTY_DATA, error: "empty_payload" };
+    }
+    const record = payload as Partial<DashboardData> & { error?: unknown; detail?: unknown };
+    if (!record.stats || typeof record.stats !== "object") {
+        return {
+            data: EMPTY_DATA,
+            error: String(record.error || record.detail || "missing_stats"),
+        };
+    }
+    const stats = record.stats as Partial<DashboardData["stats"]>;
+    const charts = record.charts && typeof record.charts === "object" ? record.charts as Partial<DashboardData["charts"]> : {};
+    return {
+        data: {
+            stats: {
+                ...EMPTY_DATA.stats,
+                ...stats,
+                totalSessions: Number(stats.totalSessions || 0),
+                totalMessages: Number(stats.totalMessages || 0),
+                totalRuns: Number(stats.totalRuns || 0),
+                totalInvocations: Number(stats.totalInvocations || 0),
+                pendingApprovals: Number(stats.pendingApprovals || 0),
+                activeRuns: Number(stats.activeRuns || 0),
+                recentWindowTokens: Number(stats.recentWindowTokens || 0),
+                recentWindowEstimatedCost: Number(stats.recentWindowEstimatedCost || 0),
+            },
+            charts: {
+                dailyActivity: Array.isArray(charts.dailyActivity) ? charts.dailyActivity : [],
+                modelUsage: Array.isArray(charts.modelUsage) ? charts.modelUsage : [],
+                providerHealth: Array.isArray(charts.providerHealth) ? charts.providerHealth : [],
+            },
+            recentInvocations: Array.isArray(record.recentInvocations) ? record.recentInvocations : [],
+            promptCache: record.promptCache && typeof record.promptCache === "object" ? record.promptCache : EMPTY_DATA.promptCache,
+        },
+        error: typeof record.error === "string" ? record.error : undefined,
+    };
+}
+
 function promptCacheHoverLines(
     t: (key: string, params?: Record<string, string | number>) => string,
     item: DashboardData["recentInvocations"][number],
@@ -171,17 +210,22 @@ function promptCacheHoverLines(
 export default function DashboardPage() {
     const t = useT();
     const [data, setData] = useState<DashboardData>(EMPTY_DATA);
+    const [telemetryError, setTelemetryError] = useState("");
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         fetch("/api/stats?days=1", { cache: "no-store" })
-            .then(res => res.json())
-            .then((payload: DashboardData) => {
-                setData(payload || EMPTY_DATA);
+            .then(async (res) => {
+                const payload = await res.json().catch(() => ({}));
+                const normalized = normalizeDashboardData(payload);
+                setData(normalized.data);
+                setTelemetryError(!res.ok || normalized.error ? String(normalized.error || res.statusText || res.status) : "");
                 setLoading(false);
             })
             .catch(err => {
                 console.error(err);
+                setData(EMPTY_DATA);
+                setTelemetryError(String(err?.message || err || "telemetry_fetch_failed"));
                 setLoading(false);
             });
     }, []);
@@ -198,6 +242,12 @@ export default function DashboardPage() {
             </div>
 
             <RuntimeDashboardCards />
+
+            {telemetryError ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    {t("app.admin.dashboard.page.telemetryUnavailable", { reason: telemetryError })}
+                </div>
+            ) : null}
 
             {/* Key Metrics */}
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">

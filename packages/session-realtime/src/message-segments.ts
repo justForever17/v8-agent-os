@@ -8,6 +8,7 @@ export type TimelineSegmentNode = {
   id?: string;
   kind?: string;
   executionType?: string;
+  traceGroupId?: string;
   timestamp?: number;
   finalized?: boolean;
   [key: string]: unknown;
@@ -74,13 +75,14 @@ export function buildMessageTimelineSegments<TNode extends TimelineSegmentNode>(
   const segments: MessageTimelineSegment<TNode>[] = [];
   let traceBuffer: TNode[] = [];
   let traceStartIndex = -1;
+  let traceGroupId = "";
 
   const flushTrace = (endIndex: number) => {
     if (traceBuffer.length === 0) {
       return;
     }
     const groupIndex = segments.length;
-    const groupId = `trace-${nodeKey(traceBuffer[0], traceStartIndex)}-${groupIndex}`;
+    const groupId = traceGroupId || `trace-${nodeKey(traceBuffer[0], traceStartIndex)}-${groupIndex}`;
     const followedByNarrative = hasNarrativeAfter(nodes, endIndex);
     const active = Boolean(options?.active) && !followedByNarrative;
     segments.push({
@@ -92,12 +94,18 @@ export function buildMessageTimelineSegments<TNode extends TimelineSegmentNode>(
     });
     traceBuffer = [];
     traceStartIndex = -1;
+    traceGroupId = "";
   };
 
   nodes.forEach((node, index) => {
     if (isTraceTimelineNode(node)) {
+      const incomingGroupId = typeof node.traceGroupId === "string" ? node.traceGroupId.trim() : "";
+      if (traceBuffer.length > 0 && incomingGroupId && traceGroupId && incomingGroupId !== traceGroupId) {
+        flushTrace(index - 1);
+      }
       if (traceBuffer.length === 0) {
         traceStartIndex = index;
+        traceGroupId = incomingGroupId;
       }
       traceBuffer.push(node);
       return;

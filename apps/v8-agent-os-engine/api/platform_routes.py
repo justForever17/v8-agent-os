@@ -1,6 +1,7 @@
 from typing import Any
 
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 from .models import ModelConnectionTestPayload
 from core.extensions_runtime import extensions_runtime_service
@@ -13,6 +14,12 @@ from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
+from core.tools.research_ledger import (
+    list_evidence_bundles,
+    promote_experience_pack,
+    research_ledger_summary,
+    search_experience_packs,
+)
 from runtimes.extensions.mcp.client import mcp_manager
 
 
@@ -639,5 +646,63 @@ async def connect_model_provider(data: dict = Body(...)):
 async def get_telemetry_overview(days: int = 1):
     try:
         return model_telemetry_service.build_dashboard_overview(days=max(1, min(days, 30)))
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "telemetry_overview_unavailable",
+                "detail": str(e),
+            },
+        )
+
+
+@router.get("/research-runtime/ledger")
+async def get_research_runtime_ledger(scope: str = "global"):
+    try:
+        return research_ledger_summary(scope=scope or "global")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/research-runtime/evidence")
+async def get_research_runtime_evidence(scope: str = "global", limit: int = 30):
+    try:
+        return {
+            "ok": True,
+            "scope": scope or "global",
+            "items": list_evidence_bundles(scope=scope or "global", limit=max(1, min(limit, 100))),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/research-runtime/experience")
+async def get_research_runtime_experience(query: str = "", scope: str = "global", minConfidence: str = "", limit: int = 30):
+    try:
+        items = search_experience_packs(
+            query=query,
+            scope=scope or "global",
+            min_confidence=minConfidence,
+            limit=max(1, min(limit, 100)),
+        )
+        return {"ok": True, "scope": scope or "global", "query": query, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/research-runtime/experience/promote")
+async def promote_research_runtime_experience(data: dict = Body(...)):
+    try:
+        pack = promote_experience_pack(
+            str(data.get("evidenceBundleId") or "").strip(),
+            title=str(data.get("title") or "").strip(),
+            tags=data.get("tags") if isinstance(data.get("tags"), list) else None,
+        )
+        if not pack:
+            raise HTTPException(status_code=404, detail="evidence bundle not found")
+        return {"ok": True, "item": pack}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

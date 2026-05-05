@@ -147,6 +147,7 @@ from core.workspace_resolution import workspace_resolution_service
 from core.tools.media_downloader import download_media_for_vision
 from core.tools.research_broker import research_broker
 from core.tools.s3_tools import s3_broker, s3_download_file, s3_list_objects, s3_upload_file
+from core.tools.tool_execution_envelope import ToolExecutionEnvelope
 from core.tools.vision_media_analyzer import vision_media_analyzer
 from core.tools.web_fetcher import web_broker, web_extract, web_fetch, web_read, web_search
 from runtimes.computer_use.verification_contract import (
@@ -3555,14 +3556,29 @@ def execute_system_command(
         if not allowed:
             return error_message or "Safety Guardian 已阻止命令执行。"
 
-        # Use shell=True to allow complex commands (pipes, redirects) if needed.
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            cwd=resolved_cwd,
-            timeout=120  # Prevent infinite hangs
-        )
+        sync_deadline_ms = 90_000
+        with ToolExecutionEnvelope(tool_name="run_system_command", family="command", deadline_ms=sync_deadline_ms, retry_limit=1) as envelope:
+            try:
+                # Use shell=True to allow complex commands (pipes, redirects) if needed.
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    cwd=resolved_cwd,
+                    timeout=sync_deadline_ms / 1000,
+                )
+            except subprocess.TimeoutExpired:
+                return json.dumps(
+                    envelope.failure_payload(
+                        summary="Synchronous command exceeded its tool deadline.",
+                        failure_class="deadline_exceeded",
+                        error=f"Command timed out after {sync_deadline_ms // 1000} seconds.",
+                        retryable=False,
+                        recommended_next_action="改用 command_session_broker(mode='start') 以可观察、可恢复的 session 运行，或缩小命令范围。",
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
         stdout, stdout_encoding = _decode_completed_process_bytes(result.stdout or b"", stream_name="stdout")
         stderr, stderr_encoding = _decode_completed_process_bytes(result.stderr or b"", stream_name="stderr")
         output = stdout or ""
@@ -3610,8 +3626,6 @@ def execute_system_command(
         if result.returncode == 0:
             _notify_skills_inventory_command_completed(command)
         return output
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after 120 seconds."
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error executing command: {str(e)}"

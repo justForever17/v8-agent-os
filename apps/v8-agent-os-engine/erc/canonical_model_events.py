@@ -8,6 +8,7 @@ from core.chat_output_extractor import extract_text_and_reasoning
 
 CanonicalModelEventType = Literal[
     "reasoning_delta",
+    "reasoning_suppressed",
     "text_delta",
     "tool_call_start",
     "tool_call_delta",
@@ -132,7 +133,7 @@ _UNTRUSTED_REASONING_PROGRESS_PATTERNS = (
 )
 
 
-def _should_reclassify_untrusted_reasoning_as_text(value: str) -> bool:
+def _looks_like_untrusted_reasoning_progress(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
@@ -317,7 +318,7 @@ class LangChainCanonicalModelEventAdapter:
         events: list[CanonicalModelEvent] = []
         if raw_text:
             if terminal:
-                text_delta, text_snapshot = self._consume_terminal_text(
+                text_delta, text_snapshot, text_diagnostics = self._consume_terminal_text(
                     text_snapshots,
                     model_run_id,
                     raw_text,
@@ -330,6 +331,7 @@ class LangChainCanonicalModelEventAdapter:
                     raw_text,
                     allow_token_delta=False,
                 )
+                text_diagnostics = {}
             if text_delta:
                 events.append(
                     CanonicalModelEvent(
@@ -339,6 +341,7 @@ class LangChainCanonicalModelEventAdapter:
                         scope=scope,
                         delta=text_delta,
                         snapshot=text_snapshot,
+                        diagnostics=text_diagnostics,
                     )
                 )
 
@@ -348,26 +351,26 @@ class LangChainCanonicalModelEventAdapter:
         if raw_reasoning and not suppress_reasoning:
             reasoning_trusted = self._should_trust_reasoning_payload(event, payload)
             if not reasoning_trusted:
-                if not _should_reclassify_untrusted_reasoning_as_text(raw_reasoning):
-                    return events
-                text_delta, text_snapshot = consume_canonical_stream_value(
-                    text_snapshots,
+                suppressed_delta, suppressed_snapshot = consume_canonical_stream_value(
+                    reasoning_snapshots,
                     model_run_id,
                     raw_reasoning,
                     allow_token_delta=True,
                 )
-                if text_delta:
+                if suppressed_delta:
                     events.append(
                         CanonicalModelEvent(
-                            event_type="text_delta",
+                            event_type="reasoning_suppressed",
                             run_id=run_id,
                             model_run_id=model_run_id,
                             scope=scope,
-                            delta=text_delta,
-                            snapshot=text_snapshot,
+                            delta=suppressed_delta,
+                            snapshot=suppressed_snapshot,
                             diagnostics={
-                                "reasoningReclassifiedAsText": True,
+                                "reasoningSuppressed": True,
                                 "reason": "untrusted_reasoning_payload",
+                                "surface": "hidden",
+                                "looksLikeProgress": _looks_like_untrusted_reasoning_progress(raw_reasoning),
                             },
                         )
                     )
@@ -401,29 +404,36 @@ class LangChainCanonicalModelEventAdapter:
         raw_value: str,
         *,
         emitted_text: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict[str, Any]]:
         run_key = normalized_model_run_id(model_run_id)
         current_value = raw_value or ""
         if not current_value:
-            return "", snapshots.get(run_key, "")
+            return "", snapshots.get(run_key, ""), {}
 
-        if not emitted_text:
+        previous_value = snapshots.get(run_key, "")
+        if not previous_value:
+            if current_value in emitted_text:
+                snapshots[run_key] = current_value
+                return "", current_value, {}
             snapshots[run_key] = current_value
-            return current_value, current_value
-        if current_value == emitted_text:
-            snapshots[run_key] = current_value
-            return "", current_value
-        if current_value.startswith(emitted_text):
-            snapshots[run_key] = current_value
-            return current_value[len(emitted_text):], current_value
-        if emitted_text.endswith(current_value) or current_value in emitted_text:
-            return "", current_value
+            return current_value, current_value, {}
 
-        overlap = longest_overlap_suffix_prefix(emitted_text, current_value)
+        if current_value == previous_value:
+            snapshots[run_key] = current_value
+            return "", current_value, {}
+        if current_value.startswith(previous_value):
+            snapshots[run_key] = current_value
+            return current_value[len(previous_value):], current_value, {}
+        if previous_value.endswith(current_value) or current_value in previous_value:
+            return "", previous_value, {}
+
+        overlap = longest_overlap_suffix_prefix(previous_value, current_value)
         if overlap > 0:
             snapshots[run_key] = current_value
-            return current_value[overlap:], current_value
-        # Final non-overlap is reconciled from the completed graph state by the
-        # chat runtime. Leaving the streaming baseline intact prevents a late
-        # terminal snapshot from corrupting buffered text.
-        return "", snapshots.get(run_key, "")
+            return current_value[overlap:], current_value, {}
+
+        snapshots[run_key] = current_value
+        return current_value, current_value, {
+            "terminalTextCorrection": True,
+            "previousRunTextChars": len(previous_value),
+        }

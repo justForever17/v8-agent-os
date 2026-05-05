@@ -100,8 +100,8 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                             ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
                             : (themeMode === "dark" ? "rgba(15,23,42,0.18)" : "rgba(255,255,255,0.20)"),
                         borderColor: isExpanded
-                            ? `${accent}33`
-                            : (themeMode === "dark" ? "rgba(255,255,255,0.055)" : "rgba(15,23,42,0.055)"),
+                            ? `${accent}24`
+                            : (themeMode === "dark" ? "rgba(255,255,255,0.035)" : "rgba(15,23,42,0.035)"),
                     },
                 ]}
             >
@@ -190,7 +190,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        marginVertical: 2,
+        marginVertical: 1,
         position: "relative",
     },
     activeGlow: {
@@ -205,23 +205,23 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     header: {
-        minHeight: 32,
+        minHeight: 27,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
     },
     headerLeft: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 7,
+        gap: 5,
         flex: 1,
     },
     iconWrap: {
-        width: 20,
-        height: 20,
-        borderRadius: 7,
+        width: 18,
+        height: 18,
+        borderRadius: 6,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -236,27 +236,27 @@ const styles = StyleSheet.create({
     title: {
         fontSize: 11,
         fontWeight: "700",
-        letterSpacing: 0.2,
+        letterSpacing: 0,
         flexShrink: 1,
     },
     statusPill: {
         overflow: "hidden",
         borderRadius: 999,
         borderWidth: 1,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
+        paddingHorizontal: 5,
+        paddingVertical: 1,
         fontSize: 9,
         lineHeight: 12,
         fontWeight: "800",
     },
     content: {
-        paddingHorizontal: 10,
-        paddingBottom: 10,
-        paddingTop: 2,
-        gap: 8,
+        paddingHorizontal: 8,
+        paddingBottom: 6,
+        paddingTop: 1,
+        gap: 4,
     },
     section: {
-        gap: 6,
+        gap: 3,
     },
     sectionLabel: {
         fontSize: 10,

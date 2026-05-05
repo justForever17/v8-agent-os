@@ -116,8 +116,8 @@ export const ThinkingCard = memo(function ThinkingCard({
         ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
         : (themeMode === "dark" ? "rgba(15,23,42,0.18)" : "rgba(255,255,255,0.20)");
     const wrapperBorder = isExpanded
-        ? "rgba(139,92,246,0.20)"
-        : (themeMode === "dark" ? "rgba(255,255,255,0.055)" : "rgba(15,23,42,0.055)");
+        ? "rgba(139,92,246,0.14)"
+        : (themeMode === "dark" ? "rgba(255,255,255,0.035)" : "rgba(15,23,42,0.035)");
 
     return (
         <View style={styles.wrap}>
@@ -147,8 +147,8 @@ export const ThinkingCard = memo(function ThinkingCard({
                             ]}
                         >
                             <MaterialCommunityIcons
-                                name="brain"
-                                size={13}
+                                name="chip"
+                                size={12}
                                 color={isStreaming ? colors.primary : colors.textMuted}
                             />
                             {isStreaming ? <View style={[styles.pingRing, { borderColor: "rgba(139,92,246,0.20)" }]} /> : null}
@@ -212,7 +212,7 @@ export const ThinkingCard = memo(function ThinkingCard({
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        marginVertical: 2,
+        marginVertical: 1,
         position: "relative",
     },
     activeGlow: {
@@ -227,23 +227,23 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     header: {
-        minHeight: 32,
+        minHeight: 27,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
     },
     headerLeft: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 7,
+        gap: 5,
         flex: 1,
     },
     iconWrap: {
-        width: 20,
-        height: 20,
-        borderRadius: 7,
+        width: 18,
+        height: 18,
+        borderRadius: 6,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -258,22 +258,22 @@ const styles = StyleSheet.create({
     title: {
         fontSize: 11,
         fontWeight: "700",
-        letterSpacing: 0.2,
+        letterSpacing: 0,
     },
     time: {
         fontSize: 10,
         fontWeight: "600",
     },
     contentOuter: {
-        paddingHorizontal: 10,
-        paddingBottom: 10,
-        paddingTop: 2,
+        paddingHorizontal: 8,
+        paddingBottom: 6,
+        paddingTop: 1,
     },
     contentInner: {
         borderRadius: 10,
         borderWidth: 1,
-        paddingHorizontal: 9,
-        paddingVertical: 8,
+        paddingHorizontal: 8,
+        paddingVertical: 5,
         flexDirection: "row",
         alignItems: "flex-end",
         flexWrap: "wrap",
@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
     },
     contentText: {
         fontSize: 11,
-        lineHeight: 17,
+        lineHeight: 15,
         fontFamily: "monospace",
         flexShrink: 1,
     },

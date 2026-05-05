@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -75,6 +76,8 @@ EXTRACT_CONTAINER_SELECTORS: dict[str, tuple[str, ...]] = {
 MAX_TEXT_CHARS = 12000
 MAX_LINKS = 20
 MAX_MEDIA = 12
+WEB_READ_TIMEOUT_SECONDS = 45.0
+WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 20.0
 SEARCH_PROVIDER_URLS: dict[str, str] = {
     "bing": "https://www.bing.com/search?q={query}",
     "google": "https://www.google.com/search?q={query}&hl=en",
@@ -341,6 +344,7 @@ def _build_fetch_options(
     headless: bool,
     referer_mode: WebRefererMode,
     referer_url: str,
+    timeout_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     extra_headers: dict[str, str] = {}
     static_headers: dict[str, str] = {}
@@ -353,15 +357,19 @@ def _build_fetch_options(
     shared = {
         "google_search": referer_mode == "google",
         "extra_headers": extra_headers or None,
+        "retries": 0,
+        "retry_delay": 0,
     }
     browser = {
         **shared,
         "headless": headless,
+        "timeout": max(1000, int(timeout_seconds * 1000)),
     }
     static = {
         **shared,
         "headers": static_headers or None,
         "stealthy_headers": referer_mode == "google",
+        "timeout": max(1.0, float(timeout_seconds)),
     }
     return static, browser
 
@@ -373,16 +381,13 @@ def _fetch_with_scrapling_internal(
     headless: bool = True,
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
+    timeout_seconds: float | None = None,
 ) -> WebPagePayload:
     attempted_modes: list[str] = []
     errors: dict[str, str] = {}
     warnings: list[str] = []
     available_modes = _dependency_status()
-    static_fetch_options, browser_fetch_options = _build_fetch_options(
-        headless=headless,
-        referer_mode=referer_mode,
-        referer_url=referer_url,
-    )
+    started_at = time.monotonic()
 
     def _fetch_static() -> WebPagePayload:
         fetcher, error = _try_import_static_fetcher()
@@ -490,16 +495,28 @@ def _fetch_with_scrapling_internal(
             ("dynamic", _fetch_dynamic),
             ("stealth", _fetch_stealth),
         ]
+    total_timeout = float(timeout_seconds or WEB_READ_TIMEOUT_SECONDS)
+    per_mode_timeout = max(5.0, total_timeout / max(len(plans), 1))
+    static_fetch_options, browser_fetch_options = _build_fetch_options(
+        headless=headless,
+        referer_mode=referer_mode,
+        referer_url=referer_url,
+        timeout_seconds=per_mode_timeout,
+    )
 
     for label, runner in plans:
+        if time.monotonic() - started_at >= total_timeout:
+            errors[label] = f"deadline_exceeded_after_{round(time.monotonic() - started_at, 2)}s"
+            break
         attempted_modes.append(label)
         try:
             return runner()
         except Exception as exc:
             errors[label] = str(exc)
 
+    elapsed = round(time.monotonic() - started_at, 2)
     details = "; ".join(f"{key}={value}" for key, value in errors.items())
-    raise RuntimeError(f"网页抓取失败。attempted={attempted_modes}; errors={details}")
+    raise RuntimeError(f"网页抓取失败。attempted={attempted_modes}; elapsed={elapsed}s; deadline={total_timeout}s; errors={details}")
 
 
 def _build_payload(
@@ -1121,7 +1138,20 @@ def _render_error_payload(
     referer_url: str,
     error: str,
     blocked: bool = False,
+    failure_class: str = "",
+    attempted_modes: list[str] | None = None,
+    elapsed_ms: int | None = None,
+    retryable: bool | None = None,
 ) -> str:
+    normalized_error = _safe_text(error)
+    if not failure_class:
+        lowered = normalized_error.lower()
+        if "timeout" in lowered or "timed_out" in lowered or "deadline" in lowered or "err_connection_timed_out" in lowered:
+            failure_class = "network_timeout"
+        elif blocked:
+            failure_class = "blocked_by_safety"
+        else:
+            failure_class = "web_fetch_failed"
     return json.dumps(
         {
             "ok": False,
@@ -1131,11 +1161,41 @@ def _render_error_payload(
             "refererMode": referer_mode,
             "refererUrl": referer_url,
             "availableModes": _dependency_status(),
-            "error": error,
+            "failureClass": failure_class,
+            "attemptedModes": attempted_modes or [],
+            "elapsedMs": elapsed_ms,
+            "retryable": bool(retryable) if retryable is not None else failure_class in {"network_timeout", "web_fetch_failed"},
+            "recommendedNextAction": (
+                "该 URL 当前不可达；不要等待 watchdog。请换可访问来源、改用 research_broker 多源调研，或把失败源标记为 unavailable。"
+                if failure_class == "network_timeout"
+                else "根据 failureClass 决定换源、缩小请求或停止该工具链。"
+            ),
+            "error": normalized_error,
         },
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _error_attempted_modes(error: str) -> list[str]:
+    match = re.search(r"attempted=\[([^\]]*)\]", str(error or ""))
+    if not match:
+        return []
+    return [
+        item.strip().strip("'\"")
+        for item in match.group(1).split(",")
+        if item.strip().strip("'\"")
+    ]
+
+
+def _error_elapsed_ms(error: str) -> int | None:
+    match = re.search(r"elapsed=([0-9.]+)s", str(error or ""))
+    if not match:
+        return None
+    try:
+        return int(float(match.group(1)) * 1000)
+    except Exception:
+        return None
 
 
 def _trim_broker_text(value: Any, *, limit: int = 2400) -> tuple[str, bool]:
@@ -1189,6 +1249,23 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
     }
 
 
+def _search_relevance_score(query: str, result: dict[str, Any]) -> int:
+    haystack = " ".join(
+        _safe_text(result.get(key)).lower()
+        for key in ("title", "snippet", "url")
+    )
+    query_text = _safe_text(query).lower()
+    if not query_text or not haystack:
+        return 0
+    latin_terms = [term for term in re.split(r"[^a-z0-9]+", query_text) if len(term) >= 3]
+    cjk_terms = re.findall(r"[\u4e00-\u9fff]{2,}", query_text)
+    terms = latin_terms + cjk_terms
+    if not terms:
+        return 0
+    hits = sum(1 for term in terms if term in haystack)
+    return int(round((hits / max(len(terms), 1)) * 100))
+
+
 def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str, debug: bool) -> dict[str, Any]:
     ok = bool(payload.get("ok"))
     resolved_mode = requested_mode
@@ -1212,6 +1289,8 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             provider = _safe_text(payload.get("provider"))
             results = payload.get("results") if isinstance(payload.get("results"), list) else []
             ranked_results = []
+            relevance_scores = []
+            authority_scores = []
             for index, result in enumerate(results, start=1):
                 item = dict(result or {})
                 url = _safe_text(item.get("url"))
@@ -1219,13 +1298,30 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
                 item["finalUrl"] = item.get("finalUrl") or url
                 if url:
                     item["sourceQualityHints"] = _search_result_quality_hints(url)
+                    authority_scores.append(int(item["sourceQualityHints"].get("authorityScore") or 0))
+                relevance = _search_relevance_score(query, item)
+                item["relevanceScore"] = relevance
+                relevance_scores.append(relevance)
                 ranked_results.append(item)
+            average_relevance = int(round(sum(relevance_scores) / len(relevance_scores))) if relevance_scores else 0
+            average_authority = int(round(sum(authority_scores) / len(authority_scores))) if authority_scores else 0
+            quality = "weak" if not results or average_relevance < 20 or average_authority < 35 else "usable"
             compact.update(
                 {
                     "summary": f"搜索到 {len(results)} 条结果。" if results else "没有找到可用结果。",
                     "query": query,
                     "provider": provider or None,
                     "resultCount": payload.get("resultCount") if payload.get("resultCount") is not None else len(results),
+                    "quality": quality,
+                    "sourceQualitySummary": {
+                        "averageRelevance": average_relevance,
+                        "averageAuthority": average_authority,
+                        "recommendedNextAction": (
+                            "结果相关性较弱；请换关键词、限定官方/权威域名，或改用 research_broker 汇总多源证据。"
+                            if quality == "weak"
+                            else "可作为单次搜索线索；复杂事实仍建议用 research_broker。"
+                        ),
+                    },
                     "results": ranked_results,
                     "omitted": {
                         "fullSearchHtml": "omitted",
@@ -1279,6 +1375,11 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             {
                 "summary": _safe_text(payload.get("error")) or "Web broker 执行失败。",
                 "error": payload.get("error"),
+                "failureClass": payload.get("failureClass"),
+                "attemptedModes": payload.get("attemptedModes"),
+                "elapsedMs": payload.get("elapsedMs"),
+                "retryable": payload.get("retryable"),
+                "recommendedNextAction": payload.get("recommendedNextAction"),
             }
         )
         if payload.get("blocked") is not None:
@@ -1287,6 +1388,8 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             compact["url"] = payload.get("url")
         if payload.get("query") not in (None, ""):
             compact["query"] = payload.get("query")
+        if payload.get("attemptedProviders") not in (None, "", [], {}):
+            compact["attemptedProviders"] = payload.get("attemptedProviders")
 
     for key in (
         "requestedMode",
@@ -1397,15 +1500,19 @@ def web_read(
             headless=headless,
             referer_mode=referer_mode,
             referer_url=referer_url,
+            timeout_seconds=WEB_READ_TIMEOUT_SECONDS,
         )
         return json.dumps(_render_page_summary(payload), ensure_ascii=False, indent=2)
     except Exception as exc:
+        error = str(exc)
         return _render_error_payload(
             url=url,
             requested_mode=mode,
             referer_mode=referer_mode,
             referer_url=referer_url,
-            error=f"Error reading webpage with Scrapling: {exc}",
+            error=f"Error reading webpage with Scrapling: {error}",
+            attempted_modes=_error_attempted_modes(error),
+            elapsed_ms=_error_elapsed_ms(error),
         )
 
 
@@ -1447,6 +1554,7 @@ def web_extract(
             headless=headless,
             referer_mode=referer_mode,
             referer_url=referer_url,
+            timeout_seconds=WEB_READ_TIMEOUT_SECONDS,
         )
         resolved_adaptive_id = adaptive_id.strip() or _default_adaptive_id(payload.final_url or payload.url, extract)
         container, adaptive_signals, selector_signals = _resolve_extract_container(
@@ -1506,12 +1614,15 @@ def web_extract(
             ]
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as exc:
+        error = str(exc)
         return _render_error_payload(
             url=url,
             requested_mode=mode,
             referer_mode=referer_mode,
             referer_url=referer_url,
-            error=f"Error extracting webpage with Scrapling: {exc}",
+            error=f"Error extracting webpage with Scrapling: {error}",
+            attempted_modes=_error_attempted_modes(error),
+            elapsed_ms=_error_elapsed_ms(error),
         )
 
 
@@ -1557,6 +1668,7 @@ def web_search(
                 headless=True,
                 referer_mode=referer_mode,
                 referer_url=referer_url,
+                timeout_seconds=WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS,
             )
             soup = BeautifulSoup(payload.html, "html.parser")
             results = _extract_search_results(soup, provider=provider, limit=limit)
@@ -1588,13 +1700,22 @@ def web_search(
             }
             return json.dumps(response, ensure_ascii=False, indent=2)
         except Exception as exc:
-            attempted_providers.append({"provider": provider, "status": "error", "reason": str(exc)})
+            error = str(exc)
+            attempted_providers.append({
+                "provider": provider,
+                "status": "error",
+                "failureClass": "network_timeout" if "timeout" in error.lower() or "deadline" in error.lower() else "web_fetch_failed",
+                "reason": error,
+                "elapsedMs": _error_elapsed_ms(error),
+            })
             last_error_payload = _render_error_payload(
                 url=search_url,
                 requested_mode=mode,
                 referer_mode=referer_mode,
                 referer_url=referer_url,
-                error=f"Error searching the web with Scrapling: {exc}",
+                error=f"Error searching the web with Scrapling: {error}",
+                attempted_modes=_error_attempted_modes(error),
+                elapsed_ms=_error_elapsed_ms(error),
             )
 
     return last_error_payload or json.dumps(

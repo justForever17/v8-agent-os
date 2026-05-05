@@ -413,12 +413,15 @@ function buildUploadTransportError(asset: DocumentPicker.DocumentPickerAsset, er
     const rawMessage = error instanceof Error ? String(error.message || "").trim() : "";
     const lowered = rawMessage.toLowerCase();
     const label = asset.name ? `“${asset.name}”` : translateCurrent("shared.upload.file_fallback_label");
-    const adminHint = adminBaseUrl ? `Admin: ${adminBaseUrl}` : "Admin URL 未配置";
-    const networkHint = `${rawMessage || "无法连接 Admin 上传代理"}；${adminHint}；候选地址请优先使用电脑局域网 IP:9528，避免 localhost/127.0.0.1；请确认手机与电脑在同一网络、Admin 9528 端口可访问。`;
-    if (lowered.includes("network request failed") || lowered.includes("upload body") || rawMessage.includes("上传体发送失败")) {
+    const adminHint = adminBaseUrl ? `Admin: ${adminBaseUrl}` : translateCurrent("shared.upload.admin_url_missing");
+    const networkHint = translateCurrent("shared.upload.admin_transport_hint", {
+        reason: rawMessage || translateCurrent("shared.upload.admin_proxy_unreachable"),
+        adminHint,
+    });
+    if (lowered.includes("network request failed") || lowered.includes("upload body") || rawMessage.includes(translateCurrent("shared.upload.body_send_failed_marker"))) {
         return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: networkHint }));
     }
-    if (lowered.includes("failed to fetch") || lowered.includes("fetch failed") || rawMessage.includes("上传 transport")) {
+    if (lowered.includes("failed to fetch") || lowered.includes("fetch failed") || rawMessage.includes(translateCurrent("shared.upload.transport_marker"))) {
         return new Error(translateCurrent("shared.upload.transport_failed_with_reason", { label, reason: networkHint }));
     }
     if (rawMessage.toLowerCase().includes("unable to reach admin") || rawMessage.includes("Admin")) {

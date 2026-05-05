@@ -113,15 +113,15 @@ export const ThinkingCard = memo(function ThinkingCard({
     };
 
     const wrapperBackground = isExpanded
-        ? (themeMode === "dark" ? "rgba(15,23,42,0.48)" : "rgba(255,255,255,0.56)")
-        : (themeMode === "dark" ? "rgba(15,23,42,0.26)" : "rgba(255,255,255,0.28)");
+        ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
+        : (themeMode === "dark" ? "rgba(15,23,42,0.18)" : "rgba(255,255,255,0.20)");
     const wrapperBorder = isExpanded
-        ? "rgba(139,92,246,0.28)"
-        : (themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.22)");
+        ? "rgba(139,92,246,0.20)"
+        : (themeMode === "dark" ? "rgba(255,255,255,0.055)" : "rgba(15,23,42,0.055)");
 
     return (
         <View style={styles.wrap}>
-            {isStreaming ? <View style={[styles.activeGlow, { backgroundColor: "rgba(139,92,246,0.12)" }]} /> : null}
+            {isStreaming ? <View style={[styles.activeGlow, { backgroundColor: "rgba(139,92,246,0.065)" }]} /> : null}
             <View
                 style={[
                     styles.card,
@@ -138,20 +138,20 @@ export const ThinkingCard = memo(function ThinkingCard({
                                 styles.iconWrap,
                                 {
                                     backgroundColor: isStreaming
-                                        ? "rgba(139,92,246,0.18)"
-                                        : (themeMode === "dark" ? "rgba(39,39,42,0.86)" : "rgba(241,245,249,0.96)"),
+                                        ? "rgba(139,92,246,0.12)"
+                                        : (themeMode === "dark" ? "rgba(39,39,42,0.72)" : "rgba(241,245,249,0.72)"),
                                     borderColor: isStreaming
-                                        ? "rgba(139,92,246,0.38)"
-                                        : colors.border,
+                                        ? "rgba(139,92,246,0.22)"
+                                        : (themeMode === "dark" ? "rgba(255,255,255,0.06)" : "rgba(15,23,42,0.06)"),
                                 },
                             ]}
                         >
                             <MaterialCommunityIcons
-                                name="chip"
-                                size={14}
+                                name="brain"
+                                size={13}
                                 color={isStreaming ? colors.primary : colors.textMuted}
                             />
-                            {isStreaming ? <View style={[styles.pingRing, { borderColor: "rgba(139,92,246,0.35)" }]} /> : null}
+                            {isStreaming ? <View style={[styles.pingRing, { borderColor: "rgba(139,92,246,0.20)" }]} /> : null}
                         </View>
 
                         <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
@@ -212,38 +212,38 @@ export const ThinkingCard = memo(function ThinkingCard({
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        marginVertical: 4,
+        marginVertical: 2,
         position: "relative",
     },
     activeGlow: {
         position: "absolute",
         inset: 0,
-        borderRadius: 16,
+        borderRadius: 13,
     },
     card: {
         width: "100%",
         overflow: "hidden",
-        borderRadius: 16,
+        borderRadius: 13,
         borderWidth: 1,
     },
     header: {
-        minHeight: 40,
+        minHeight: 32,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        paddingHorizontal: 14,
-        paddingVertical: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
     },
     headerLeft: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 7,
         flex: 1,
     },
     iconWrap: {
-        width: 22,
-        height: 22,
-        borderRadius: 8,
+        width: 20,
+        height: 20,
+        borderRadius: 7,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -252,28 +252,28 @@ const styles = StyleSheet.create({
     pingRing: {
         position: "absolute",
         inset: -1,
-        borderRadius: 8,
+        borderRadius: 7,
         borderWidth: 1,
     },
     title: {
         fontSize: 11,
         fontWeight: "700",
-        letterSpacing: 0.5,
+        letterSpacing: 0.2,
     },
     time: {
         fontSize: 10,
         fontWeight: "600",
     },
     contentOuter: {
-        paddingHorizontal: 14,
-        paddingBottom: 14,
+        paddingHorizontal: 10,
+        paddingBottom: 10,
         paddingTop: 2,
     },
     contentInner: {
-        borderRadius: 12,
+        borderRadius: 10,
         borderWidth: 1,
-        paddingHorizontal: 10,
-        paddingVertical: 10,
+        paddingHorizontal: 9,
+        paddingVertical: 8,
         flexDirection: "row",
         alignItems: "flex-end",
         flexWrap: "wrap",
@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
     },
     contentText: {
         fontSize: 11,
-        lineHeight: 18,
+        lineHeight: 17,
         fontFamily: "monospace",
         flexShrink: 1,
     },

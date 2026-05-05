@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from core.chat_output_extractor import extract_text_and_reasoning
@@ -27,6 +27,7 @@ class CanonicalModelEvent:
     scope: CanonicalModelEventScope
     delta: str = ""
     snapshot: str = ""
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def normalized_model_run_id(model_run_id: str | None) -> str:
@@ -42,6 +43,105 @@ def _metadata_path_contains_tool_node(value: Any) -> bool:
         return any(_metadata_path_contains_tool_node(item) for item in value)
     text = _lower_metadata_value(value)
     return bool(text and ("supervisor_tools" in text or text.endswith("_tools") or ":tools" in text))
+
+
+def _metadata_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "trusted"}
+
+
+def _iter_content_blocks(payload: Any):
+    if payload is None:
+        return []
+    content_blocks = getattr(payload, "content_blocks", None)
+    if content_blocks is None and isinstance(payload, dict):
+        content_blocks = payload.get("content_blocks")
+    if content_blocks is None:
+        content = getattr(payload, "content", None)
+        if content is None and isinstance(payload, dict):
+            content = payload.get("content")
+        content_blocks = content if isinstance(content, list) else None
+    if isinstance(content_blocks, list):
+        return content_blocks
+    return []
+
+
+def _payload_has_explicit_reasoning_block(payload: Any) -> bool:
+    for block in _iter_content_blocks(payload):
+        if not isinstance(block, dict):
+            block_type = str(getattr(block, "type", "") or "").strip().lower()
+        else:
+            block_type = str(block.get("type") or "").strip().lower()
+        if block_type in {"reasoning", "thinking", "reasoning_content"}:
+            return True
+    return False
+
+
+def _payload_has_trusted_reasoning_key(payload: Any) -> bool:
+    containers: list[Any] = [payload]
+    if isinstance(payload, dict):
+        containers.extend([payload.get("additional_kwargs"), payload.get("response_metadata"), payload.get("generation_info")])
+    else:
+        containers.extend(
+            [
+                getattr(payload, "additional_kwargs", None),
+                getattr(payload, "response_metadata", None),
+                getattr(payload, "generation_info", None),
+            ]
+        )
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        if any(key in container for key in ("thinking_delta", "thinking")):
+            return True
+    return False
+
+
+_UNTRUSTED_REASONING_PROGRESS_PATTERNS = (
+    "让我",
+    "我先",
+    "我现在",
+    "现在开始",
+    "接下来",
+    "计划已",
+    "工具",
+    "调用",
+    "检查",
+    "读取",
+    "搜索",
+    "创建",
+    "写入",
+    "观察",
+    "用户想",
+    "用户要求",
+    "let me",
+    "i need to",
+    "i will",
+    "i'll",
+    "now i",
+    "next i",
+    "calling",
+    "call the",
+    "use the tool",
+    "check",
+    "read",
+    "search",
+    "create",
+    "write",
+)
+
+
+def _should_reclassify_untrusted_reasoning_as_text(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(pattern in lowered for pattern in _UNTRUSTED_REASONING_PROGRESS_PATTERNS):
+        return True
+    # Very short fragments around tool boundaries are usually progress narration
+    # from providers that misuse reasoning_content as a streaming text channel.
+    return len(text) <= 24 and not any(marker in lowered for marker in ("because", "therefore", "所以", "因为", "推理"))
 
 
 def longest_overlap_suffix_prefix(previous: str, current: str) -> int:
@@ -141,6 +241,23 @@ class LangChainCanonicalModelEventAdapter:
 
         return "assistant_root"
 
+    def _should_trust_reasoning_payload(self, event: dict[str, Any], payload: Any) -> bool:
+        metadata = event.get("metadata") if isinstance(event, dict) else None
+        metadata = metadata if isinstance(metadata, dict) else {}
+        tags = event.get("tags") if isinstance(event, dict) else None
+        tags = tags if isinstance(tags, list) else []
+
+        if any(_metadata_truthy(metadata.get(key)) for key in ("v8_trusted_reasoning", "trusted_reasoning", "reasoning_trusted")):
+            return True
+        lowered_tags = {str(tag or "").strip().lower() for tag in tags}
+        if lowered_tags.intersection({"v8:trusted_reasoning", "trusted_reasoning", "reasoning:trusted"}):
+            return True
+        if _payload_has_explicit_reasoning_block(payload):
+            return True
+        if _payload_has_trusted_reasoning_key(payload):
+            return True
+        return False
+
     def normalize_chat_model_stream(
         self,
         event: dict[str, Any],
@@ -229,6 +346,33 @@ class LangChainCanonicalModelEventAdapter:
             suppress_reasoning = True
 
         if raw_reasoning and not suppress_reasoning:
+            reasoning_trusted = self._should_trust_reasoning_payload(event, payload)
+            if not reasoning_trusted:
+                if not _should_reclassify_untrusted_reasoning_as_text(raw_reasoning):
+                    return events
+                text_delta, text_snapshot = consume_canonical_stream_value(
+                    text_snapshots,
+                    model_run_id,
+                    raw_reasoning,
+                    allow_token_delta=True,
+                )
+                if text_delta:
+                    events.append(
+                        CanonicalModelEvent(
+                            event_type="text_delta",
+                            run_id=run_id,
+                            model_run_id=model_run_id,
+                            scope=scope,
+                            delta=text_delta,
+                            snapshot=text_snapshot,
+                            diagnostics={
+                                "reasoningReclassifiedAsText": True,
+                                "reason": "untrusted_reasoning_payload",
+                            },
+                        )
+                    )
+                return events
+
             reasoning_delta, reasoning_snapshot = consume_canonical_stream_value(
                 reasoning_snapshots,
                 model_run_id,
@@ -244,6 +388,7 @@ class LangChainCanonicalModelEventAdapter:
                         scope=scope,
                         delta=reasoning_delta,
                         snapshot=reasoning_snapshot,
+                        diagnostics={"trustedReasoning": True},
                     )
                 )
 

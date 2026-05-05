@@ -62,7 +62,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                 <View style={styles.audioBody}>
                     <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
                     <Text style={[styles.audioSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
-                        {isMusic ? "音乐 artifact · 点击打开" : t("src.components.chat.mediarenderers.tap_to_open_audio")}
+                        {isMusic ? t("src.components.chat.mediarenderers.tap_to_open_music_artifact") : t("src.components.chat.mediarenderers.tap_to_open_audio")}
                     </Text>
                 </View>
                 <Pressable onPress={() => void Linking.openURL(resolvedSrc)} style={styles.openButton}>

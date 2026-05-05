@@ -9,6 +9,7 @@ CONTEXT_POLICY_SCHEMA_VERSION = 3
 DEFAULT_CONTEXT_POLICY: Dict[str, Any] = {
     "schema_version": CONTEXT_POLICY_SCHEMA_VERSION,
     "recursion_limit": 100,
+    "maxGraphContinuations": 5,
     "compression": {
         "enabled": True,
         "mode": "persistent_baseline",
@@ -75,6 +76,12 @@ def normalize_context_policy(raw: Dict[str, Any] | None) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {
         "schema_version": CONTEXT_POLICY_SCHEMA_VERSION,
         "recursion_limit": _coerce_int(data.get("recursion_limit", 100), 100, minimum=10, maximum=5000),
+        "maxGraphContinuations": _coerce_int(
+            data.get("maxGraphContinuations", data.get("max_graph_continuations", 5)),
+            5,
+            minimum=0,
+            maximum=20,
+        ),
         "compression": {
             "enabled": bool(compression.get("enabled", True)),
             "mode": str(compression.get("mode") or "persistent_baseline").strip() or "persistent_baseline",

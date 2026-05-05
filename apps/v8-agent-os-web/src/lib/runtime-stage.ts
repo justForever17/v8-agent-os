@@ -2,6 +2,7 @@ import { Message, UiArtifactNode, UiExecutionNode, UiGovernanceNode, UiTimelineN
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
     coerceAdminResourceRef,
+    type ContextGovernanceDigest,
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     normalizeAuthoritativeRuntimeTimeline,
@@ -385,6 +386,8 @@ interface BuildRuntimeStageModelOptions {
     currentStepTitle?: string | null;
     runtimeTimeline?: RuntimeTimelineEntry[] | null;
     memoryInsight?: MemoryRuntimeInsight | null;
+    governanceDigest?: ContextGovernanceDigest | null;
+    governanceHistory?: ContextGovernanceDigest[] | null;
 }
 
 export function buildRuntimeStageModel(
@@ -476,6 +479,51 @@ export function buildRuntimeStageModel(
         });
     }
 
+    const governanceDigests = [
+        options?.governanceDigest || null,
+        ...(options?.governanceHistory || []),
+    ].filter((item): item is ContextGovernanceDigest => Boolean(item));
+    const seenGovernanceIds = new Set<string>();
+    for (const item of governanceDigests) {
+        if (!item.id || seenGovernanceIds.has(item.id)) {
+            continue;
+        }
+        seenGovernanceIds.add(item.id);
+        const summary = item.triggerReason
+            ? `上下文治理：${item.triggerReason}`
+            : "上下文治理已更新";
+        const detailParts = [
+            item.resolvedScope ? `Scope: ${item.resolvedScope}` : null,
+            typeof item.blockCount === "number" ? `Blocks: ${item.blockCount}` : null,
+            item.durableFlushReason ? `Durable: ${item.durableFlushReason}` : null,
+            item.compactionApplied ? "已压缩" : null,
+            item.recallAudit?.rejectReason ? `Recall: ${item.recallAudit.rejectReason}` : null,
+        ].filter((value): value is string => Boolean(value));
+        const timestamp = item.eventTs ? Date.parse(item.eventTs) || Date.now() : Date.now();
+        activities.push({
+            id: `governance:${item.id}`,
+            runtimeId: "context_governance",
+            timestamp,
+            summary,
+            topic: "context.prepared",
+            actorLabel: "上下文治理",
+            messageId: `governance:${item.id}`,
+            node: {
+                id: `timeline-node-governance:${item.id}`,
+                kind: "governance",
+                governanceType: "context_governance",
+                topic: "context.prepared",
+                reason: detailParts.join("\n") || summary,
+                status: item.compactionApplied ? "compacted" : "updated",
+                timestamp,
+                agentName: "上下文治理",
+                agentRoleLabel: "上下文治理",
+            },
+            kind: "governance",
+            synthetic: true,
+        });
+    }
+
     activities.sort((left, right) => right.timestamp - left.timestamp);
 
     const realActivities = activities.filter((activity) => !activity.synthetic);
@@ -494,6 +542,8 @@ export function buildRuntimeStageModel(
         let status: RuntimeCardStatus = "idle";
         if (runtimeId === activeRuntimeId && isBusy) {
             status = options?.pendingApproval ? "attention" : "active";
+        } else if (runtimeId === activeRuntimeId && (options?.recoverable || String(options?.status || "").trim().toLowerCase() === "failed")) {
+            status = "attention";
         } else if (lastActivity) {
             status = "recent";
         }

@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "if exist dist rmdir /s /q dist",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs"
   },
   "exports": {
     ".": {
@@ -61,6 +62,10 @@
     "./history": {
       "types": "./dist/history.d.ts",
       "default": "./dist/history.js"
+    },
+    "./message-segments": {
+      "types": "./dist/message-segments.d.ts",
+      "default": "./dist/message-segments.js"
     }
   },
   "devDependencies": {

@@ -10,7 +10,6 @@ import {
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
-import { Badge } from "@/src/components/ui/badge";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 export type ToolInvocation = {
@@ -35,6 +34,26 @@ function stringifyPayload(value: unknown) {
     } catch {
         return String(value ?? "");
     }
+}
+
+function resolveToolIconName(toolName: string) {
+    const normalized = String(toolName || "").toLowerCase();
+    if (/(command|shell|bash|terminal|process|session)/.test(normalized)) {
+        return "console-line";
+    }
+    if (/(file|directory|read|write|edit|path|workspace)/.test(normalized)) {
+        return "file-document-outline";
+    }
+    if (/(web|search|read_url|browser|research|fetch)/.test(normalized)) {
+        return "magnify";
+    }
+    if (/(safety|approval|risk|guard)/.test(normalized)) {
+        return "shield-check-outline";
+    }
+    if (/(image|video|audio|media|render)/.test(normalized)) {
+        return "image-multiple-outline";
+    }
+    return "tools";
 }
 
 export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: ToolCardProps) {
@@ -68,20 +87,21 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
     });
 
     const accent = isComplete ? "#14B8A6" : "#3B82F6";
+    const iconName = resolveToolIconName(toolInvocation.toolName);
 
     return (
         <View style={styles.wrap}>
-            {!isComplete ? <View style={[styles.activeGlow, { backgroundColor: "rgba(59,130,246,0.1)" }]} /> : null}
+            {!isComplete ? <View style={[styles.activeGlow, { backgroundColor: "rgba(59,130,246,0.055)" }]} /> : null}
             <View
                 style={[
                     styles.card,
                     {
                         backgroundColor: isExpanded
-                            ? (themeMode === "dark" ? "rgba(15,23,42,0.46)" : "rgba(255,255,255,0.56)")
-                            : (themeMode === "dark" ? "rgba(15,23,42,0.26)" : "rgba(255,255,255,0.28)"),
+                            ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
+                            : (themeMode === "dark" ? "rgba(15,23,42,0.18)" : "rgba(255,255,255,0.20)"),
                         borderColor: isExpanded
-                            ? `${accent}4D`
-                            : (themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.22)"),
+                            ? `${accent}33`
+                            : (themeMode === "dark" ? "rgba(255,255,255,0.055)" : "rgba(15,23,42,0.055)"),
                     },
                 ]}
             >
@@ -91,26 +111,33 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                             style={[
                                 styles.iconWrap,
                                 {
-                                    backgroundColor: isComplete ? "rgba(20,184,166,0.12)" : "rgba(59,130,246,0.18)",
-                                    borderColor: isComplete ? "rgba(20,184,166,0.3)" : "rgba(59,130,246,0.4)",
+                                    backgroundColor: isComplete ? "rgba(20,184,166,0.10)" : "rgba(59,130,246,0.12)",
+                                    borderColor: isComplete ? "rgba(20,184,166,0.18)" : "rgba(59,130,246,0.22)",
                                 },
                             ]}
                         >
                             <MaterialCommunityIcons
-                                name="source-branch"
-                                size={14}
+                                name={iconName as never}
+                                size={13}
                                 color={isComplete ? "#14B8A6" : "#3B82F6"}
                             />
-                            {!isComplete ? <View style={[styles.pingRing, { borderColor: "rgba(59,130,246,0.35)" }]} /> : null}
+                            {!isComplete ? <View style={[styles.pingRing, { borderColor: "rgba(59,130,246,0.20)" }]} /> : null}
                         </View>
 
                         <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
                             {toolInvocation.toolName}
                         </Text>
 
-                        <Badge variant={isComplete ? "secondary" : "outline"}>
+                        <Text style={[
+                            styles.statusPill,
+                            {
+                                color: isComplete ? "#0F766E" : "#2563EB",
+                                backgroundColor: isComplete ? "rgba(20,184,166,0.10)" : "rgba(59,130,246,0.10)",
+                                borderColor: isComplete ? "rgba(20,184,166,0.14)" : "rgba(59,130,246,0.16)",
+                            },
+                        ]}>
                             {isComplete ? t("src.components.chat.toolcard.complete") : t("src.components.chat.toolcard.running")}
-                        </Badge>
+                        </Text>
                     </View>
 
                     <Animated.View style={{ transform: [{ rotate }] }}>
@@ -163,38 +190,38 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        marginVertical: 4,
+        marginVertical: 2,
         position: "relative",
     },
     activeGlow: {
         position: "absolute",
         inset: 0,
-        borderRadius: 16,
+        borderRadius: 13,
     },
     card: {
         width: "100%",
         overflow: "hidden",
-        borderRadius: 16,
+        borderRadius: 13,
         borderWidth: 1,
     },
     header: {
-        minHeight: 40,
+        minHeight: 32,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        paddingHorizontal: 14,
-        paddingVertical: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
     },
     headerLeft: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 7,
         flex: 1,
     },
     iconWrap: {
-        width: 22,
-        height: 22,
-        borderRadius: 8,
+        width: 20,
+        height: 20,
+        borderRadius: 7,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -203,20 +230,30 @@ const styles = StyleSheet.create({
     pingRing: {
         position: "absolute",
         inset: -1,
-        borderRadius: 8,
+        borderRadius: 7,
         borderWidth: 1,
     },
     title: {
         fontSize: 11,
         fontWeight: "700",
-        letterSpacing: 0.4,
+        letterSpacing: 0.2,
         flexShrink: 1,
     },
+    statusPill: {
+        overflow: "hidden",
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        fontSize: 9,
+        lineHeight: 12,
+        fontWeight: "800",
+    },
     content: {
-        paddingHorizontal: 14,
-        paddingBottom: 14,
+        paddingHorizontal: 10,
+        paddingBottom: 10,
         paddingTop: 2,
-        gap: 10,
+        gap: 8,
     },
     section: {
         gap: 6,

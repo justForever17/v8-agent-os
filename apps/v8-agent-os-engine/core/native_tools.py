@@ -484,6 +484,39 @@ def _detect_session_preferred_command(command: str) -> str | None:
     return None
 
 
+def _windows_shell_syntax_violation_payload(command: str) -> dict[str, Any] | None:
+    if sys.platform != "win32":
+        return None
+    stripped = _strip_leading_shell_cwd(command)
+    if not stripped:
+        return None
+    lowered = stripped.lower()
+    violations: list[str] = []
+    suggestions: list[str] = []
+    if re.search(r"(^|[;&|]\s*)mkdir\s+-p(?:\s|$)", lowered):
+        violations.append("mkdir_-p")
+        suggestions.append("PowerShell: New-Item -ItemType Directory -Force <path>")
+        suggestions.append("Prefer write_native_file for project files; it creates parent directories safely.")
+    if re.search(r"\{[^{}\r\n,]+,[^{}\r\n]+\}", stripped):
+        violations.append("brace_expansion")
+        suggestions.append("PowerShell: create each directory explicitly or use an array piped to New-Item.")
+    if re.search(r"(^|[;&|]\s*)ls\s+-[A-Za-z]*[la][A-Za-z]*(?:\s|$)", stripped):
+        violations.append("ls_dash_la")
+        suggestions.append("PowerShell: Get-ChildItem -Force <path>")
+    if not violations:
+        return None
+    return {
+        "ok": False,
+        "kind": "cross_shell_syntax_violation",
+        "summary": "检测到 POSIX shell 写法，但当前命令会在 Windows shell 中执行，已阻断以避免污染工作区。",
+        "command": command,
+        "platform": "windows",
+        "violations": violations,
+        "suggestedAlternatives": list(dict.fromkeys(suggestions)),
+        "recommendedNextAction": "改用 PowerShell/Windows 等价命令，或使用 V8 文件工具在 Active Workspace Root 内创建文件。",
+    }
+
+
 _SCAFFOLD_INSTALL_PATTERN = re.compile(
     r"(?i)(?:^|[;&|]\s*)(?:npx\s+(?:--yes\s+|-y\s+)?create-[\w@./-]+|create-[\w@./-]+|npm\s+create\b|pnpm\s+create\b|yarn\s+create\b|bun\s+create\b|npm\s+(?:install|i)\b|pnpm\s+(?:install|i)\b|yarn\s+(?:install|add)\b|bun\s+(?:install|add)\b)"
 )
@@ -3478,6 +3511,9 @@ def execute_system_command(
         command (str): The command to execute natively.
     """
     try:
+        shell_violation = _windows_shell_syntax_violation_payload(command)
+        if shell_violation:
+            return json.dumps(shell_violation, ensure_ascii=False, indent=2)
         interactive_reason = _detect_interactive_command(command)
         if interactive_reason:
             return (
@@ -3524,15 +3560,18 @@ def execute_system_command(
             command,
             shell=True,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             cwd=resolved_cwd,
             timeout=120  # Prevent infinite hangs
         )
-        output = result.stdout or ""
-        if result.stderr:
-            output += f"\n[STDERR]:\n{result.stderr}"
+        stdout, stdout_encoding = _decode_completed_process_bytes(result.stdout or b"", stream_name="stdout")
+        stderr, stderr_encoding = _decode_completed_process_bytes(result.stderr or b"", stream_name="stderr")
+        output = stdout or ""
+        if stderr:
+            output += f"\n[STDERR]:\n{stderr}"
+        encoding_diagnostics = {
+            "stdout": stdout_encoding,
+            "stderr": stderr_encoding,
+        }
             
         if not output.strip() and result.returncode == 0:
             return "Command executed successfully with no output."
@@ -3540,6 +3579,21 @@ def execute_system_command(
         # Truncate if insanely long (protect LLM context)
         if len(output) > 20000:
             output = output[:20000] + f"\n\n...[OUTPUT TRUNCATED] ({len(output)} chars total). Use grep_search or read_native_file with lines to analyze further."
+
+        noisy_encoding_states = {
+            str(stdout_encoding.get("state") or ""),
+            str(stderr_encoding.get("state") or ""),
+        } - {"", "empty", "clean"}
+        if noisy_encoding_states:
+            output += "\n\n[encodingDiagnostics]: " + json.dumps(
+                {
+                    "state": sorted(noisy_encoding_states),
+                    "stdoutEncoding": stdout_encoding.get("encoding"),
+                    "stderrEncoding": stderr_encoding.get("encoding"),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
 
         safety_guardian.observe_post_action(
             action_family="command",
@@ -3549,6 +3603,7 @@ def execute_system_command(
                 "cwd": resolved_cwd,
                 "workspaceBinding": workspace_preflight.get("binding"),
                 "return_code": result.returncode,
+                "encodingDiagnostics": encoding_diagnostics,
             },
             runtime_context=runtime_context,
         )
@@ -3986,6 +4041,9 @@ def _launch_background_command(
     profile: str = "auto",
     cwd: str = "",
 ) -> dict[str, Any]:
+    shell_violation = _windows_shell_syntax_violation_payload(command)
+    if shell_violation:
+        raise RuntimeError(json.dumps(shell_violation, ensure_ascii=False))
     interactive_reason = _detect_interactive_command(command)
     session_reason = _detect_session_preferred_command(command)
     resolved_profile, profile_reason = _detect_background_command_profile(command, requested_profile=profile)
@@ -4738,18 +4796,48 @@ def _runtime_broker_payload(
     groups: list[dict[str, Any]] | None = None,
     rejected: list[str] | None = None,
     error: str | None = None,
+    detail_level: str = "summary",
+    changed: list[dict[str, Any]] | None = None,
+    next_action: str | None = None,
 ) -> str:
+    normalized_detail = str(detail_level or "summary").strip().lower()
+    group_items = list(groups or [])
+    if normalized_detail not in {"catalog", "detail", "full"}:
+        group_items = [
+            {
+                "group": str(item.get("group") or ""),
+                "runtimeKind": str(item.get("runtimeKind") or ""),
+                "label": str(item.get("label") or item.get("group") or ""),
+                "summary": str(item.get("summary") or ""),
+            }
+            for item in group_items
+            if isinstance(item, dict)
+        ]
     payload = {
         "mode": mode,
         "ok": ok,
         "summary": summary,
-        "grants": list(grants or []),
-        "groups": list(groups or []),
+        "activeGrants": list(grants or []),
+        "availableGroups": group_items,
         "rejected": list(rejected or []),
+        "detailMode": normalized_detail if normalized_detail in {"catalog", "detail", "full"} else "summary",
+        "detailTool": "runtime_broker(mode='list', detail_level='catalog')",
     }
+    if changed is not None:
+        payload["changed"] = list(changed or [])
+    if next_action:
+        payload["recommendedNextAction"] = next_action
+    if normalized_detail not in {"catalog", "detail", "full"} and groups:
+        omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
+        payload["omitted"] = {
+            "toolNames": omitted_tools,
+            "reason": "system content already lists runtime capability cards; broker default only reports state and grants.",
+        }
     if error:
         payload["error"] = error
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    if normalized_detail in {"catalog", "detail", "full"}:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 @tool
@@ -4759,6 +4847,7 @@ def runtime_broker(
     tool_group: Optional[str] = None,
     tool_groups: Optional[list[str]] = None,
     reason: Optional[str] = None,
+    detail_level: str = "summary",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
@@ -4781,6 +4870,8 @@ def runtime_broker(
                                 {"group": group, "runtimeKind": group.split(".", 1)[0]}
                                 for group in runtime_access_from_route_context(route_context)
                             ],
+                            detail_level=detail_level,
+                            next_action="Grant a needed group with runtime_broker(mode='grant', tool_group='...'); request detail_level='catalog' only when tool names are required.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -4810,6 +4901,8 @@ def runtime_broker(
                                 {"group": group, "runtimeKind": group.split(".", 1)[0]}
                                 for group in active_groups
                             ],
+                            detail_level=detail_level,
+                            next_action="Continue with currently granted tools, or grant/revoke a runtime group as needed.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -4830,6 +4923,7 @@ def runtime_broker(
                                 ok=False,
                                 summary="runtime_broker(mode=grant) requires tool_group or tool_groups.",
                                 error="missing_tool_group",
+                                next_action="Call runtime_broker(mode='list') to see group ids, then grant one.",
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -4856,9 +4950,12 @@ def runtime_broker(
                                 else "Some requested runtime tool groups were not granted."
                             ),
                             grants=grants,
-                            groups=runtime_tool_groups_catalog(),
+                            groups=runtime_tool_groups_catalog() if str(detail_level or "").strip().lower() in {"catalog", "detail", "full"} else [],
                             rejected=rejected,
                             error="unknown_tool_group" if rejected else None,
+                            detail_level=detail_level,
+                            changed=grants,
+                            next_action="On the next supervisor step, use the newly granted runtime tools; do not call list again unless another group is needed.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -4882,7 +4979,9 @@ def runtime_broker(
                             ok=True,
                             summary="Runtime tool grants updated for this run.",
                             grants=grants,
-                            groups=runtime_tool_groups_catalog(),
+                            detail_level=detail_level,
+                            changed=grants,
+                            next_action="Continue with the remaining grants.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -4901,6 +5000,7 @@ def runtime_broker(
                         ok=False,
                         summary=f"Unsupported runtime_broker mode: {normalized_mode}",
                         error="unsupported_mode",
+                        next_action="Use one of: list, status, grant, revoke.",
                     ),
                     tool_call_id=tool_call_id,
                 )
@@ -6279,6 +6379,69 @@ def _terminal_snapshot_looks_busy(snapshot: str) -> bool:
         return False
     tail = "\n".join(normalized.splitlines()[-6:])
     return bool(_BUSY_HINT_PATTERN.search(tail))
+
+
+def _windows_text_encoding_candidates() -> list[str]:
+    candidates = [
+        "utf-8",
+        locale.getpreferredencoding(False),
+        "mbcs",
+        "cp936",
+        "gbk",
+    ]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        item = str(candidate or "").strip()
+        key = item.lower()
+        if item and key not in seen:
+            seen.add(key)
+            normalized.append(item)
+    return normalized
+
+
+def _decode_completed_process_bytes(data: bytes, *, stream_name: str) -> tuple[str, dict[str, Any]]:
+    raw = bytes(data or b"")
+    if not raw:
+        return "", {"stream": stream_name, "encoding": "utf-8", "state": "empty"}
+    if sys.platform != "win32":
+        try:
+            return raw.decode("utf-8"), {"stream": stream_name, "encoding": "utf-8", "state": "clean"}
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+            return text, {"stream": stream_name, "encoding": "utf-8", "state": "undecodable"}
+
+    attempted: list[str] = []
+    utf8_failed = False
+    for encoding in _windows_text_encoding_candidates():
+        attempted.append(encoding)
+        try:
+            text = raw.decode(encoding, errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            if encoding.lower() == "utf-8":
+                utf8_failed = True
+            continue
+        state = "mojibake_recovered" if utf8_failed and encoding.lower() != "utf-8" else "clean"
+        if _looks_like_terminal_mojibake(text):
+            state = "mojibake_suspected"
+        return text, {
+            "stream": stream_name,
+            "encoding": encoding,
+            "state": state,
+            "attempted": attempted,
+        }
+
+    fallback_encoding = locale.getpreferredencoding(False) or "utf-8"
+    text = raw.decode(fallback_encoding, errors="replace")
+    state = "undecodable"
+    if _looks_like_terminal_mojibake(text):
+        state = "mojibake_suspected"
+    return text, {
+        "stream": stream_name,
+        "encoding": fallback_encoding,
+        "state": state,
+        "attempted": attempted,
+    }
 
 
 def _normalize_status_timestamp(value: Any) -> str | None:

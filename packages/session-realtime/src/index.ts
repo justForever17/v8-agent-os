@@ -11,3 +11,4 @@ export * from "./runtime-timeline.js";
 export * from "./runtime-projection-matrix.js";
 export * from "./history.js";
 export * from "./timeline-node-identity.js";
+export * from "./message-segments.js";

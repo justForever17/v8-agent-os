@@ -21,7 +21,7 @@ type TodosHUDProps = {
 
 export function TodosHUD({ items, isStale = false, shouldAutoHide = false, dismissDelayMs = 2600 }: TodosHUDProps) {
     const [isCollapsed, setIsCollapsed] = useState(false);
-    const [dismissed, setDismissed] = useState(false);
+    const [dismissedSignature, setDismissedSignature] = useState<string | null>(null);
 
     const todos = useMemo(
         () =>
@@ -36,20 +36,21 @@ export function TodosHUD({ items, isStale = false, shouldAutoHide = false, dismi
     );
 
     const allCompleted = todos.length > 0 && todos.every((todo) => todo.status === "done" || todo.status === "skipped");
-
-    useEffect(() => {
-        setDismissed(false);
-    }, [todos.map((todo) => `${todo.id}:${todo.status}:${todo.text}`).join("|")]);
+    const todosSignature = useMemo(
+        () => todos.map((todo) => `${todo.id}:${todo.status}:${todo.text}`).join("|"),
+        [todos],
+    );
+    const dismissed = dismissedSignature === todosSignature;
 
     useEffect(() => {
         if (!shouldAutoHide || !allCompleted || todos.length === 0) {
             return undefined;
         }
         const timer = window.setTimeout(() => {
-            setDismissed(true);
+            setDismissedSignature(todosSignature);
         }, dismissDelayMs);
         return () => window.clearTimeout(timer);
-    }, [allCompleted, dismissDelayMs, shouldAutoHide, todos.length]);
+    }, [allCompleted, dismissDelayMs, shouldAutoHide, todos.length, todosSignature]);
 
     if (todos.length === 0 || dismissed) {
         return null;

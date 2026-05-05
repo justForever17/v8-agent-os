@@ -3,7 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "r
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { type AdminProcessRef } from "@v8/session-realtime";
+import { buildMessageTimelineSegments, type AdminProcessRef } from "@v8/session-realtime";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -34,6 +34,97 @@ function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNod
 
 function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode & { toolCallId: string } {
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
+}
+
+function TraceGroup({
+    id,
+    nodes,
+    collapsedByDefault,
+    messageIdentity,
+    assistantActive,
+    streamPhase,
+    speakingKey,
+    onSpeakVoice,
+    processes,
+    resultNodesByToolCallId,
+    borderColor,
+    backgroundColor,
+    titleColor,
+    textColor,
+    expanded,
+    onToggle,
+    label,
+    fallbackTitle,
+    fallbackDescription,
+}: {
+    id: string;
+    nodes: PhoneUiTimelineNode[];
+    collapsedByDefault: boolean;
+    messageIdentity: string;
+    assistantActive: boolean;
+    streamPhase?: ChatMessage["uiStreamPhase"];
+    speakingKey?: string;
+    onSpeakVoice?: (text: string, messageKey: string) => void;
+    processes: AdminProcessRef[];
+    resultNodesByToolCallId: Map<string, PhoneUiExecutionNode>;
+    borderColor: string;
+    backgroundColor: string;
+    titleColor: string;
+    textColor: string;
+    expanded?: boolean;
+    onToggle: () => void;
+    label: string;
+    fallbackTitle: string;
+    fallbackDescription: string;
+}) {
+    const isExpanded = expanded ?? !collapsedByDefault;
+
+    return (
+        <View style={styles.traceGroup}>
+            <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={label}
+                style={[
+                    styles.traceToggle,
+                    isExpanded && styles.traceToggleExpanded,
+                    { borderColor, backgroundColor },
+                ]}
+                onPress={onToggle}
+            >
+                <Text style={[styles.traceToggleText, { color: textColor }]}>
+                    {isExpanded ? "⌄" : ">"}
+                </Text>
+            </Pressable>
+            {isExpanded ? (
+                <View style={styles.traceGroupContent}>
+                    {nodes.map((node, index) => (
+                        <NodeRenderBoundary
+                            key={node.id || `${id}:trace-node:${index}`}
+                            title={fallbackTitle}
+                            description={fallbackDescription}
+                            borderColor={borderColor}
+                            backgroundColor={backgroundColor}
+                            titleColor={titleColor}
+                            textColor={textColor}
+                        >
+                            <ContentDispatcher
+                                node={node}
+                                messageIdentity={`${messageIdentity}:trace:${id}:${index}`}
+                                isExecuting={assistantActive}
+                                isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
+                                speakingKey={speakingKey}
+                                onSpeakVoice={onSpeakVoice}
+                                processes={processes}
+                                resultNode={hasToolCallId(node) && node.executionType === "tool_call"
+                                    ? resultNodesByToolCallId.get(node.toolCallId.trim())
+                                    : undefined}
+                            />
+                        </NodeRenderBoundary>
+                    ))}
+                </View>
+            ) : null}
+        </View>
+    );
 }
 
 function AssistantWorkIndicator({
@@ -311,6 +402,7 @@ export const MessageBubble = memo(function MessageBubble({
     const [copied, setCopied] = useState(false);
     const [userMediaOpen, setUserMediaOpen] = useState(false);
     const [userMediaIndex, setUserMediaIndex] = useState(0);
+    const [expandedTraceGroups, setExpandedTraceGroups] = useState<Record<string, boolean>>({});
     const avatarUri = useMemo(
         () => resolveAdminAssetUrl(
             adminBaseUrl,
@@ -461,6 +553,10 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
     const assistantActive = !isUser && isLast && isLoading;
+    const timelineSegments = useMemo(
+        () => buildMessageTimelineSegments(renderableNodes, { active: assistantActive }),
+        [assistantActive, renderableNodes],
+    );
     const assistantEmptyActive = assistantActive && !hasStructuredNodes && fallbackBlocks.length === 0;
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
@@ -751,30 +847,65 @@ export const MessageBubble = memo(function MessageBubble({
                         ) : null}
                         <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
                             {hasStructuredNodes ? (
-                                renderableNodes.map((node, index) => (
-                                    <NodeRenderBoundary
-                                        key={node.id || `${messageIdentity}:node:${index}`}
-                                        title={t("src.components.chat.messagebubble.node_render_failed")}
-                                        description={t("src.components.chat.messagebubble.this_node_has_been_downgraded_so_the_rest_of_the_reply_remains_visible")}
-                                        borderColor={palette.border}
-                                        backgroundColor={palette.surface}
-                                        titleColor={palette.text}
-                                        textColor={palette.textMuted}
-                                    >
-                                        <ContentDispatcher
-                                            node={node}
-                                            messageIdentity={`${messageIdentity}:node:${index}`}
-                                            isExecuting={assistantActive}
-                                            isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
-                                            speakingKey={speakingKey}
-                                            onSpeakVoice={onSpeakVoice}
-                                            processes={processes}
-                                            resultNode={hasToolCallId(node) && node.executionType === "tool_call"
-                                                ? resultNodesByToolCallId.get(node.toolCallId.trim())
-                                                : undefined}
-                                        />
-                                    </NodeRenderBoundary>
-                                ))
+                                timelineSegments.map((segment, index) => {
+                                    if (segment.kind === "trace_group") {
+                                        const expanded = expandedTraceGroups[segment.id];
+                                        return (
+                                            <TraceGroup
+                                                key={segment.id}
+                                                id={segment.id}
+                                                nodes={segment.nodes as PhoneUiTimelineNode[]}
+                                                collapsedByDefault={segment.collapsedByDefault}
+                                                messageIdentity={messageIdentity}
+                                                assistantActive={assistantActive}
+                                                streamPhase={streamPhase}
+                                                speakingKey={speakingKey}
+                                                onSpeakVoice={onSpeakVoice}
+                                                processes={processes}
+                                                resultNodesByToolCallId={resultNodesByToolCallId}
+                                                borderColor={palette.border}
+                                                backgroundColor={palette.surface}
+                                                titleColor={palette.text}
+                                                textColor={palette.textMuted}
+                                                expanded={expanded}
+                                                onToggle={() => setExpandedTraceGroups((current) => ({
+                                                    ...current,
+                                                    [segment.id]: !(expanded ?? !segment.collapsedByDefault),
+                                                }))}
+                                                label={expanded ?? !segment.collapsedByDefault
+                                                    ? t("src.components.chat.messagebubble.collapse_trace_group")
+                                                    : t("src.components.chat.messagebubble.expand_trace_group")}
+                                                fallbackTitle={t("src.components.chat.messagebubble.node_render_failed")}
+                                                fallbackDescription={t("src.components.chat.messagebubble.this_node_has_been_downgraded_so_the_rest_of_the_reply_remains_visible")}
+                                            />
+                                        );
+                                    }
+                                    const node = segment.node as PhoneUiTimelineNode;
+                                    return (
+                                        <NodeRenderBoundary
+                                            key={node.id || `${messageIdentity}:node:${index}`}
+                                            title={t("src.components.chat.messagebubble.node_render_failed")}
+                                            description={t("src.components.chat.messagebubble.this_node_has_been_downgraded_so_the_rest_of_the_reply_remains_visible")}
+                                            borderColor={palette.border}
+                                            backgroundColor={palette.surface}
+                                            titleColor={palette.text}
+                                            textColor={palette.textMuted}
+                                        >
+                                            <ContentDispatcher
+                                                node={node}
+                                                messageIdentity={`${messageIdentity}:node:${index}`}
+                                                isExecuting={assistantActive}
+                                                isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
+                                                speakingKey={speakingKey}
+                                                onSpeakVoice={onSpeakVoice}
+                                                processes={processes}
+                                                resultNode={hasToolCallId(node) && node.executionType === "tool_call"
+                                                    ? resultNodesByToolCallId.get(node.toolCallId.trim())
+                                                    : undefined}
+                                            />
+                                        </NodeRenderBoundary>
+                                    );
+                                })
                             ) : fallbackBlocks.length > 0 ? (
                                 fallbackBlocks.map((block, index) => {
                                     const voiceKey = block.type === "voice"
@@ -1073,6 +1204,33 @@ const styles = StyleSheet.create({
     assistantInnerVoiceOnly: {
         paddingTop: 18,
         paddingBottom: 20,
+    },
+    traceGroup: {
+        width: "100%",
+        gap: 6,
+        alignItems: "flex-start",
+    },
+    traceToggle: {
+        minWidth: 20,
+        height: 20,
+        borderRadius: 10,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 6,
+        opacity: 0.72,
+    },
+    traceToggleExpanded: {
+        opacity: 0.9,
+    },
+    traceToggleText: {
+        fontSize: 13,
+        lineHeight: 16,
+        fontWeight: "900",
+    },
+    traceGroupContent: {
+        width: "100%",
+        gap: 6,
     },
     assistantText: {
         fontSize: 14,

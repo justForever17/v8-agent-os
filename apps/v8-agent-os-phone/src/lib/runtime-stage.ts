@@ -561,7 +561,7 @@ export function buildPhoneRuntimeStageModel(
             : t("src.lib.runtime_stage.context_governance_updated_summary");
         const detailParts = [
             item.resolvedScope ? t("src.lib.runtime_stage.scope_detail", { scope: item.resolvedScope }) : null,
-            item.blockCount !== null ? t("src.lib.runtime_stage.blocks_detail", { count: item.blockCount }) : null,
+            typeof item.blockCount === "number" ? t("src.lib.runtime_stage.blocks_detail", { count: item.blockCount }) : null,
             item.durableFlushReason ? t("src.lib.runtime_stage.durable_detail", { reason: item.durableFlushReason }) : null,
             item.compactionApplied ? t("src.lib.runtime_stage.compaction_applied") : null,
             item.recallAudit?.rejectReason ? t("src.lib.runtime_stage.recall_detail", { reason: item.recallAudit.rejectReason }) : null,

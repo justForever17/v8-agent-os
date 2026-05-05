@@ -614,7 +614,10 @@ export default function ChatClient() {
     );
     const projectionContextReferences = sessionProjection?.contextReferences || [];
     const projectionContextGovernance = sessionProjection?.contextGovernance || null;
-    const projectionContextGovernanceHistory = sessionProjection?.contextGovernanceHistory || [];
+    const projectionContextGovernanceHistory = useMemo(
+        () => sessionProjection?.contextGovernanceHistory || [],
+        [sessionProjection?.contextGovernanceHistory],
+    );
     const projectionRuntimeTimeline = useMemo(
         () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
         [sessionProjection?.runtimeTimeline],
@@ -650,7 +653,9 @@ export default function ChatClient() {
         currentStepTitle: sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null,
         runtimeTimeline: projectionRuntimeTimeline,
         memoryInsight: projectionMemoryInsight,
-    }), [effectivePendingApproval, effectiveStatus, messages, projectionMemoryInsight, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
+        governanceDigest: projectionContextGovernance,
+        governanceHistory: projectionContextGovernanceHistory,
+    }), [effectivePendingApproval, effectiveStatus, messages, projectionContextGovernance, projectionContextGovernanceHistory, projectionMemoryInsight, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
     const historyPreview = useMemo(
         () => deriveHistoryPreview(messages, sessionProjection?.summary),
         [messages, sessionProjection?.summary],

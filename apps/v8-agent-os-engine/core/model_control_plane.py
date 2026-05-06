@@ -10,6 +10,7 @@ from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
+from core.reasoning_surface_contract import merge_reasoning_surface
 from core.storage import storage
 
 
@@ -605,6 +606,7 @@ class ModelControlPlane:
                     "isEnabled": bool(model_meta.get("isEnabled", True)),
                     "runtimeReady": provider_runtime_ready,
                     "capabilities": capabilities,
+                    "reasoningSurface": merge_reasoning_surface(meta.get("reasoningSurface"), model_meta.get("reasoningSurface")),
                     "capabilityClass": capability_class,
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
@@ -626,6 +628,7 @@ class ModelControlPlane:
                     "type": meta.get("type") or "API",
                     "icon": meta.get("icon") or None,
                     "logoAsset": meta.get("logoAsset") or None,
+                    "reasoningSurface": meta.get("reasoningSurface") or {},
                     "promptCachingProfileId": meta.get("promptCachingProfileId")
                     or meta.get("prompt_caching_profile_id")
                     or prompt_cache_profile_id_for_provider(str(provider_id)),
@@ -977,6 +980,7 @@ class ModelControlPlane:
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or "chat",
                     "mediaLimits": model_meta.get("mediaLimits") or {},
+                    "reasoningSurface": model_meta.get("reasoningSurface") or {},
                     "promptCachingProfileId": model_meta.get("promptCachingProfileId")
                     or provider_meta.get("promptCachingProfileId")
                     or prompt_cache_profile_id_for_provider(str(provider_id)),

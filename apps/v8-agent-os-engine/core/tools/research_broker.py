@@ -18,12 +18,15 @@ from langgraph.prebuilt import InjectedState
 
 from core.storage import storage
 from core.tools.research_ledger import (
+    archive_experience_pack,
+    delete_experience_pack,
     get_evidence_bundle,
     get_experience_pack,
     list_evidence_bundles,
     promote_experience_pack,
     research_ledger_summary,
-    search_experience_packs,
+    restore_experience_pack,
+    search_experience_packs_with_options,
     store_evidence_bundle,
 )
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope, classify_failure
@@ -732,6 +735,8 @@ def research_broker(
     tags: list[str] | str | None = None,
     minConfidence: str = "",
     limit: int = 20,
+    includeArchived: bool = False,
+    confirm: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
@@ -743,14 +748,25 @@ def research_broker(
     """
     config = _research_config()
     normalized_mode = _safe_text(mode).lower() or "plan"
-    supported_modes = {"plan", "run", "observe", "get_evidence", "search_experience", "get_experience", "promote_experience"}
+    supported_modes = {
+        "plan",
+        "run",
+        "observe",
+        "get_evidence",
+        "search_experience",
+        "get_experience",
+        "promote_experience",
+        "archive_experience",
+        "restore_experience",
+        "delete_experience",
+    }
     if normalized_mode not in supported_modes:
         return _render_payload(
             {
                 "ok": False,
                 "mode": normalized_mode,
                 "summary": f"Unsupported research_broker mode: {normalized_mode}",
-                "recommendedNextAction": "use plan, search_experience, get_experience, run, observe, get_evidence, or promote_experience",
+                "recommendedNextAction": "use plan, search_experience, get_experience, run, observe, get_evidence, promote_experience, archive_experience, restore_experience, or delete_experience",
             }
         )
     if not config["enabled"] and normalized_mode in {"plan", "run"}:
@@ -766,7 +782,7 @@ def research_broker(
     scope = _ledger_scope(state)
     if normalized_mode == "observe":
         items = list_evidence_bundles(scope=scope, limit=limit)
-        summary = research_ledger_summary(scope=scope)
+        summary = research_ledger_summary(scope=scope, include_archived=includeArchived)
         return _render_payload(
             {
                 "ok": True,
@@ -812,12 +828,13 @@ def research_broker(
                     "recommendedNextAction": "provide_query",
                 }
             )
-        packs = search_experience_packs(
+        packs = search_experience_packs_with_options(
             query=clean_query,
             scope=scope,
             tags=_as_list(tags),
             min_confidence=minConfidence,
             limit=limit,
+            include_archived=includeArchived,
         )
         return _render_payload(
             {
@@ -847,7 +864,7 @@ def research_broker(
         )
 
     if normalized_mode == "get_experience":
-        pack = get_experience_pack(_safe_text(experiencePackId))
+        pack = get_experience_pack(_safe_text(experiencePackId), include_archived=includeArchived)
         return _render_payload(
             {
                 "ok": bool(pack),
@@ -859,6 +876,48 @@ def research_broker(
                 "recommendedNextAction": "reuse_experience" if pack else "search_experience_then_run",
             },
             max_chars=8000,
+        )
+
+    if normalized_mode == "archive_experience":
+        pack = archive_experience_pack(_safe_text(experiencePackId), initiated_by="research_broker")
+        return _render_payload(
+            {
+                "ok": bool(pack),
+                "mode": normalized_mode,
+                "kind": "research_experience_archive",
+                "summary": "Experience pack archived." if pack else "Experience pack not found.",
+                **({"item": pack} if pack else {}),
+                "recommendedNextAction": "search_experience",
+            },
+            max_chars=8000,
+        )
+
+    if normalized_mode == "restore_experience":
+        pack = restore_experience_pack(_safe_text(experiencePackId), initiated_by="research_broker")
+        return _render_payload(
+            {
+                "ok": bool(pack),
+                "mode": normalized_mode,
+                "kind": "research_experience_restore",
+                "summary": "Experience pack restored." if pack else "Experience pack not found.",
+                **({"item": pack} if pack else {}),
+                "recommendedNextAction": "get_experience" if pack else "search_experience",
+            },
+            max_chars=8000,
+        )
+
+    if normalized_mode == "delete_experience":
+        deleted = delete_experience_pack(_safe_text(experiencePackId), confirm=confirm)
+        return _render_payload(
+            {
+                "ok": bool(deleted),
+                "mode": normalized_mode,
+                "kind": "research_experience_delete",
+                "summary": "Experience pack permanently deleted." if deleted else "Experience pack not deleted. Set confirm=true and provide an existing experiencePackId.",
+                "experiencePackId": _safe_text(experiencePackId),
+                "recommendedNextAction": "search_experience",
+            },
+            max_chars=4000,
         )
 
     if normalized_mode == "promote_experience":

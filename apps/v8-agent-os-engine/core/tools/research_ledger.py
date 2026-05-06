@@ -209,6 +209,8 @@ def search_experience_packs(*, query: str, scope: str = "global", tags: list[str
         for item in payload["experiencePacks"]:
             if not isinstance(item, dict) or not _scope_matches(item, scope):
                 continue
+            if _safe_text(item.get("status")).lower() == "archived":
+                continue
             if min_rank and confidence_rank.get(_safe_text(item.get("confidence")).lower(), 0) < min_rank:
                 continue
             item_tags = {str(tag).strip().lower() for tag in _as_list(item.get("tags")) if str(tag).strip()}
@@ -234,13 +236,61 @@ def search_experience_packs(*, query: str, scope: str = "global", tags: list[str
     return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
 
 
-def get_experience_pack(experience_pack_id: str) -> dict[str, Any] | None:
+def search_experience_packs_with_options(
+    *,
+    query: str,
+    scope: str = "global",
+    tags: list[str] | None = None,
+    min_confidence: str = "",
+    limit: int = 10,
+    include_archived: bool = False,
+) -> list[dict[str, Any]]:
+    if not include_archived:
+        return search_experience_packs(query=query, scope=scope, tags=tags, min_confidence=min_confidence, limit=limit)
+    q_tokens = _question_tokens(query)
+    tag_set = {str(item).strip().lower() for item in list(tags or []) if str(item).strip()}
+    confidence_rank = {"low": 1, "medium": 2, "high": 3}
+    min_rank = confidence_rank.get(_safe_text(min_confidence).lower(), 0)
+    scored: list[tuple[int, dict[str, Any]]] = []
+    with _LOCK:
+        payload = _read_store()
+        for item in payload["experiencePacks"]:
+            if not isinstance(item, dict) or not _scope_matches(item, scope):
+                continue
+            if min_rank and confidence_rank.get(_safe_text(item.get("confidence")).lower(), 0) < min_rank:
+                continue
+            item_tags = {str(tag).strip().lower() for tag in _as_list(item.get("tags")) if str(tag).strip()}
+            if tag_set and not tag_set.intersection(item_tags):
+                continue
+            haystack = " ".join(
+                [
+                    _safe_text(item.get("title")),
+                    _safe_text(item.get("query")),
+                    _safe_text(item.get("summary")),
+                    _safe_text(item.get("applicability")),
+                    " ".join(_safe_text(src.get("host")) for src in _as_list(item.get("sourceMatrixDigest")) if isinstance(src, dict)),
+                    " ".join(item_tags),
+                ]
+            ).lower()
+            tokens = _question_tokens(haystack)
+            overlap = len(q_tokens.intersection(tokens)) if q_tokens else 0
+            score = overlap * 10 + int(float(item.get("authorityScore") or 0) / 10) + int(item.get("usageCount") or 0)
+            if q_tokens and overlap == 0:
+                continue
+            scored.append((score, _visible(item)))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
+
+
+def get_experience_pack(experience_pack_id: str, *, include_archived: bool = False) -> dict[str, Any] | None:
     with _LOCK:
         payload = _read_store()
         target = _safe_text(experience_pack_id)
         changed = False
         for item in payload["experiencePacks"]:
             if _safe_text(item.get("experiencePackId")) == target:
+                if _safe_text(item.get("status")).lower() == "archived" and not include_archived:
+                    return None
                 item["usageCount"] = int(item.get("usageCount") or 0) + 1
                 item["lastUsedAt"] = _utc_now_iso()
                 changed = True
@@ -269,16 +319,72 @@ def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: l
         return _visible(candidate)
 
 
-def list_experience_packs(*, scope: str = "global", limit: int = 50) -> list[dict[str, Any]]:
+def archive_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin", reason: str = "") -> dict[str, Any] | None:
     with _LOCK:
         payload = _read_store()
-        items = [_visible(item) for item in payload["experiencePacks"] if isinstance(item, dict) and _scope_matches(item, scope)]
+        target = _safe_text(experience_pack_id)
+        now = _utc_now_iso()
+        for item in payload["experiencePacks"]:
+            if _safe_text(item.get("experiencePackId")) == target:
+                item["status"] = "archived"
+                item["archivedAt"] = now
+                item["archivedBy"] = _safe_text(initiated_by) or "admin"
+                item["archiveReason"] = _safe_text(reason)
+                item["updatedAt"] = now
+                _write_store(payload)
+                return _visible(item)
+    return None
+
+
+def restore_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin") -> dict[str, Any] | None:
+    with _LOCK:
+        payload = _read_store()
+        target = _safe_text(experience_pack_id)
+        now = _utc_now_iso()
+        for item in payload["experiencePacks"]:
+            if _safe_text(item.get("experiencePackId")) == target:
+                item["status"] = "active" if _safe_text(item.get("status")).lower() == "archived" else (_safe_text(item.get("status")) or "active")
+                item["restoredAt"] = now
+                item["restoredBy"] = _safe_text(initiated_by) or "admin"
+                item["updatedAt"] = now
+                _write_store(payload)
+                return _visible(item)
+    return None
+
+
+def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False) -> bool:
+    if not confirm:
+        return False
+    with _LOCK:
+        payload = _read_store()
+        target = _safe_text(experience_pack_id)
+        before = len(payload["experiencePacks"])
+        payload["experiencePacks"] = [
+            item for item in payload["experiencePacks"]
+            if not (isinstance(item, dict) and _safe_text(item.get("experiencePackId")) == target)
+        ]
+        changed = len(payload["experiencePacks"]) != before
+        if changed:
+            _write_store(payload)
+        return changed
+
+
+def list_experience_packs(*, scope: str = "global", limit: int = 50, include_archived: bool = False) -> list[dict[str, Any]]:
+    with _LOCK:
+        payload = _read_store()
+        items = [
+            _visible(item)
+            for item in payload["experiencePacks"]
+            if isinstance(item, dict)
+            and _scope_matches(item, scope)
+            and (include_archived or _safe_text(item.get("status")).lower() != "archived")
+        ]
         return items[: max(1, min(int(limit or 50), 200))]
 
 
-def research_ledger_summary(*, scope: str = "global") -> dict[str, Any]:
+def research_ledger_summary(*, scope: str = "global", include_archived: bool = False) -> dict[str, Any]:
     bundles = list_evidence_bundles(scope=scope, limit=200)
-    packs = list_experience_packs(scope=scope, limit=200)
+    packs = list_experience_packs(scope=scope, limit=200, include_archived=include_archived)
     timeline = [
         {
             "at": item.get("createdAt"),

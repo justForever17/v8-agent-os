@@ -67,6 +67,23 @@ export type ProjectSummary = {
     updatedAt?: string;
 };
 
+export type WorkspaceFolderNode = {
+    root?: boolean;
+    path: string;
+    name: string;
+    children?: WorkspaceFolderNode[];
+    hasMore?: boolean;
+    cursor?: string;
+    canSelect?: boolean;
+    canCreate?: boolean;
+};
+
+export type WorkspaceFolderTreeResponse = {
+    platform?: string;
+    roots?: WorkspaceFolderNode[];
+    root?: WorkspaceFolderNode;
+};
+
 export type ScopeBindingView = {
     projectId?: string;
     workspaceId?: string;
@@ -170,6 +187,7 @@ export type PhoneUiExecutionNode = PhoneUiTimelineNodeBase & {
     kind: "execution";
     executionType: "reasoning" | "tool_call" | "tool_result" | "runtime_progress" | "agent_start";
     content?: string;
+    reasoningKind?: string;
     time?: number;
     startTime?: number;
     toolCallId?: string;

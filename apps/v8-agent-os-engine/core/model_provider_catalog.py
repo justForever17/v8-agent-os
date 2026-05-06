@@ -13,6 +13,7 @@ from core.model_capability_registry import model_capability_registry
 from core.media_model_capability_registry import media_model_capability_registry
 from core.model_ref import make_model_ref
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
+from core.reasoning_surface_contract import merge_reasoning_surface
 
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "model_catalog" / "provider_catalog.json"
@@ -1007,6 +1008,10 @@ class ModelProviderCatalog:
             if media_registry
             else {}
         )
+        reasoning_surface = merge_reasoning_surface(
+            provider.get("reasoningSurface"),
+            model.get("reasoningSurface") or (registry_entry or {}).get("reasoningSurface"),
+        )
         return {
             "id": model_id,
             "modelId": model_id,
@@ -1018,6 +1023,7 @@ class ModelProviderCatalog:
             "contextWindow": context_window,
             "maxTokens": max_tokens,
             "capabilities": capability_map,
+            "reasoningSurface": reasoning_surface,
             "capabilityTags": sorted(capability_tags),
             "capabilitySource": capability_source,
             "capabilityRegistryMatched": bool(registry_entry or media_registry),

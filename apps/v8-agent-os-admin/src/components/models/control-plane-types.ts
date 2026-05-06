@@ -45,6 +45,13 @@ export type ControlPlaneModel = {
     driftWarnings?: Array<Record<string, unknown>>;
     parameterProfile?: string | null;
     mediaLimits?: Record<string, unknown>;
+    reasoningSurface?: {
+        mode?: string;
+        trust?: string;
+        requestStyle?: string;
+        displayKind?: string;
+        responseFields?: string[];
+    } | null;
     isEnabled: boolean;
     capabilities: ModelCapabilities;
     capabilityTags: string[];

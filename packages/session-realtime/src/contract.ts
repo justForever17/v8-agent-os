@@ -242,6 +242,7 @@ export type NormalizedSessionRuntimeEvent = {
   status?: string;
   actorLabel?: string;
   content?: string;
+  reasoningKind?: "raw_thinking" | "summary" | "provider_reasoning" | "hidden" | string;
   error?: string;
   tool?: {
     toolCallId?: string;

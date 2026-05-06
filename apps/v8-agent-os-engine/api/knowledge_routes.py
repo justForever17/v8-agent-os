@@ -1,5 +1,9 @@
 import asyncio
 import json
+import os
+import platform
+import re
+import string
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -803,6 +807,180 @@ async def list_projects():
             "mainWorkspacePath": workspace_resolution_service.get_main_workspace_path(),
             "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in project_registry_service.list_projects()],
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _folder_display_name(path: Path) -> str:
+    raw = str(path)
+    name = path.name
+    if name:
+        return name
+    return raw.rstrip("\\/") or raw
+
+
+def _safe_resolve_folder(value: str) -> Path:
+    raw = str(value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="path_required")
+    return Path(raw).expanduser().resolve(strict=False)
+
+
+def _can_create_in_folder(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_dir() and os.access(path, os.W_OK)
+    except Exception:
+        return False
+
+
+def _folder_node(
+    path: Path,
+    *,
+    root: bool = False,
+    children: list[dict] | None = None,
+    has_more: bool = False,
+    cursor: str | None = None,
+) -> dict:
+    node = {
+        "root": root,
+        "path": str(path),
+        "name": _folder_display_name(path),
+        "children": children or [],
+        "hasMore": has_more,
+        "canSelect": True,
+        "canCreate": _can_create_in_folder(path),
+    }
+    if cursor:
+        node["cursor"] = cursor
+    return node
+
+
+def _common_folder_roots() -> list[Path]:
+    candidates: list[Path] = []
+    main_workspace = workspace_resolution_service.get_main_workspace_path()
+    if main_workspace:
+        candidates.append(Path(main_workspace).expanduser())
+    home = Path.home()
+    candidates.append(home)
+    current_platform = platform.system().lower()
+    if current_platform == "windows":
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            if drive.exists():
+                candidates.append(drive)
+    elif current_platform == "darwin":
+        candidates.extend([Path("/Users"), Path("/Volumes"), Path("/")])
+    else:
+        candidates.extend([Path("/home"), Path("/mnt"), Path("/media"), Path("/")])
+
+    seen: set[str] = set()
+    roots: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve(strict=False)
+        except Exception:
+            continue
+        key = str(resolved).lower() if platform.system().lower() == "windows" else str(resolved)
+        if key in seen or not resolved.exists() or not resolved.is_dir():
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+def _list_child_folders(path: Path, *, max_children: int, cursor: int = 0) -> tuple[list[dict], bool, str | None]:
+    children: list[Path] = []
+    try:
+        for child in path.iterdir():
+            try:
+                if child.is_dir():
+                    children.append(child)
+            except Exception:
+                continue
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=f"directory_unreadable: {exc}")
+    children.sort(key=lambda item: item.name.lower())
+    start = max(0, int(cursor or 0))
+    bounded = children[start:start + max_children]
+    next_offset = start + len(bounded)
+    has_more = next_offset < len(children)
+    return [_folder_node(child) for child in bounded], has_more, str(next_offset) if has_more else None
+
+
+def _build_folder_tree(path: Path, *, max_depth: int, max_children: int, cursor: int = 0) -> dict:
+    if not path.exists() or not path.is_dir():
+        raise HTTPException(status_code=404, detail="directory_not_found")
+    children, has_more, next_cursor = _list_child_folders(path, max_children=max_children, cursor=cursor)
+    if max_depth > 1:
+        next_children: list[dict] = []
+        for child in children:
+            child_path = Path(str(child.get("path") or ""))
+            try:
+                nested_children, nested_has_more, nested_cursor = _list_child_folders(child_path, max_children=max_children)
+                nested_patch = {**child, "children": nested_children, "hasMore": nested_has_more}
+                if nested_cursor:
+                    nested_patch["cursor"] = nested_cursor
+                next_children.append(nested_patch)
+            except HTTPException:
+                next_children.append(child)
+        children = next_children
+    return _folder_node(path, root=True, children=children, has_more=has_more, cursor=next_cursor)
+
+
+@router.get("/workspace/folders")
+async def list_workspace_folders(
+    path: str = Query("", alias="path"),
+    max_depth: int = Query(1, alias="maxDepth"),
+    max_children: int = Query(80, alias="maxChildren"),
+    cursor: str = Query("", alias="cursor"),
+):
+    try:
+        bounded_depth = max(0, min(int(max_depth or 1), 2))
+        bounded_children = max(1, min(int(max_children or 80), 120))
+        cursor_offset = max(0, int(str(cursor or "0").strip() or "0"))
+        if str(path or "").strip():
+            root_path = _safe_resolve_folder(path)
+            return {
+                "platform": platform.system().lower() or "unknown",
+                "root": _build_folder_tree(root_path, max_depth=bounded_depth, max_children=bounded_children, cursor=cursor_offset),
+            }
+        return {
+            "platform": platform.system().lower() or "unknown",
+            "roots": [_folder_node(root, root=True) for root in _common_folder_roots()],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/workspace/folders")
+async def create_workspace_folder(payload: dict = Body(...)):
+    try:
+        parent = _safe_resolve_folder(str(payload.get("parentPath") or payload.get("path") or ""))
+        folder_name = str(payload.get("folderName") or payload.get("name") or "").strip()
+        if not folder_name:
+            raise HTTPException(status_code=400, detail="folder_name_required")
+        if re.search(r"[\\/:*?\"<>|\x00-\x1F]", folder_name):
+            raise HTTPException(status_code=400, detail="folder_name_invalid")
+        if not parent.exists() or not parent.is_dir():
+            raise HTTPException(status_code=404, detail="parent_directory_not_found")
+        target = (parent / folder_name).resolve(strict=False)
+        try:
+            target.relative_to(parent.resolve(strict=False))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="folder_path_escape")
+        target.mkdir(parents=False, exist_ok=False)
+        return {
+            "platform": platform.system().lower() or "unknown",
+            "folder": _folder_node(target, root=True),
+        }
+    except HTTPException:
+        raise
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="folder_already_exists")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=f"permission_denied: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

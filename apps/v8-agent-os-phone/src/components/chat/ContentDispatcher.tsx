@@ -308,11 +308,15 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         const executionNode = node as PhoneUiExecutionNode;
 
         if (executionNode.executionType === "reasoning") {
+            const reasoningKind = String(executionNode.reasoningKind || executionNode.data?.reasoningKind || "").trim();
             const block: PhoneContentBlock = {
                 id: `${executionNode.id}-thinking`,
                 type: "thinking",
                 content: String(executionNode.content || ""),
-                data: executionNode.time ? { elapsedTime: executionNode.time } : undefined,
+                data: {
+                    ...(executionNode.time ? { elapsedTime: executionNode.time } : {}),
+                    ...(reasoningKind ? { reasoningKind } : {}),
+                },
             };
             return <MessageBlockItem block={block} />;
         }

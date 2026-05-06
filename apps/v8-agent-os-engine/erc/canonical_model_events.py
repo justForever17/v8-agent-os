@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from core.chat_output_extractor import extract_text_and_reasoning
+from core.reasoning_surface_contract import evaluate_reasoning_payload, normalize_reasoning_surface
 
 
 CanonicalModelEventType = Literal[
@@ -50,53 +51,6 @@ def _metadata_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "trusted"}
-
-
-def _iter_content_blocks(payload: Any):
-    if payload is None:
-        return []
-    content_blocks = getattr(payload, "content_blocks", None)
-    if content_blocks is None and isinstance(payload, dict):
-        content_blocks = payload.get("content_blocks")
-    if content_blocks is None:
-        content = getattr(payload, "content", None)
-        if content is None and isinstance(payload, dict):
-            content = payload.get("content")
-        content_blocks = content if isinstance(content, list) else None
-    if isinstance(content_blocks, list):
-        return content_blocks
-    return []
-
-
-def _payload_has_explicit_reasoning_block(payload: Any) -> bool:
-    for block in _iter_content_blocks(payload):
-        if not isinstance(block, dict):
-            block_type = str(getattr(block, "type", "") or "").strip().lower()
-        else:
-            block_type = str(block.get("type") or "").strip().lower()
-        if block_type in {"reasoning", "thinking", "reasoning_content"}:
-            return True
-    return False
-
-
-def _payload_has_trusted_reasoning_key(payload: Any) -> bool:
-    containers: list[Any] = [payload]
-    if isinstance(payload, dict):
-        containers.extend([payload.get("additional_kwargs"), payload.get("response_metadata"), payload.get("generation_info")])
-    else:
-        containers.extend(
-            [
-                getattr(payload, "additional_kwargs", None),
-                getattr(payload, "response_metadata", None),
-                getattr(payload, "generation_info", None),
-            ]
-        )
-    for container in containers:
-        if not isinstance(container, dict):
-            continue
-        if any(key in container for key in ("thinking_delta", "thinking")):
-            return True
-    return False
 
 
 _UNTRUSTED_REASONING_PROGRESS_PATTERNS = (
@@ -242,22 +196,30 @@ class LangChainCanonicalModelEventAdapter:
 
         return "assistant_root"
 
-    def _should_trust_reasoning_payload(self, event: dict[str, Any], payload: Any) -> bool:
+    def _reasoning_payload_decision(self, event: dict[str, Any], payload: Any, reasoning_surface: dict[str, Any] | None) -> dict[str, Any]:
+        surface = normalize_reasoning_surface(reasoning_surface)
+        decision = evaluate_reasoning_payload(surface, payload)
+        if decision.get("accepted"):
+            return decision
         metadata = event.get("metadata") if isinstance(event, dict) else None
         metadata = metadata if isinstance(metadata, dict) else {}
         tags = event.get("tags") if isinstance(event, dict) else None
         tags = tags if isinstance(tags, list) else []
-
-        if any(_metadata_truthy(metadata.get(key)) for key in ("v8_trusted_reasoning", "trusted_reasoning", "reasoning_trusted")):
-            return True
-        lowered_tags = {str(tag or "").strip().lower() for tag in tags}
-        if lowered_tags.intersection({"v8:trusted_reasoning", "trusted_reasoning", "reasoning:trusted"}):
-            return True
-        if _payload_has_explicit_reasoning_block(payload):
-            return True
-        if _payload_has_trusted_reasoning_key(payload):
-            return True
-        return False
+        if surface.get("mode") != "hidden" and (
+            any(_metadata_truthy(metadata.get(key)) for key in ("v8_trusted_reasoning", "trusted_reasoning", "reasoning_trusted"))
+            or {str(tag or "").strip().lower() for tag in tags}.intersection({"v8:trusted_reasoning", "trusted_reasoning", "reasoning:trusted"})
+        ):
+            return {
+                **decision,
+                "accepted": True,
+                "matchedField": decision.get("matchedField") or "metadata.trusted_reasoning",
+                "reasoningKind": {
+                    "typed_thinking": "raw_thinking",
+                    "reasoning_summary": "summary",
+                    "provider_reasoning": "provider_reasoning",
+                }.get(str(surface.get("mode") or ""), "hidden"),
+            }
+        return decision
 
     def normalize_chat_model_stream(
         self,
@@ -265,6 +227,7 @@ class LangChainCanonicalModelEventAdapter:
         *,
         text_snapshots: dict[str, str],
         reasoning_snapshots: dict[str, str],
+        reasoning_surface: dict[str, Any] | None = None,
     ) -> list[CanonicalModelEvent]:
         return self._normalize_chat_model_payload(
             event,
@@ -273,6 +236,7 @@ class LangChainCanonicalModelEventAdapter:
             reasoning_snapshots=reasoning_snapshots,
             terminal=False,
             suppress_reasoning=False,
+            reasoning_surface=reasoning_surface,
         )
 
     def normalize_chat_model_end(
@@ -283,6 +247,7 @@ class LangChainCanonicalModelEventAdapter:
         reasoning_snapshots: dict[str, str],
         suppress_reasoning: bool = False,
         emitted_text: str = "",
+        reasoning_surface: dict[str, Any] | None = None,
     ) -> list[CanonicalModelEvent]:
         return self._normalize_chat_model_payload(
             event,
@@ -292,6 +257,7 @@ class LangChainCanonicalModelEventAdapter:
             terminal=True,
             suppress_reasoning=suppress_reasoning,
             emitted_text=emitted_text,
+            reasoning_surface=reasoning_surface,
         )
 
     def _normalize_chat_model_payload(
@@ -304,6 +270,7 @@ class LangChainCanonicalModelEventAdapter:
         terminal: bool,
         suppress_reasoning: bool,
         emitted_text: str = "",
+        reasoning_surface: dict[str, Any] | None = None,
     ) -> list[CanonicalModelEvent]:
         scope = self.scope_for_event(event)
         run_id = str(event.get("parent_run_id") or event.get("run_id") or "").strip()
@@ -349,8 +316,8 @@ class LangChainCanonicalModelEventAdapter:
             suppress_reasoning = True
 
         if raw_reasoning and not suppress_reasoning:
-            reasoning_trusted = self._should_trust_reasoning_payload(event, payload)
-            if not reasoning_trusted:
+            reasoning_decision = self._reasoning_payload_decision(event, payload, reasoning_surface)
+            if not reasoning_decision.get("accepted"):
                 suppressed_delta, suppressed_snapshot = consume_canonical_stream_value(
                     reasoning_snapshots,
                     model_run_id,
@@ -368,8 +335,13 @@ class LangChainCanonicalModelEventAdapter:
                             snapshot=suppressed_snapshot,
                             diagnostics={
                                 "reasoningSuppressed": True,
-                                "reason": "untrusted_reasoning_payload",
-                                "surface": "hidden",
+                                "reason": "reasoning_surface_not_trusted",
+                                "surface": reasoning_decision.get("reasoningSurfaceMode") or "hidden",
+                                "reasoningKind": "hidden",
+                                "reasoningSurfaceMode": reasoning_decision.get("reasoningSurfaceMode") or "hidden",
+                                "reasoningSurfaceTrust": reasoning_decision.get("reasoningSurfaceTrust") or "unknown",
+                                "reasoningDisplayKind": reasoning_decision.get("reasoningDisplayKind") or "hidden",
+                                "matchedField": reasoning_decision.get("matchedField") or "",
                                 "looksLikeProgress": _looks_like_untrusted_reasoning_progress(raw_reasoning),
                             },
                         )
@@ -391,7 +363,15 @@ class LangChainCanonicalModelEventAdapter:
                         scope=scope,
                         delta=reasoning_delta,
                         snapshot=reasoning_snapshot,
-                        diagnostics={"trustedReasoning": True},
+                        diagnostics={
+                            "trustedReasoning": True,
+                            "reasoningKind": reasoning_decision.get("reasoningKind") or "provider_reasoning",
+                            "reasoningSurfaceMode": reasoning_decision.get("reasoningSurfaceMode"),
+                            "reasoningSurfaceTrust": reasoning_decision.get("reasoningSurfaceTrust"),
+                            "reasoningDisplayKind": reasoning_decision.get("reasoningDisplayKind"),
+                            "reasoningRequestStyle": reasoning_decision.get("reasoningRequestStyle"),
+                            "matchedField": reasoning_decision.get("matchedField"),
+                        },
                     )
                 )
 

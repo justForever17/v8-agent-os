@@ -6,7 +6,7 @@ function buildEnginePath(req: NextRequest) {
     const url = new URL(req.url);
     const view = url.searchParams.get("view") || "ledger";
     const params = new URLSearchParams();
-    for (const key of ["scope", "limit", "query", "minConfidence"]) {
+    for (const key of ["scope", "limit", "query", "minConfidence", "includeArchived"]) {
         const value = url.searchParams.get(key);
         if (value) params.set(key, value);
     }
@@ -33,7 +33,13 @@ export async function POST(req: NextRequest) {
         const unauthorized = await requireAdminIdentity(req);
         if (unauthorized) return unauthorized;
         const body = await req.json().catch(() => ({}));
-        const { response, data } = await proxyEngineJson("/research-runtime/experience/promote", {
+        const action = typeof body?.action === "string" ? body.action : "promote";
+        const path = action === "archive"
+            ? "/research-runtime/experience/archive"
+            : action === "restore"
+                ? "/research-runtime/experience/restore"
+                : "/research-runtime/experience/promote";
+        const { response, data } = await proxyEngineJson(path, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(body),
@@ -42,5 +48,23 @@ export async function POST(req: NextRequest) {
     } catch (error) {
         console.error("Failed to promote research experience:", error);
         return NextResponse.json({ ok: false, error: "research_runtime_promote_failed" }, { status: 500 });
+    }
+}
+
+export async function DELETE(req: NextRequest) {
+    try {
+        const unauthorized = await requireAdminIdentity(req);
+        if (unauthorized) return unauthorized;
+        const url = new URL(req.url);
+        const experiencePackId = url.searchParams.get("experiencePackId") || "";
+        const confirm = url.searchParams.get("confirm") === "true";
+        const { response, data } = await proxyEngineJson(
+            `/research-runtime/experience/${encodeURIComponent(experiencePackId)}?confirm=${confirm ? "true" : "false"}`,
+            { method: "DELETE" },
+        );
+        return NextResponse.json(data, { status: response.status });
+    } catch (error) {
+        console.error("Failed to delete research experience:", error);
+        return NextResponse.json({ ok: false, error: "research_runtime_delete_failed" }, { status: 500 });
     }
 }

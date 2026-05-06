@@ -15,10 +15,13 @@ from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
 from core.tools.research_ledger import (
+    archive_experience_pack,
+    delete_experience_pack,
     list_evidence_bundles,
     promote_experience_pack,
     research_ledger_summary,
-    search_experience_packs,
+    restore_experience_pack,
+    search_experience_packs_with_options,
 )
 from runtimes.extensions.mcp.client import mcp_manager
 
@@ -658,9 +661,9 @@ async def get_telemetry_overview(days: int = 1):
 
 
 @router.get("/research-runtime/ledger")
-async def get_research_runtime_ledger(scope: str = "global"):
+async def get_research_runtime_ledger(scope: str = "global", includeArchived: bool = False):
     try:
-        return research_ledger_summary(scope=scope or "global")
+        return research_ledger_summary(scope=scope or "global", include_archived=includeArchived)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -678,15 +681,62 @@ async def get_research_runtime_evidence(scope: str = "global", limit: int = 30):
 
 
 @router.get("/research-runtime/experience")
-async def get_research_runtime_experience(query: str = "", scope: str = "global", minConfidence: str = "", limit: int = 30):
+async def get_research_runtime_experience(query: str = "", scope: str = "global", minConfidence: str = "", limit: int = 30, includeArchived: bool = False):
     try:
-        items = search_experience_packs(
+        items = search_experience_packs_with_options(
             query=query,
             scope=scope or "global",
             min_confidence=minConfidence,
             limit=max(1, min(limit, 100)),
+            include_archived=includeArchived,
         )
         return {"ok": True, "scope": scope or "global", "query": query, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/research-runtime/experience/archive")
+async def archive_research_runtime_experience(data: dict = Body(...)):
+    try:
+        pack = archive_experience_pack(
+            str(data.get("experiencePackId") or "").strip(),
+            initiated_by=str(data.get("initiatedBy") or "admin").strip(),
+            reason=str(data.get("reason") or "").strip(),
+        )
+        if not pack:
+            raise HTTPException(status_code=404, detail="experience pack not found")
+        return {"ok": True, "item": pack}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/research-runtime/experience/restore")
+async def restore_research_runtime_experience(data: dict = Body(...)):
+    try:
+        pack = restore_experience_pack(
+            str(data.get("experiencePackId") or "").strip(),
+            initiated_by=str(data.get("initiatedBy") or "admin").strip(),
+        )
+        if not pack:
+            raise HTTPException(status_code=404, detail="experience pack not found")
+        return {"ok": True, "item": pack}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/research-runtime/experience/{experience_pack_id}")
+async def delete_research_runtime_experience(experience_pack_id: str, confirm: bool = False):
+    try:
+        deleted = delete_experience_pack(experience_pack_id, confirm=confirm)
+        if not deleted:
+            raise HTTPException(status_code=404 if confirm else 400, detail="experience pack not deleted")
+        return {"ok": True, "deleted": True, "experiencePackId": experience_pack_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

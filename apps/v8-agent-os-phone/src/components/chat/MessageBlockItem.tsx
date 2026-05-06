@@ -592,6 +592,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                 content={block.content}
                 isStreaming={resolvedStreaming}
                 elapsedTime={typeof block.data?.elapsedTime === "number" ? block.data.elapsedTime : undefined}
+                reasoningKind={typeof block.data?.reasoningKind === "string" ? block.data.reasoningKind : undefined}
                 data={{
                     startTime: typeof block.data?.startTime === "number" ? block.data.startTime : undefined,
                     endTime: typeof block.data?.endTime === "number" ? block.data.endTime : undefined,

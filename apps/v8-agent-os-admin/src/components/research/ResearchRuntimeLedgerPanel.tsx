@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Archive, GitBranch, RefreshCw, Search } from "lucide-react";
+import { Archive, GitBranch, RefreshCw, RotateCcw, Search, Trash2 } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 
 type EvidenceBundle = {
@@ -26,6 +27,7 @@ type ExperiencePack = {
     authorityScore?: number;
     usageCount?: number;
     lastUsedAt?: string | null;
+    archivedAt?: string | null;
     sourceMatrixDigest?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
 };
 
@@ -43,11 +45,39 @@ function confidenceTone(confidence?: string) {
     return "bg-slate-50 text-slate-600 border-slate-200";
 }
 
+function normalizeStatus(value?: string) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "active" || normalized === "draft" || normalized === "archived") return normalized;
+    return "unknown";
+}
+
+function normalizeErrorCode(value?: string) {
+    const normalized = String(value || "").trim();
+    const lowered = normalized.toLowerCase();
+    if (!normalized) return "unknown";
+    if (lowered.includes("experience pack not found")) return "experience_pack_not_found";
+    if (lowered.includes("evidence bundle not found")) return "evidence_bundle_not_found";
+    if (
+        [
+            "research_runtime_load_failed",
+            "research_runtime_search_failed",
+            "research_runtime_promote_failed",
+            "research_runtime_archive_failed",
+            "research_runtime_restore_failed",
+            "research_runtime_delete_failed",
+        ].includes(lowered)
+    ) {
+        return lowered;
+    }
+    return "unknown";
+}
+
 export function ResearchRuntimeLedgerPanel() {
     const t = useT();
     const [data, setData] = useState<LedgerPayload | null>(null);
     const [query, setQuery] = useState("");
     const [packs, setPacks] = useState<ExperiencePack[]>([]);
+    const [includeArchived, setIncludeArchived] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
@@ -59,7 +89,9 @@ export function ResearchRuntimeLedgerPanel() {
         setLoading(true);
         setError("");
         try {
-            const response = await fetch("/api/research-runtime?view=ledger&scope=global&limit=30", { cache: "no-store" });
+            const params = new URLSearchParams({ view: "ledger", scope: "global", limit: "30" });
+            if (includeArchived) params.set("includeArchived", "true");
+            const response = await fetch(`/api/research-runtime?${params.toString()}`, { cache: "no-store" });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_load_failed");
             setData(payload);
@@ -68,7 +100,7 @@ export function ResearchRuntimeLedgerPanel() {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [includeArchived]);
 
     const searchPacks = useCallback(async () => {
         setLoading(true);
@@ -76,6 +108,7 @@ export function ResearchRuntimeLedgerPanel() {
         try {
             const params = new URLSearchParams({ view: "experience", scope: "global", limit: "30" });
             if (query.trim()) params.set("query", query.trim());
+            if (includeArchived) params.set("includeArchived", "true");
             const response = await fetch(`/api/research-runtime?${params.toString()}`, { cache: "no-store" });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_search_failed");
@@ -85,7 +118,7 @@ export function ResearchRuntimeLedgerPanel() {
         } finally {
             setLoading(false);
         }
-    }, [query]);
+    }, [includeArchived, query]);
 
     const promote = useCallback(
         async (bundleId?: string) => {
@@ -111,6 +144,54 @@ export function ResearchRuntimeLedgerPanel() {
         [refresh, searchPacks],
     );
 
+    const mutatePack = useCallback(
+        async (action: "archive" | "restore", packId?: string) => {
+            if (!packId) return;
+            setLoading(true);
+            setError("");
+            try {
+                const response = await fetch("/api/research-runtime", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ action, experiencePackId: packId, initiatedBy: "admin_research_runtime" }),
+                });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload?.detail || payload?.error || `research_runtime_${action}_failed`);
+                await refresh();
+                await searchPacks();
+            } catch (err) {
+                setError(err instanceof Error ? err.message : `research_runtime_${action}_failed`);
+            } finally {
+                setLoading(false);
+            }
+        },
+        [refresh, searchPacks],
+    );
+
+    const hardDeletePack = useCallback(
+        async (pack: ExperiencePack) => {
+            const packId = String(pack.experiencePackId || "").trim();
+            if (!packId) return;
+            const label = pack.title || packId;
+            if (!window.confirm(t("app.admin.dashboard.research.runtime.ledger.deleteConfirm", { label }))) return;
+            setLoading(true);
+            setError("");
+            try {
+                const params = new URLSearchParams({ experiencePackId: packId, confirm: "true" });
+                const response = await fetch(`/api/research-runtime?${params.toString()}`, { method: "DELETE" });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_delete_failed");
+                await refresh();
+                await searchPacks();
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "research_runtime_delete_failed");
+            } finally {
+                setLoading(false);
+            }
+        },
+        [refresh, searchPacks, t],
+    );
+
     useEffect(() => {
         void refresh();
     }, [refresh]);
@@ -132,7 +213,12 @@ export function ResearchRuntimeLedgerPanel() {
                 </Button>
             </CardHeader>
             <CardContent className="space-y-5">
-                {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+                {error ? (
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                        {t(`app.admin.dashboard.research.runtime.ledger.errors.${normalizeErrorCode(error)}`)}
+                        {normalizeErrorCode(error) === "unknown" ? <div className="mt-1 font-mono text-xs text-rose-600">{error}</div> : null}
+                    </div>
+                ) : null}
                 <div className="grid gap-3 md:grid-cols-3">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
                         <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.research.runtime.ledger.evidenceCount")}</div>
@@ -152,6 +238,13 @@ export function ResearchRuntimeLedgerPanel() {
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                         <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.research.runtime.ledger.experiencePacks")}</h3>
                         <div className="flex gap-2">
+                            <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 text-xs text-slate-600">
+                                <Checkbox checked={includeArchived} onCheckedChange={(value) => {
+                                    setIncludeArchived(Boolean(value));
+                                    setPacks([]);
+                                }} />
+                                {t("app.admin.dashboard.research.runtime.ledger.includeArchived")}
+                            </label>
                             <Input
                                 value={query}
                                 onChange={(event) => setQuery(event.target.value)}
@@ -173,13 +266,30 @@ export function ResearchRuntimeLedgerPanel() {
                                         <div className="mt-1 text-xs text-slate-500">{item.experiencePackId}</div>
                                     </div>
                                     <Badge variant="outline" className={confidenceTone(item.confidence)}>
-                                        {item.confidence || "unknown"}
+                                        {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}
                                     </Badge>
                                 </div>
                                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
                                     <span>{t("app.admin.dashboard.research.runtime.ledger.authority")}: {item.authorityScore ?? 0}</span>
                                     <span>{t("app.admin.dashboard.research.runtime.ledger.usage")}: {item.usageCount ?? 0}</span>
-                                    <span>{item.status || "draft"}</span>
+                                    <span>{t(`app.admin.dashboard.research.runtime.ledger.status.${normalizeStatus(item.status)}`)}</span>
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    {normalizeStatus(item.status) === "archived" ? (
+                                        <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("restore", item.experiencePackId)} disabled={loading}>
+                                            <RotateCcw className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.restore")}
+                                        </Button>
+                                    ) : (
+                                        <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("archive", item.experiencePackId)} disabled={loading}>
+                                            <Archive className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.archive")}
+                                        </Button>
+                                    )}
+                                    <Button type="button" variant="outline" size="sm" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => hardDeletePack(item)} disabled={loading}>
+                                        <Trash2 className="mr-2 h-4 w-4" />
+                                        {t("app.admin.dashboard.research.runtime.ledger.hardDelete")}
+                                    </Button>
                                 </div>
                             </div>
                         ))}
@@ -198,7 +308,7 @@ export function ResearchRuntimeLedgerPanel() {
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Badge variant="outline" className={confidenceTone(item.confidence)}>
-                                            {item.confidence || "unknown"}
+                                            {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}
                                         </Badge>
                                         <Button type="button" variant="outline" size="sm" onClick={() => promote(item.evidenceBundleId)} disabled={loading}>
                                             <Archive className="mr-2 h-4 w-4" />
@@ -220,7 +330,7 @@ export function ResearchRuntimeLedgerPanel() {
                                     <GitBranch className="mt-0.5 h-4 w-4 text-sky-600" />
                                     <div className="min-w-0">
                                         <div className="truncate font-medium text-slate-900">{item.question || item.evidenceBundleId}</div>
-                                        <div className="text-xs text-slate-500">{item.at} · {item.confidence || "unknown"} · {item.authorityScore ?? 0}</div>
+                                        <div className="text-xs text-slate-500">{item.at} · {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")} · {item.authorityScore ?? 0}</div>
                                     </div>
                                 </div>
                             ))}

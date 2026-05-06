@@ -19,6 +19,8 @@ import type {
     PhoneUser,
     ProfileUpdatePayload,
     ProjectSummary,
+    WorkspaceFolderNode,
+    WorkspaceFolderTreeResponse,
     ScopeBindingView,
     RegisterInput,
     RealtimeSessionSnapshot,
@@ -237,6 +239,41 @@ export async function createProject(authorizedFetch: AuthorizedFetch, input: Cre
             body: JSON.stringify(input),
         },
     );
+}
+
+export async function listWorkspaceFolders(
+    authorizedFetch: AuthorizedFetch,
+    input: { path?: string; maxDepth?: number; maxChildren?: number; cursor?: string } = {},
+) {
+    const params = new URLSearchParams();
+    if (input.path) params.set("path", input.path);
+    if (typeof input.maxDepth === "number") params.set("maxDepth", String(input.maxDepth));
+    if (typeof input.maxChildren === "number") params.set("maxChildren", String(input.maxChildren));
+    if (input.cursor) params.set("cursor", input.cursor);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return authorizedJson<WorkspaceFolderTreeResponse>(
+        authorizedFetch,
+        `/api/client/workspace/folders${suffix}`,
+        translateCurrent("src.lib.phone_api.workspace_folders"),
+        { cache: "no-store" },
+    );
+}
+
+export async function createWorkspaceFolder(
+    authorizedFetch: AuthorizedFetch,
+    input: { parentPath: string; folderName: string },
+) {
+    const payload = await authorizedJson<{ folder?: WorkspaceFolderNode }>(
+        authorizedFetch,
+        "/api/client/workspace/folders",
+        translateCurrent("src.lib.phone_api.workspace_folder_create"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+        },
+    );
+    return payload.folder || null;
 }
 
 export async function getSessionScope(authorizedFetch: AuthorizedFetch, sessionId: string) {

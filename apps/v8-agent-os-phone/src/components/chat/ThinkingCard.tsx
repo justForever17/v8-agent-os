@@ -8,6 +8,7 @@ import {
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
@@ -15,6 +16,7 @@ type ThinkingCardProps = {
     content: string;
     isStreaming?: boolean;
     elapsedTime?: number;
+    reasoningKind?: string;
     data?: {
         startTime?: number;
         endTime?: number;
@@ -25,6 +27,7 @@ export const ThinkingCard = memo(function ThinkingCard({
     content,
     isStreaming = false,
     elapsedTime,
+    reasoningKind,
     data,
 }: ThinkingCardProps) {
     const { colors, themeMode, t } = useUiPrefs();
@@ -111,6 +114,11 @@ export const ThinkingCard = memo(function ThinkingCard({
         if (ms < 1000) return `${ms}ms`;
         return `${(ms / 1000).toFixed(1)}s`;
     };
+    const normalizedReasoningKind = String(reasoningKind || "").trim().toLowerCase();
+    const title = normalizedReasoningKind.includes("summary")
+        ? t("src.components.chat.thinkingcard.reasoning_summary")
+        : t("src.components.chat.thinkingcard.reasoning");
+    const shouldFadeContent = content.length > 420;
 
     const wrapperBackground = isExpanded
         ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
@@ -155,7 +163,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                         </View>
 
                         <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
-                            {t("src.components.chat.thinkingcard.reasoning")}
+                            {title}
                         </Text>
 
                         {isStreaming ? (
@@ -191,6 +199,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                         <View
                             style={[
                                 styles.contentInner,
+                                shouldFadeContent ? styles.contentInnerTruncated : null,
                                 {
                                     backgroundColor: themeMode === "dark" ? "rgba(0,0,0,0.18)" : "rgba(15,23,42,0.04)",
                                     borderColor: themeMode === "dark" ? "rgba(255,255,255,0.06)" : "rgba(15,23,42,0.05)",
@@ -201,6 +210,15 @@ export const ThinkingCard = memo(function ThinkingCard({
                                 {content}
                             </Text>
                             {isStreaming ? <View style={[styles.cursor, { backgroundColor: colors.primary }]} /> : null}
+                            {shouldFadeContent ? (
+                                <LinearGradient
+                                    pointerEvents="none"
+                                    colors={themeMode === "dark"
+                                        ? ["rgba(15,23,42,0)", "rgba(15,23,42,0.92)"]
+                                        : ["rgba(255,255,255,0)", "rgba(248,250,252,0.96)"]}
+                                    style={styles.fadeOverlay}
+                                />
+                            ) : null}
                         </View>
                     </Animated.View>
                 ) : null}
@@ -279,6 +297,10 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         gap: 4,
     },
+    contentInnerTruncated: {
+        maxHeight: 148,
+        overflow: "hidden",
+    },
     contentText: {
         fontSize: 11,
         lineHeight: 15,
@@ -290,5 +312,14 @@ const styles = StyleSheet.create({
         height: 14,
         borderRadius: 3,
         marginBottom: 1,
+    },
+    fadeOverlay: {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: 34,
+        borderBottomLeftRadius: 10,
+        borderBottomRightRadius: 10,
     },
 });

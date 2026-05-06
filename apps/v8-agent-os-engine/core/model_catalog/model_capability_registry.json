@@ -42,8 +42,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 25.0,
-      "outputPricePerMillionTokens": 125.0,
+      "inputPricePerMillionTokens": 25,
+      "outputPricePerMillionTokens": 125,
       "sourceType": "Proprietary",
       "benchlmRank": 1,
       "overallScore": 99,
@@ -71,7 +71,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "typed_thinking",
+        "trust": "official",
+        "requestStyle": "anthropic_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "raw_thinking",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+        ],
+        "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+      }
     },
     {
       "displayName": "GPT-5.5",
@@ -101,8 +117,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 5.0,
-      "outputPricePerMillionTokens": 30.0,
+      "inputPricePerMillionTokens": 5,
+      "outputPricePerMillionTokens": 30,
       "sourceType": "Proprietary",
       "benchlmRank": 2,
       "overallScore": 93,
@@ -130,7 +146,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Gemini 3.1 Pro",
@@ -160,8 +192,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 2.0,
-      "outputPricePerMillionTokens": 12.0,
+      "inputPricePerMillionTokens": 2,
+      "outputPricePerMillionTokens": 12,
       "sourceType": "Proprietary",
       "benchlmRank": 3,
       "overallScore": 92,
@@ -217,8 +249,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 30.0,
-      "outputPricePerMillionTokens": 180.0,
+      "inputPricePerMillionTokens": 30,
+      "outputPricePerMillionTokens": 180,
       "sourceType": "Proprietary",
       "benchlmRank": 4,
       "overallScore": 91,
@@ -246,7 +278,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Claude Opus 4.7 (Adaptive)",
@@ -276,8 +324,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 5.0,
-      "outputPricePerMillionTokens": 25.0,
+      "inputPricePerMillionTokens": 5,
+      "outputPricePerMillionTokens": 25,
       "sourceType": "Proprietary",
       "benchlmRank": 5,
       "overallScore": 90,
@@ -448,7 +496,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 2.5,
-      "outputPricePerMillionTokens": 15.0,
+      "outputPricePerMillionTokens": 15,
       "sourceType": "Proprietary",
       "benchlmRank": 8,
       "overallScore": 89,
@@ -476,7 +524,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.3 Codex",
@@ -507,7 +571,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.75,
-      "outputPricePerMillionTokens": 14.0,
+      "outputPricePerMillionTokens": 14,
       "sourceType": "Proprietary",
       "benchlmRank": 9,
       "overallScore": 88,
@@ -535,7 +599,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Claude Opus 4.6",
@@ -565,8 +645,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 5.0,
-      "outputPricePerMillionTokens": 25.0,
+      "inputPricePerMillionTokens": 5,
+      "outputPricePerMillionTokens": 25,
       "sourceType": "Proprietary",
       "benchlmRank": 10,
       "overallScore": 87,
@@ -649,7 +729,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Kimi 2.6",
@@ -680,7 +769,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 0.95,
-      "outputPricePerMillionTokens": 4.0,
+      "outputPricePerMillionTokens": 4,
       "sourceType": "Proprietary",
       "benchlmRank": 12,
       "overallScore": 85,
@@ -708,7 +797,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Kimi reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Claude Sonnet 4.6",
@@ -738,8 +836,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 3.0,
-      "outputPricePerMillionTokens": 15.0,
+      "inputPricePerMillionTokens": 3,
+      "outputPricePerMillionTokens": 15,
       "sourceType": "Proprietary",
       "benchlmRank": 14,
       "overallScore": 83,
@@ -822,7 +920,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "GLM-5 (Reasoning)",
@@ -852,7 +959,7 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 1.0,
+      "inputPricePerMillionTokens": 1,
       "outputPricePerMillionTokens": 3.2,
       "sourceType": "Open Weight",
       "benchlmRank": 16,
@@ -883,7 +990,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "o1-preview",
@@ -912,8 +1028,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 15.0,
-      "outputPricePerMillionTokens": 60.0,
+      "inputPricePerMillionTokens": 15,
+      "outputPricePerMillionTokens": 60,
       "sourceType": "Proprietary",
       "benchlmRank": 17,
       "overallScore": 83,
@@ -941,7 +1057,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Gemini 3 Pro",
@@ -970,8 +1102,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 2.0,
-      "outputPricePerMillionTokens": 12.0,
+      "inputPricePerMillionTokens": 2,
+      "outputPricePerMillionTokens": 12,
       "sourceType": "Proprietary",
       "benchlmRank": 18,
       "overallScore": 81,
@@ -1028,7 +1160,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.75,
-      "outputPricePerMillionTokens": 14.0,
+      "outputPricePerMillionTokens": 14,
       "sourceType": "Proprietary",
       "benchlmRank": 19,
       "overallScore": 81,
@@ -1056,7 +1188,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Qwen3.5 397B (Reasoning)",
@@ -1144,7 +1292,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.25,
-      "outputPricePerMillionTokens": 10.0,
+      "outputPricePerMillionTokens": 10,
       "sourceType": "Proprietary",
       "benchlmRank": 21,
       "overallScore": 79,
@@ -1172,7 +1320,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5",
@@ -1203,7 +1367,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.25,
-      "outputPricePerMillionTokens": 10.0,
+      "outputPricePerMillionTokens": 10,
       "sourceType": "Proprietary",
       "benchlmRank": 22,
       "overallScore": 78,
@@ -1231,7 +1395,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.2-Codex",
@@ -1262,7 +1442,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.75,
-      "outputPricePerMillionTokens": 14.0,
+      "outputPricePerMillionTokens": 14,
       "sourceType": "Proprietary",
       "benchlmRank": 23,
       "overallScore": 78,
@@ -1290,7 +1470,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Claude Opus 4.5",
@@ -1320,8 +1516,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 5.0,
-      "outputPricePerMillionTokens": 25.0,
+      "inputPricePerMillionTokens": 5,
+      "outputPricePerMillionTokens": 25,
       "sourceType": "Proprietary",
       "benchlmRank": 24,
       "overallScore": 77,
@@ -1378,7 +1574,7 @@
       ],
       "isSiblingSku": true,
       "inputPricePerMillionTokens": 0.6,
-      "outputPricePerMillionTokens": 3.0,
+      "outputPricePerMillionTokens": 3,
       "sourceType": "Proprietary",
       "benchlmRank": 25,
       "overallScore": 77,
@@ -1461,7 +1657,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "GPT-5.1-Codex-Max",
@@ -1492,7 +1697,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.25,
-      "outputPricePerMillionTokens": 10.0,
+      "outputPricePerMillionTokens": 10,
       "sourceType": "Proprietary",
       "benchlmRank": 27,
       "overallScore": 77,
@@ -1520,7 +1725,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Qwen3.6 Plus",
@@ -1579,7 +1800,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Qwen3.6-27B",
@@ -1609,8 +1839,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 29,
       "overallScore": 74,
@@ -1638,7 +1868,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Grok 4.20",
@@ -1668,8 +1907,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 2.0,
-      "outputPricePerMillionTokens": 6.0,
+      "inputPricePerMillionTokens": 2,
+      "outputPricePerMillionTokens": 6,
       "sourceType": "Proprietary",
       "benchlmRank": 30,
       "overallScore": 73,
@@ -1697,7 +1936,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "GPT-5 (medium)",
@@ -1756,7 +2004,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "DeepSeek V4 Pro",
@@ -1813,7 +2077,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "DeepSeek V4 Flash (High)",
@@ -1890,8 +2163,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 34,
       "overallScore": 70,
@@ -1919,7 +2192,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Grok 4.1 Fast",
@@ -2037,7 +2319,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Qwen3.6-35B-A3B",
@@ -2089,7 +2380,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Claude Sonnet 4.5",
@@ -2119,8 +2419,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 3.0,
-      "outputPricePerMillionTokens": 15.0,
+      "inputPricePerMillionTokens": 3,
+      "outputPricePerMillionTokens": 15,
       "sourceType": "Proprietary",
       "benchlmRank": 38,
       "overallScore": 66,
@@ -2176,8 +2476,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 39,
       "overallScore": 65,
@@ -2205,7 +2505,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Gemini 3 Flash",
@@ -2235,7 +2544,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 0.5,
-      "outputPricePerMillionTokens": 3.0,
+      "outputPricePerMillionTokens": 3,
       "sourceType": "Proprietary",
       "benchlmRank": 40,
       "overallScore": 65,
@@ -2292,7 +2601,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.25,
-      "outputPricePerMillionTokens": 10.0,
+      "outputPricePerMillionTokens": 10,
       "sourceType": "Proprietary",
       "benchlmRank": 41,
       "overallScore": 65,
@@ -2405,7 +2714,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 0.6,
-      "outputPricePerMillionTokens": 3.0,
+      "outputPricePerMillionTokens": 3,
       "sourceType": "Proprietary",
       "benchlmRank": 43,
       "overallScore": 64,
@@ -2518,8 +2827,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 45,
       "overallScore": 63,
@@ -2547,7 +2856,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "MiniMax M2.7",
@@ -2688,8 +3006,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 48,
       "overallScore": 61,
@@ -2717,7 +3035,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "DeepSeek V4 Flash",
@@ -2793,8 +3120,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 20.0,
-      "outputPricePerMillionTokens": 80.0,
+      "inputPricePerMillionTokens": 20,
+      "outputPricePerMillionTokens": 80,
       "sourceType": "Proprietary",
       "benchlmRank": 50,
       "overallScore": 59,
@@ -2822,7 +3149,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "DeepSeek V3.2",
@@ -2909,8 +3252,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 2.0,
-      "outputPricePerMillionTokens": 8.0,
+      "inputPricePerMillionTokens": 2,
+      "outputPricePerMillionTokens": 8,
       "sourceType": "Proprietary",
       "benchlmRank": 52,
       "overallScore": 58,
@@ -2966,8 +3309,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 1.0,
-      "outputPricePerMillionTokens": 5.0,
+      "inputPricePerMillionTokens": 1,
+      "outputPricePerMillionTokens": 5,
       "sourceType": "Proprietary",
       "benchlmRank": 53,
       "overallScore": 58,
@@ -3021,8 +3364,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 2.0,
-      "outputPricePerMillionTokens": 8.0,
+      "inputPricePerMillionTokens": 2,
+      "outputPricePerMillionTokens": 8,
       "sourceType": "Proprietary",
       "benchlmRank": 54,
       "overallScore": 58,
@@ -3050,7 +3393,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "o1",
@@ -3078,8 +3437,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 15.0,
-      "outputPricePerMillionTokens": 60.0,
+      "inputPricePerMillionTokens": 15,
+      "outputPricePerMillionTokens": 60,
       "sourceType": "Proprietary",
       "benchlmRank": 55,
       "overallScore": 58,
@@ -3107,7 +3466,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Qwen3.5-35B-A3B",
@@ -3137,8 +3512,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 56,
       "overallScore": 57,
@@ -3166,7 +3541,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "o3-mini",
@@ -3224,7 +3608,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "DeepSeek LLM 2.0",
@@ -3254,8 +3654,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 58,
       "overallScore": 52,
@@ -3368,8 +3768,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 60,
       "overallScore": 52,
@@ -3425,8 +3825,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 15.0,
-      "outputPricePerMillionTokens": 75.0,
+      "inputPricePerMillionTokens": 15,
+      "outputPricePerMillionTokens": 75,
       "sourceType": "Proprietary",
       "benchlmRank": 61,
       "overallScore": 52,
@@ -3482,8 +3882,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 62,
       "overallScore": 51,
@@ -3538,8 +3938,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 63,
       "overallScore": 51,
@@ -3567,7 +3967,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Claude 4 Sonnet",
@@ -3596,8 +4005,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 3.0,
-      "outputPricePerMillionTokens": 15.0,
+      "inputPricePerMillionTokens": 3,
+      "outputPricePerMillionTokens": 15,
       "sourceType": "Proprietary",
       "benchlmRank": 64,
       "overallScore": 51,
@@ -3823,8 +4232,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 68,
       "overallScore": 47,
@@ -3879,8 +4288,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 69,
       "overallScore": 47,
@@ -3908,7 +4317,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "GPT-4.1 mini",
@@ -3994,8 +4412,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 71,
       "overallScore": 45,
@@ -4080,7 +4498,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Claude 4.1 Opus Thinking",
@@ -4167,7 +4601,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 2.5,
-      "outputPricePerMillionTokens": 10.0,
+      "outputPricePerMillionTokens": 10,
       "sourceType": "Proprietary",
       "benchlmRank": 74,
       "overallScore": 43,
@@ -4223,8 +4657,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 75,
       "overallScore": 42,
@@ -4334,8 +4768,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 3.0,
-      "outputPricePerMillionTokens": 15.0,
+      "inputPricePerMillionTokens": 3,
+      "outputPricePerMillionTokens": 15,
       "sourceType": "Proprietary",
       "benchlmRank": 77,
       "overallScore": 41,
@@ -4559,8 +4993,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 81,
       "overallScore": 39,
@@ -4586,7 +5020,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "DeepSeek",
@@ -4668,8 +5111,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 83,
       "overallScore": 36,
@@ -4726,7 +5169,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.25,
-      "outputPricePerMillionTokens": 5.0,
+      "outputPricePerMillionTokens": 5,
       "sourceType": "Proprietary",
       "benchlmRank": 84,
       "overallScore": 36,
@@ -4781,8 +5224,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 15.0,
-      "outputPricePerMillionTokens": 75.0,
+      "inputPricePerMillionTokens": 15,
+      "outputPricePerMillionTokens": 75,
       "sourceType": "Proprietary",
       "benchlmRank": 85,
       "overallScore": 35,
@@ -4866,7 +5309,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Qwen3 235B 2507",
@@ -4895,8 +5347,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 87,
       "overallScore": 34,
@@ -4951,8 +5403,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 88,
       "overallScore": 33,
@@ -5061,8 +5513,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 90,
       "overallScore": 31,
@@ -5117,8 +5569,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 150.0,
-      "outputPricePerMillionTokens": 600.0,
+      "inputPricePerMillionTokens": 150,
+      "outputPricePerMillionTokens": 600,
       "sourceType": "Proprietary",
       "benchlmRank": 91,
       "overallScore": 29,
@@ -5146,7 +5598,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GLM-4.5",
@@ -5232,8 +5700,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 93,
       "overallScore": 28,
@@ -5287,8 +5755,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 94,
       "overallScore": 27,
@@ -5401,8 +5869,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 96,
       "overallScore": 26,
@@ -5457,8 +5925,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 97,
       "overallScore": 26,
@@ -5512,8 +5980,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 10.0,
-      "outputPricePerMillionTokens": 30.0,
+      "inputPricePerMillionTokens": 10,
+      "outputPricePerMillionTokens": 30,
       "sourceType": "Proprietary",
       "benchlmRank": 98,
       "overallScore": 26,
@@ -5679,8 +6147,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 101,
       "overallScore": 24,
@@ -5790,8 +6258,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 103,
       "overallScore": 23,
@@ -5847,8 +6315,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 104,
       "overallScore": 23,
@@ -5900,8 +6368,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 105,
       "overallScore": 23,
@@ -6011,8 +6479,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 107,
       "overallScore": 23,
@@ -6039,7 +6507,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "GLM-4.5-Air",
@@ -6126,8 +6603,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 109,
       "overallScore": 18,
@@ -6182,8 +6659,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 110,
       "overallScore": 17,
@@ -6237,8 +6714,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 111,
       "overallScore": 17,
@@ -6293,8 +6770,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 112,
       "overallScore": 12,
@@ -6405,8 +6882,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 114,
       "overallScore": 5,
@@ -6458,8 +6935,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "benchlmRank": 115,
       "overallScore": 2,
@@ -6506,8 +6983,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -6542,8 +7019,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -6578,8 +7055,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -6770,8 +7247,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 5.0,
-      "outputPricePerMillionTokens": 25.0,
+      "inputPricePerMillionTokens": 5,
+      "outputPricePerMillionTokens": 25,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -6849,7 +7326,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "DNA 1.0 🇰🇷",
@@ -6903,8 +7389,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -6916,7 +7402,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "DeepSeek V4 Flash Base",
@@ -7006,7 +7501,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Exaone 4.0 🇰🇷",
@@ -7038,7 +7542,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "GLM-4.6",
@@ -7070,7 +7583,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "GLM-4.7-Flash",
@@ -7096,8 +7618,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7109,7 +7631,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "GLM-5",
@@ -7145,7 +7676,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "GLM-5-Turbo",
@@ -7163,7 +7703,7 @@
       ],
       "isPricingOnly": true,
       "inputPricePerMillionTokens": 1.2,
-      "outputPricePerMillionTokens": 4.0,
+      "outputPricePerMillionTokens": 4,
       "sourceType": "Proprietary",
       "contextWindowTokens": 200000,
       "capabilities": [
@@ -7201,7 +7741,7 @@
       ],
       "isSiblingSku": true,
       "inputPricePerMillionTokens": 1.2,
-      "outputPricePerMillionTokens": 4.0,
+      "outputPricePerMillionTokens": 4,
       "sourceType": "Proprietary",
       "maxOutputTokens": null,
       "releaseDate": null,
@@ -7215,7 +7755,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "GPT-5 mini",
@@ -7242,7 +7791,7 @@
       ],
       "isSiblingSku": true,
       "inputPricePerMillionTokens": 0.25,
-      "outputPricePerMillionTokens": 2.0,
+      "outputPricePerMillionTokens": 2,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -7254,7 +7803,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5 nano",
@@ -7293,7 +7858,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.1-Codex",
@@ -7325,7 +7906,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.2 Instant",
@@ -7352,7 +7949,7 @@
       ],
       "isSiblingSku": true,
       "inputPricePerMillionTokens": 1.5,
-      "outputPricePerMillionTokens": 6.0,
+      "outputPricePerMillionTokens": 6,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -7364,7 +7961,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.2 Pro",
@@ -7390,8 +8003,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 25.0,
-      "outputPricePerMillionTokens": 150.0,
+      "inputPricePerMillionTokens": 25,
+      "outputPricePerMillionTokens": 150,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -7403,7 +8016,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.3",
@@ -7430,7 +8059,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 1.75,
-      "outputPricePerMillionTokens": 14.0,
+      "outputPricePerMillionTokens": 14,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -7442,7 +8071,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.3-Codex-Spark",
@@ -7481,7 +8126,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.4 mini",
@@ -7520,7 +8181,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.4 nano",
@@ -7559,7 +8236,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "GPT-5.5 Pro",
@@ -7585,8 +8278,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 30.0,
-      "outputPricePerMillionTokens": 180.0,
+      "inputPricePerMillionTokens": 30,
+      "outputPricePerMillionTokens": 180,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -7598,7 +8291,23 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "displayName": "Gemma 4",
@@ -7623,8 +8332,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7636,7 +8345,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+      }
     },
     {
       "displayName": "Gemma 4 26B A4B",
@@ -7662,8 +8380,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7675,7 +8393,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+      }
     },
     {
       "displayName": "Gemma 4 E2B",
@@ -7701,8 +8428,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7714,7 +8441,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+      }
     },
     {
       "displayName": "Gemma 4 E4B",
@@ -7740,8 +8476,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7753,7 +8489,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+      }
     },
     {
       "displayName": "Granite 4.0 1B",
@@ -7779,8 +8524,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7817,8 +8562,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7883,8 +8628,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -7931,7 +8676,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Grok 4 Fast",
@@ -7963,7 +8717,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Grok 4.1 Fast (Reasoning)",
@@ -8032,7 +8795,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Holo2",
@@ -8283,7 +9055,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "HyperClova X 🇰🇷",
@@ -8314,7 +9095,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "K-Exaone 🇰🇷",
@@ -8345,7 +9135,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Kanana Essence",
@@ -8456,8 +9255,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -8492,8 +9291,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -8528,8 +9327,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -8564,8 +9363,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -8600,8 +9399,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -8639,8 +9438,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -8652,7 +9451,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Laguna XS.2",
@@ -8678,8 +9486,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -8691,7 +9499,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Leanstral",
@@ -8716,8 +9533,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -8729,7 +9546,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Ling 2.6",
@@ -8804,7 +9630,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "MiMo-V2-Omni",
@@ -8837,7 +9672,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "MiMo-V2-Pro",
@@ -8868,7 +9712,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "MiMo-V2.5",
@@ -8907,7 +9760,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "MiMo-V2.5-Pro",
@@ -8946,7 +9808,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "MiniMax M1 80k",
@@ -9263,7 +10134,7 @@
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 0.4,
-      "outputPricePerMillionTokens": 2.0,
+      "outputPricePerMillionTokens": 2,
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
@@ -9414,7 +10285,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Nemotron 3 Nano Omni",
@@ -9439,8 +10319,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -9454,7 +10334,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Nemotron 3 Super 120B A12B",
@@ -9479,8 +10368,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -9638,7 +10527,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Qwen2.5 Coder",
@@ -9664,8 +10562,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -9701,8 +10599,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -9744,7 +10642,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Qwen3.5 Flash",
@@ -9783,7 +10690,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Qwen3.5 Plus",
@@ -9822,7 +10738,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "displayName": "Sarvam 30B",
@@ -9847,8 +10772,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -9859,7 +10784,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Seed 1.6",
@@ -9898,7 +10832,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Seed 1.6 Flash",
@@ -9937,7 +10880,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Seed 2.0",
@@ -10042,7 +10994,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Step 3.5 Flash",
@@ -10104,8 +11065,8 @@
         }
       ],
       "isSiblingSku": false,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -10140,8 +11101,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -10176,8 +11137,8 @@
         }
       ],
       "isSiblingSku": true,
-      "inputPricePerMillionTokens": 0.0,
-      "outputPricePerMillionTokens": 0.0,
+      "inputPricePerMillionTokens": 0,
+      "outputPricePerMillionTokens": 0,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -10252,7 +11213,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Trinity-Large-Preview",
@@ -10279,7 +11249,7 @@
       ],
       "isSiblingSku": true,
       "inputPricePerMillionTokens": 0.25,
-      "outputPricePerMillionTokens": 1.0,
+      "outputPricePerMillionTokens": 1,
       "sourceType": "Open Weight",
       "capabilities": [
         "chat",
@@ -10291,7 +11261,16 @@
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "benchlm_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "displayName": "Varco 🇰🇷",

@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { useEffect, useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Animated, {
     Easing,
@@ -44,16 +44,40 @@ function toneForStatus(status: string, colors: ReturnType<typeof useUiPrefs>["co
                 stateLabel: "shared.runtime_status.waiting_input",
             };
         case "failed":
-        case "cancelled":
-        case "paused":
             return {
                 dot: colors.danger,
                 surface: "rgba(244,63,94,0.10)",
                 border: "rgba(244,63,94,0.18)",
                 stateLabel: "shared.runtime_status.failed",
             };
+        case "cancelled":
+            return {
+                dot: colors.danger,
+                surface: "rgba(244,63,94,0.10)",
+                border: "rgba(244,63,94,0.18)",
+                stateLabel: "shared.runtime_status.cancelled",
+            };
+        case "paused":
+            return {
+                dot: colors.danger,
+                surface: "rgba(244,63,94,0.10)",
+                border: "rgba(244,63,94,0.18)",
+                stateLabel: "shared.runtime_status.paused",
+            };
         case "queued":
+            return {
+                dot: colors.textSoft,
+                surface: "rgba(120,113,108,0.10)",
+                border: "rgba(120,113,108,0.16)",
+                stateLabel: "shared.runtime_status.queued",
+            };
         case "completed":
+            return {
+                dot: colors.textSoft,
+                surface: "rgba(120,113,108,0.10)",
+                border: "rgba(120,113,108,0.16)",
+                stateLabel: "shared.runtime_status.completed",
+            };
         default:
             return {
                 dot: colors.textSoft,
@@ -90,6 +114,7 @@ export function RunControlBar({
     onInterrupt?: () => void;
 }) {
     const { colors, t } = useUiPrefs();
+    const [stateInfoOpen, setStateInfoOpen] = useState(false);
     const normalizedStatus = String(status || "completed");
     const tone = toneForStatus(normalizedStatus, colors);
     const showApprovalAction = Boolean((pendingApproval || normalizedStatus === "waiting_approval") && canOpenApproval && onOpenApproval);
@@ -145,6 +170,13 @@ export function RunControlBar({
                 ? t("src.components.chat.runcontrolbar.interrupt_run")
                 : t("src.components.chat.runcontrolbar.no_action_available");
     const actionDisabled = !actionPress || busy || stateMode === "idle";
+    const availableActions = [
+        canOpenApproval ? t("src.components.chat.runcontrolbar.open_approvals") : "",
+        canResume ? t("src.components.chat.runcontrolbar.resume_run") : "",
+        canRetry ? t("src.components.chat.runcontrolbar.retry_run") : "",
+        canInterrupt ? t("src.components.chat.runcontrolbar.interrupt_run") : "",
+    ].filter(Boolean);
+    const shortRunId = String(runId || "").trim().slice(0, 8);
     const motion = useSharedValue(0);
     const highlightState = normalizedStatus === "running" || normalizedStatus === "waiting_approval";
 
@@ -174,9 +206,10 @@ export function RunControlBar({
             style={[styles.wrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
             accessibilityLabel={runId ? `${t("src.components.chat.runcontrolbar.run_controls")} ${runId}` : t("src.components.chat.runcontrolbar.run_controls")}
         >
-            <View
-                accessibilityRole="image"
+            <Pressable
+                accessibilityRole="button"
                 accessibilityLabel={t(tone.stateLabel)}
+                onPress={() => setStateInfoOpen((current) => !current)}
                 style={[
                     styles.iconSlot,
                     {
@@ -191,7 +224,7 @@ export function RunControlBar({
                 />
                 <View style={[styles.stateLightOuter, { borderColor: tone.border }]} />
                 <View style={[styles.stateLight, { backgroundColor: tone.dot }]} />
-            </View>
+            </Pressable>
 
             <Pressable
                 accessibilityRole="button"
@@ -213,6 +246,22 @@ export function RunControlBar({
                     />
                 )}
             </Pressable>
+            {stateInfoOpen ? (
+                <View style={[styles.statePopover, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                    <Text style={[styles.statePopoverTitle, { color: colors.text }]}>{t(tone.stateLabel)}</Text>
+                    <Text style={[styles.statePopoverText, { color: colors.textMuted }]}>
+                        {shortRunId ? t("src.components.chat.runcontrolbar.run_short_id", { runId: shortRunId }) : t("src.components.chat.runcontrolbar.no_active_run")}
+                    </Text>
+                    <Text style={[styles.statePopoverText, { color: colors.textMuted }]}>
+                        {t("src.components.chat.runcontrolbar.next_action", { action: actionLabel })}
+                    </Text>
+                    <Text style={[styles.statePopoverText, { color: colors.textMuted }]}>
+                        {t("src.components.chat.runcontrolbar.available_actions", {
+                            actions: availableActions.length ? availableActions.join(" / ") : t("src.components.chat.runcontrolbar.none"),
+                        })}
+                    </Text>
+                </View>
+            ) : null}
         </View>
     );
 }
@@ -270,5 +319,31 @@ const styles = StyleSheet.create({
     },
     disabled: {
         opacity: 0.52,
+    },
+    statePopover: {
+        position: "absolute",
+        top: 43,
+        left: -8,
+        width: 190,
+        borderWidth: 1,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        gap: 4,
+        shadowColor: "#0F172A",
+        shadowOpacity: 0.14,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 8,
+        zIndex: 20,
+    },
+    statePopoverTitle: {
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    statePopoverText: {
+        fontSize: 11,
+        fontWeight: "600",
+        lineHeight: 15,
     },
 });

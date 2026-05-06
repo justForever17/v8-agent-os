@@ -351,6 +351,10 @@ function deriveRunControlState({
         status = "waiting_approval";
     } else if (authoritativeStatus === "waiting_input") {
         status = "waiting_input";
+    } else if (!hasActiveProcess && canRetry && !ACTIVE_PROCESS_STATUSES.has(authoritativeStatus)) {
+        status = "failed";
+    } else if (!hasActiveProcess && canResume && !ACTIVE_PROCESS_STATUSES.has(authoritativeStatus)) {
+        status = "paused";
     } else if (authoritativeStatus && TERMINAL_RUN_STATUSES.has(authoritativeStatus) && !hasActiveProcess) {
         status = authoritativeStatus;
     } else if (optimisticStatus === "running") {

@@ -35,12 +35,14 @@ import { getThumbnailAsync } from "expo-video-thumbnails";
 import { ChatWindow } from "@/src/components/chat/ChatWindow";
 import { Composer } from "@/src/components/chat/Composer";
 import { ComposerPickerOverlay } from "@/src/components/chat/ComposerPickerOverlay";
+import { EdgeActionRail } from "@/src/components/chat/EdgeActionRail";
 import { GovernanceApprovalModal } from "@/src/components/chat/GovernanceApprovalModal";
 import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/src/components/chat/RunControlBar";
 import { RuntimeDock } from "@/src/components/chat/RuntimeDock";
 import { RuntimeTimelinePanel } from "@/src/components/chat/RuntimeTimelinePanel";
 import { TodosHUD } from "@/src/components/chat/TodosHUD";
+import { WorkspaceFolderExplorer } from "@/src/components/chat/WorkspaceFolderExplorer";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
@@ -76,6 +78,7 @@ import {
     createDesktopLiveSession,
     createConversation,
     createProject,
+    createWorkspaceFolder,
     deleteConversation,
     deleteMessage,
     dispatchRunCommand,
@@ -86,6 +89,7 @@ import {
     getRealtimeSnapshot,
     getSessionProcesses,
     getSessionScope,
+    listWorkspaceFolders,
     listCommandPresets,
     listConversations,
     listSkillsAndSubagentFamilies,
@@ -114,6 +118,7 @@ import type {
     RealtimeSessionSnapshot,
     ProjectSummary,
     ScopeBindingView,
+    WorkspaceFolderNode,
     SessionTodoItem,
     SkillReferenceSummary,
     ContextMentionSummary,
@@ -1774,6 +1779,11 @@ export default function ChatScreen() {
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
     const [workspaceChooserBusy, setWorkspaceChooserBusy] = useState(false);
     const [newProjectPath, setNewProjectPath] = useState("");
+    const [folderRoots, setFolderRoots] = useState<WorkspaceFolderNode[]>([]);
+    const [selectedFolderPath, setSelectedFolderPath] = useState("");
+    const [expandedFolderPaths, setExpandedFolderPaths] = useState<Set<string>>(() => new Set());
+    const [loadingFolderPaths, setLoadingFolderPaths] = useState<Set<string>>(() => new Set());
+    const [newFolderName, setNewFolderName] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -1798,6 +1808,8 @@ export default function ChatScreen() {
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
+    const [leftRailOpen, setLeftRailOpen] = useState(false);
+    const [rightRailOpen, setRightRailOpen] = useState(false);
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
@@ -2545,6 +2557,68 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch]);
 
+    const loadFolderRoots = useCallback(async () => {
+        try {
+            const payload = await listWorkspaceFolders(authorizedFetch, { maxDepth: 0, maxChildren: 80 });
+            const roots = Array.isArray(payload.roots) ? payload.roots : [];
+            setFolderRoots(roots);
+            setSelectedFolderPath((current) => current || roots[0]?.path || "");
+        } catch (error) {
+            console.warn("[phone/chat] loadFolderRoots failed", error instanceof Error ? error.message : error);
+            setFolderRoots([]);
+        }
+    }, [authorizedFetch]);
+
+    const mergeFolderNode = useCallback((roots: WorkspaceFolderNode[], nextNode: WorkspaceFolderNode): WorkspaceFolderNode[] => {
+        return roots.map((node) => {
+            if (node.path === nextNode.path) {
+                return { ...node, ...nextNode };
+            }
+            if (node.children?.length) {
+                return { ...node, children: mergeFolderNode(node.children, nextNode) };
+            }
+            return node;
+        });
+    }, []);
+
+    const toggleFolderNode = useCallback(async (node: WorkspaceFolderNode) => {
+        const nodePath = String(node.path || "").trim();
+        if (!nodePath) return;
+        if (expandedFolderPaths.has(nodePath)) {
+            setExpandedFolderPaths((current) => {
+                const next = new Set(current);
+                next.delete(nodePath);
+                return next;
+            });
+            return;
+        }
+        setExpandedFolderPaths((current) => new Set(current).add(nodePath));
+        if (node.children && node.children.length > 0) {
+            return;
+        }
+        setLoadingFolderPaths((current) => new Set(current).add(nodePath));
+        try {
+            const payload = await listWorkspaceFolders(authorizedFetch, { path: nodePath, maxDepth: 1, maxChildren: 80 });
+            if (payload.root) {
+                setFolderRoots((current) => mergeFolderNode(current, payload.root as WorkspaceFolderNode));
+            }
+        } catch (error) {
+            console.warn("[phone/chat] toggleFolderNode failed", error instanceof Error ? error.message : error);
+        } finally {
+            setLoadingFolderPaths((current) => {
+                const next = new Set(current);
+                next.delete(nodePath);
+                return next;
+            });
+        }
+    }, [authorizedFetch, expandedFolderPaths, mergeFolderNode]);
+
+    useEffect(() => {
+        if (workspaceChooserVisible) {
+            void loadFolderRoots();
+        }
+    }, [loadFolderRoots, workspaceChooserVisible]);
+
     const loadSessionScope = useCallback(async (conversationId: string) => {
         setScopeLoading(true);
         try {
@@ -2651,6 +2725,78 @@ export default function ChatScreen() {
             setWorkspaceChooserBusy(false);
         }
     }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectPath, setActiveConversationId, t, workspaceChooserBusy]);
+
+    const createProjectConversationAtPath = useCallback(async (workspacePath: string) => {
+        const nextProjectPath = workspacePath.trim();
+        if (!nextProjectPath || workspaceChooserBusy) {
+            return;
+        }
+        setWorkspaceChooserBusy(true);
+        try {
+            const createdProject = await createProject(authorizedFetch, { workspacePath: nextProjectPath });
+            const createdProjectId = String(createdProject?.id || "").trim();
+            if (!createdProjectId) {
+                throw new Error(t("src.screens.chatscreen.project_creation_succeeded_but_returned_no_valid_project_id"));
+            }
+            await loadProjects();
+            const createdConversation = await createConversation(authorizedFetch, {
+                title: "",
+                projectId: createdProjectId,
+                workspaceId: createdProject.workspaceId,
+                workspacePath: createdProject.workspacePath,
+                scopeHint: createdProject.defaultScope,
+                scopeMode: "explicit",
+            });
+            const createdSessionId = createdConversation.sessionId || createdConversation.id;
+            optimisticSeedConversationIdRef.current = createdSessionId;
+            activeConversationIdRef.current = createdSessionId;
+            setConversations((current) => [createdConversation, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
+            setWorkspaceChooserVisible(false);
+            setWorkspaceInfoOpen(false);
+            setNewProjectPath("");
+            setNewFolderName("");
+            clearNewConversationIntent();
+            await setActiveConversationId(createdSessionId);
+            await loadSessionScope(createdSessionId);
+        } catch (error) {
+            Alert.alert(
+                t("src.screens.chatscreen.create_project_workspace_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_create_a_new_project_workspace"),
+            );
+        } finally {
+            setWorkspaceChooserBusy(false);
+        }
+    }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, setActiveConversationId, t, workspaceChooserBusy]);
+
+    const handleCreateFromSelectedFolder = useCallback(async () => {
+        if (!selectedFolderPath || workspaceChooserBusy) {
+            return;
+        }
+        const folderName = newFolderName.trim();
+        if (folderName) {
+            setWorkspaceChooserBusy(true);
+            try {
+                const createdFolder = await createWorkspaceFolder(authorizedFetch, { parentPath: selectedFolderPath, folderName });
+                if (!createdFolder?.path) {
+                    throw new Error(t("src.screens.chatscreen.workspace_folder_create_returned_no_path"));
+                }
+                setSelectedFolderPath(createdFolder.path);
+                setNewFolderName("");
+                await loadFolderRoots();
+                setWorkspaceChooserBusy(false);
+                await createProjectConversationAtPath(createdFolder.path);
+                return;
+            } catch (error) {
+                setWorkspaceChooserBusy(false);
+                Alert.alert(
+                    t("src.screens.chatscreen.create_project_workspace_failed"),
+                    error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_create_a_new_project_workspace"),
+                );
+                return;
+            }
+        }
+        await createProjectConversationAtPath(selectedFolderPath);
+    }, [authorizedFetch, createProjectConversationAtPath, loadFolderRoots, newFolderName, selectedFolderPath, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
         const [nextConversations, nextCommands, nextReferences] = await Promise.all([
@@ -5147,6 +5293,60 @@ export default function ChatScreen() {
                                                 {t("src.screens.chatscreen.create_a_project_workspace")}
                                             </Text>
                                             <Text style={[styles.workspaceSectionHint, { color: palette.textMuted }]}>
+                                                {t("src.screens.chatscreen.choose_or_create_folder_on_engine_machine")}
+                                            </Text>
+                                            <WorkspaceFolderExplorer
+                                                roots={folderRoots}
+                                                selectedPath={selectedFolderPath}
+                                                expandedPaths={expandedFolderPaths}
+                                                loadingPaths={loadingFolderPaths}
+                                                onSelect={(node) => setSelectedFolderPath(node.path)}
+                                                onToggle={(node) => void toggleFolderNode(node)}
+                                                emptyLabel={t("src.screens.chatscreen.folder_tree_empty")}
+                                            />
+                                            <View style={styles.workspaceSelectedPathCard}>
+                                                <Text style={[styles.workspaceSelectedPathLabel, { color: palette.textMuted }]}>
+                                                    {t("src.screens.chatscreen.selected_folder")}
+                                                </Text>
+                                                <Text style={[styles.workspaceSelectedPathText, { color: palette.text }]} numberOfLines={2}>
+                                                    {selectedFolderPath || t("src.screens.chatscreen.no_folder_selected")}
+                                                </Text>
+                                            </View>
+                                            <View style={styles.workspaceCreateRow}>
+                                                <TextInput
+                                                    value={newFolderName}
+                                                    onChangeText={setNewFolderName}
+                                                    placeholder={t("src.screens.chatscreen.optional_new_child_folder_name")}
+                                                    placeholderTextColor={palette.textSoft}
+                                                    style={[styles.workspaceNameInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border }]}
+                                                />
+                                                <Pressable
+                                                    style={[
+                                                        styles.workspaceCreateButton,
+                                                        {
+                                                            backgroundColor: palette.primary,
+                                                            opacity: workspaceChooserBusy || !selectedFolderPath ? 0.56 : 1,
+                                                        },
+                                                    ]}
+                                                    disabled={workspaceChooserBusy || !selectedFolderPath}
+                                                    onPress={() => void handleCreateFromSelectedFolder()}
+                                                >
+                                                    {workspaceChooserBusy ? (
+                                                        <ActivityIndicator size="small" color="#FFFFFF" />
+                                                    ) : (
+                                                        <Text style={styles.workspaceCreateButtonText}>
+                                                            {newFolderName.trim() ? t("src.screens.chatscreen.create_folder_and_start") : t("src.screens.chatscreen.use_selected_folder")}
+                                                        </Text>
+                                                    )}
+                                                </Pressable>
+                                            </View>
+                                        </View>
+
+                                        <View style={[styles.workspaceChooserSection, { borderColor: palette.border }]}>
+                                            <Text style={[styles.workspaceSectionLabel, { color: palette.textMuted }]}>
+                                                {t("src.screens.chatscreen.absolute_path_fallback")}
+                                            </Text>
+                                            <Text style={[styles.workspaceSectionHint, { color: palette.textMuted }]}>
                                                 {t("src.screens.chatscreen.enter_an_absolute_project_folder_path_the_folder_name_becomes_the_project_name")}
                                             </Text>
                                             <View style={styles.workspaceCreateRow}>
@@ -5207,89 +5407,94 @@ export default function ChatScreen() {
                                 />
                             )}
 
-                            <View pointerEvents="box-none" style={[styles.chatStageHeader, isLandscape && styles.chatStageHeaderLandscape]}>
-                                <View style={[styles.chatStageTopRow, isLandscape && styles.chatStageTopRowLandscape]}>
+                            <EdgeActionRail
+                                side="left"
+                                open={leftRailOpen}
+                                expandedWidth={174}
+                                top={10}
+                                onOpen={() => {
+                                    setLeftRailOpen(true);
+                                    setRightRailOpen(false);
+                                }}
+                                onClose={() => setLeftRailOpen(false)}
+                            >
+                                <View style={styles.leftEdgeRailContent}>
                                     <Pressable
-                                        style={[
-                                            styles.historyFab,
-                                            { backgroundColor: palette.surfaceStrong, borderColor: palette.border },
-                                        ]}
-                                        onPress={() => setHistoryOpen(true)}
+                                        style={[styles.edgeIconButton, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}
+                                        onPress={() => {
+                                            setLeftRailOpen(false);
+                                            setHistoryOpen(true);
+                                        }}
                                     >
                                         <MaterialCommunityIcons name="view-headline" size={20} color={palette.text} />
                                     </Pressable>
-
-                                    <View
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t("src.screens.chatscreen.current_workspace")}
                                         style={[
-                                            styles.controlRailPrimary,
+                                            styles.edgeIconButton,
                                             {
-                                                backgroundColor: palette.surfaceStrong,
-                                                borderColor: palette.border,
+                                                backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : palette.surfaceStrong,
+                                                borderColor: workspaceInfoOpen || workspaceChooserVisible ? `${palette.primary}33` : palette.border,
                                             },
                                         ]}
+                                        onPress={() => {
+                                            setLeftRailOpen(false);
+                                            if (activeConversationId) {
+                                                setWorkspaceInfoOpen(true);
+                                                return;
+                                            }
+                                            setWorkspaceChooserVisible(true);
+                                            clearNewConversationIntent();
+                                        }}
                                     >
-                                        <Pressable
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t("src.screens.chatscreen.current_workspace")}
-                                            style={[
-                                                styles.scopeTrigger,
-                                                {
-                                                    backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : palette.surfaceStrong,
-                                                    borderColor: workspaceInfoOpen || workspaceChooserVisible ? `${palette.primary}33` : palette.border,
-                                                },
-                                            ]}
-                                            onPress={() => {
-                                                if (activeConversationId) {
-                                                    setWorkspaceInfoOpen(true);
-                                                    return;
-                                                }
-                                                setWorkspaceChooserVisible(true);
-                                                clearNewConversationIntent();
-                                            }}
-                                        >
-                                            <View style={styles.scopeTriggerIconWrap}>
-                                                {scopeLoading ? (
-                                                    <ActivityIndicator size="small" color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted} />
-                                                ) : (
-                                                    <MaterialCommunityIcons
-                                                        name="file-tree-outline"
-                                                        size={16}
-                                                        color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
-                                                    />
-                                                )}
-                                            </View>
-                                        </Pressable>
-
-                                        <View style={styles.runControlWrap}>
-                                            <RunControlBar
-                                                runId={projection.runControlState.runId}
-                                                status={projection.runControlState.status}
-                                                pendingApproval={projection.runControlState.pendingApproval}
-                                                canOpenApproval={projection.runControlState.canOpenApproval}
-                                                canResume={projection.runControlState.canResume}
-                                                canRetry={projection.runControlState.canRetry}
-                                                canInterrupt={projection.runControlState.canInterrupt}
-                                                busy={runActionBusy}
-                                                onOpenApproval={openApprovalPanel}
-                                                onRetry={() => void handleRunCommand("retry")}
-                                                onInterrupt={() => void handleRunCommand("interrupt")}
+                                        {scopeLoading ? (
+                                            <ActivityIndicator size="small" color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted} />
+                                        ) : (
+                                            <MaterialCommunityIcons
+                                                name="file-tree-outline"
+                                                size={18}
+                                                color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
                                             />
-                                        </View>
-
-                                        <View style={styles.runtimeDockInline}>
-                                            <RuntimeDock
-                                                items={projection.runtimeStageModel.items}
-                                                selectedRuntimeId={projection.selectedRuntimeId}
-                                                panelOpen={runtimePanelOpen}
-                                                onSelectRuntime={(runtimeId) => {
-                                                    setSelectedRuntimeId(runtimeId);
-                                                    setRuntimePanelOpen(true);
-                                                }}
-                                            />
-                                        </View>
-                                    </View>
+                                        )}
+                                    </Pressable>
+                                    <RunControlBar
+                                        runId={projection.runControlState.runId}
+                                        status={projection.runControlState.status}
+                                        pendingApproval={projection.runControlState.pendingApproval}
+                                        canOpenApproval={projection.runControlState.canOpenApproval}
+                                        canResume={projection.runControlState.canResume}
+                                        canRetry={projection.runControlState.canRetry}
+                                        canInterrupt={projection.runControlState.canInterrupt}
+                                        busy={runActionBusy}
+                                        onOpenApproval={openApprovalPanel}
+                                        onRetry={() => void handleRunCommand("retry")}
+                                        onInterrupt={() => void handleRunCommand("interrupt")}
+                                    />
                                 </View>
-                            </View>
+                            </EdgeActionRail>
+
+                            <EdgeActionRail
+                                side="right"
+                                open={rightRailOpen}
+                                expandedWidth={356}
+                                top={10}
+                                onOpen={() => {
+                                    setRightRailOpen(true);
+                                    setLeftRailOpen(false);
+                                }}
+                                onClose={() => setRightRailOpen(false)}
+                            >
+                                <RuntimeDock
+                                    items={projection.runtimeStageModel.items}
+                                    selectedRuntimeId={projection.selectedRuntimeId}
+                                    panelOpen={runtimePanelOpen}
+                                    onSelectRuntime={(runtimeId) => {
+                                        setSelectedRuntimeId(runtimeId);
+                                        setRuntimePanelOpen(true);
+                                    }}
+                                />
+                            </EdgeActionRail>
                         </View>
                     </View>
                     {overlayDockContent}
@@ -5552,6 +5757,19 @@ const styles = StyleSheet.create({
         flex: 1,
         minWidth: 0,
         justifyContent: "center",
+    },
+    leftEdgeRailContent: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    edgeIconButton: {
+        width: 40,
+        height: 40,
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 20,
+        borderWidth: 1,
     },
     scopeTrigger: {
         width: 40,
@@ -5920,6 +6138,20 @@ const styles = StyleSheet.create({
     workspaceEmptyText: {
         fontSize: 12,
         lineHeight: 18,
+    },
+    workspaceSelectedPathCard: {
+        gap: 4,
+        paddingVertical: 4,
+    },
+    workspaceSelectedPathLabel: {
+        fontSize: 11,
+        fontWeight: "800",
+        letterSpacing: 0.2,
+    },
+    workspaceSelectedPathText: {
+        fontSize: 12,
+        fontWeight: "700",
+        lineHeight: 17,
     },
     workspaceCreateRow: {
         gap: 10,

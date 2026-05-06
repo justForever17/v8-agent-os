@@ -302,6 +302,7 @@ class ChatStreamState:
     text_filter: StreamFilter = field(default_factory=lambda: StreamFilter(["NONE", "None", "null", "```json", "```"]))
     text_aggregator: TextChunkAggregator = field(default_factory=TextChunkAggregator)
     preserve_stream_timeline: bool = False
+    reasoning_surface_contract: dict[str, Any] = field(default_factory=dict)
     pending_stream_event_task: asyncio.Task[Any] | None = None
     assistant_message_id: str | None = None
     assistant_transcript_version: int = 0
@@ -2482,11 +2483,24 @@ class ChatRuntime:
         async for event in supervisor_runner.stream_events(bundle.runner_bundle):
             yield event
 
-    def create_stream_state(self, *, transport: str = "http") -> ChatStreamState:
+    def create_stream_state(self, *, transport: str = "http", chat_run: ChatRunContext | None = None) -> ChatStreamState:
         loaded_agents = storage.get_all_agents()
         valid_nodes = [item.get("id") for item in loaded_agents if item.get("id")] + ["supervisor", "reviewer"]
         preserve_timeline = str(transport or "").strip() in {"network_supervisor_openai", "network_supervisor_anthropic"}
-        return ChatStreamState(valid_agent_node_names=valid_nodes, preserve_stream_timeline=preserve_timeline)
+        reasoning_surface_contract: dict[str, Any] = {}
+        model_ref = ""
+        try:
+            if chat_run is not None:
+                model_ref = str(getattr(chat_run.request.config, "model_name", "") or "").strip()
+            if model_ref:
+                reasoning_surface_contract = dict(llm_factory.get_model_metadata(model_ref).get("reasoning_surface") or {})
+        except Exception:
+            reasoning_surface_contract = {}
+        return ChatStreamState(
+            valid_agent_node_names=valid_nodes,
+            preserve_stream_timeline=preserve_timeline,
+            reasoning_surface_contract=reasoning_surface_contract,
+        )
 
     @staticmethod
     def _now_timestamp_ms() -> int:
@@ -3277,6 +3291,8 @@ class ChatRuntime:
         *,
         model_run_id: str,
         snapshot: str | None = None,
+        reasoning_kind: str = "provider_reasoning",
+        reasoning_surface: dict[str, Any] | None = None,
         provider_delta_at_ms: int | None = None,
         canonical_event_at_ms: int | None = None,
     ) -> dict[str, Any] | None:
@@ -3293,6 +3309,8 @@ class ChatRuntime:
             "type": "reasoning_chunk",
             "content": reasoning_delta,
             "snapshot": node_content,
+            "reasoningKind": reasoning_kind,
+            "reasoningSurface": reasoning_surface or {},
             "timestamp": 0,
             "_diagnostics": self._stream_trace_diagnostics(
                 chat_run,
@@ -3312,10 +3330,15 @@ class ChatRuntime:
             "kind": "execution",
             "executionType": "reasoning",
             "content": node_content,
+            "reasoningKind": reasoning_kind,
             "timestamp": self._now_timestamp_ms(),
             "agentName": profile["name"],
             "agentAvatar": profile["avatar"],
             "agentRoleLabel": profile["roleLabel"],
+            "data": {
+                "reasoningKind": reasoning_kind,
+                "reasoningSurface": reasoning_surface or {},
+            },
         }
         runtime_event = self._emit_owner_scoped_runtime_event(
             chat_run,
@@ -4616,6 +4639,7 @@ class ChatRuntime:
                 event,
                 text_snapshots=stream_state.text_snapshots_by_run,
                 reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
+                reasoning_surface=stream_state.reasoning_surface_contract,
             )
             for model_event in model_events:
                 canonical_event_at_ms = self._now_timestamp_ms()
@@ -4661,8 +4685,11 @@ class ChatRuntime:
                             "run.reasoning.suppressed",
                             {
                                 "count": stream_state.reasoning_suppressed_count,
-                                "reason": model_event.diagnostics.get("reason") or "untrusted_reasoning_payload",
+                                "reason": model_event.diagnostics.get("reason") or "reasoning_surface_not_trusted",
                                 "surface": model_event.diagnostics.get("surface") or "hidden",
+                                "reasoningKind": model_event.diagnostics.get("reasoningKind") or "hidden",
+                                "reasoningSurfaceMode": model_event.diagnostics.get("reasoningSurfaceMode") or "hidden",
+                                "reasoningSurfaceTrust": model_event.diagnostics.get("reasoningSurfaceTrust") or "unknown",
                                 "looksLikeProgress": bool(model_event.diagnostics.get("looksLikeProgress")),
                                 "modelRunId": model_run_id,
                                 "preview": str(model_event.delta or "")[:160],
@@ -4694,6 +4721,8 @@ class ChatRuntime:
                         reasoning_delta,
                         model_run_id=model_run_id,
                         snapshot=model_event.snapshot,
+                        reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
+                        reasoning_surface=dict(stream_state.reasoning_surface_contract or {}),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
                     )
@@ -4712,6 +4741,7 @@ class ChatRuntime:
                 reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
                 suppress_reasoning=self._normalized_stream_run_id(model_run_id) in stream_state.narrative_started_model_run_ids,
                 emitted_text=self._current_canonical_text(stream_state),
+                reasoning_surface=stream_state.reasoning_surface_contract,
             )
             final_snapshot = stream_state.text_snapshots_by_run.get(self._normalized_stream_run_id(model_run_id))
             if final_snapshot:
@@ -4766,8 +4796,11 @@ class ChatRuntime:
                             "run.reasoning.suppressed",
                             {
                                 "count": stream_state.reasoning_suppressed_count,
-                                "reason": model_event.diagnostics.get("reason") or "untrusted_reasoning_payload",
+                                "reason": model_event.diagnostics.get("reason") or "reasoning_surface_not_trusted",
                                 "surface": model_event.diagnostics.get("surface") or "hidden",
+                                "reasoningKind": model_event.diagnostics.get("reasoningKind") or "hidden",
+                                "reasoningSurfaceMode": model_event.diagnostics.get("reasoningSurfaceMode") or "hidden",
+                                "reasoningSurfaceTrust": model_event.diagnostics.get("reasoningSurfaceTrust") or "unknown",
                                 "looksLikeProgress": bool(model_event.diagnostics.get("looksLikeProgress")),
                                 "modelRunId": model_event.model_run_id,
                                 "preview": str(model_event.delta or "")[:160],
@@ -4799,6 +4832,8 @@ class ChatRuntime:
                         reasoning_delta,
                         model_run_id=model_event.model_run_id,
                         snapshot=model_event.snapshot,
+                        reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
+                        reasoning_surface=dict(stream_state.reasoning_surface_contract or {}),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
                     )
@@ -6074,7 +6109,7 @@ class ChatRuntime:
         self.emit_lifecycle_start_events(chat_run)
         self.record_request_inputs(chat_run)
 
-        stream_state = self.create_stream_state(transport=chat_run.transport)
+        stream_state = self.create_stream_state(transport=chat_run.transport, chat_run=chat_run)
 
         try:
             for startup_event in self.emit_stream_start_events(chat_run, stream_state):

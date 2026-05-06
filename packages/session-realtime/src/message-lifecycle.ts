@@ -44,7 +44,7 @@ export type SessionStreamArtifact = {
 
 export type SessionStreamUiEvent = Pick<
   NormalizedSessionRuntimeEvent,
-  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "runtimeId" | "seq" | "message_id" | "node_id" | "transcript_version"
+  "type" | "name" | "content" | "data" | "run_id" | "error" | "targets" | "visibility" | "topic" | "runtimeId" | "seq" | "message_id" | "node_id" | "transcript_version" | "reasoningKind"
 > & {
   agent?: {
     id?: string;
@@ -86,6 +86,7 @@ export type SessionStreamExecutionNode = {
   agentRoleLabel?: string;
   agentType?: "supervisor" | "agent" | "user";
   content?: string;
+  reasoningKind?: string;
   time?: number;
   startTime?: number;
   toolCallId?: string;
@@ -959,6 +960,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const eventData = asRecord(event.data);
     const content = String(event.content || "");
     const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
+    const reasoningKind = String(event.reasoningKind || eventData.reasoningKind || "").trim() || undefined;
     const explicitNode = event.node_id
       ? (Array.isArray(current.nodes)
         ? current.nodes.find((node) => String(node.id || "").trim() === event.node_id)
@@ -973,6 +975,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       && executionStreamKeyMatches(lastNode, ownerFields)
     ) {
       Object.assign(lastNode, ownerFields);
+      if (reasoningKind) {
+        lastNode.reasoningKind = reasoningKind;
+        lastNode.data = {
+          ...(lastNode.data || {}),
+          reasoningKind,
+        };
+      }
       if (snapshot !== undefined) {
         lastNode.content = snapshot;
       } else {
@@ -987,9 +996,14 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         kind: "execution",
         executionType: "reasoning",
         content: snapshot ?? content,
+        reasoningKind,
         time: 0,
         startTime: Date.now(),
         timestamp: Date.now(),
+        data: {
+          reasoningKind,
+          reasoningSurface: eventData.reasoningSurface,
+        },
         ...nextActiveAgentProfile,
         ...ownerFields,
       });

@@ -33,6 +33,7 @@ from core.model_control_plane import model_control_plane, normalize_config_tempe
 from core.model_telemetry import model_telemetry_service
 from core.oauth_credentials import resolve_oauth_reference, resolve_provider_oauth_credential
 from core.provider_compatibility import normalize_provider_error
+from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
 from erc.runtime_context import get_runtime_context
 from langchain_core.embeddings import Embeddings
 
@@ -761,6 +762,17 @@ class LLMFactory:
                 "rerank_api_flavor": normalize_rerank_api_flavor(meta.get("rerank_api_flavor") or meta.get("rerankApiFlavor")),
                 "capabilities": capabilities,
                 "capability_class": capability_class,
+                "reasoning_surface": resolve_reasoning_surface_for_metadata(
+                    {
+                        "provider_id": p_name,
+                        "model_id": upstream_model_id,
+                        "model_ref": model_ref,
+                        "provider_record": p_conf,
+                        "model_record": meta,
+                        "api_standard": api_standard,
+                        "capabilities": capabilities,
+                    }
+                ),
                 "cost_per_input": meta.get("costPerInput"),
                 "cost_per_output": meta.get("costPerOutput"),
                 "tokenizer_family": meta.get("tokenizerFamily") or meta.get("tokenizer_family") or "",

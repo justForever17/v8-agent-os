@@ -182,7 +182,7 @@ def _extract_from_content_blocks(blocks: Iterable[Any]) -> Tuple[str, str]:
             continue
 
         if block_type in REASONING_BLOCK_TYPES:
-            _append_unique(reasoning_parts, _first_string(block, ("reasoning", "text", "content", "value")))
+            _append_unique(reasoning_parts, _first_string(block, ("reasoning", "thinking", "text", "content", "value")))
             continue
 
         if isinstance(block, Mapping):

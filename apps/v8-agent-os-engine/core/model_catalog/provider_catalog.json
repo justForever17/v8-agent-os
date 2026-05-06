@@ -32,7 +32,23 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": [
+              "reasoning.summary",
+              "reasoning_content",
+              "additional_kwargs.reasoning_content",
+              "response_metadata.reasoning_content"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              "https://developers.openai.com/api/docs/guides/reasoning"
+            ],
+            "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+          }
         },
         {
           "id": "gpt-5.4",
@@ -45,11 +61,43 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": [
+              "reasoning.summary",
+              "reasoning_content",
+              "additional_kwargs.reasoning_content",
+              "response_metadata.reasoning_content"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              "https://developers.openai.com/api/docs/guides/reasoning"
+            ],
+            "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+          }
         }
       ],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/lobe/openai.svg"
+      "logoAsset": "/model-assets/lobe/openai.svg",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
     },
     {
       "id": "anthropic",
@@ -80,11 +128,43 @@
             "vision",
             "streaming",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "typed_thinking",
+            "trust": "official",
+            "requestStyle": "anthropic_thinking",
+            "responseFields": [
+              "content[type=thinking]",
+              "thinking",
+              "thinking_delta",
+              "additional_kwargs.thinking"
+            ],
+            "displayKind": "raw_thinking",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+            ],
+            "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+          }
         }
       ],
       "logoAsset": "/model-assets/providers/anthropic.ico",
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "reasoningSurface": {
+        "mode": "typed_thinking",
+        "trust": "official",
+        "requestStyle": "anthropic_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "raw_thinking",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+        ],
+        "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+      }
     },
     {
       "id": "gemini-api",
@@ -115,7 +195,16 @@
             "vision",
             "streaming",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+          }
         },
         {
           "id": "gemini-3-flash-preview",
@@ -128,7 +217,16 @@
             "streaming",
             "reasoning",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+          }
         },
         {
           "id": "gemini-2.5-pro",
@@ -141,7 +239,16 @@
             "vision",
             "streaming",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+          }
         },
         {
           "id": "gemini-2.5-flash",
@@ -154,11 +261,29 @@
             "streaming",
             "reasoning",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+          }
         }
       ],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/lobe/gemini-color.svg"
+      "logoAsset": "/model-assets/lobe/gemini-color.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+      }
     },
     {
       "id": "gemini",
@@ -185,7 +310,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
+          }
         },
         {
           "id": "gemini-3-flash-preview",
@@ -197,7 +331,16 @@
             "reasoning",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
+          }
         },
         {
           "id": "gemini-2.5-pro",
@@ -209,7 +352,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
+          }
         },
         {
           "id": "gemini-2.5-flash",
@@ -221,11 +373,29 @@
             "reasoning",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
+          }
         }
       ],
       "providerKind": "local_runtime",
-      "logoAsset": "/model-assets/lobe/geminicli-color.svg"
+      "logoAsset": "/model-assets/lobe/geminicli-color.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
+      }
     },
     {
       "id": "codex",
@@ -253,7 +423,16 @@
             "tools",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "gpt-5.4",
@@ -266,7 +445,16 @@
             "tools",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         }
       ],
       "providerKind": "local_runtime",
@@ -292,7 +480,23 @@
       "confidence": "official",
       "models": [],
       "logoAsset": "/model-assets/providers/openrouter.ico",
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "reasoningSurface": {
+        "mode": "provider_reasoning",
+        "trust": "official",
+        "requestStyle": "openrouter_reasoning",
+        "responseFields": [
+          "reasoning",
+          "reasoning_content",
+          "additional_kwargs.reasoning",
+          "additional_kwargs.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
+        ],
+        "notes": "OpenRouter reasoning fields are provider mediated and displayed as summary/provider reasoning, not raw typed thinking."
+      }
     },
     {
       "id": "deepseek",
@@ -322,7 +526,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "deepseek-v4-pro",
@@ -333,12 +546,30 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         }
       ],
       "logoAsset": "/model-assets/providers/deepseek.ico",
       "providerKind": "chat",
-      "credentialRealm": "deepseek"
+      "credentialRealm": "deepseek",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "id": "dashscope",
@@ -381,7 +612,16 @@
         }
       ],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/lobe/qwen-color.svg"
+      "logoAsset": "/model-assets/lobe/qwen-color.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Qwen/DashScope reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "id": "siliconflow",
@@ -475,7 +715,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-5",
@@ -484,7 +733,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-5-turbo",
@@ -493,7 +751,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.7",
@@ -502,7 +769,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.7-flashx",
@@ -511,7 +787,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.7-flash",
@@ -520,7 +805,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.6",
@@ -529,7 +823,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.5-air",
@@ -538,7 +841,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.5-airx",
@@ -547,7 +859,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4-long",
@@ -556,7 +877,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4-flashx-250414",
@@ -565,7 +895,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4-flash-250414",
@@ -574,7 +913,16 @@
             "reasoning",
             "tools",
             "streaming"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-5v-turbo",
@@ -585,7 +933,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.6v",
@@ -596,7 +953,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-ocr",
@@ -607,7 +973,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "autoglm-phone",
@@ -618,7 +993,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.1v-thinking-flashx",
@@ -629,7 +1013,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.6v-flash",
@@ -640,7 +1033,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4.1v-thinking-flash",
@@ -651,7 +1053,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "glm-4v-flash",
@@ -662,7 +1073,16 @@
             "streaming",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+          }
         },
         {
           "id": "embedding-3",
@@ -684,7 +1104,16 @@
         }
       ],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/lobe/zhipu-color.svg"
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Zhipu reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "id": "moonshot",
@@ -706,7 +1135,16 @@
       "confidence": "official",
       "models": [],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/lobe/kimi-color.svg"
+      "logoAsset": "/model-assets/lobe/kimi-color.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Kimi reasoning capability does not imply a display-safe response field."
+      }
     },
     {
       "id": "xiaomi-mimo",
@@ -746,7 +1184,16 @@
             "streaming",
             "structured_output",
             "web_search"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "mimo-v2-pro",
@@ -759,7 +1206,16 @@
             "streaming",
             "structured_output",
             "web_search"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "mimo-v2.5",
@@ -774,7 +1230,16 @@
             "web_search",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "mimo-v2-omni",
@@ -789,7 +1254,16 @@
             "web_search",
             "vision",
             "multimodal"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "mimo-v2.5-flash",
@@ -895,7 +1369,16 @@
             "streaming",
             "structured_output",
             "web_search"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         },
         {
           "id": "mimo-v2-pro",
@@ -908,7 +1391,16 @@
             "streaming",
             "structured_output",
             "web_search"
-          ]
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+          }
         }
       ],
       "providerKind": "chat",
@@ -1030,7 +1522,16 @@
       "confidence": "provider_docs",
       "models": [],
       "logoAsset": "/model-assets/providers/xai.ico",
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+      }
     },
     {
       "id": "groq",
@@ -1089,7 +1590,16 @@
       "confidence": "official",
       "models": [],
       "providerKind": "local_runtime",
-      "logoAsset": "/model-assets/lobe/ollama.svg"
+      "logoAsset": "/model-assets/lobe/ollama.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "Local Ollama models vary by template; reasoning-like fields are not adapter verified."
+      }
     },
     {
       "id": "lmstudio",

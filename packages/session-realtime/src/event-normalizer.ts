@@ -540,7 +540,7 @@ function resolveTypedEventTargets(type: string, name: string): SessionRuntimeEve
     return ["runtime_card", "hud"];
   }
   if (normalizedType === "tool_start" || normalizedType === "tool_result") {
-    return ["message", "runtime_card", "process"];
+    return ["message", "process"];
   }
   if (normalizedType === "done" || normalizedType === "error") {
     return ["message", "runtime_card", "hud"];
@@ -841,6 +841,7 @@ function buildTypedEventFromMatrixEntry(
     return {
       type: "reasoning_chunk",
       content: pickFirstString(payload.content, payload.delta, payload.text, payload.message, payload.summary) || "",
+      reasoningKind: pickFirstString(payload.reasoningKind, payload.reasoning_kind, payload.displayKind, payload.display_kind),
       ...sharedBase,
     };
   }

@@ -45,6 +45,15 @@ type RemoteLinkConfig = {
     enabled?: boolean;
     activeProfileId?: string;
     transportProfiles?: RemoteLinkProfile[];
+    meshProviders?: Array<{
+        id?: string;
+        kind?: string;
+        enabled?: boolean;
+        mode?: string;
+        controlUrl?: string;
+        namespace?: string;
+        allowRouteMutation?: boolean;
+    }>;
 };
 
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
@@ -137,7 +146,7 @@ function withApiSuffix(value: unknown, suffix: string) {
 
 function normalizeTransportKind(value: unknown) {
     const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
-    return ["manual_url", "lan", "wireguard", "tailscale", "custom_vpn"].includes(normalized)
+    return ["manual_url", "lan", "wireguard", "tailscale", "headscale", "custom_vpn"].includes(normalized)
         ? normalized
         : "manual_url";
 }
@@ -153,6 +162,7 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
         { id: "lan", kind: "lan", label: "LAN", enabled: true },
         { id: "wireguard", kind: "wireguard", label: "WireGuard", enabled: true },
         { id: "tailscale", kind: "tailscale", label: "Tailscale", enabled: true },
+        { id: "headscale", kind: "headscale", label: "Headscale", enabled: true },
         { id: "custom-vpn", kind: "custom_vpn", label: "Custom VPN", enabled: true },
     ];
     const profilesById = new Map<string, RemoteLinkProfile>();
@@ -203,9 +213,17 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
         capabilities: {
             adminProxy: true,
             phoneUpload: true,
+            artifactPreview: true,
             runtimeEvents: true,
             networkSupervisorPeers: true,
         },
+        meshProviders: (remoteLink.meshProviders || []).map((provider) => ({
+            id: provider.id || provider.kind || "",
+            kind: provider.kind || provider.id || "",
+            enabled: provider.enabled !== false,
+            mode: provider.mode || "detect_only",
+            allowRouteMutation: false,
+        })),
         diagnostics: {
             readOnly: true,
             warnings,

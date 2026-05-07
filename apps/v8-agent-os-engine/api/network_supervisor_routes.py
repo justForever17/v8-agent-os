@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request, WebSocket
+from fastapi import APIRouter, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.system_base import get_internal_secret
@@ -44,6 +44,12 @@ from runtimes.network_supervisor.compat_wire_emitter import (
 )
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
+from core.headscale_admin import (
+    clear_headscale_api_key,
+    client_from_provider,
+    set_headscale_api_key,
+)
+from core.v8_link import build_mesh_provider_status
 
 
 router = APIRouter()
@@ -701,6 +707,16 @@ async def get_network_supervisor_peers():
     return network_supervisor_service.list_peers_payload()
 
 
+@router.get("/network-supervisor/mesh/candidates")
+async def get_network_supervisor_mesh_candidates():
+    mesh = build_mesh_provider_status()
+    return {
+        "ok": True,
+        "kind": "network_mesh_peer_candidates",
+        "items": list(mesh.get("peerCandidates") or []),
+    }
+
+
 @router.post("/network-supervisor/peers")
 async def post_network_supervisor_peer(payload: NetworkPeerMutationPayload):
     return network_supervisor_service.upsert_peer(payload)
@@ -716,6 +732,87 @@ async def patch_network_supervisor_peer(peer_id: str, payload: dict):
 @router.delete("/network-supervisor/peers/{peer_id}")
 async def delete_network_supervisor_peer(peer_id: str):
     return network_supervisor_service.delete_peer(peer_id)
+
+
+@router.get("/network-supervisor/headscale/status")
+async def get_network_supervisor_headscale_status():
+    return await client_from_provider().status()
+
+
+@router.post("/network-supervisor/headscale/api-key")
+async def post_network_supervisor_headscale_api_key(payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return set_headscale_api_key(str(body.get("apiKey") or "").strip())
+
+
+@router.delete("/network-supervisor/headscale/api-key")
+async def delete_network_supervisor_headscale_api_key():
+    return clear_headscale_api_key()
+
+
+@router.get("/network-supervisor/headscale/users")
+async def get_network_supervisor_headscale_users():
+    return await client_from_provider().users()
+
+
+@router.get("/network-supervisor/headscale/nodes")
+async def get_network_supervisor_headscale_nodes():
+    return await client_from_provider().nodes()
+
+
+@router.get("/network-supervisor/headscale/preauthkeys")
+async def get_network_supervisor_headscale_preauthkeys():
+    return await client_from_provider().preauth_keys()
+
+
+@router.post("/network-supervisor/headscale/preauthkeys")
+async def post_network_supervisor_headscale_preauthkey(payload: dict[str, Any] | None = None):
+    return await client_from_provider().create_preauth_key(dict(payload or {}))
+
+
+@router.post("/network-supervisor/headscale/register")
+async def post_network_supervisor_headscale_register(payload: dict[str, Any] | None = None):
+    return await client_from_provider().register_node(dict(payload or {}))
+
+
+@router.post("/network-supervisor/headscale/nodes/{node_id}/rename")
+async def post_network_supervisor_headscale_rename_node(node_id: str, payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return await client_from_provider().rename_node(node_id, str(body.get("newName") or "").strip())
+
+
+@router.post("/network-supervisor/headscale/nodes/{node_id}/expire")
+async def post_network_supervisor_headscale_expire_node(node_id: str, confirm: bool = Query(default=False)):
+    return await client_from_provider().expire_node(node_id, confirm=confirm)
+
+
+@router.delete("/network-supervisor/headscale/nodes/{node_id}")
+async def delete_network_supervisor_headscale_node(node_id: str, confirm: bool = Query(default=False)):
+    return await client_from_provider().delete_node(node_id, confirm=confirm)
+
+
+@router.post("/network-supervisor/headscale/nodes/{node_id}/routes")
+async def post_network_supervisor_headscale_routes(node_id: str, payload: dict[str, Any] | None = None, confirm: bool = Query(default=False)):
+    body = dict(payload or {})
+    routes = [str(item).strip() for item in list(body.get("routes") or []) if str(item).strip()]
+    return await client_from_provider().set_routes(node_id, routes, confirm=confirm)
+
+
+@router.post("/network-supervisor/headscale/nodes/{node_id}/tags")
+async def post_network_supervisor_headscale_tags(node_id: str, payload: dict[str, Any] | None = None, confirm: bool = Query(default=False)):
+    body = dict(payload or {})
+    tags = [str(item).strip() for item in list(body.get("tags") or []) if str(item).strip()]
+    return await client_from_provider().set_tags(node_id, tags, confirm=confirm)
+
+
+@router.get("/network-supervisor/headscale/policy")
+async def get_network_supervisor_headscale_policy():
+    return await client_from_provider().get_policy()
+
+
+@router.post("/network-supervisor/headscale/policy")
+async def post_network_supervisor_headscale_policy(payload: dict[str, Any] | None = None, confirm: bool = Query(default=False)):
+    return await client_from_provider().set_policy(dict(payload or {}), confirm=confirm)
 
 
 @router.post("/network-supervisor/diagnostics/challenge")

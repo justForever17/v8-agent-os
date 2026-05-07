@@ -1254,10 +1254,17 @@ class NetworkSupervisorService:
         items = self.list_peers()
         trusted_items = [item for item in items if bool(item.get("trusted"))]
         discovered_items = [item for item in items if bool(item.get("discovered")) and not bool(item.get("trusted"))]
+        try:
+            from core.v8_link import build_mesh_provider_status
+
+            mesh_candidates = list(build_mesh_provider_status().get("peerCandidates") or [])
+        except Exception:
+            mesh_candidates = []
         return {
             "items": items,
             "trustedItems": trusted_items,
             "discoveredItems": discovered_items,
+            "meshCandidates": mesh_candidates,
         }
 
     def upsert_peer(self, payload: NetworkPeerMutationPayload) -> dict[str, Any]:

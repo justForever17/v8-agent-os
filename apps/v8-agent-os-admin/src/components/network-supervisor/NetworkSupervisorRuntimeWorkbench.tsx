@@ -5,6 +5,7 @@ import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
+import { DocumentationGuideDialog } from "@/components/admin-shell/DocumentationGuideDialog";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,11 +33,29 @@ type PeerItem = {
     tokenFingerprint: string;
     source: string;
     address?: string;
+    transportProfileId?: string;
+    peerBaseUrl?: string;
+};
+type MeshCandidate = {
+    id?: string;
+    source?: string;
+    transportProfileId?: string;
+    hostName?: string;
+    dnsName?: string;
+    ips?: string[];
+    os?: string;
+    online?: boolean;
+    lastSeen?: string;
+    peerBaseUrl?: string;
+    deviceClass?: string;
+    requiresApproval?: boolean;
+    approvalReason?: string;
 };
 type PeersPayload = {
     items: PeerItem[];
     trustedItems: PeerItem[];
     discoveredItems: PeerItem[];
+    meshCandidates: MeshCandidate[];
 };
 type RuntimeConfig = {
     enabled: boolean;
@@ -151,6 +170,10 @@ type PeerForm = {
     allowedScopes: string;
     allowedWorkspaces: string;
     peerToken: string;
+    transportProfileId: string;
+    peerBaseUrl: string;
+    deviceClass: string;
+    requiresApproval: boolean;
 };
 type DiagState = {
     peerId: string;
@@ -245,8 +268,8 @@ const EMPTY_STATUS: RuntimeStatus = {
     delegationAvailability: { available: false, reasons: [] },
     toolAvailability: {},
 };
-const EMPTY_PEERS: PeersPayload = { items: [], trustedItems: [], discoveredItems: [] };
-const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", wsUrl: "", publicKey: "", allowedScopes: "", allowedWorkspaces: "", peerToken: "" };
+const EMPTY_PEERS: PeersPayload = { items: [], trustedItems: [], discoveredItems: [], meshCandidates: [] };
+const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", wsUrl: "", publicKey: "", allowedScopes: "", allowedWorkspaces: "", peerToken: "", transportProfileId: "", peerBaseUrl: "", deviceClass: "", requiresApproval: false };
 const EMPTY_DIAG: DiagState = { peerId: "", note: "", task: "", result: "" };
 const csv = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
 const lines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
@@ -328,6 +351,7 @@ function normalizePeers(value: unknown): PeersPayload {
         items: Array.isArray(payload.items) ? payload.items : [],
         trustedItems: Array.isArray(payload.trustedItems) ? payload.trustedItems : [],
         discoveredItems: Array.isArray(payload.discoveredItems) ? payload.discoveredItems : [],
+        meshCandidates: Array.isArray((payload as { meshCandidates?: unknown }).meshCandidates) ? (payload as { meshCandidates: MeshCandidate[] }).meshCandidates : [],
     };
 }
 export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: NetworkSupervisorRuntimeWorkbenchProps) {
@@ -341,6 +365,8 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const [diag, setDiag] = React.useState<DiagState>(EMPTY_DIAG);
     const [loading, setLoading] = React.useState(true);
     const [loadError, setLoadError] = React.useState<string | null>(null);
+    const [guideOpen, setGuideOpen] = React.useState(false);
+    const [docContent, setDocContent] = React.useState("");
     const [savingConfig, setSavingConfig] = React.useState(false);
     const [savingPeer, setSavingPeer] = React.useState(false);
     const [tokens, setTokens] = React.useState<OpenAICompatToken[]>([]);
@@ -425,6 +451,23 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             setAdminOrigin(window.location.origin);
         }
     }, []);
+    const loadDocumentation = React.useCallback(async () => {
+        try {
+            const response = await fetch(locale.startsWith("en") ? "/NETWORK_RUNTIME.en.md" : "/NETWORK_RUNTIME.zh-CN.md", { cache: "no-store" });
+            const fallback = await fetch("/NETWORK_RUNTIME.zh-CN.md", { cache: "no-store" });
+            const text = response.ok ? await response.text() : await fallback.text();
+            setDocContent(text);
+            setGuideOpen(true);
+        }
+        catch (error) {
+            console.error("Failed to load Network Runtime guide:", error);
+            toast({
+                variant: "destructive",
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.guideLoadFailed"),
+                description: error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.guideLoadFailedDescription"),
+            });
+        }
+    }, [locale, t, toast]);
     const loadAll = React.useCallback(async () => {
         setLoading(true);
         setLoadError(null);
@@ -572,8 +615,32 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             allowedScopes: joinCsv(peer.allowedScopes),
             allowedWorkspaces: joinLines(peer.allowedWorkspaces),
             peerToken: "",
+            transportProfileId: peer.transportProfileId || "",
+            peerBaseUrl: peer.peerBaseUrl || "",
+            deviceClass: "",
+            requiresApproval: false,
         });
     }, []);
+    const fillPeerFormFromMeshCandidate = React.useCallback((candidate: MeshCandidate) => {
+        const displayName = candidate.hostName || candidate.dnsName || candidate.ips?.[0] || "";
+        const peerBaseUrl = candidate.peerBaseUrl || (candidate.dnsName ? `http://${candidate.dnsName}:9530` : "");
+        setPeerForm({
+            ...EMPTY_PEER_FORM,
+            peerId: String(candidate.id || displayName).replace(/^(tailscale|headscale):/i, ""),
+            displayName,
+            baseUrl: peerBaseUrl,
+            transportProfileId: candidate.transportProfileId || "",
+            peerBaseUrl,
+            deviceClass: candidate.deviceClass || "",
+            requiresApproval: Boolean(candidate.requiresApproval || candidate.deviceClass === "phone"),
+        });
+        if (candidate.deviceClass === "phone" || candidate.requiresApproval) {
+            toast({
+                title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalTitle"),
+                description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalDescription"),
+            });
+        }
+    }, [t, toast]);
     const chooseDiagPeer = React.useCallback((peerId: string) => {
         setDiag((prev) => ({ ...prev, peerId }));
     }, []);
@@ -618,6 +685,19 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             });
             return;
         }
+        if (peerForm.requiresApproval) {
+            if (!peerForm.publicKey.trim() || !peerForm.peerToken.trim()) {
+                toast({
+                    variant: "destructive",
+                    title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalTitle"),
+                    description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerCredentialsRequired"),
+                });
+                return;
+            }
+            if (typeof window !== "undefined" && !window.confirm(t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalConfirm", { peer: peerForm.displayName || peerForm.peerId }))) {
+                return;
+            }
+        }
         setSavingPeer(true);
         try {
             const response = await fetch("/api/network-supervisor/peers", {
@@ -632,6 +712,8 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     allowedScopes: csv(peerForm.allowedScopes),
                     allowedWorkspaces: lines(peerForm.allowedWorkspaces),
                     peerToken: peerForm.peerToken.trim(),
+                    transportProfileId: peerForm.transportProfileId.trim() || undefined,
+                    peerBaseUrl: peerForm.peerBaseUrl.trim() || undefined,
                 }),
             });
             const payload = await response.json().catch(() => ({}));
@@ -741,6 +823,9 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             <AdminPageHeader title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k45a604ec"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.description"} badges={["components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kcd4380d3", "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k959f4745"]} actions={<>
                         <Button variant="outline" onClick={() => void loadAll()} disabled={loading}>
                             {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k876e8c06")}
+                        </Button>
+                        <Button variant="outline" onClick={() => void loadDocumentation()}>
+                            {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.guideButton")}
                         </Button>
                         <Button asChild variant="outline">
                             <Link href={docsUrl} target="_blank">
@@ -1147,6 +1232,40 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     <div className="space-y-6">
                         <section className="space-y-3">
                             <div className="flex items-center justify-between">
+                                <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshCandidatesTitle")}</h3>
+                                <Badge variant="outline">{peers.meshCandidates.length}</Badge>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs leading-5 text-slate-600">
+                                {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshCandidatesPolicy")}
+                            </div>
+                            {peers.meshCandidates.length ? (<div className="space-y-3">
+                                    {peers.meshCandidates.map((candidate) => (
+                                        <div key={candidate.id || candidate.peerBaseUrl || candidate.hostName} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <div className="font-medium text-slate-900">{candidate.hostName || candidate.dnsName || candidate.ips?.[0] || t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshUnknownPeer")}</div>
+                                                <Badge variant="secondary">{candidate.source || "mesh"}</Badge>
+                                                <Badge variant={candidate.online ? "default" : "secondary"}>{candidate.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
+                                                {candidate.deviceClass === "phone" ? <Badge variant="outline">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerCandidateBadge")}</Badge> : null}
+                                            </div>
+                                            <div className="mt-2 space-y-1 text-xs text-slate-500">
+                                                <div className="break-all">{candidate.peerBaseUrl || candidate.dnsName || candidate.ips?.join(" · ") || "—"}</div>
+                                                {candidate.os ? <div>{candidate.os}</div> : null}
+                                                {candidate.deviceClass === "phone" || candidate.requiresApproval ? <div className="text-amber-700">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalHint")}</div> : null}
+                                            </div>
+                                            <div className="mt-4 flex flex-wrap gap-2">
+                                                <Button variant="outline" size="sm" onClick={() => fillPeerFormFromMeshCandidate(candidate)}>
+                                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshUseCandidate")}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>) : (<div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                    {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshNoCandidates")}
+                                </div>)}
+                        </section>
+
+                        <section className="space-y-3">
+                            <div className="flex items-center justify-between">
                                 <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb07e9c89")}</h3>
                                 <Badge variant="outline">{peers.discoveredItems.length}</Badge>
                             </div>
@@ -1233,6 +1352,16 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                             <Label htmlFor="peer-form-base">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd575b517")}</Label>
                             <Input id="peer-form-base" value={peerForm.baseUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, baseUrl: event.target.value }))}/>
                         </div>
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                                <Label htmlFor="peer-form-transport">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshTransportProfile")}</Label>
+                                <Input id="peer-form-transport" value={peerForm.transportProfileId} onChange={(event) => setPeerForm((prev) => ({ ...prev, transportProfileId: event.target.value }))}/>
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="peer-form-peer-base">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshPeerBaseUrl")}</Label>
+                                <Input id="peer-form-peer-base" value={peerForm.peerBaseUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, peerBaseUrl: event.target.value }))}/>
+                            </div>
+                        </div>
                         <div className="space-y-2">
                             <Label htmlFor="peer-form-ws">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb0019af3")}</Label>
                             <Input id="peer-form-ws" value={peerForm.wsUrl} onChange={(event) => setPeerForm((prev) => ({ ...prev, wsUrl: event.target.value }))}/>
@@ -1299,5 +1428,12 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     </div>
                 </div>
             </ConfigCard>
+            <DocumentationGuideDialog
+                open={guideOpen}
+                onOpenChange={setGuideOpen}
+                title={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.guideTitle")}
+                description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.guideDescription")}
+                content={docContent}
+            />
         </AdminPageShell>);
 }

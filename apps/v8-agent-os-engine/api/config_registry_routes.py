@@ -23,7 +23,7 @@ from core.prompt_budget import (
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from core.system_base import detect_desktop_tools_readiness
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
-from core.v8_link import build_link_manifest, normalize_remote_link_config
+from core.v8_link import build_link_manifest, build_mesh_provider_status, normalize_remote_link_config
 from core.v8_agent_os_identity import render_system_identity_block
 from core.v8_agent_os_paths import COMPUTER_USE_JSON_PATH, CONFIG_JSON_PATH, V8_AGENT_OS_HOME
 from core.workspace_guard import build_workspace_path_status
@@ -1006,6 +1006,10 @@ def _build_system_base_domain() -> dict[str, Any]:
             "desktopLive": dict(system_base.get("desktopLive") or {}),
             "remoteLink": remote_link,
             "remoteLinkManifest": build_link_manifest(),
+            "remoteLinkMeshStatus": build_mesh_provider_status(
+                admin_base_url=bridge.get("adminBaseUrl") or "",
+                engine_base_url=bridge.get("engineBaseUrl") or "",
+            ),
             "s3": dict(system_base.get("s3") or {}),
             "desktopReadiness": {
                 "status": desktop_readiness.get("status"),

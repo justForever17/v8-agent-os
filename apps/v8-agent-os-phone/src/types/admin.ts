@@ -79,6 +79,14 @@ export type V8LinkManifest = {
     };
     warnings?: string[];
     diagnostics?: V8LinkDiagnostics;
+    meshProviders?: Array<{
+        id?: string;
+        kind?: string;
+        enabled?: boolean;
+        status?: string;
+        dnsName?: string;
+        addresses?: string[];
+    }>;
 };
 
 export type ProjectSummary = {

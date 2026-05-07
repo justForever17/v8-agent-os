@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import platform
 import socket
 import subprocess
@@ -8,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-TRANSPORT_KINDS = {"manual_url", "lan", "wireguard", "tailscale", "custom_vpn"}
+TRANSPORT_KINDS = {"manual_url", "lan", "wireguard", "tailscale", "headscale", "custom_vpn"}
 
 
 def normalize_transport_kind(value: Any) -> str:
@@ -61,9 +62,28 @@ def default_remote_link_config(*, admin_base_url: str = "", engine_base_url: str
             {"id": "lan", "kind": "lan", "label": "LAN", "enabled": True},
             {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},
             {"id": "tailscale", "kind": "tailscale", "label": "Tailscale", "enabled": True},
+            {"id": "headscale", "kind": "headscale", "label": "Headscale", "enabled": True},
             {"id": "custom-vpn", "kind": "custom_vpn", "label": "Custom VPN", "enabled": True},
         ],
         "diagnostics": {"readOnly": True},
+        "meshProviders": [
+            {
+                "id": "tailscale",
+                "kind": "tailscale",
+                "enabled": True,
+                "mode": "detect_only",
+                "allowRouteMutation": False,
+            },
+            {
+                "id": "headscale",
+                "kind": "headscale",
+                "enabled": False,
+                "mode": "external_control_plane",
+                "controlUrl": "",
+                "namespace": "",
+                "allowRouteMutation": False,
+            },
+        ],
     }
 
 
@@ -100,7 +120,30 @@ def normalize_remote_link_config(config: dict[str, Any] | None, *, admin_base_ur
         "activeProfileId": active_profile_id,
         "transportProfiles": profiles,
         "diagnostics": {"readOnly": True, **dict(incoming.get("diagnostics") or {})},
+        "meshProviders": normalize_mesh_provider_config(incoming.get("meshProviders")),
     }
+
+
+def normalize_mesh_provider_config(value: Any) -> list[dict[str, Any]]:
+    defaults = default_remote_link_config()["meshProviders"]
+    providers_by_id = {
+        str(item.get("id") or "").strip(): dict(item)
+        for item in defaults
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    for item in list(value or []):
+        if not isinstance(item, dict):
+            continue
+        provider_id = str(item.get("id") or item.get("kind") or "").strip().lower()
+        if not provider_id:
+            continue
+        merged = {**providers_by_id.get(provider_id, {}), **item}
+        merged["id"] = provider_id
+        merged["kind"] = str(merged.get("kind") or provider_id).strip().lower()
+        merged["enabled"] = bool(merged.get("enabled", provider_id == "tailscale"))
+        merged["allowRouteMutation"] = False
+        providers_by_id[provider_id] = merged
+    return list(providers_by_id.values())
 
 
 def _host_is_loopback(host: str) -> bool:
@@ -178,6 +221,198 @@ def _vpn_presence() -> dict[str, Any]:
     }
 
 
+def _url_scheme_host_port(value: str, fallback_port: int) -> tuple[str, int]:
+    parsed = urlparse(strip_api_suffix(value))
+    scheme = parsed.scheme or "http"
+    port = int(parsed.port or fallback_port)
+    return scheme, port
+
+
+def _url_for_host(value: str, host: str, fallback_port: int) -> str:
+    scheme, port = _url_scheme_host_port(value, fallback_port)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{port}"
+
+
+def _device_class(os_name: Any, *names: Any) -> str:
+    haystack = " ".join(str(item or "") for item in (os_name, *names)).strip().lower()
+    if any(token in haystack for token in ("ios", "iphone", "ipad", "android", "phone", "mobile")):
+        return "phone"
+    if any(token in haystack for token in ("windows", "macos", "darwin", "linux", "desktop", "server")):
+        return "computer"
+    return "unknown"
+
+
+def _candidate_approval_fields(device_class: str) -> dict[str, Any]:
+    if device_class == "phone":
+        return {
+            "requiresApproval": True,
+            "approvalReason": "phone_peer_requires_v8_phone_peer_support",
+        }
+    return {"requiresApproval": False, "approvalReason": ""}
+
+
+def _tailscale_status() -> dict[str, Any]:
+    raw = _run_readonly_command(["tailscale", "status", "--json"], timeout=2.5)
+    if not raw:
+        return {
+            "id": "tailscale",
+            "kind": "tailscale",
+            "installed": False,
+            "loggedIn": False,
+            "status": "unavailable",
+            "warnings": ["tailscale_cli_unavailable"],
+            "recommendedNextAction": "Install and log in to Tailscale, then refresh V8 Link diagnostics.",
+        }
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {
+            "id": "tailscale",
+            "kind": "tailscale",
+            "installed": True,
+            "loggedIn": False,
+            "status": "unreadable",
+            "warnings": ["tailscale_status_unreadable"],
+            "recommendedNextAction": "Run tailscale status locally and ensure the client is logged in.",
+        }
+    self_node = dict(payload.get("Self") or {})
+    addresses = [str(item).strip() for item in list(self_node.get("TailscaleIPs") or []) if str(item).strip()]
+    dns_name = str(self_node.get("DNSName") or "").strip().rstrip(".")
+    online = bool(self_node.get("Online")) if "Online" in self_node else bool(addresses)
+    peer_candidates: list[dict[str, Any]] = []
+    for key, raw_peer in dict(payload.get("Peer") or {}).items():
+        if not isinstance(raw_peer, dict):
+            continue
+        peer_dns = str(raw_peer.get("DNSName") or "").strip().rstrip(".")
+        peer_ips = [str(item).strip() for item in list(raw_peer.get("TailscaleIPs") or []) if str(item).strip()]
+        peer_host = str(raw_peer.get("HostName") or raw_peer.get("DNSName") or key or "").strip()
+        peer_os = str(raw_peer.get("OS") or "").strip()
+        preferred = peer_dns or (peer_ips[0] if peer_ips else "")
+        if not preferred:
+            continue
+        device_class = _device_class(peer_os, peer_host, peer_dns)
+        peer_candidates.append(
+            {
+                "id": f"tailscale:{peer_dns or peer_host or preferred}",
+                "source": "tailscale",
+                "transportProfileId": "tailscale",
+                "hostName": peer_host,
+                "dnsName": peer_dns,
+                "ips": peer_ips,
+                "os": peer_os,
+                "online": bool(raw_peer.get("Online")),
+                "lastSeen": str(raw_peer.get("LastSeen") or "").strip(),
+                "peerBaseUrl": _url_for_host("", preferred, 9530),
+                "deviceClass": device_class,
+                **_candidate_approval_fields(device_class),
+            }
+        )
+    return {
+        "id": "tailscale",
+        "kind": "tailscale",
+        "installed": True,
+        "loggedIn": bool(addresses or dns_name),
+        "status": "online" if online else "offline",
+        "hostName": str(self_node.get("HostName") or "").strip(),
+        "dnsName": dns_name,
+        "addresses": addresses,
+        "tailnet": str((payload.get("CurrentTailnet") or {}).get("Name") or "").strip(),
+        "peerCandidates": peer_candidates,
+        "warnings": [] if addresses or dns_name else ["tailscale_logged_out_or_no_ip"],
+        "recommendedNextAction": (
+            "Use the recommended Tailscale URL as a V8 Link TransportProfile."
+            if addresses or dns_name
+            else "Log in to Tailscale on the Engine/Admin machine."
+        ),
+    }
+
+
+def build_mesh_provider_status(*, admin_base_url: str = "", engine_base_url: str = "") -> dict[str, Any]:
+    from core.storage import storage
+
+    system_base = storage.get_system_base_config()
+    remote_link = normalize_remote_link_config(
+        dict(system_base.get("remoteLink") or {}),
+        admin_base_url=admin_base_url or (system_base.get("bridge") or {}).get("adminBaseUrl") or "",
+        engine_base_url=engine_base_url or (system_base.get("bridge") or {}).get("engineBaseUrl") or "",
+    )
+    bridge = dict(system_base.get("bridge") or {})
+    admin_base = strip_api_suffix(admin_base_url or bridge.get("adminBaseUrl"))
+    engine_base = strip_api_suffix(engine_base_url or bridge.get("engineBaseUrl"))
+    providers: list[dict[str, Any]] = []
+    provider_config = {
+        str(item.get("id") or item.get("kind") or "").strip().lower(): dict(item)
+        for item in list(remote_link.get("meshProviders") or [])
+        if isinstance(item, dict)
+    }
+    tailscale_config = provider_config.get("tailscale", {})
+    tailscale = {**tailscale_config, **_tailscale_status(), "enabled": bool(tailscale_config.get("enabled", True))}
+    preferred_hosts = [str(tailscale.get("dnsName") or "").strip(), *list(tailscale.get("addresses") or [])]
+    preferred_host = next((item for item in preferred_hosts if item), "")
+    if preferred_host:
+        tailscale["recommendedUrls"] = {
+            "adminBaseUrl": _url_for_host(admin_base, preferred_host, 9528),
+            "engineBaseUrl": _url_for_host(engine_base, preferred_host, 9530),
+            "peerBaseUrl": _url_for_host(engine_base, preferred_host, 9530),
+        }
+    providers.append(tailscale)
+
+    headscale_config = provider_config.get("headscale", {})
+    headscale_enabled = bool(headscale_config.get("enabled", False))
+    try:
+        from core.headscale_admin import headscale_status_snapshot
+
+        headscale_snapshot = headscale_status_snapshot(headscale_config)
+    except Exception:
+        headscale_snapshot = {}
+    providers.append(
+        {
+            "id": "headscale",
+            "kind": "headscale",
+            "enabled": headscale_enabled,
+            "installed": bool(headscale_config.get("controlUrl")),
+            "loggedIn": bool(headscale_snapshot.get("apiKeyConfigured")),
+            "status": str(
+                headscale_snapshot.get("status")
+                or ("configured" if headscale_enabled and headscale_config.get("controlUrl") else "not_configured")
+            ),
+            "controlUrl": str(headscale_config.get("controlUrl") or "").strip(),
+            "namespace": str(headscale_config.get("namespace") or "").strip(),
+            "allowRouteMutation": False,
+            "apiKeyConfigured": bool(headscale_snapshot.get("apiKeyConfigured")),
+            "apiKeyFingerprint": str(headscale_snapshot.get("apiKeyFingerprint") or ""),
+            "capabilities": headscale_snapshot.get("capabilities") or {},
+            "peerCandidates": list(headscale_snapshot.get("peerCandidates") or []),
+            "warnings": list(headscale_snapshot.get("warnings") or ([] if not headscale_enabled else ["headscale_api_key_not_configured"])),
+            "recommendedNextAction": (
+                str(headscale_snapshot.get("recommendedNextAction") or "")
+                if headscale_enabled
+                else "Enable only if you already operate a Headscale control plane."
+            ),
+        }
+    )
+    peer_candidates = []
+    for provider in providers:
+        for candidate in list(provider.get("peerCandidates") or []):
+            if isinstance(candidate, dict):
+                peer_candidates.append(candidate)
+    return {
+        "ok": True,
+        "kind": "v8_mesh_provider_status",
+        "readOnly": True,
+        "providers": providers,
+        "peerCandidates": peer_candidates,
+        "policy": {
+            "installsClients": False,
+            "mutatesRoutes": False,
+            "managesKeys": bool(headscale_snapshot.get("apiKeyConfigured")),
+            "requiresAuth": True,
+        },
+    }
+
+
 def _port_probe(url: str) -> dict[str, Any]:
     parsed = urlparse(strip_api_suffix(url))
     host = parsed.hostname or ""
@@ -197,14 +432,18 @@ def build_vpn_diagnostics(*, admin_base_url: str = "", engine_base_url: str = ""
     candidate_ips = _candidate_ips()
     vpn = _vpn_presence()
     warnings: list[str] = []
+    info: list[str] = []
+    tailscale_healthy = bool(vpn.get("tailscaleDetected") and vpn.get("tailscaleStatusReadable"))
     for label, value in (("admin", admin_base), ("engine", engine_base)):
         parsed = urlparse(value)
         if parsed.hostname and _host_is_loopback(parsed.hostname):
-            warnings.append(f"{label}_loopback_not_reachable_from_phone")
+            target = info if tailscale_healthy else warnings
+            target.append(f"{label}_loopback_not_reachable_from_phone")
     if not candidate_ips:
         warnings.append("no_private_ip_detected")
     if not vpn.get("wireguardDetected"):
-        warnings.append("wireguard_not_detected")
+        target = info if tailscale_healthy else warnings
+        target.append("wireguard_not_detected")
     if not vpn.get("tailscaleDetected"):
         warnings.append("tailscale_not_detected")
     return {
@@ -217,6 +456,7 @@ def build_vpn_diagnostics(*, admin_base_url: str = "", engine_base_url: str = ""
             "engine": _port_probe(engine_base) if engine_base else {"reachable": False, "reason": "missing_url"},
         },
         "warnings": warnings,
+        "info": info,
         "notes": [
             "V8 only observes VPN state; it does not change WireGuard/Tailscale routes, DNS, MTU, or keys.",
         ],
@@ -250,6 +490,12 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
     active = _active_profile(remote_link)
     transport_kind = normalize_transport_kind(active.get("kind"))
     diagnostics = build_vpn_diagnostics(admin_base_url=admin_base, engine_base_url=engine_base)
+    mesh_status = build_mesh_provider_status(admin_base_url=admin_base, engine_base_url=engine_base)
+    tailscale_recommended = {}
+    for provider in list(mesh_status.get("providers") or []):
+        if str(provider.get("kind") or "") == "tailscale":
+            tailscale_recommended = dict(provider.get("recommendedUrls") or {})
+            break
     warnings = list(diagnostics.get("warnings") or [])
     if not remote_link.get("enabled", True):
         warnings.append("remote_link_disabled")
@@ -272,7 +518,18 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
         "profiles": [
             {
                 key: value
-                for key, value in dict(item).items()
+                for key, value in {
+                    **(
+                        {
+                            "adminBaseUrl": tailscale_recommended.get("adminBaseUrl"),
+                            "engineBaseUrl": tailscale_recommended.get("engineBaseUrl"),
+                            "peerBaseUrl": tailscale_recommended.get("peerBaseUrl"),
+                        }
+                        if normalize_transport_kind(dict(item).get("kind")) == "tailscale"
+                        else {}
+                    ),
+                    **dict(item),
+                }.items()
                 if key in {"id", "kind", "label", "enabled", "adminBaseUrl", "engineBaseUrl", "peerBaseUrl"}
                 and value not in (None, "")
             }
@@ -282,10 +539,13 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
         "capabilities": {
             "adminProxy": True,
             "phoneUpload": True,
+            "artifactPreview": True,
             "runtimeEvents": True,
             "networkSupervisorPeers": True,
         },
         "diagnostics": diagnostics,
+        "meshProviders": mesh_status.get("providers", []),
+        "peerCandidates": mesh_status.get("peerCandidates", []),
         "warnings": warnings,
     }
 

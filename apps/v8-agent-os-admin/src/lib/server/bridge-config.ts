@@ -51,6 +51,15 @@ export type CanonicalConfig = {
                 engineBaseUrl?: string;
                 peerBaseUrl?: string;
             }>;
+            meshProviders?: Array<{
+                id?: string;
+                kind?: string;
+                enabled?: boolean;
+                mode?: string;
+                controlUrl?: string;
+                namespace?: string;
+                allowRouteMutation?: boolean;
+            }>;
         };
     };
     workspace?: {

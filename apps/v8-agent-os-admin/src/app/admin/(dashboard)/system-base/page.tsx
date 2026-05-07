@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Save, Shield, Server, Wrench } from "lucide-react";
+import { AlertTriangle, CheckCircle2, KeyRound, Loader2, RefreshCw, Save, Shield, Server, Trash2, Wrench } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -60,6 +60,15 @@ type SystemBaseData = {
             engineBaseUrl?: string;
             peerBaseUrl?: string;
         }>;
+        meshProviders?: Array<{
+            id?: string;
+            kind?: string;
+            enabled?: boolean;
+            mode?: string;
+            controlUrl?: string;
+            namespace?: string;
+            allowRouteMutation?: boolean;
+        }>;
     };
     remoteLinkManifest?: {
         transportKind?: string;
@@ -73,13 +82,43 @@ type SystemBaseData = {
             apiBaseUrl?: string;
         };
         warnings?: string[];
+        peerCandidates?: MeshPeerCandidate[];
         diagnostics?: {
             warnings?: string[];
+            info?: string[];
             candidateIps?: Array<{ address?: string; family?: string; private?: boolean }>;
             vpn?: {
                 wireguardDetected?: boolean;
                 tailscaleDetected?: boolean;
             };
+        };
+    };
+    remoteLinkMeshStatus?: {
+        providers?: Array<{
+            id?: string;
+            kind?: string;
+            enabled?: boolean;
+            installed?: boolean;
+            loggedIn?: boolean;
+            status?: string;
+            dnsName?: string;
+            addresses?: string[];
+            recommendedUrls?: {
+                adminBaseUrl?: string;
+                engineBaseUrl?: string;
+                peerBaseUrl?: string;
+            };
+            warnings?: string[];
+            recommendedNextAction?: string;
+            apiKeyConfigured?: boolean;
+            apiKeyFingerprint?: string;
+            peerCandidates?: MeshPeerCandidate[];
+        }>;
+        peerCandidates?: MeshPeerCandidate[];
+        policy?: {
+            mutatesRoutes?: boolean;
+            managesKeys?: boolean;
+            installsClients?: boolean;
         };
     };
     s3?: {
@@ -120,6 +159,27 @@ type SystemBaseData = {
             detail?: string;
         };
     }>;
+};
+
+type MeshPeerCandidate = {
+    id?: string;
+    source?: string;
+    transportProfileId?: string;
+    hostName?: string;
+    dnsName?: string;
+    ips?: string[];
+    os?: string;
+    online?: boolean;
+    lastSeen?: string;
+    peerBaseUrl?: string;
+};
+
+type HeadscalePanelData = {
+    status?: Record<string, unknown>;
+    users?: Array<Record<string, unknown>>;
+    nodes?: Array<Record<string, unknown>>;
+    preauthKeys?: Array<Record<string, unknown>>;
+    createdPreauthKey?: Record<string, unknown> | null;
 };
 
 function formatEndpointSummary(value?: string, emptyLabel = "Not set") {
@@ -169,6 +229,7 @@ function transportLabel(kind: string | undefined, t: (value: string) => string) 
     if (normalized === "lan") return "LAN";
     if (normalized === "wireguard") return "WireGuard";
     if (normalized === "tailscale") return "Tailscale";
+    if (normalized === "headscale") return "Headscale";
     if (normalized === "custom_vpn") return t("app.admin.dashboard.system.base.remoteLink.customVpn");
     return t("app.admin.dashboard.system.base.remoteLink.manualUrl");
 }
@@ -222,6 +283,12 @@ export default function SystemBasePage() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [headscaleBusy, setHeadscaleBusy] = useState(false);
+    const [headscaleApiKey, setHeadscaleApiKey] = useState("");
+    const [headscaleUserId, setHeadscaleUserId] = useState("");
+    const [headscaleTtlMinutes, setHeadscaleTtlMinutes] = useState(60);
+    const [headscaleMessage, setHeadscaleMessage] = useState("");
+    const [headscaleData, setHeadscaleData] = useState<HeadscalePanelData>({});
 
     const loadData = async () => {
         setLoading(true);
@@ -281,6 +348,110 @@ export default function SystemBasePage() {
         }
     };
 
+    const headscaleRequest = async (path: string, init?: RequestInit) => {
+        const response = await fetch(`/api/network-supervisor/headscale${path}`, {
+            cache: "no-store",
+            ...init,
+            headers: {
+                ...(init?.body ? { "Content-Type": "application/json" } : {}),
+                ...(init?.headers || {}),
+            },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const detail = payload?.detail;
+            throw new Error(
+                typeof detail === "string"
+                    ? detail
+                    : detail?.failureClass || payload?.error || "Headscale request failed",
+            );
+        }
+        return payload;
+    };
+
+    const refreshHeadscale = async () => {
+        setHeadscaleBusy(true);
+        setHeadscaleMessage("");
+        try {
+            const [status, users, nodes, preauthKeys] = await Promise.all([
+                headscaleRequest("/status").catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) })),
+                headscaleRequest("/users").catch(() => ({ items: [] })),
+                headscaleRequest("/nodes").catch(() => ({ items: [] })),
+                headscaleRequest("/preauthkeys").catch(() => ({ items: [] })),
+            ]);
+            setHeadscaleData({
+                status,
+                users: Array.isArray(users.items) ? users.items : [],
+                nodes: Array.isArray(nodes.items) ? nodes.items : [],
+                preauthKeys: Array.isArray(preauthKeys.items) ? preauthKeys.items : [],
+            });
+        } finally {
+            setHeadscaleBusy(false);
+        }
+    };
+
+    const saveHeadscaleApiKey = async () => {
+        setHeadscaleBusy(true);
+        setHeadscaleMessage("");
+        try {
+            await headscaleRequest("/api-key", {
+                method: "POST",
+                body: JSON.stringify({ apiKey: headscaleApiKey }),
+            });
+            setHeadscaleApiKey("");
+            setHeadscaleMessage(t("app.admin.dashboard.system.base.remoteLink.headscaleKeySaved"));
+            await loadData();
+            await refreshHeadscale();
+        } finally {
+            setHeadscaleBusy(false);
+        }
+    };
+
+    const clearHeadscaleApiKey = async () => {
+        if (!window.confirm(t("app.admin.dashboard.system.base.remoteLink.headscaleClearConfirm"))) return;
+        setHeadscaleBusy(true);
+        try {
+            await headscaleRequest("/api-key", { method: "DELETE" });
+            setHeadscaleMessage(t("app.admin.dashboard.system.base.remoteLink.headscaleKeyCleared"));
+            await loadData();
+            setHeadscaleData({});
+        } finally {
+            setHeadscaleBusy(false);
+        }
+    };
+
+    const createHeadscalePreauthKey = async () => {
+        setHeadscaleBusy(true);
+        setHeadscaleMessage("");
+        try {
+            const payload = await headscaleRequest("/preauthkeys", {
+                method: "POST",
+                body: JSON.stringify({ user: headscaleUserId, ttlMinutes: headscaleTtlMinutes, reusable: false, ephemeral: false }),
+            });
+            setHeadscaleData((current) => ({ ...current, createdPreauthKey: payload.preAuthKey || null }));
+            setHeadscaleMessage(t("app.admin.dashboard.system.base.remoteLink.headscalePreauthCreated"));
+            await refreshHeadscale();
+        } finally {
+            setHeadscaleBusy(false);
+        }
+    };
+
+    const dangerousHeadscaleNodeAction = async (nodeId: string, action: "expire" | "delete") => {
+        const label = action === "expire"
+            ? t("app.admin.dashboard.system.base.remoteLink.headscaleExpireNode")
+            : t("app.admin.dashboard.system.base.remoteLink.headscaleDeleteNode");
+        if (!window.confirm(`${label}: ${nodeId}`)) return;
+        setHeadscaleBusy(true);
+        try {
+            await headscaleRequest(`/nodes/${encodeURIComponent(nodeId)}${action === "expire" ? "/expire" : ""}?confirm=true`, {
+                method: action === "delete" ? "DELETE" : "POST",
+            });
+            await refreshHeadscale();
+        } finally {
+            setHeadscaleBusy(false);
+        }
+    };
+
     const applyDetectedDesktopTools = () => {
         const detected = envelope?.data.detectedDesktopTools;
         if (!detected) return;
@@ -308,7 +479,13 @@ export default function SystemBasePage() {
     const desktopLive = envelope.data.desktopLive || {};
     const remoteLink = envelope.data.remoteLink || {};
     const remoteLinkManifest = envelope.data.remoteLinkManifest || {};
+    const remoteLinkMeshStatus = envelope.data.remoteLinkMeshStatus || {};
     const remoteLinkProfiles = remoteLink.transportProfiles || [];
+    const meshProviders = remoteLink.meshProviders || [];
+    const meshProviderStatuses = remoteLinkMeshStatus.providers || [];
+    const meshPeerCandidates = remoteLinkMeshStatus.peerCandidates || remoteLinkManifest.peerCandidates || [];
+    const headscaleCreatedKey = String(headscaleData.createdPreauthKey?.["key"] || "");
+    const headscaleStatusError = String(headscaleData.status?.["error"] || "");
     const activeRemoteLinkProfile = remoteLinkProfiles.find((profile) => profile.id === remoteLink.activeProfileId) || remoteLinkProfiles[0] || {};
     const desktopLivePreset = deriveDesktopLivePreset(desktopLive);
     const s3 = envelope.data.s3 || {};
@@ -532,8 +709,244 @@ export default function SystemBasePage() {
                                     {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).slice(0, 4).join(" · ")}
                                 </div>
                             ) : null}
+                            {(remoteLinkManifest.diagnostics?.info || []).length > 0 ? (
+                                <div className="mt-2 text-slate-500">
+                                    {t("app.admin.dashboard.system.base.remoteLink.info")}{" "}
+                                    {(remoteLinkManifest.diagnostics?.info || []).slice(0, 4).join(" · ")}
+                                </div>
+                            ) : null}
                             <div className="mt-2 text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.readOnlyNotice")}</div>
                         </div>
+                        <AdvancedSection
+                            title={t("app.admin.dashboard.system.base.remoteLink.meshProviders")}
+                            description={t("app.admin.dashboard.system.base.remoteLink.meshProvidersHelp")}
+                            defaultOpen={false}
+                        >
+                            <div className="space-y-3">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                    <div className="mb-3 flex items-center justify-between gap-3">
+                                        <div>
+                                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.system.base.remoteLink.peerCandidates")}</div>
+                                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.peerCandidatesHelp")}</div>
+                                        </div>
+                                        <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-600">{meshPeerCandidates.length}</span>
+                                    </div>
+                                    {meshPeerCandidates.length > 0 ? (
+                                        <div className="grid gap-2">
+                                            {meshPeerCandidates.slice(0, 8).map((candidate) => (
+                                                <div key={candidate.id || candidate.peerBaseUrl || candidate.hostName} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+                                                    <div className="min-w-0">
+                                                        <div className="truncate font-semibold text-slate-800">
+                                                            {candidate.hostName || candidate.dnsName || candidate.ips?.[0] || t("app.admin.dashboard.system.base.remoteLink.unknownPeer")}
+                                                        </div>
+                                                        <div className="truncate text-slate-500">
+                                                            {candidate.source} · {candidate.os || t("app.admin.dashboard.system.base.page.k6ed9c299")} · {candidate.peerBaseUrl || candidate.ips?.join(" · ")}
+                                                        </div>
+                                                    </div>
+                                                    <div className={candidate.online ? "text-emerald-700" : "text-slate-400"}>
+                                                        {candidate.online ? t("app.admin.dashboard.system.base.remoteLink.peerOnline") : t("app.admin.dashboard.system.base.remoteLink.peerOffline")}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
+                                            {t("app.admin.dashboard.system.base.remoteLink.noPeerCandidates")}
+                                        </div>
+                                    )}
+                                </div>
+                                {meshProviderStatuses.map((providerStatus) => {
+                                    const providerConfig = meshProviders.find((item) => item.id === providerStatus.id || item.kind === providerStatus.kind) || {};
+                                    return (
+                                        <div key={providerStatus.id || providerStatus.kind} className="rounded-2xl border border-slate-200 bg-white p-4">
+                                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                                <div className="space-y-1">
+                                                    <div className="text-sm font-semibold text-slate-900">
+                                                        {providerStatus.kind === "headscale" ? "Headscale" : "Tailscale"}
+                                                        <span className="ml-2 text-xs font-medium text-slate-500">{providerStatus.status || "unknown"}</span>
+                                                    </div>
+                                                    <div className="text-xs leading-5 text-slate-500">
+                                                        {providerStatus.dnsName || providerStatus.addresses?.[0] || providerStatus.recommendedNextAction || t("app.admin.dashboard.system.base.remoteLink.noMeshAddress")}
+                                                    </div>
+                                                </div>
+                                                <Switch
+                                                    checked={providerConfig.enabled !== false && providerStatus.enabled !== false}
+                                                    onCheckedChange={(checked) =>
+                                                        updateData((current) => {
+                                                            const currentRemote = current.remoteLink || {};
+                                                            const existing = currentRemote.meshProviders || meshProviders;
+                                                            const targetId = providerStatus.id || providerStatus.kind || "";
+                                                            const nextProviders = existing.map((provider) => (
+                                                                (provider.id || provider.kind) === targetId
+                                                                    ? { ...provider, enabled: checked, allowRouteMutation: false }
+                                                                    : provider
+                                                            ));
+                                                            return {
+                                                                ...current,
+                                                                remoteLink: { ...currentRemote, meshProviders: nextProviders },
+                                                            };
+                                                        })
+                                                    }
+                                                />
+                                            </div>
+                                            {providerStatus.recommendedUrls ? (
+                                                <div className="mt-3 grid gap-2 text-xs md:grid-cols-3">
+                                                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                                                        <div className="font-medium text-slate-700">Admin</div>
+                                                        <div className="break-all text-slate-500">{providerStatus.recommendedUrls.adminBaseUrl}</div>
+                                                    </div>
+                                                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                                                        <div className="font-medium text-slate-700">Engine</div>
+                                                        <div className="break-all text-slate-500">{providerStatus.recommendedUrls.engineBaseUrl}</div>
+                                                    </div>
+                                                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                                                        <div className="font-medium text-slate-700">Peer</div>
+                                                        <div className="break-all text-slate-500">{providerStatus.recommendedUrls.peerBaseUrl}</div>
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                            {providerStatus.kind === "headscale" ? (
+                                                <div className="mt-3 space-y-3">
+                                                    <div className="grid gap-3 md:grid-cols-2">
+                                                        <Input
+                                                            value={String(providerConfig.controlUrl || "")}
+                                                            onChange={(event) =>
+                                                                updateData((current) => {
+                                                                    const currentRemote = current.remoteLink || {};
+                                                                    const existing = currentRemote.meshProviders || meshProviders;
+                                                                    return {
+                                                                        ...current,
+                                                                        remoteLink: {
+                                                                            ...currentRemote,
+                                                                            meshProviders: existing.map((provider) => (
+                                                                                (provider.id || provider.kind) === "headscale"
+                                                                                    ? { ...provider, controlUrl: event.target.value, allowRouteMutation: false }
+                                                                                    : provider
+                                                                            )),
+                                                                        },
+                                                                    };
+                                                                })
+                                                            }
+                                                            placeholder="https://headscale.example.com"
+                                                        />
+                                                        <Input
+                                                            value={String(providerConfig.namespace || "")}
+                                                            onChange={(event) =>
+                                                                updateData((current) => {
+                                                                    const currentRemote = current.remoteLink || {};
+                                                                    const existing = currentRemote.meshProviders || meshProviders;
+                                                                    return {
+                                                                        ...current,
+                                                                        remoteLink: {
+                                                                            ...currentRemote,
+                                                                            meshProviders: existing.map((provider) => (
+                                                                                (provider.id || provider.kind) === "headscale"
+                                                                                    ? { ...provider, namespace: event.target.value, allowRouteMutation: false }
+                                                                                    : provider
+                                                                            )),
+                                                                        },
+                                                                    };
+                                                                })
+                                                            }
+                                                            placeholder={t("app.admin.dashboard.system.base.remoteLink.headscaleNamespace")}
+                                                        />
+                                                    </div>
+                                                    <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                                                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                                                            <span className="font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscaleApiKey")}</span>
+                                                            <span className={providerStatus.apiKeyConfigured ? "text-emerald-700" : "text-amber-700"}>
+                                                                {providerStatus.apiKeyConfigured
+                                                                    ? `${t("app.admin.dashboard.system.base.remoteLink.configured")} · ${providerStatus.apiKeyFingerprint || ""}`
+                                                                    : t("app.admin.dashboard.system.base.remoteLink.notConfigured")}
+                                                            </span>
+                                                        </div>
+                                                        <div className="grid gap-2 md:grid-cols-[1fr_auto_auto_auto]">
+                                                            <Input
+                                                                type="password"
+                                                                value={headscaleApiKey}
+                                                                onChange={(event) => setHeadscaleApiKey(event.target.value)}
+                                                                placeholder={t("app.admin.dashboard.system.base.remoteLink.headscaleApiKeyPlaceholder")}
+                                                            />
+                                                            <Button type="button" size="sm" onClick={() => void saveHeadscaleApiKey()} disabled={headscaleBusy || !headscaleApiKey.trim()}>
+                                                                <KeyRound className="mr-2 h-4 w-4" />
+                                                                {t("app.admin.dashboard.system.base.remoteLink.saveKey")}
+                                                            </Button>
+                                                            <Button type="button" size="sm" variant="outline" onClick={() => void refreshHeadscale()} disabled={headscaleBusy}>
+                                                                <RefreshCw className="mr-2 h-4 w-4" />
+                                                                {t("app.admin.dashboard.system.base.remoteLink.testHeadscale")}
+                                                            </Button>
+                                                            <Button type="button" size="sm" variant="outline" onClick={() => void clearHeadscaleApiKey()} disabled={headscaleBusy || !providerStatus.apiKeyConfigured}>
+                                                                <Trash2 className="mr-2 h-4 w-4" />
+                                                                {t("app.admin.dashboard.system.base.remoteLink.clearKey")}
+                                                            </Button>
+                                                        </div>
+                                                        {headscaleMessage ? <div className="mt-2 text-xs text-emerald-700">{headscaleMessage}</div> : null}
+                                                        {headscaleStatusError ? <div className="mt-2 text-xs text-amber-700">{headscaleStatusError}</div> : null}
+                                                    </div>
+                                                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                                                        <div className="mb-2 text-xs font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.createPreauthKey")}</div>
+                                                        <div className="grid gap-2 md:grid-cols-[1fr_120px_auto]">
+                                                            <Input value={headscaleUserId} onChange={(event) => setHeadscaleUserId(event.target.value)} placeholder={t("app.admin.dashboard.system.base.remoteLink.headscaleUserPlaceholder")} />
+                                                            <Input type="number" min={5} max={43200} value={headscaleTtlMinutes} onChange={(event) => setHeadscaleTtlMinutes(Number(event.target.value || 60))} />
+                                                            <Button type="button" size="sm" onClick={() => void createHeadscalePreauthKey()} disabled={headscaleBusy || !headscaleUserId.trim()}>
+                                                                {t("app.admin.dashboard.system.base.remoteLink.createKey")}
+                                                            </Button>
+                                                        </div>
+                                                        {headscaleCreatedKey ? (
+                                                            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                                                <div className="font-semibold">{t("app.admin.dashboard.system.base.remoteLink.oneTimePreauthKey")}</div>
+                                                                <div className="break-all font-mono">{headscaleCreatedKey}</div>
+                                                            </div>
+                                                        ) : null}
+                                                    </div>
+                                                    <div className="grid gap-3 text-xs md:grid-cols-3">
+                                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                                                            <div className="mb-2 font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscaleUsers")}</div>
+                                                            {(headscaleData.users || []).slice(0, 6).map((item) => (
+                                                                <div key={String(item["id"] || item["name"])} className="truncate text-slate-600">{String(item["name"] || item["id"])}</div>
+                                                            ))}
+                                                            {(headscaleData.users || []).length === 0 ? <div className="text-slate-400">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
+                                                        </div>
+                                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                                                            <div className="mb-2 font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscaleNodes")}</div>
+                                                            {(headscaleData.nodes || []).slice(0, 6).map((item) => {
+                                                                const nodeId = String(item["id"] || item["nodeId"] || "");
+                                                                return (
+                                                                    <div key={nodeId || String(item["name"])} className="mb-2 rounded-lg bg-white px-2 py-2">
+                                                                        <div className="truncate font-medium text-slate-700">{String(item["name"] || item["givenName"] || nodeId)}</div>
+                                                                        <div className="truncate text-slate-400">{String(item["ipAddresses"] || item["lastSeen"] || "")}</div>
+                                                                        {nodeId ? (
+                                                                            <div className="mt-2 flex gap-2">
+                                                                                <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void dangerousHeadscaleNodeAction(nodeId, "expire")}>
+                                                                                    {t("app.admin.dashboard.system.base.remoteLink.expire")}
+                                                                                </Button>
+                                                                                <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs text-rose-700" onClick={() => void dangerousHeadscaleNodeAction(nodeId, "delete")}>
+                                                                                    {t("app.admin.dashboard.system.base.remoteLink.delete")}
+                                                                                </Button>
+                                                                            </div>
+                                                                        ) : null}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                            {(headscaleData.nodes || []).length === 0 ? <div className="text-slate-400">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
+                                                        </div>
+                                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                                                            <div className="mb-2 font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscalePreauthKeys")}</div>
+                                                            {(headscaleData.preauthKeys || []).slice(0, 6).map((item) => (
+                                                                <div key={String(item["id"] || item["keyFingerprint"] || item["keyPrefix"])} className="truncate text-slate-600">
+                                                                    {String(item["keyPrefix"] || item["keyFingerprint"] || item["id"])}
+                                                                </div>
+                                                            ))}
+                                                            {(headscaleData.preauthKeys || []).length === 0 ? <div className="text-slate-400">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </AdvancedSection>
                         <div className="flex flex-wrap gap-2">
                             <Button
                                 type="button"

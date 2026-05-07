@@ -1109,9 +1109,28 @@ class StorageManager:
                     {"id": "lan", "kind": "lan", "label": "LAN", "enabled": True},
                     {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},
                     {"id": "tailscale", "kind": "tailscale", "label": "Tailscale", "enabled": True},
+                    {"id": "headscale", "kind": "headscale", "label": "Headscale", "enabled": True},
                     {"id": "custom-vpn", "kind": "custom_vpn", "label": "Custom VPN", "enabled": True},
                 ],
                 "diagnostics": {"readOnly": True},
+                "meshProviders": [
+                    {
+                        "id": "tailscale",
+                        "kind": "tailscale",
+                        "enabled": True,
+                        "mode": "detect_only",
+                        "allowRouteMutation": False,
+                    },
+                    {
+                        "id": "headscale",
+                        "kind": "headscale",
+                        "enabled": False,
+                        "mode": "external_control_plane",
+                        "controlUrl": "",
+                        "namespace": "",
+                        "allowRouteMutation": False,
+                    },
+                ],
             },
             "s3": {},
             "legacySettings": [],
@@ -2514,6 +2533,8 @@ class StorageManager:
         remote_link.setdefault("activeProfileId", "manual-local")
         if not isinstance(remote_link.get("transportProfiles"), list):
             remote_link["transportProfiles"] = []
+        if not isinstance(remote_link.get("meshProviders"), list):
+            remote_link["meshProviders"] = []
         normalized["remoteLink"] = remote_link
         normalized.setdefault("s3", {})
         legacy_settings = normalized.get("legacySettings")

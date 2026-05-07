@@ -36,22 +36,26 @@ def count_nodes(value: Any) -> int:
     return 1 if value not in (None, "") else 0
 
 
-def artifact_summary(artifact: Any) -> dict[str, Any]:
+def artifact_summary(artifact: Any, *, detail: bool = False) -> dict[str, Any]:
     if not isinstance(artifact, dict):
         return {}
-    return compact_dict(
-        {
-            "artifactId": artifact.get("artifactId"),
-            "kind": artifact.get("kind"),
-            "mimeType": artifact.get("mimeType"),
-            "title": artifact.get("title"),
-            "sourcePath": artifact.get("sourcePath") or artifact.get("path"),
-            "previewUrl": artifact.get("previewUrl"),
-            "contentUrl": artifact.get("contentUrl"),
-            "externalUrl": artifact.get("externalUrl"),
-            "sizeBytes": artifact.get("sizeBytes"),
-        }
-    )
+    payload = {
+        "artifactId": artifact.get("artifactId"),
+        "kind": artifact.get("kind"),
+        "mimeType": artifact.get("mimeType"),
+        "title": artifact.get("title"),
+        "sizeBytes": artifact.get("sizeBytes"),
+    }
+    if detail:
+        payload.update(
+            {
+                "sourcePath": artifact.get("sourcePath") or artifact.get("path"),
+                "previewUrl": artifact.get("previewUrl"),
+                "contentUrl": artifact.get("contentUrl"),
+                "externalUrl": artifact.get("externalUrl"),
+            }
+        )
+    return compact_dict(payload)
 
 
 def job_summary(job: Any) -> dict[str, Any]:
@@ -77,19 +81,14 @@ def job_summary(job: Any) -> dict[str, Any]:
             "model": request.get("model") or job.get("model"),
             "preset": request.get("preset"),
             "ratio": request.get("ratio"),
-            "promptPreview": preview_text(request.get("prompt") or request.get("text") or request.get("brief"), limit=140),
             "artifactCount": len(artifacts),
             "artifactIds": [item for item in artifact_ids if item][:3],
             "qualityStatus": job.get("qualityStatus"),
-            "qualityJobIds": limited_list(job.get("qualityJobIds"), limit=3),
-            "providerTaskId": job.get("providerTaskId"),
-            "fallbackAttempts": limited_list(job.get("fallbackAttempts"), limit=2),
-            "retryReason": preview_text(job.get("retryReason"), limit=140),
             "policyRejectReason": preview_text(job.get("policyRejectReason"), limit=140),
-            "rawProviderResponseRef": job.get("rawProviderResponseRef") or job.get("providerResponseRef"),
             "error": preview_text(job.get("error"), limit=140),
             "createdAt": job.get("createdAt"),
             "completedAt": job.get("completedAt"),
+            "detailTool": f"creative_media_get_job(job_id='{job.get('jobId')}')" if job.get("jobId") else None,
         }
     )
 
@@ -101,7 +100,7 @@ def job_detail(job: Any) -> dict[str, Any]:
     provider_response = dict(job.get("providerResponse") or {})
     detail = job_summary(job)
     detail["workspacePath"] = job.get("workspacePath")
-    detail["artifacts"] = [artifact_summary(item) for item in list(job.get("artifacts") or [])[:4] if isinstance(item, dict)]
+    detail["artifacts"] = [artifact_summary(item, detail=True) for item in list(job.get("artifacts") or [])[:4] if isinstance(item, dict)]
     detail["request"] = compact_dict(
         {
             "modality": request.get("modality"),
@@ -138,7 +137,7 @@ def catalog_presenter(
     normalized_detail = str(detail_level or "summary").strip().lower()
     effective_limit = max(1, min(int(limit or 20), 50))
     if normalized_detail == "summary" and not normalized_modality and not normalized_operation:
-        effective_limit = min(effective_limit, 5)
+        effective_limit = min(effective_limit, 3)
     offset = 0
     try:
         offset = max(0, int(str(cursor or "0").strip() or "0"))
@@ -177,13 +176,12 @@ def catalog_presenter(
                     {
                         "id": provider.get("id"),
                         "displayName": provider.get("displayName") or provider.get("name"),
-                        "apiStandard": provider.get("apiStandard") or provider.get("api_standard"),
                         "adapter": provider.get("adapter"),
                         "status": provider.get("status"),
                         "executable": provider.get("executable"),
-                        "operationKinds": operation_kinds[:8 if normalized_detail in {"detail", "diagnostic", "full"} else 4],
+                        "operationKinds": operation_kinds[:8 if normalized_detail in {"detail", "diagnostic", "full"} else 3],
                         "modelCount": len(model_ids),
-                        "modelSamples": model_ids[:8 if normalized_detail in {"detail", "diagnostic", "full"} else 3],
+                        "modelSamples": model_ids[:8 if normalized_detail in {"detail", "diagnostic", "full"} else 2],
                         "notes": limited_list(provider.get("notes"), limit=3)
                         if normalized_detail in {"detail", "diagnostic", "full"}
                         else [],
@@ -195,15 +193,55 @@ def catalog_presenter(
     registry = catalog.get("mediaModelCapabilityRegistry")
     overrides = catalog.get("modelCapabilityOverrides")
     next_cursor = str(offset + effective_limit) if total_rows > offset + effective_limit else None
-    return compact_dict(
+    if normalized_detail == "summary" and not normalized_modality and not normalized_operation:
+        modality_summaries: list[dict[str, Any]] = []
+        top_candidates: list[dict[str, Any]] = []
+        for modality_key, providers in dict(catalog.get("modalities") or {}).items():
+            provider_rows = [item for item in list(providers or []) if isinstance(item, dict)]
+            executable_rows = [item for item in provider_rows if bool(item.get("executable"))]
+            for provider in (executable_rows or provider_rows)[:3]:
+                model_ids = list(provider.get("modelIds") or provider.get("models") or [])
+                row = compact_dict(
+                    {
+                        "id": provider.get("id"),
+                        "displayName": provider.get("displayName") or provider.get("name"),
+                        "adapter": provider.get("adapter"),
+                        "status": provider.get("status"),
+                        "modelSamples": model_ids[:2],
+                    }
+                )
+                if len(top_candidates) < 3 and bool(provider.get("executable")):
+                    top_candidates.append({"modality": modality_key, **row})
+            modality_summaries.append(
+                compact_dict(
+                    {
+                        "modality": modality_key,
+                        "providerCount": len(provider_rows),
+                        "executableCount": len(executable_rows),
+                    }
+                )
+            )
+        return compact_dict(
+            {
+                "ok": True,
+                "action": "creative_media_catalog",
+                "detailLevel": normalized_detail,
+                "summary": "Creative Media executable capability overview; use filtered detail for provider/model matrix.",
+                "modalityCount": len(modality_summaries),
+                "executableCandidateCount": sum(int(item.get("executableCount") or 0) for item in modality_summaries),
+                "topCandidates": top_candidates,
+                "modalities": modality_summaries,
+                "catalogOnlyReminder": "Catalog-only providers are discovery hints, not executable adapters.",
+                "detailTool": "creative_media_catalog(modality=..., operation_kind=..., detail_level='detail')",
+            }
+        )
+    payload = compact_dict(
         {
             "ok": True,
             "action": "creative_media_catalog",
             "detailLevel": normalized_detail,
             "version": catalog.get("version"),
             "updatedAt": catalog.get("updatedAt"),
-            "statusLevels": catalog.get("statusLevels"),
-            "notes": limited_list(catalog.get("notes"), limit=6),
             "filters": compact_dict({"modality": normalized_modality or None, "operationKind": normalized_operation or None}),
             "limit": effective_limit,
             "cursor": str(offset) if offset else None,
@@ -215,17 +253,26 @@ def catalog_presenter(
                 if isinstance(item, dict)
             ],
             "modalities": modality_rows,
-            "registrySummary": {
-                "type": type(registry).__name__,
-                "topLevelKeys": list(registry.keys())[:12] if isinstance(registry, dict) else [],
-                "nodeCount": count_nodes(registry),
-            },
-            "overrideSummary": {
-                "type": type(overrides).__name__,
-                "topLevelKeys": list(overrides.keys())[:12] if isinstance(overrides, dict) else [],
-                "nodeCount": count_nodes(overrides),
-            },
             "catalogOnlyReminder": "music/model3d entries are catalog or planning surfaces unless an executable adapter says otherwise.",
             "detailTool": "creative_media_catalog(modality=..., operation_kind=..., detail_level='detail', cursor=nextCursor)",
         }
     )
+    if normalized_detail in {"detail", "diagnostic", "full"}:
+        payload = compact_dict(
+            {
+                **payload,
+                "statusLevels": catalog.get("statusLevels"),
+                "notes": limited_list(catalog.get("notes"), limit=6),
+                "registrySummary": {
+                    "type": type(registry).__name__,
+                    "topLevelKeys": list(registry.keys())[:12] if isinstance(registry, dict) else [],
+                    "nodeCount": count_nodes(registry),
+                },
+                "overrideSummary": {
+                    "type": type(overrides).__name__,
+                    "topLevelKeys": list(overrides.keys())[:12] if isinstance(overrides, dict) else [],
+                    "nodeCount": count_nodes(overrides),
+                },
+            }
+        )
+    return payload

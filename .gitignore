@@ -21,6 +21,7 @@ htmlcov/
 .coverage.*
 playwright-report/
 test-results/
+.tmp_metaso_chunks/
 
 # Python artifacts
 **/__pycache__/

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.agent_browser_profile import configured_agent_browser_profile_dir, normalize_agent_browser_kind
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
 from runtimes.rpa.keyword_contract import bridge_keyword_issues, is_supported_bridge_use, keyword_name_for_use
 from runtimes.rpa.store import RPAScriptStore, rpa_script_store
@@ -202,6 +203,20 @@ class RobotFrameworkAdapter:
                 return str(value).strip()
         return "about:blank"
 
+    def _browser_open_arguments(self, *, app_id: str, step: Dict[str, Any]) -> List[str]:
+        params = dict(step.get("params") or {})
+        browser_hint = params.get("browserKind") or params.get("browser_kind") or app_id
+        browser_kind = normalize_agent_browser_kind(str(browser_hint or "chrome"))
+        browser_selection = "Edge" if browser_kind == "edge" else "Chrome"
+        profile_dir = configured_agent_browser_profile_dir(browser_kind)
+        return [
+            self._browser_url_for_step(step),
+            "use_profile=True",
+            f"profile_path={profile_dir}",
+            f"browser_selection={browser_selection}",
+            "maximized=True",
+        ]
+
     def _profile_augmented_step(self, app_id: str, step: Dict[str, Any], *, action_name: str | None = None) -> Dict[str, Any]:
         if not app_id:
             return dict(step)
@@ -370,10 +385,10 @@ class RobotFrameworkAdapter:
                 return {
                     "library": "RPA.Browser.Selenium",
                     "keyword": "Open Available Browser",
-                    "arguments": [self._browser_url_for_step(step)],
+                    "arguments": self._browser_open_arguments(app_id=app_id, step=step),
                     "fallbackKeyword": "Open App",
                     "locator": "",
-                    "notes": ["兼容旧 draft 的浏览器 native 语义。"],
+                    "notes": ["兼容旧 draft 的浏览器 native 语义；使用 Agent 专用浏览器 profile。"],
                 }
             select_value = self._browser_select_value(params)
             if use == "find_and_type" and browser_locator and select_value:

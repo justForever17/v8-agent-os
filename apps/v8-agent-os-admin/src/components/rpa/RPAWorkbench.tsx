@@ -13,6 +13,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { tg } from "@/i18n/admin-legacy";
 type AvailabilityPayload = {
   robotFramework?: boolean;
   rpaFramework?: boolean;
@@ -505,13 +506,13 @@ export function RPAWorkbench() {
       const data = await res.json().catch(() => ({}));
       setLatestResult(data);
       if (!res.ok) {
-        throw new Error(data?.detail || data?.error || t("admin.generated.8fdc4112"));
+        throw new Error(data?.detail || data?.error || tg(t, "8fdc4112")));
       }
       toast({
         title: successTitle,
-        description: typeof data?.status === "string" ? t("admin.generated.2bf0d2b2", {
+        description: typeof data?.status === "string" ? tg(t, "2bf0d2b2"), {
           value1: data.status
-        }) : t("admin.generated.3d8c4a5f")
+        }) : tg(t, "3d8c4a5f"))
       });
       await loadAll();
       return data;
@@ -559,7 +560,7 @@ export function RPAWorkbench() {
         save: true
       })
     });
-    const data = await runAction("compile", compileRequest, t("admin.generated.d71174f4"));
+    const data = await runAction("compile", compileRequest, tg(t, "d71174f4")));
     if (data?.id) {
       setSelectedDraftId(data.id);
     }
@@ -575,7 +576,7 @@ export function RPAWorkbench() {
     }
     await runAction(`draft:source:${selectedDraftId}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraftId)}/source-traces?include_steps=true&max_steps=8`, {
       cache: "no-store"
-    }), t("admin.generated.846dc508"));
+    }), tg(t, "846dc508")));
   };
   const handleDraftAction = async (mode: "export" | "prepare" | "run") => {
     if (!selectedDraftId) {
@@ -593,7 +594,7 @@ export function RPAWorkbench() {
       toast({
         variant: "destructive",
         title: t("components.rpa.RPAWorkbench.k35f41066"),
-        description: error instanceof Error ? error.message : t("admin.generated.3d763c86")
+        description: error instanceof Error ? error.message : tg(t, "3d763c86"))
       });
       return;
     }
@@ -608,7 +609,7 @@ export function RPAWorkbench() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify(mode === "export" ? commonPayload() : payload)
-    }), mode === "run" ? t("admin.generated.be524bf1") : t("admin.generated.e9e44bf1"));
+    }), mode === "run" ? tg(t, "be524bf1")) : tg(t, "e9e44bf1")));
   };
   const handleExistingAction = async (mode: "prepare-existing" | "run-existing") => {
     const robotFile = existingRobotFile.trim();
@@ -627,7 +628,7 @@ export function RPAWorkbench() {
       toast({
         variant: "destructive",
         title: t("components.rpa.RPAWorkbench.k35f41066"),
-        description: error instanceof Error ? error.message : t("admin.generated.3d763c86")
+        description: error instanceof Error ? error.message : tg(t, "3d763c86"))
       });
       return;
     }
@@ -643,7 +644,7 @@ export function RPAWorkbench() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
-    }), t("admin.generated.a04fb186"));
+    }), tg(t, "a04fb186")));
   };
   const handleApproval = async (approvalId: string, approve: boolean) => {
     const answer = approvalDrafts[approvalId]?.trim() || "";
@@ -659,7 +660,7 @@ export function RPAWorkbench() {
           approved: approve
         }
       })
-    }), t("admin.generated.3860d079"));
+    }), tg(t, "3860d079")));
     setApprovalDrafts(current => {
       const next = {
         ...current
@@ -677,7 +678,7 @@ export function RPAWorkbench() {
       body: JSON.stringify({
         reason: command === "interrupt" ? "admin_rpa_interrupt" : "admin_rpa_retry"
       })
-    }), t("admin.generated.c6683c32"));
+    }), tg(t, "c6683c32")));
   };
   const handleTemplateAction = async (action: "approve" | "freeze" | "review_required") => {
     if (!selectedTemplateId) {
@@ -703,7 +704,7 @@ export function RPAWorkbench() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify(body)
-    }), action === "approve" ? t("admin.generated.b2d6ae9b") : t("admin.generated.5f612337"));
+    }), action === "approve" ? tg(t, "b2d6ae9b")) : tg(t, "5f612337")));
   };
   const handleTemplateRollback = async (revision?: number, historyPath?: string) => {
     if (!selectedTemplateId) {
@@ -720,13 +721,13 @@ export function RPAWorkbench() {
         reviewer: "admin_ui",
         notes: templateNote.trim() || undefined
       })
-    }), t("admin.generated.b77221d2"));
+    }), tg(t, "b77221d2")));
   };
   return <div className="space-y-6">
             <div className="flex items-center justify-between gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">{t("admin.generated.545938bb")}</h1>
-                    <p className="mt-1 text-muted-foreground">{t("admin.generated.a6e48ba6")}</p>
+                    <h1 className="text-3xl font-bold tracking-tight">{tg(t, "545938bb"))}</h1>
+                    <p className="mt-1 text-muted-foreground">{tg(t, "a6e48ba6"))}</p>
                 </div>
                 <Button variant="outline" onClick={() => void loadAll()} disabled={loading || !!busyAction}>
                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -738,7 +739,7 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base">Robot Framework</CardTitle>
-                        <CardDescription>{t("admin.generated.06e27187")}</CardDescription>
+                        <CardDescription>{tg(t, "06e27187"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2">
                         <Badge variant={probeState(availability.robotFrameworkDetail).variant} className="max-w-full overflow-hidden">
@@ -753,7 +754,7 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base">RPA Framework</CardTitle>
-                        <CardDescription>{t("admin.generated.4787a117")}</CardDescription>
+                        <CardDescription>{tg(t, "4787a117"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2">
                         <Badge variant={probeState(availability.rpaFrameworkDetail).variant} className="max-w-full overflow-hidden">
@@ -767,8 +768,8 @@ export function RPAWorkbench() {
                 </Card>
                 <Card className="border-border/60 md:col-span-2">
                     <CardHeader className="pb-3">
-                        <CardTitle className="text-base">{t("admin.generated.e9e8406f")}</CardTitle>
-                        <CardDescription>{t("admin.generated.5f35173c")}</CardDescription>
+                        <CardTitle className="text-base">{tg(t, "e9e8406f"))}</CardTitle>
+                        <CardDescription>{tg(t, "5f35173c"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2">
                         {Object.entries(availability.libraryDetails || {}).map(([name, detail]) => <div key={name} className="rounded-xl border border-border/60 p-3">
@@ -792,9 +793,9 @@ export function RPAWorkbench() {
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2 text-lg">
                             <Wand2 className="h-5 w-5 text-primary" />
-                            {t("admin.generated.83eb2c86")}
+                            {tg(t, "83eb2c86"))}
                         </CardTitle>
-                        <CardDescription>{t("admin.generated.80b3232f")}</CardDescription>
+                        <CardDescription>{tg(t, "80b3232f"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
@@ -803,27 +804,27 @@ export function RPAWorkbench() {
                         </div>
                         <Button onClick={() => void handleCompile()} disabled={busyAction === "compile"}>
                             <FileCode2 className="mr-2 h-4 w-4" />
-                            {t("admin.generated.49a24181")}
+                            {tg(t, "49a24181"))}
                         </Button>
                     </CardContent>
                 </Card>
 
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.b215c993")}</CardTitle>
-                        <CardDescription>{t("admin.generated.e2efa0cc")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "b215c993"))}</CardTitle>
+                        <CardDescription>{tg(t, "e2efa0cc"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4">
                         <div className="grid gap-2">
-                            <Label htmlFor="cwd">{t("admin.generated.a0d7822e")}</Label>
+                            <Label htmlFor="cwd">{tg(t, "a0d7822e"))}</Label>
                             <Input id="cwd" value={cwd} onChange={event => setCwd(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.kcb17052e")} />
                         </div>
                         <div className="grid gap-2">
-                            <Label htmlFor="output-dir">{t("admin.generated.fd576472")}</Label>
+                            <Label htmlFor="output-dir">{tg(t, "fd576472"))}</Label>
                             <Input id="output-dir" value={outputDir} onChange={event => setOutputDir(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.kbc389513")} />
                         </div>
                         <div className="grid gap-2">
-                            <Label htmlFor="timeout-ms">{t("admin.generated.a3ce47a7")}</Label>
+                            <Label htmlFor="timeout-ms">{tg(t, "a3ce47a7"))}</Label>
                             <Input id="timeout-ms" type="number" value={timeoutMs} onChange={event => setTimeoutMs(event.target.value)} />
                         </div>
                     </CardContent>
@@ -833,13 +834,13 @@ export function RPAWorkbench() {
             <div className="grid gap-6 xl:grid-cols-[1.15fr_1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.17269e32")}</CardTitle>
-                        <CardDescription>{t("admin.generated.f068e67b")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "17269e32"))}</CardTitle>
+                        <CardDescription>{tg(t, "f068e67b"))}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <ScrollArea className="h-[420px] pr-4">
                             <div className="space-y-3">
-                                {drafts.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.ffb6da59")}</div> : drafts.map(draft => {
+                                {drafts.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "ffb6da59"))}</div> : drafts.map(draft => {
                 const selected = draft.id === selectedDraftId;
                 const highRisk = (draft.steps || []).some(item => item.approval?.mode);
                 const assessment = draft.assessment;
@@ -854,7 +855,7 @@ export function RPAWorkbench() {
                                                     <div className="flex flex-wrap gap-2">
                                                         <Badge variant="outline">{draft.appId || "desktop"}</Badge>
                                                         <Badge variant={highRisk ? "destructive" : "secondary"}>
-                                                            {t("admin.generated.cc7caf6a")}
+                                                            {tg(t, "cc7caf6a"))}
                                                         </Badge>
                                                         {assessment?.status ? <Badge variant={reviewRequired ? "destructive" : "secondary"}>
                                                                 {assessment.status}{assessment.band ? ` · ${assessment.band}` : ""}
@@ -879,7 +880,7 @@ export function RPAWorkbench() {
                                                         <span>excluded {assessment.excludedSteps ?? 0}</span>
                                                     </div> : null}
                                                 {assessment?.signals?.historicalScriptRuns ? <div className="mt-1 text-[11px] text-muted-foreground">
-                                                        {t("admin.generated.be78b205")} {assessment.signals.historicalScriptRuns} {t("admin.generated.fcdfff9f")} {formatRatio(assessment.signals.historicalScriptCompletedRate)} {t("admin.generated.e1765a36")} {formatRatio(assessment.signals.historicalScriptFallbackHeavyRate)}
+                                                        {tg(t, "be78b205"))} {assessment.signals.historicalScriptRuns} {tg(t, "fcdfff9f"))} {formatRatio(assessment.signals.historicalScriptCompletedRate)} {tg(t, "e1765a36"))} {formatRatio(assessment.signals.historicalScriptFallbackHeavyRate)}
                                                     </div> : null}
                                                 <div className="mt-3 flex flex-wrap gap-1.5">
                                                     {(draft.robot?.tags || []).slice(0, 5).map(tag => <Badge key={`${draft.id}:${tag}`} variant="secondary">{tag}</Badge>)}
@@ -893,32 +894,32 @@ export function RPAWorkbench() {
 
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.1ef00e19")}</CardTitle>
-                        <CardDescription>{selectedDraft ? `${selectedDraft.name || selectedDraft.id}` : t("admin.generated.9b331209")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "1ef00e19"))}</CardTitle>
+                        <CardDescription>{selectedDraft ? `${selectedDraft.name || selectedDraft.id}` : tg(t, "9b331209"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
-                            <Label htmlFor="draft-vars">{t("admin.generated.c0e67c85")}</Label>
+                            <Label htmlFor="draft-vars">{tg(t, "c0e67c85"))}</Label>
                             <Textarea id="draft-vars" className="min-h-[180px] font-mono text-xs" value={variablesText} onChange={event => setVariablesText(event.target.value)} />
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="ghost" onClick={() => void handleViewSourceTrace()} disabled={!selectedDraftId || busyAction === `draft:source:${selectedDraftId}`}>
-                                {t("admin.generated.b1a93773")}
+                                {tg(t, "b1a93773"))}
                             </Button>
                             <Button variant="outline" onClick={() => void handleDraftAction("export")} disabled={!selectedDraftId || busyAction === "draft:export"}>
-                                {t("admin.generated.9f9eca77")}
+                                {tg(t, "9f9eca77"))}
                             </Button>
                             <Button variant="outline" onClick={() => void handleDraftAction("prepare")} disabled={!selectedDraftId || busyAction === "draft:prepare"}>
-                                {t("admin.generated.c6611470")}
+                                {tg(t, "c6611470"))}
                             </Button>
                             <Button onClick={() => void handleDraftAction("run")} disabled={!selectedDraftId || busyAction === "draft:run"}>
                                 <Play className="mr-2 h-4 w-4" />
-                                {t("admin.generated.8b377b85")}
+                                {tg(t, "8b377b85"))}
                             </Button>
                         </div>
                         {selectedDraft ? <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
                                 {selectedDraft.assessment ? <div className="space-y-1 pb-2 text-foreground">
-                                        <div>{t("admin.generated.c1a6f6f5")}{selectedDraft.assessment.status || "unknown"}{selectedDraft.assessment.band ? ` · ${selectedDraft.assessment.band}` : ""} {t("admin.generated.fe6b1c17")} {formatConfidence(selectedDraft.assessment.score)}</div>
+                                        <div>{tg(t, "c1a6f6f5"))}{selectedDraft.assessment.status || "unknown"}{selectedDraft.assessment.band ? ` · ${selectedDraft.assessment.band}` : ""} {tg(t, "fe6b1c17"))} {formatConfidence(selectedDraft.assessment.score)}</div>
                                         <div className="text-xs text-muted-foreground">
                                             accepted {selectedDraft.assessment.acceptedSteps ?? 0} · review {selectedDraft.assessment.reviewRequiredSteps ?? 0} · excluded {selectedDraft.assessment.excludedSteps ?? 0}
                                         </div>
@@ -926,18 +927,18 @@ export function RPAWorkbench() {
                                                 acceptedRatio {formatRatio(selectedDraft.assessment.signals.acceptedRatio)} · nativeRatio {formatRatio(selectedDraft.assessment.signals.nativeSemanticRatio)} · recoveryHeavy {formatRatio(selectedDraft.assessment.signals.recoveryHeavyRatio)} · profileAugmented {formatRatio(selectedDraft.assessment.signals.profileAugmentedRatio)}
                                             </div> : null}
                                         {selectedDraft.assessment.signals ? <div className="text-xs text-muted-foreground">
-                                                {t("admin.generated.be78b205")} {selectedDraft.assessment.signals.historicalScriptRuns ?? 0} {t("admin.generated.fcdfff9f")} {formatRatio(selectedDraft.assessment.signals.historicalScriptCompletedRate)} · review {formatRatio(selectedDraft.assessment.signals.historicalScriptReviewRequiredRate)} · blocked {formatRatio(selectedDraft.assessment.signals.historicalScriptCompileBlockedRate)}
+                                                {tg(t, "be78b205"))} {selectedDraft.assessment.signals.historicalScriptRuns ?? 0} {tg(t, "fcdfff9f"))} {formatRatio(selectedDraft.assessment.signals.historicalScriptCompletedRate)} · review {formatRatio(selectedDraft.assessment.signals.historicalScriptReviewRequiredRate)} · blocked {formatRatio(selectedDraft.assessment.signals.historicalScriptCompileBlockedRate)}
                                             </div> : null}
                                         {selectedDraft.assessment.signals ? <div className="text-xs text-muted-foreground">
-                                            {t("admin.generated.22fc3a85")} {formatCalibrationSource(selectedDraft.assessment.signals.historicalScriptCalibrationSource)} · calibratedSteps {selectedDraft.assessment.signals.calibratedSteps ?? 0} · profileSteps {selectedDraft.assessment.signals.profileAugmentedSteps ?? 0} {t("admin.generated.efd7c6ce")} {formatRatio(selectedDraft.assessment.signals.historicalScriptProfileAugmentedRatio)} {t("admin.generated.40328829")} {formatRatio(selectedDraft.assessment.signals.historicalScriptNativeSuccessRate ?? selectedDraft.assessment.signals.historicalNativeSuccessRate)}
+                                            {tg(t, "22fc3a85"))} {formatCalibrationSource(selectedDraft.assessment.signals.historicalScriptCalibrationSource)} · calibratedSteps {selectedDraft.assessment.signals.calibratedSteps ?? 0} · profileSteps {selectedDraft.assessment.signals.profileAugmentedSteps ?? 0} {tg(t, "efd7c6ce"))} {formatRatio(selectedDraft.assessment.signals.historicalScriptProfileAugmentedRatio)} {tg(t, "40328829"))} {formatRatio(selectedDraft.assessment.signals.historicalScriptNativeSuccessRate ?? selectedDraft.assessment.signals.historicalNativeSuccessRate)}
                                         </div> : null}
                                         {selectedDraft.assessment.trustModel ? <div className="text-xs text-muted-foreground">
-                                                {t("admin.generated.eda0e2b9")} {formatRatio(selectedDraft.assessment.trustModel.effectiveScriptTrustedThreshold)} · review {formatRatio(selectedDraft.assessment.trustModel.effectiveScriptReviewThreshold)} · fallbackHeavy {formatRatio(selectedDraft.assessment.trustModel.effectiveScriptFallbackHeavyThreshold)}
+                                                {tg(t, "eda0e2b9"))} {formatRatio(selectedDraft.assessment.trustModel.effectiveScriptTrustedThreshold)} · review {formatRatio(selectedDraft.assessment.trustModel.effectiveScriptReviewThreshold)} · fallbackHeavy {formatRatio(selectedDraft.assessment.trustModel.effectiveScriptFallbackHeavyThreshold)}
                                             </div> : null}
                                         {selectedDraft.metadata?.templateGovernance ? <div className="pt-2 text-xs text-muted-foreground">
-                                                {t("admin.generated.2538c1e7")}{selectedDraft.metadata.templateGovernance.stage || selectedDraft.metadata.templateGovernanceStage || "unknown"} {t("admin.generated.4123b632")} 
-                  {selectedDraft.metadata.templateGovernance.recommendedDecision || selectedDraft.metadata.templateRecommendedDecision || "n/a"} {t("admin.generated.1b48a628")} 
-                  {selectedDraft.metadata.templateGovernance.rolloutMode || selectedDraft.metadata.templateRolloutMode || "n/a"} {t("admin.generated.fc038e30")} 
+                                                {tg(t, "2538c1e7"))}{selectedDraft.metadata.templateGovernance.stage || selectedDraft.metadata.templateGovernanceStage || "unknown"} {tg(t, "4123b632"))} 
+                  {selectedDraft.metadata.templateGovernance.recommendedDecision || selectedDraft.metadata.templateRecommendedDecision || "n/a"} {tg(t, "1b48a628"))} 
+                  {selectedDraft.metadata.templateGovernance.rolloutMode || selectedDraft.metadata.templateRolloutMode || "n/a"} {tg(t, "fc038e30"))} 
                   {formatConfidence(selectedDraft.metadata.templateGovernance.confidence ?? selectedDraft.metadata.templateTrustConfidence)}
                                             </div> : null}
                                     </div> : null}
@@ -947,9 +948,9 @@ export function RPAWorkbench() {
                                         {step.assessment?.score != null ? ` · ${formatConfidence(step.assessment.score)}` : ""}
                                     </div>)}
                                 {selectedDraft.source?.traceRunIds?.length ? <div className="pt-2 text-muted-foreground">
-                                        {t("admin.generated.30d5c40f")}{selectedDraft.source.traceRunIds.length} {t("app.admin.dashboard.memory.page.kbcc46b75")}
+                                        {tg(t, "30d5c40f"))}{selectedDraft.source.traceRunIds.length} {t("app.admin.dashboard.memory.page.kbcc46b75")}
                                     </div> : selectedDraft.source?.traceRunId ? <div className="pt-2 text-muted-foreground">
-                                        {t("admin.generated.30d5c40f")}{selectedDraft.source.traceRunId}
+                                        {tg(t, "30d5c40f"))}{selectedDraft.source.traceRunId}
                                     </div> : null}
                                 {(selectedDraft.metadata?.compileIssues || []).slice(0, 2).map((issue, index) => <div key={`${selectedDraft.id}:issue:${index}`} className="pt-1 text-destructive">
                                         {issue}
@@ -962,25 +963,25 @@ export function RPAWorkbench() {
             <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.a498e2b7")}</CardTitle>
-                        <CardDescription>{t("admin.generated.7b5192bb")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "a498e2b7"))}</CardTitle>
+                        <CardDescription>{tg(t, "7b5192bb"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
-                            <Label htmlFor="existing-robot">{t("admin.generated.d4f3228c")}</Label>
+                            <Label htmlFor="existing-robot">{tg(t, "d4f3228c"))}</Label>
                             <Input id="existing-robot" value={existingRobotFile} onChange={event => setExistingRobotFile(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.k0f5296b5")} />
                         </div>
                         <div className="grid gap-2">
-                            <Label htmlFor="existing-vars">{t("admin.generated.c0e67c85")}</Label>
+                            <Label htmlFor="existing-vars">{tg(t, "c0e67c85"))}</Label>
                             <Textarea id="existing-vars" className="min-h-[160px] font-mono text-xs" value={existingVariablesText} onChange={event => setExistingVariablesText(event.target.value)} />
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="outline" onClick={() => void handleExistingAction("prepare-existing")} disabled={busyAction === "prepare-existing"}>
-                                {t("admin.generated.8d37c8f0")}
+                                {tg(t, "8d37c8f0"))}
                             </Button>
                             <Button onClick={() => void handleExistingAction("run-existing")} disabled={busyAction === "run-existing"}>
                                 <Play className="mr-2 h-4 w-4" />
-                                {t("admin.generated.52818c1e")}
+                                {tg(t, "52818c1e"))}
                             </Button>
                         </div>
                     </CardContent>
@@ -988,13 +989,13 @@ export function RPAWorkbench() {
 
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.9c772e23")}</CardTitle>
-                        <CardDescription>{t("admin.generated.f4fdb48f")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "9c772e23"))}</CardTitle>
+                        <CardDescription>{tg(t, "f4fdb48f"))}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <ScrollArea className="h-[340px] pr-4">
                             <div className="space-y-3">
-                                {scripts.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.aa0ca7a9")}</div> : scripts.map(script => <div key={script.path} className="rounded-2xl border border-border/60 p-4">
+                                {scripts.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "aa0ca7a9"))}</div> : scripts.map(script => <div key={script.path} className="rounded-2xl border border-border/60 p-4">
                                             <div className="text-sm font-medium">{script.name}</div>
                                             <div className="mt-1 break-all text-xs text-muted-foreground">{script.path}</div>
                                             <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -1011,20 +1012,20 @@ export function RPAWorkbench() {
             <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.34369e72")}</CardTitle>
-                        <CardDescription>{t("admin.generated.d420bf42")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "34369e72"))}</CardTitle>
+                        <CardDescription>{tg(t, "d420bf42"))}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <div className="mb-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                            <Badge variant="outline">{t("admin.generated.06d0f38d")} {templateSummary.total ?? 0}</Badge>
-                            <Badge variant="secondary">{t("admin.generated.e585b2a8")} {templateSummary.templatePreferredCount ?? 0}</Badge>
-                            <Badge variant="secondary">{t("admin.generated.f79637ac")} {templateSummary.computerUseFirstCount ?? 0}</Badge>
-                            <Badge variant={templateSummary.atRiskCount ? "destructive" : "outline"}>{t("admin.generated.f79fbe32")} {templateSummary.atRiskCount ?? 0}</Badge>
-                            <Badge variant="outline">{t("admin.generated.4607babd")} {templateSummary.reviewRequiredCount ?? 0}</Badge>
+                            <Badge variant="outline">{tg(t, "06d0f38d"))} {templateSummary.total ?? 0}</Badge>
+                            <Badge variant="secondary">{tg(t, "e585b2a8"))} {templateSummary.templatePreferredCount ?? 0}</Badge>
+                            <Badge variant="secondary">{tg(t, "f79637ac"))} {templateSummary.computerUseFirstCount ?? 0}</Badge>
+                            <Badge variant={templateSummary.atRiskCount ? "destructive" : "outline"}>{tg(t, "f79fbe32"))} {templateSummary.atRiskCount ?? 0}</Badge>
+                            <Badge variant="outline">{tg(t, "4607babd"))} {templateSummary.reviewRequiredCount ?? 0}</Badge>
                         </div>
                         <ScrollArea className="h-[420px] pr-4">
                             <div className="space-y-3">
-                                {templates.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.41f86afb")}</div> : templates.map(template => {
+                                {templates.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "41f86afb"))}</div> : templates.map(template => {
                 const selected = template.id === selectedTemplateId;
                 return <button key={template.id} type="button" onClick={() => setSelectedTemplateId(template.id)} className={`w-full rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border/60 hover:border-primary/40 hover:bg-muted/30"}`}>
 
@@ -1042,11 +1043,11 @@ export function RPAWorkbench() {
                                                     </div>
                                                 </div>
                                                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                                                    <span>{template.view?.stageLabel || template.governance?.stage || t("admin.generated.3b8aa569")}</span>
+                                                    <span>{template.view?.stageLabel || template.governance?.stage || tg(t, "3b8aa569"))}</span>
                                                     <span>·</span>
-                                                    <span>{template.view?.recommendedDecisionLabel || template.governance?.recommendedDecision || t("admin.generated.9191e379")}</span>
+                                                    <span>{template.view?.recommendedDecisionLabel || template.governance?.recommendedDecision || tg(t, "9191e379"))}</span>
                                                     <span>·</span>
-                                                    <span>{t("admin.generated.5d540fae")} {template.view?.confidenceLabel || formatConfidence(template.governance?.confidence)}</span>
+                                                    <span>{tg(t, "5d540fae"))} {template.view?.confidenceLabel || formatConfidence(template.governance?.confidence)}</span>
                                                     <span>·</span>
                                                     <span>rev {template.metadata?.revision ?? 0}</span>
                                                 </div>
@@ -1063,8 +1064,8 @@ export function RPAWorkbench() {
 
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.00681781")}</CardTitle>
-                        <CardDescription>{selectedTemplate ? `${selectedTemplate.name || selectedTemplate.id}` : t("admin.generated.db138e40")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "00681781"))}</CardTitle>
+                        <CardDescription>{selectedTemplate ? `${selectedTemplate.name || selectedTemplate.id}` : tg(t, "db138e40"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         {selectedTemplate ? <>
@@ -1076,13 +1077,13 @@ export function RPAWorkbench() {
                                             {selectedTemplate.view?.executionPathLabel || selectedTemplate.view?.rolloutModeLabel || t("components.plugin.host.PluginHostWorkbench.k54745147")}
                                         </Badge>
                                     </div>
-                                    <div>{t("admin.generated.3e403dc5")}<span className="text-foreground">{selectedTemplate.view?.recommendedDecisionLabel || selectedTemplate.governance?.recommendedDecision || t("admin.generated.9191e379")}</span></div>
-                                    <div>{t("admin.generated.35124d6d")}<span className="text-foreground">{selectedTemplate.view?.confidenceLabel || formatConfidence(selectedTemplate.governance?.confidence)}</span></div>
-                                    <div>{t("admin.generated.dd515e1a")}<span className="text-foreground">{selectedTemplate.source?.draftId || "n/a"}</span></div>
-                                    <div className="pt-2">{t("admin.generated.e97b8331")}<span className="text-foreground">
-                                        {selectedTemplate.view?.reviewSummary?.total ?? 0} {t("admin.generated.f7576770")} {selectedTemplate.view?.reviewSummary?.approveCount ?? 0} {t("admin.generated.f5355174")} {selectedTemplate.view?.reviewSummary?.freezeCount ?? 0} {t("admin.generated.d6409da0")} {selectedTemplate.view?.reviewSummary?.rollbackCount ?? 0}
+                                    <div>{tg(t, "3e403dc5"))}<span className="text-foreground">{selectedTemplate.view?.recommendedDecisionLabel || selectedTemplate.governance?.recommendedDecision || tg(t, "9191e379"))}</span></div>
+                                    <div>{tg(t, "35124d6d"))}<span className="text-foreground">{selectedTemplate.view?.confidenceLabel || formatConfidence(selectedTemplate.governance?.confidence)}</span></div>
+                                    <div>{tg(t, "dd515e1a"))}<span className="text-foreground">{selectedTemplate.source?.draftId || "n/a"}</span></div>
+                                    <div className="pt-2">{tg(t, "e97b8331"))}<span className="text-foreground">
+                                        {selectedTemplate.view?.reviewSummary?.total ?? 0} {tg(t, "f7576770"))} {selectedTemplate.view?.reviewSummary?.approveCount ?? 0} {tg(t, "f5355174"))} {selectedTemplate.view?.reviewSummary?.freezeCount ?? 0} {tg(t, "d6409da0"))} {selectedTemplate.view?.reviewSummary?.rollbackCount ?? 0}
                                     </span></div>
-                                    {selectedTemplate.view?.reviewSummary?.lastReviewedAt ? <div>{t("admin.generated.6ff3be27")}<span className="text-foreground">{formatWhen(selectedTemplate.view.reviewSummary.lastReviewedAt)}</span>{selectedTemplate.view.reviewSummary.lastReviewer ? ` · ${selectedTemplate.view.reviewSummary.lastReviewer}` : ""}</div> : null}
+                                    {selectedTemplate.view?.reviewSummary?.lastReviewedAt ? <div>{tg(t, "6ff3be27"))}<span className="text-foreground">{formatWhen(selectedTemplate.view.reviewSummary.lastReviewedAt)}</span>{selectedTemplate.view.reviewSummary.lastReviewer ? ` · ${selectedTemplate.view.reviewSummary.lastReviewer}` : ""}</div> : null}
                                     {selectedTemplate.governance?.reasons?.length ? <div className="pt-2 space-y-1">
                                             {(selectedTemplate.governance.reasons || []).slice(0, 4).map((reason, index) => <div key={`${selectedTemplate.id}:reason:${index}`}>- {reason}</div>)}
                                         </div> : null}
@@ -1091,45 +1092,45 @@ export function RPAWorkbench() {
                                         </div> : null}
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="template-note">{t("admin.generated.e0361480")}</Label>
+                                    <Label htmlFor="template-note">{tg(t, "e0361480"))}</Label>
                                     <Textarea id="template-note" className="min-h-[96px]" value={templateNote} onChange={event => setTemplateNote(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.k3d5ec5ad")} />
 
                                 </div>
                                 <div className="flex flex-wrap gap-2">
                                     <Button variant="outline" onClick={() => void handleTemplateAction("review_required")} disabled={busyAction === `template:review_required:${selectedTemplate.id}`}>
-                                        {t("admin.generated.11ab7032")}
+                                        {tg(t, "11ab7032"))}
                                     </Button>
                                     <Button variant="outline" onClick={() => void handleTemplateAction("freeze")} disabled={busyAction === `template:freeze:${selectedTemplate.id}`}>
-                                        {t("admin.generated.c5d4e94b")}
+                                        {tg(t, "c5d4e94b"))}
                                     </Button>
                                     <Button onClick={() => void handleTemplateAction("approve")} disabled={busyAction === `template:approve:${selectedTemplate.id}`}>
-                                        {t("admin.generated.10a18390")}
+                                        {tg(t, "10a18390"))}
                                     </Button>
                                 </div>
                                 <div className="space-y-3">
-                                    <div className="text-sm font-medium">{t("admin.generated.7f928d3f")}</div>
+                                    <div className="text-sm font-medium">{tg(t, "7f928d3f"))}</div>
                                     <ScrollArea className="h-[220px] pr-4">
                                         <div className="space-y-2">
-                                            {templateHistory.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("admin.generated.2901f955")}</div> : templateHistory.map(item => <div key={item.path || `${selectedTemplate.id}:${item.revision}`} className="rounded-xl border border-border/60 p-3 text-xs text-muted-foreground">
+                                            {templateHistory.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{tg(t, "2901f955"))}</div> : templateHistory.map(item => <div key={item.path || `${selectedTemplate.id}:${item.revision}`} className="rounded-xl border border-border/60 p-3 text-xs text-muted-foreground">
                                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                                             <div className="flex flex-wrap gap-2">
                                                                 <Badge variant="outline">rev {item.historyView?.revision ?? item.revision ?? 0}</Badge>
                                                                 <Badge variant="secondary">{item.historyView?.statusLabel || item.template?.view?.statusLabel || "unknown"}</Badge>
                                                             </div>
                                                             <Button variant="ghost" size="sm" onClick={() => void handleTemplateRollback(item.revision, item.path)} disabled={busyAction === `template:rollback:${selectedTemplate.id}:${item.revision || item.path || "latest"}`}>
-                                                                {t("admin.generated.5fad9bec")}
+                                                                {tg(t, "5fad9bec"))}
                                                             
                         </Button>
                                                         </div>
-                                                        <div className="mt-2">{t("admin.generated.0f93c2bb")}<span className="text-foreground">{item.historyView?.reason || item.reason || "snapshot"}</span></div>
-                                                        <div>{t("admin.generated.8c56cb7b")}<span className="text-foreground">{item.historyView?.actor || item.actor || "system"}</span></div>
-                                                        <div>{t("admin.generated.32d77333")}<span className="text-foreground">{formatWhen(item.historyView?.at || item.at)}</span></div>
-                                                        {item.template?.view?.executionPathLabel ? <div>{t("admin.generated.d72a54ed")}<span className="text-foreground">{item.template.view.executionPathLabel}</span></div> : null}
+                                                        <div className="mt-2">{tg(t, "0f93c2bb"))}<span className="text-foreground">{item.historyView?.reason || item.reason || "snapshot"}</span></div>
+                                                        <div>{tg(t, "8c56cb7b"))}<span className="text-foreground">{item.historyView?.actor || item.actor || "system"}</span></div>
+                                                        <div>{tg(t, "32d77333"))}<span className="text-foreground">{formatWhen(item.historyView?.at || item.at)}</span></div>
+                                                        {item.template?.view?.executionPathLabel ? <div>{tg(t, "d72a54ed"))}<span className="text-foreground">{item.template.view.executionPathLabel}</span></div> : null}
                                                     </div>)}
                                         </div>
                                     </ScrollArea>
                                 </div>
-                            </> : <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.49b46706")}</div>}
+                            </> : <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "49b46706"))}</div>}
                     </CardContent>
                 </Card>
             </div>
@@ -1142,12 +1143,12 @@ export function RPAWorkbench() {
           }).status === "string" && ["completed", "ready", "completed_with_fallback"].includes((latestResult as {
             status?: string;
           }).status || "") ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : latestResult ? <ShieldAlert className="h-5 w-5 text-amber-500" /> : <AlertCircle className="h-5 w-5 text-muted-foreground" />}
-                        {t("admin.generated.40852947")}
+                        {tg(t, "40852947"))}
                     </CardTitle>
                 </CardHeader>
                 <CardContent>
                     <pre className="max-h-[420px] overflow-auto rounded-xl bg-muted/30 p-4 text-xs leading-6">
-                        {latestResult ? prettyJson(latestResult) : t("admin.generated.e14a0bde")}
+                        {latestResult ? prettyJson(latestResult) : tg(t, "e14a0bde"))}
                     </pre>
                 </CardContent>
             </Card>
@@ -1155,14 +1156,14 @@ export function RPAWorkbench() {
             <div className="grid gap-6 xl:grid-cols-2">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.ae650bf3")}</CardTitle>
-                        <CardDescription>{t("admin.generated.fa0e6e54")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "ae650bf3"))}</CardTitle>
+                        <CardDescription>{tg(t, "fa0e6e54"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        {rpaApprovals.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.c3194cc7")}</div> : rpaApprovals.map(approval => {
+                        {rpaApprovals.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "c3194cc7"))}</div> : rpaApprovals.map(approval => {
             const busyApprove = busyAction === `approval:approve:${approval.id}`;
             const busyReject = busyAction === `approval:reject:${approval.id}`;
-            const question = approval.request?.question || approval.request?.prompt || t("admin.generated.7f180ac0");
+            const question = approval.request?.question || approval.request?.prompt || tg(t, "7f180ac0"));
             return <div key={approval.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap gap-2">
                                             <Badge variant="outline">{approval.approval_kind || "approval"}</Badge>
@@ -1199,11 +1200,11 @@ export function RPAWorkbench() {
 
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.3df5bcab")}</CardTitle>
-                        <CardDescription>{t("admin.generated.4300eeee")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "3df5bcab"))}</CardTitle>
+                        <CardDescription>{tg(t, "4300eeee"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                        {rpaRuns.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.8262eaa3")}</div> : rpaRuns.map(run => {
+                        {rpaRuns.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "8262eaa3"))}</div> : rpaRuns.map(run => {
             const interruptBusy = busyAction === `run:interrupt:${run.id}`;
             const retryBusy = busyAction === `run:retry:${run.id}`;
             const status = run.status || "queued";
@@ -1220,7 +1221,7 @@ export function RPAWorkbench() {
                                             <Badge>{t(RUN_LABELS[status] || status)}</Badge>
                                             {run.metadata?.mode ? <Badge variant="outline">{String(run.metadata.mode)}</Badge> : null}
                                             {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
-                                            {approvalCount > 0 ? <Badge variant="destructive">{approvalCount} {t("admin.generated.ad766906")}</Badge> : null}
+                                            {approvalCount > 0 ? <Badge variant="destructive">{approvalCount} {tg(t, "ad766906"))}</Badge> : null}
                                             {executionState ? <Badge variant="outline">{executionState}</Badge> : null}
                                             {templatePolicy?.executionPath ? <Badge variant="outline">route:{templatePolicy.executionPath}</Badge> : null}
                                             {fallback?.type ? <Badge variant="secondary">fallback:{fallback.type}</Badge> : null}
@@ -1228,20 +1229,20 @@ export function RPAWorkbench() {
                                         <div className="mt-3 space-y-1 text-sm text-muted-foreground">
                                             <div>Run ID: <span className="text-foreground">{run.id}</span></div>
                                             {run.session_id ? <div>Session: <span className="text-foreground">{run.session_id}</span></div> : null}
-                                            {scriptName ? <div>{t("admin.generated.e4dce09c")} <span className="text-foreground">{scriptName}</span></div> : null}
+                                            {scriptName ? <div>{tg(t, "e4dce09c"))} <span className="text-foreground">{scriptName}</span></div> : null}
                                             {robotFile ? <div>Robot: <span className="break-all text-foreground">{robotFile}</span></div> : null}
-                                            {assessment ? <div>{t("admin.generated.144967bc")} <span className="text-foreground">{assessment.status || "unknown"}{assessment.band ? ` · ${assessment.band}` : ""} · {formatConfidence(assessment.score)}</span></div> : null}
+                                            {assessment ? <div>{tg(t, "144967bc"))} <span className="text-foreground">{assessment.status || "unknown"}{assessment.band ? ` · ${assessment.band}` : ""} · {formatConfidence(assessment.score)}</span></div> : null}
                                             {assessment?.signals ? <div>acceptedRatio: <span className="text-foreground">{formatRatio(assessment.signals.acceptedRatio)}</span> · nativeRatio: <span className="text-foreground">{formatRatio(assessment.signals.nativeSemanticRatio)}</span> · recoveryHeavy: <span className="text-foreground">{formatRatio(assessment.signals.recoveryHeavyRatio)}</span> · profileAugmented: <span className="text-foreground">{formatRatio(assessment.signals.profileAugmentedRatio)}</span></div> : null}
                                             {assessment ? <div>accepted/review/excluded: <span className="text-foreground">{assessment.acceptedSteps ?? 0}/{assessment.reviewRequiredSteps ?? 0}/{assessment.excludedSteps ?? 0}</span></div> : null}
-                                            {assessment?.signals ? <div>{t("admin.generated.a1242e26")} <span className="text-foreground">{assessment.signals.historicalScriptRuns ?? 0}</span> {t("admin.generated.fcdfff9f")} <span className="text-foreground">{formatRatio(assessment.signals.historicalScriptCompletedRate)}</span> {t("admin.generated.451d6141")} <span className="text-foreground">{formatCalibrationSource(assessment.signals.historicalScriptCalibrationSource)}</span></div> : null}
-                                            {templatePolicy ? <div>{t("admin.generated.52818247")} <span className="text-foreground">{templatePolicy.executionPath || "robot"}</span> {t("admin.generated.ce991a38")} <span className="text-foreground">{templatePolicy.stage || "unknown"}</span> {t("admin.generated.4123b632")} <span className="text-foreground">{templatePolicy.recommendedDecision || "n/a"}</span></div> : null}
+                                            {assessment?.signals ? <div>{tg(t, "a1242e26"))} <span className="text-foreground">{assessment.signals.historicalScriptRuns ?? 0}</span> {tg(t, "fcdfff9f"))} <span className="text-foreground">{formatRatio(assessment.signals.historicalScriptCompletedRate)}</span> {tg(t, "451d6141"))} <span className="text-foreground">{formatCalibrationSource(assessment.signals.historicalScriptCalibrationSource)}</span></div> : null}
+                                            {templatePolicy ? <div>{tg(t, "52818247"))} <span className="text-foreground">{templatePolicy.executionPath || "robot"}</span> {tg(t, "ce991a38"))} <span className="text-foreground">{templatePolicy.stage || "unknown"}</span> {tg(t, "4123b632"))} <span className="text-foreground">{templatePolicy.recommendedDecision || "n/a"}</span></div> : null}
                                             {fallback?.sourceTraceRunId ? <div>Fallback Trace: <span className="text-foreground">{fallback.sourceTraceRunId}</span></div> : null}
                                             {fallback?.sourceScriptId ? <div>Fallback Script: <span className="text-foreground">{fallback.sourceScriptId}</span></div> : null}
-                                            <div>{t("admin.generated.4c2869e5")} <span className="text-foreground">{formatWhen(run.created_at)}</span></div>
+                                            <div>{tg(t, "4c2869e5"))} <span className="text-foreground">{formatWhen(run.created_at)}</span></div>
                                         </div>
                                         {missingLibraries.length ? <div className="mt-3 flex flex-wrap gap-2">
                                                 {missingLibraries.map(item => <Badge key={`${run.id}:${item}`} variant="outline">
-                                                        {t("admin.generated.423b830d")} {item}
+                                                        {tg(t, "423b830d"))} {item}
                                                     </Badge>)}
                                             </div> : null}
                                         <div className="mt-3 flex justify-end gap-2">

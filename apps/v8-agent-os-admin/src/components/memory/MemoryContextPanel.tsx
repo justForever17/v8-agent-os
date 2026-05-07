@@ -19,6 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { cn } from "@/lib/utils";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { tg } from "@/i18n/admin-legacy";
 interface SysModel {
   id: string;
   modelRef?: string;
@@ -393,28 +394,28 @@ export function MemoryContextPanel() {
             </div>
 
             <DomainSummaryStrip items={[{
-      label: t("admin.generated.6dee3a47"),
+      label: tg(t, "6dee3a47")),
       value: presetLabel(currentPreset),
-      description: t("admin.generated.60af6ce0")
+      description: tg(t, "60af6ce0"))
     }, {
-      label: t("admin.generated.4ffaf26a"),
+      label: tg(t, "4ffaf26a")),
       value: describeSummaryStrategy(policyForm, bindingsForm),
-      description: t("admin.generated.70b33f52")
+      description: tg(t, "70b33f52"))
     }, {
-      label: t("admin.generated.31b467d8"),
-      value: t("admin.generated.81fb3b15", {
+      label: tg(t, "31b467d8")),
+      value: tg(t, "81fb3b15"), {
         value1: policyForm.compression?.keep_recent_turns ?? 4,
         value2: policyForm.compression?.keep_recent_messages ?? 8
       }),
-      description: t("admin.generated.7c1d5691")
+      description: tg(t, "7c1d5691"))
     }, {
-      label: t("admin.generated.3c44d473"),
+      label: tg(t, "3c44d473")),
       value: `${Math.round((policyForm.compression?.trigger_ratio ?? 0.94) * 100)}%`,
-      description: t("admin.generated.e96fe6e9")
+      description: tg(t, "e96fe6e9"))
     }, {
-      label: t("admin.generated.81d60e7b"),
-      value: policyForm.compression?.mode === "persistent_baseline" ? t("admin.generated.3d9158b9") : policyForm.compression?.mode || t("app.admin.dashboard.system.base.page.k6ed9c299"),
-      description: t("admin.generated.2afde78b")
+      label: tg(t, "81d60e7b")),
+      value: policyForm.compression?.mode === "persistent_baseline" ? tg(t, "3d9158b9")) : policyForm.compression?.mode || t("app.admin.dashboard.system.base.page.k6ed9c299"),
+      description: tg(t, "2afde78b"))
     }, {
       label: t("components.memory.MemoryContextPanel.maxGraphContinuationsSummaryLabel"),
       value: t("components.memory.MemoryContextPanel.maxGraphContinuationsSummaryValue", {
@@ -433,7 +434,7 @@ export function MemoryContextPanel() {
                         </div>
                         <div className="mt-2 text-sm leading-6 text-slate-500">{option.description}</div>
                         <div className="mt-4 text-xs leading-5 text-slate-500">
-                            {t("admin.generated.a05320e1")} {Math.round((option.compression.trigger_ratio ?? 0.94) * 100)}{t("admin.generated.63c5e541")} {option.compression.keep_recent_turns} {t("admin.generated.74fcafe5")} {option.compression.max_summary_input_tokens}
+                            {tg(t, "a05320e1"))} {Math.round((option.compression.trigger_ratio ?? 0.94) * 100)}{tg(t, "63c5e541"))} {option.compression.keep_recent_turns} {tg(t, "74fcafe5"))} {option.compression.max_summary_input_tokens}
                         </div>
                     </button>)}
             </div>
@@ -444,12 +445,12 @@ export function MemoryContextPanel() {
 
             <AdvancedSection title={"app.admin.dashboard.context.page.k8d1286a2"} description={"app.admin.dashboard.context.page.k71a2c636"} defaultOpen={false}>
                 <div className="grid gap-6 xl:grid-cols-2">
-                    <ConfigCard title={t("admin.generated.b7778df4")} description={t("admin.generated.b6ca53e1")}>
+                    <ConfigCard title={tg(t, "b7778df4"))} description={tg(t, "b6ca53e1"))}>
                         <div className="space-y-5">
                             <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                                 <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t("admin.generated.f59328c7")}</div>
-                                    <div className="text-xs leading-5 text-slate-500">{t("admin.generated.7d9870f2")}</div>
+                                    <div className="text-sm font-medium text-slate-900">{tg(t, "f59328c7"))}</div>
+                                    <div className="text-xs leading-5 text-slate-500">{tg(t, "7d9870f2"))}</div>
                                 </div>
                                 <Switch checked={policyForm.compression?.enabled ?? true} onCheckedChange={checked => updateCompression({
                 enabled: checked
@@ -458,13 +459,13 @@ export function MemoryContextPanel() {
 
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.8d68fefc")}</Label>
+                                    <Label>{tg(t, "8d68fefc"))}</Label>
                                     <Input type="number" min={10} max={5000} value={policyForm.recursion_limit ?? 100} onChange={event => setPolicyForm(prev => normalizePolicy({
                   ...prev,
                   recursion_limit: Number(event.target.value)
                 }))} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.40cc9a8e")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "40cc9a8e"))}</p>
                                 </div>
 
                                 <div className="space-y-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 md:col-span-2">
@@ -485,80 +486,80 @@ export function MemoryContextPanel() {
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.726b4a24")}</Label>
+                                    <Label>{tg(t, "726b4a24"))}</Label>
                                     <Input type="number" min={2048} max={2000000} value={policyForm.compression?.default_context_window_tokens ?? 32000} onChange={event => updateCompression({
                   default_context_window_tokens: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.eb062e12")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "eb062e12"))}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.5521e31d")}</Label>
+                                    <Label>{tg(t, "5521e31d"))}</Label>
                                     <Input type="number" min={0.92} max={0.95} step={0.01} value={policyForm.compression?.trigger_ratio ?? 0.94} onChange={event => updateCompression({
                   trigger_ratio: Number(event.target.value),
                   hard_trigger_ratio: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.3fa3b1ca")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "3fa3b1ca"))}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.219d9b58")}</Label>
+                                    <Label>{tg(t, "219d9b58"))}</Label>
                                     <Input type="number" min={1} max={40} value={policyForm.compression?.keep_recent_turns ?? 4} onChange={event => updateCompression({
                   keep_recent_turns: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.781d67e9")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "781d67e9"))}</p>
                                 </div>
                             </div>
                         </div>
                     </ConfigCard>
 
-                    <ConfigCard title={t("admin.generated.4fbe2a66")} description={t("admin.generated.a75910a7")}>
+                    <ConfigCard title={tg(t, "4fbe2a66"))} description={tg(t, "a75910a7"))}>
                         <div className="space-y-5">
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.d89c8154")}</Label>
+                                    <Label>{tg(t, "d89c8154"))}</Label>
                                     <Input type="number" min={1} max={100} value={policyForm.compression?.keep_recent_messages ?? 6} onChange={event => updateCompression({
                   keep_recent_messages: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.73d842ac")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "73d842ac"))}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.72607929")}</Label>
+                                    <Label>{tg(t, "72607929"))}</Label>
                                     <Input type="number" min={512} max={200000} value={policyForm.compression?.max_summary_input_tokens ?? 5000} onChange={event => updateCompression({
                   max_summary_input_tokens: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.81120cd0")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "81120cd0"))}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.b5d9653b")}</Label>
+                                    <Label>{tg(t, "b5d9653b"))}</Label>
                                     <Input type="number" min={5} max={200} value={policyForm.compression?.max_summary_input_messages ?? 60} onChange={event => updateCompression({
                   max_summary_input_messages: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.9a5e5aa2")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "9a5e5aa2"))}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.fbfd44de")}</Label>
+                                    <Label>{tg(t, "fbfd44de"))}</Label>
                                     <Input type="number" min={128} max={8000} value={policyForm.compression?.max_summary_output_tokens ?? 800} onChange={event => updateCompression({
                   max_summary_output_tokens: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.932563f8")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "932563f8"))}</p>
                                 </div>
                             </div>
 
                             <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
                                 <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t("admin.generated.b42d73ff")}</div>
-                                    <div className="text-xs leading-5 text-slate-500">{t("admin.generated.359daca3")}</div>
+                                    <div className="text-sm font-medium text-slate-900">{tg(t, "b42d73ff"))}</div>
+                                    <div className="text-xs leading-5 text-slate-500">{tg(t, "359daca3"))}</div>
                                 </div>
                                 <Switch checked={policyForm.compression?.use_llm_summary ?? false} onCheckedChange={checked => updateCompression({
                 use_llm_summary: checked
@@ -567,33 +568,33 @@ export function MemoryContextPanel() {
 
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.328696ea")}</Label>
+                                    <Label>{tg(t, "328696ea"))}</Label>
                                     <Input type="number" min={0.5} max={0.95} step={0.01} value={policyForm.compression?.compression_model_safety_ratio ?? 0.9} onChange={event => updateCompression({
                   compression_model_safety_ratio: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.85f682b2")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "85f682b2"))}</p>
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>{t("admin.generated.beaa2f75")}</Label>
+                                    <Label>{tg(t, "beaa2f75"))}</Label>
                                     <Input type="number" min={50} max={60000} step={50} value={policyForm.compression?.noticeable_latency_ms ?? 800} onChange={event => updateCompression({
                   noticeable_latency_ms: Number(event.target.value)
                 })} />
 
-                                    <p className="text-xs text-slate-500">{t("admin.generated.7b897eba")}</p>
+                                    <p className="text-xs text-slate-500">{tg(t, "7b897eba"))}</p>
                                 </div>
                             </div>
 
                             <div className="space-y-1.5">
-                                <Label>{t("admin.generated.d48bda26")}</Label>
-                                <ModelSelect models={llmModels} value={bindingsForm.summaryModel || "__empty__"} emptyLabel={t("admin.generated.275de093")} placeholder={t("admin.generated.fd8f3a4f")} onValueChange={value => {
+                                <Label>{tg(t, "d48bda26"))}</Label>
+                                <ModelSelect models={llmModels} value={bindingsForm.summaryModel || "__empty__"} emptyLabel={tg(t, "275de093"))} placeholder={tg(t, "fd8f3a4f"))} onValueChange={value => {
                 setBindingsForm(prev => ({
                   ...prev,
                   summaryModel: value
                 }));
               }} />
 
-                                <p className="text-xs text-slate-500">{t("admin.generated.319af8c2")}</p>
+                                <p className="text-xs text-slate-500">{tg(t, "319af8c2"))}</p>
                             </div>
                         </div>
                     </ConfigCard>

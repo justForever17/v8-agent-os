@@ -459,6 +459,7 @@ def _run_search_shard(
     blocked_domains: list[str],
     source_policy: str,
     max_rounds: int,
+    use_agent_browser_profile: bool,
     tool_call_id: str,
 ) -> dict[str, Any]:
     query = _safe_text(shard.get("query"))
@@ -471,6 +472,7 @@ def _run_search_shard(
             mode="auto",
             referer_mode="none",
             referer_url="",
+            useAgentBrowserProfile=bool(use_agent_browser_profile),
             tool_call_id=tool_call_id,
         ),
         deadline_ms=min(_RESEARCH_SHARD_DEADLINE_MS, 45_000),
@@ -532,6 +534,7 @@ def _run_search_shard(
                     headless=True,
                     referer_mode="none",
                     referer_url="",
+                    useAgentBrowserProfile=bool(use_agent_browser_profile),
                     tool_call_id=tool_call_id,
                 ),
                 deadline_ms=_RESEARCH_SOURCE_READ_DEADLINE_MS,
@@ -571,6 +574,7 @@ def _run_search_shards(
     blocked_domains: list[str],
     source_policy: str,
     max_rounds: int,
+    use_agent_browser_profile: bool,
     tool_call_id: str,
 ) -> list[dict[str, Any]]:
     if not shards:
@@ -585,6 +589,7 @@ def _run_search_shards(
                 blocked_domains=blocked_domains,
                 source_policy=source_policy,
                 max_rounds=max_rounds,
+                use_agent_browser_profile=bool(use_agent_browser_profile),
                 tool_call_id=tool_call_id,
             ): index
             for index, shard in enumerate(shards)
@@ -737,6 +742,7 @@ def research_broker(
     limit: int = 20,
     includeArchived: bool = False,
     confirm: bool = False,
+    useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
@@ -745,6 +751,9 @@ def research_broker(
     Use this instead of ad-hoc web_search for multi-source facts, current provider/API details, source confidence,
     or research that benefits from parallel query decomposition. Search experience packs first for repeat topics;
     run new research only when prior packs are missing, stale, low confidence, or conflict with the current need.
+
+    useAgentBrowserProfile defaults to false. Set it to true only for an explicit login-backed research need;
+    the target source domains must match systemBase.webFetch.agentBrowserProfileAllowlist.
     """
     config = _research_config()
     normalized_mode = _safe_text(mode).lower() or "plan"
@@ -981,6 +990,7 @@ def research_broker(
                 "sideEffects": "read_only",
                 "deadlineMs": _RESEARCH_SHARD_DEADLINE_MS,
                 "sourceReadDeadlineMs": _RESEARCH_SOURCE_READ_DEADLINE_MS,
+                "useAgentBrowserProfile": bool(useAgentBrowserProfile),
             },
             "limits": {
                 "defaultShardCount": config["defaultShardCount"],
@@ -1001,6 +1011,7 @@ def research_broker(
         blocked_domains=blocked_domains,
         source_policy=sourcePolicy,
         max_rounds=round_cap,
+        use_agent_browser_profile=bool(useAgentBrowserProfile),
         tool_call_id=tool_call_id,
     )
     bundle = _synthesize_bundle(

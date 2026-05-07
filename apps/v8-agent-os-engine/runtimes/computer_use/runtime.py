@@ -12298,14 +12298,16 @@ class ComputerUseRuntime:
         try:
             from core.tools.web_fetcher import web_search
 
-            if hasattr(web_search, "invoke"):
-                return web_search.invoke({"query": query, "limit": 5})
+            if hasattr(web_search, "func"):
+                return web_search.func(query=query, limit=5, search_engine="auto", tool_call_id="computer_use_task_loop")
             return web_search(query=query, limit=5)
         except Exception as exc:
             return {
                 "ok": False,
                 "query": query,
+                "failureClass": "web_search_failed",
                 "error": str(exc),
+                "recommendedNextAction": "该 Computer Use 事实解析搜索失败；请要求用户提供明确 URL，或先用 research_broker/web_broker 获取可访问来源。",
                 "source": "computer_use_task_loop_web_search",
             }
 

@@ -4,6 +4,7 @@ import hashlib
 import re
 from typing import Any, Dict, List, Optional
 
+from core.agent_browser_profile import configured_agent_browser_profile_dir, normalize_agent_browser_kind
 from core.multimodal_payload_adapter import utc_now_iso
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
 from runtimes.computer_use.trace_store import trace_store
@@ -514,6 +515,20 @@ class RPATraceCompiler:
             if value not in (None, ""):
                 return str(value).strip()
         return "about:blank"
+
+    def _browser_open_arguments(self, *, app_id: str, step: Dict[str, Any]) -> List[str]:
+        params = dict(step.get("params") or {})
+        browser_hint = params.get("browserKind") or params.get("browser_kind") or app_id
+        browser_kind = normalize_agent_browser_kind(str(browser_hint or "chrome"))
+        browser_selection = "Edge" if browser_kind == "edge" else "Chrome"
+        profile_dir = configured_agent_browser_profile_dir(browser_kind)
+        return [
+            self._browser_url_for_step(step),
+            "use_profile=True",
+            f"profile_path={profile_dir}",
+            f"browser_selection={browser_selection}",
+            "maximized=True",
+        ]
 
     def _normalize_score(self, value: float) -> float:
         return round(max(0.0, min(1.0, value)), 3)
@@ -1449,9 +1464,9 @@ class RPATraceCompiler:
                 return RPAStepRobotSemantic(
                     library="RPA.Browser.Selenium",
                     keyword="Open Available Browser",
-                    arguments=[self._browser_url_for_step(step)],
+                    arguments=self._browser_open_arguments(app_id=app_id, step=step),
                     fallback_keyword=fallback_keyword,
-                    notes=["浏览器场景优先导出为 Selenium 打开浏览器语义。"],
+                    notes=["浏览器场景优先导出为 Selenium 打开浏览器语义；使用 Agent 专用浏览器 profile。"],
                 )
             select_value = self._browser_select_value(params)
             if compiled_use == "find_and_type" and browser_locator and select_value:

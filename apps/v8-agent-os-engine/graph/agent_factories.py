@@ -320,7 +320,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
 _INTERACTIVE_CLI_RULE = (
     "[Interactive CLI Rule]\n"
     "Use `run_system_command` only for short synchronous commands.\n"
-    "Use `command_session_broker(mode=start)` for long-running commands, interactive CLIs/REPLs, and dev servers; continue with `observe`, `input`, or `terminate`.\n"
+    "Use `run_system_command(mode=auto)` as the default shell entry; it returns compact final results for short commands and starts a recoverable command session for long-running commands, interactive CLIs/REPLs, and dev servers.\n"
     "Before scaffolding, dependency installation, or bulk writing in a non-empty Active Workspace Root, call `workspace_broker(mode=\"inspect\")` and choose whether to continue an existing project, create a clearly named subdirectory, or ask the user.\n"
     "When a command prompt waits for confirmation, `command_session_broker(mode=\"input\", input_text=\"y\")` submits Enter by default; use `submit=false` only for TUI raw typing.\n"
     "Treat broker JSON (`summary`, `recommendedNextAction`, `awaitingInput`, `hasMore`, `status`) as the primary truth; use `debug=true` only for raw terminal diagnostics.\n"

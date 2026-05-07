@@ -40,10 +40,10 @@ class ToolSurfaceEnvelope:
         return {key: value for key, value in payload.items() if value not in (None, "", {}, [])}
 
 TOOL_OUTPUT_TARGET_CHARS = {
-    "default": 8000,
-    "catalog": 12000,
-    "diagnostic": 12000,
-    "operation": 6000,
+    "default": 4000,
+    "catalog": 4000,
+    "diagnostic": 6000,
+    "operation": 2500,
 }
 
 JSON_PRIORITY_KEYS = (
@@ -338,33 +338,37 @@ def _tool_surface_payload(
     summary: str | None = None,
     next_action: str | None = None,
 ) -> dict[str, Any]:
-    run_id = str(
-        budget_meta.get("runId")
-        or budget_meta.get("run_id")
-        or budget_meta.get("sessionRunId")
-        or ""
-    ).strip() or None
-    envelope = ToolSurfaceEnvelope(
-        runId=run_id,
-        tool=tool_name,
-        toolCallId=tool_call_id,
-        runtimeKind=runtime_kind,
-        summary=summary or ("Tool output truncated; use rawRef for full evidence." if was_truncated else "Tool output captured."),
-        refs={"rawRef": raw_ref} if raw_ref else {},
-        budget={
-            "budgetSource": budget_meta.get("budgetSource"),
-            "agentVisibleBudget": budget_meta.get("agentVisibleBudget"),
-            "hardMaxChars": budget_meta.get("hardMaxChars"),
-            "targetChars": budget_meta.get("targetChars"),
-        },
-        omitted={
-            "wasBudgetTruncated": was_truncated,
-            "semanticTruncationStrategy": strategy,
-            "omittedChars": max(0, int(omitted_chars or 0)),
-        },
-        nextAction=next_action or ("Call tool_observation_detail with rawRef for full evidence when needed." if raw_ref and was_truncated else None),
-    )
-    return envelope.to_dict()
+    compact: dict[str, Any] = {}
+    if raw_ref:
+        compact["rawRef"] = raw_ref
+        compact["detailTool"] = f"tool_observation_detail(raw_ref='{raw_ref}')"
+    if was_truncated:
+        compact["truncated"] = True
+    if omitted_chars:
+        compact["omittedChars"] = max(0, int(omitted_chars or 0))
+    if next_action:
+        compact["nextAction"] = next_action
+    elif raw_ref and was_truncated:
+        compact["nextAction"] = "Use detailTool only if the compact output is insufficient."
+    return compact
+
+
+def _prune_agent_visible_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        pruned: dict[str, Any] = {}
+        for key, item in value.items():
+            nested = _prune_agent_visible_json(item)
+            if nested in (None, "", [], {}):
+                continue
+            pruned[key] = nested
+        return pruned
+    if isinstance(value, list):
+        return [
+            nested
+            for nested in (_prune_agent_visible_json(item) for item in value)
+            if nested not in (None, "", [], {})
+        ]
+    return value
 
 
 def _inject_surface_metadata(text: str, surface: dict[str, Any], *, budget: int) -> str:
@@ -378,6 +382,7 @@ def _inject_surface_metadata(text: str, surface: dict[str, Any], *, budget: int)
     if not isinstance(payload, dict):
         return text
     payload.setdefault("_v8ToolSurface", surface)
+    payload = _prune_agent_visible_json(payload)
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
     return rendered if len(rendered) <= budget else text
 
@@ -412,10 +417,10 @@ def _truncate_json_semantic(
     )
     compact = _compact_json_value(payload, text_limit=max(400, budget // 8))
     if isinstance(compact, dict):
-        compact.setdefault("toolCallId", tool_call_id)
         compact["_v8ToolSurface"] = surface
     else:
         compact = {"items": compact, "_v8ToolSurface": surface}
+    compact = _prune_agent_visible_json(compact)
     rendered = json.dumps(compact, ensure_ascii=False, indent=2)
     if len(rendered) <= budget:
         return rendered
@@ -425,6 +430,7 @@ def _truncate_json_semantic(
         for key in JSON_PRIORITY_KEYS:
             if key in payload:
                 minimal[key] = _compact_json_value(payload.get(key), depth=1, text_limit=240)
+    minimal = _prune_agent_visible_json(minimal)
     rendered = json.dumps(minimal, ensure_ascii=False, indent=2)
     if len(rendered) <= budget:
         return rendered

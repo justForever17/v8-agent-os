@@ -16,6 +16,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { ApprovalRecord, RunRecord, RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { CORE_RUNTIME_KINDS, getRuntimeControlHref, isLockedRuntimeKind } from "@/lib/runtime-admin";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { tg } from "@/i18n/admin-legacy";
 type RuntimePolicy = {
   enabled?: boolean;
   auto_route?: boolean;
@@ -287,7 +288,7 @@ export function RuntimeGovernanceWorkbench({
   const t = useT();
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [query, setQuery] = useState(t("admin.generated.f8c5ad8f"));
+  const [query, setQuery] = useState(tg(t, "f8c5ad8f")));
   const [snapshot, setSnapshot] = useState<CapabilitySnapshot>({
     count: 0,
     recommendations: [],
@@ -483,7 +484,7 @@ export function RuntimeGovernanceWorkbench({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data?.detail || data?.error || t("admin.generated.e947d30a"));
+        throw new Error(data?.detail || data?.error || tg(t, "e947d30a")));
       }
       setSelectedSessionDetail(data as SessionDetail);
     } catch (error) {
@@ -499,7 +500,7 @@ export function RuntimeGovernanceWorkbench({
   useEffect(() => {
     void (async () => {
       try {
-        await loadAll(t("admin.generated.f8c5ad8f"));
+        await loadAll(tg(t, "f8c5ad8f")));
       } catch (error) {
         toast({
           variant: "destructive",
@@ -573,7 +574,7 @@ export function RuntimeGovernanceWorkbench({
       if (!res.ok) throw new Error(data?.detail || data?.error || t("components.runtime.RuntimeStabilityPanel.k12769ce1"));
       toast({
         title: "components.runtime.RuntimeGovernanceWorkbench.k93e608a9",
-        description: t("admin.generated.287cdbd3", {
+        description: tg(t, "287cdbd3"), {
           value1: kind
         })
       });
@@ -598,7 +599,7 @@ export function RuntimeGovernanceWorkbench({
       if (!res.ok) throw new Error(data?.detail || data?.error || t("components.runtime.RuntimeGovernanceWorkbench.kbb48c954"));
       toast({
         title: "components.runtime.RuntimeGovernanceWorkbench.kd5cd9463",
-        description: t("admin.generated.df562ea8", {
+        description: tg(t, "df562ea8"), {
           value1: kind
         })
       });
@@ -632,7 +633,7 @@ export function RuntimeGovernanceWorkbench({
           })
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data?.detail || data?.error || t("admin.generated.34d44cc0", {
+        if (!res.ok) throw new Error(data?.detail || data?.error || tg(t, "34d44cc0"), {
           value1: runtime.kind
         }));
       }));
@@ -654,27 +655,27 @@ export function RuntimeGovernanceWorkbench({
   return <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
                 {embedded ? <div className="text-sm text-muted-foreground">
-                        {t("admin.generated.89a6bc19")}
+                        {tg(t, "89a6bc19"))}
                     </div> : <div>
-                        <h1 className="text-3xl font-bold tracking-tight">{t("admin.generated.d1dd5c23")}</h1>
-                        <p className="mt-1 text-muted-foreground">{t("admin.generated.b9baa9b6")}</p>
+                        <h1 className="text-3xl font-bold tracking-tight">{tg(t, "d1dd5c23"))}</h1>
+                        <p className="mt-1 text-muted-foreground">{tg(t, "b9baa9b6"))}</p>
                     </div>}
                 <div className="flex flex-wrap gap-2">
                     {activeRuntimeKind ? <Button variant="outline" onClick={() => setActiveRuntimeKind(null)}>
-                            {t("admin.generated.52b1fba0")}
+                            {tg(t, "52b1fba0"))}
                         </Button> : null}
                     <Button variant="outline" onClick={() => void handleRefresh()} disabled={loading}>
                         <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                        {t("admin.generated.0f6f6484")}
+                        {tg(t, "0f6f6484"))}
                     </Button>
                 </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-4">
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("admin.generated.32f538d7")}</CardDescription><CardTitle className="text-3xl">{snapshot.count || 0}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{t("admin.generated.6d95b1d5")}</CardContent></Card>
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("app.admin.dashboard.engineeringLane.enabledState")}</CardDescription><CardTitle className="text-3xl">{summary.enabled}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{t("admin.generated.0c353b83")}</CardContent></Card>
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("admin.generated.57fce0c4")}</CardDescription><CardTitle className="text-3xl">{approvals.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{t("admin.generated.1bae8500")}</CardContent></Card>
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("admin.generated.0801745d")}</CardDescription><CardTitle className="text-3xl">{recoverableSessions.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{t("admin.generated.b6eae25e")}</CardContent></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "32f538d7"))}</CardDescription><CardTitle className="text-3xl">{snapshot.count || 0}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "6d95b1d5"))}</CardContent></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("app.admin.dashboard.engineeringLane.enabledState")}</CardDescription><CardTitle className="text-3xl">{summary.enabled}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "0c353b83"))}</CardContent></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "57fce0c4"))}</CardDescription><CardTitle className="text-3xl">{approvals.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "1bae8500"))}</CardContent></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "0801745d"))}</CardDescription><CardTitle className="text-3xl">{recoverableSessions.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "b6eae25e"))}</CardContent></Card>
             </div>
 
             <Card className="border-border/60">
@@ -716,25 +717,25 @@ export function RuntimeGovernanceWorkbench({
             <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-lg"><Route className="h-5 w-5 text-primary" />{t("admin.generated.b80577b9")}</CardTitle>
-                        <CardDescription>{t("admin.generated.fde33445")}</CardDescription>
+                        <CardTitle className="flex items-center gap-2 text-lg"><Route className="h-5 w-5 text-primary" />{tg(t, "b80577b9"))}</CardTitle>
+                        <CardDescription>{tg(t, "fde33445"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="flex flex-col gap-3 md:flex-row">
                             <Input value={query} onChange={event => setQuery(event.target.value)} placeholder="components.runtime.RuntimeGovernanceWorkbench.kab2a9ac2" />
-                            <Button onClick={() => void handleSearch()} disabled={busyKey === "query"}>{t("admin.generated.189d876a")}</Button>
+                            <Button onClick={() => void handleSearch()} disabled={busyKey === "query"}>{tg(t, "189d876a"))}</Button>
                         </div>
                         <div className="space-y-3">
-                            {recommendations.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{t("admin.generated.5e356906")}</div> : recommendations.map(item => <div key={item.kind} className="rounded-2xl border border-border/60 p-4">
+                            {recommendations.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{tg(t, "5e356906"))}</div> : recommendations.map(item => <div key={item.kind} className="rounded-2xl border border-border/60 p-4">
                                     <div className="flex flex-wrap items-center gap-2">
                                         <div className="text-sm font-medium">{item.displayName}</div>
                                         <Badge variant="outline">{item.kind}</Badge>
                                         <Badge>{item.score.toFixed(1)}</Badge>
                                         <Button variant="outline" size="sm" onClick={() => setActiveRuntimeKind(item.kind)}>
-                                            {t("admin.generated.fe2da584")}
+                                            {tg(t, "fe2da584"))}
                                         </Button>
                                     </div>
-                                    <div className="mt-2 text-xs text-muted-foreground">{t("admin.generated.d2f4d8e7")}{item.matchedKeywords?.length ? item.matchedKeywords.join("、") : t("app.admin.dashboard.engineeringLane.none")} {t("admin.generated.125a32b5")}{item.matchedSignals?.length ? item.matchedSignals.join("、") : t("app.admin.dashboard.engineeringLane.none")}</div>
+                                    <div className="mt-2 text-xs text-muted-foreground">{tg(t, "d2f4d8e7"))}{item.matchedKeywords?.length ? item.matchedKeywords.join("、") : t("app.admin.dashboard.engineeringLane.none")} {tg(t, "125a32b5"))}{item.matchedSignals?.length ? item.matchedSignals.join("、") : t("app.admin.dashboard.engineeringLane.none")}</div>
                                 </div>)}
                         </div>
                     </CardContent>
@@ -742,15 +743,15 @@ export function RuntimeGovernanceWorkbench({
 
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-lg"><SlidersHorizontal className="h-5 w-5 text-primary" />{t("admin.generated.68b8eea2")}</CardTitle>
-                        <CardDescription>{t("admin.generated.b55e7b2c")}</CardDescription>
+                        <CardTitle className="flex items-center gap-2 text-lg"><SlidersHorizontal className="h-5 w-5 text-primary" />{tg(t, "68b8eea2"))}</CardTitle>
+                        <CardDescription>{tg(t, "b55e7b2c"))}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                         {(Object.keys(PRESET_LABELS) as RuntimePresetId[]).map(preset => <div key={preset} className="rounded-2xl border border-border/60 p-4">
                                 <div className="text-sm font-medium">{PRESET_LABELS[preset].title}</div>
                                 <div className="mt-1 text-xs text-muted-foreground">{PRESET_LABELS[preset].description}</div>
                                 <Button className="mt-3" variant="outline" onClick={() => void applyPreset(preset)} disabled={busyKey === `preset:${preset}`}>
-                                    {t("admin.generated.d6988b11")}
+                                    {tg(t, "d6988b11"))}
                                 </Button>
                             </div>)}
                     </CardContent>
@@ -759,8 +760,8 @@ export function RuntimeGovernanceWorkbench({
 
             <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.a90cbb36")}</CardTitle>
-                        <CardDescription>{t("admin.generated.8b3b5a7e")}</CardDescription>
+                        <CardTitle className="text-lg">{tg(t, "a90cbb36"))}</CardTitle>
+                        <CardDescription>{tg(t, "8b3b5a7e"))}</CardDescription>
                 </CardHeader>
                 <CardContent>
                     <ScrollArea className="h-[640px] pr-4">
@@ -785,43 +786,43 @@ export function RuntimeGovernanceWorkbench({
                                                             <div className="flex flex-wrap items-center gap-2">
                                                                 <div className="text-base font-semibold">{runtime.displayName}</div>
                                                                 <Badge variant="outline">{runtime.kind}</Badge>
-                                                                <Badge variant={isCoreRuntime ? "default" : "secondary"}>{t("admin.generated.abc9e6a5")}</Badge>
+                                                                <Badge variant={isCoreRuntime ? "default" : "secondary"}>{tg(t, "abc9e6a5"))}</Badge>
                                                                 <Badge variant="secondary">{runtime.visibility || "internal"}</Badge>
                                                                 {policy.expose_direct_tools ? <Badge>direct tools</Badge> : <Badge variant="secondary">runtime-only</Badge>}
                                                                 <Button variant="outline" size="sm" onClick={() => setActiveRuntimeKind(highlighted ? null : runtime.kind)}>
-                                                                    {t("admin.generated.ee2e9ccf")}
+                                                                    {tg(t, "ee2e9ccf"))}
                                                                 </Button>
                                                                 {controlHref ? <Button variant="outline" size="sm" asChild>
-                                                                        <Link href={controlHref}>{t("admin.generated.149cf40f")}</Link>
+                                                                        <Link href={controlHref}>{tg(t, "149cf40f"))}</Link>
                                                                     </Button> : null}
                                                             </div>
-                                                            <div className="mt-2 text-sm text-muted-foreground">{runtime.summary || t("admin.generated.fe61b3df")}</div>
+                                                            <div className="mt-2 text-sm text-muted-foreground">{runtime.summary || tg(t, "fe61b3df"))}</div>
                                                             <div className="mt-2 flex flex-wrap gap-2">
                                                                 {runtime.capabilities?.slice(0, 6).map(item => <Badge key={`${runtime.kind}:${item.key}`} variant="outline">{item.label} · {riskLabel(item.risk_level)}</Badge>)}
                                                             </div>
                                                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                                                                <Badge variant="secondary">{t("admin.generated.609a49cc")}{live?.totalRuns ?? 0}</Badge>
-                                                                <Badge variant="secondary">{t("admin.generated.bba105af")}{live?.activeRuns ?? 0}</Badge>
-                                                                <Badge variant="secondary">{t("admin.generated.8703d7ba")}{live?.failedRuns ?? 0}</Badge>
-                                                                <Badge variant="secondary">{t("admin.generated.7e1beb07")}{live?.pendingApprovals ?? 0}</Badge>
-                                                                <Badge variant="secondary">{t("admin.generated.3516c469")}{live?.recoverableSessions ?? 0}</Badge>
+                                                                <Badge variant="secondary">{tg(t, "609a49cc"))}{live?.totalRuns ?? 0}</Badge>
+                                                                <Badge variant="secondary">{tg(t, "bba105af"))}{live?.activeRuns ?? 0}</Badge>
+                                                                <Badge variant="secondary">{tg(t, "8703d7ba"))}{live?.failedRuns ?? 0}</Badge>
+                                                                <Badge variant="secondary">{tg(t, "7e1beb07"))}{live?.pendingApprovals ?? 0}</Badge>
+                                                                <Badge variant="secondary">{tg(t, "3516c469"))}{live?.recoverableSessions ?? 0}</Badge>
                                                             </div>
                                                         </div>
                                                         <div className="flex gap-2">
-                                                            <Button variant="outline" onClick={() => void resetPolicy(runtime.kind)} disabled={busyKey === `reset:${runtime.kind}` || busyKey === `save:${runtime.kind}`}>{t("admin.generated.616090e7")}</Button>
+                                                            <Button variant="outline" onClick={() => void resetPolicy(runtime.kind)} disabled={busyKey === `reset:${runtime.kind}` || busyKey === `save:${runtime.kind}`}>{tg(t, "616090e7"))}</Button>
                                                             <Button onClick={() => void savePolicy(runtime.kind)} disabled={busyKey === `save:${runtime.kind}` || busyKey === `reset:${runtime.kind}`}><Save className="mr-2 h-4 w-4" />{t("app.admin.dashboard.creativeMedia.saving")}</Button>
                                                         </div>
                                                     </div>
                                                     <div className="mt-4 grid gap-4 md:grid-cols-3">
                                                         <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-enabled`}>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</Label><Switch id={`${runtime.kind}-enabled`} checked={policy.enabled} onCheckedChange={checked => patchPolicy(runtime.kind, {
                             enabled: checked
-                          })} disabled={isLockedRuntime} /></div><p className="mt-2 text-xs text-muted-foreground">{isLockedRuntime ? t("admin.generated.e4d0d527") : t("admin.generated.7abc4e39")}</p></div>
-                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-auto`}>{t("admin.generated.8b713b45")}</Label><Switch id={`${runtime.kind}-auto`} checked={policy.auto_route} onCheckedChange={checked => patchPolicy(runtime.kind, {
+                          })} disabled={isLockedRuntime} /></div><p className="mt-2 text-xs text-muted-foreground">{isLockedRuntime ? tg(t, "e4d0d527")) : tg(t, "7abc4e39"))}</p></div>
+                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-auto`}>{tg(t, "8b713b45"))}</Label><Switch id={`${runtime.kind}-auto`} checked={policy.auto_route} onCheckedChange={checked => patchPolicy(runtime.kind, {
                             auto_route: checked
-                          })} /></div><p className="mt-2 text-xs text-muted-foreground">{t("admin.generated.c70e191c")}</p></div>
-                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-direct`}>{t("admin.generated.d3374d07")}</Label><Switch id={`${runtime.kind}-direct`} checked={policy.expose_direct_tools} onCheckedChange={checked => patchPolicy(runtime.kind, {
+                          })} /></div><p className="mt-2 text-xs text-muted-foreground">{tg(t, "c70e191c"))}</p></div>
+                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-direct`}>{tg(t, "d3374d07"))}</Label><Switch id={`${runtime.kind}-direct`} checked={policy.expose_direct_tools} onCheckedChange={checked => patchPolicy(runtime.kind, {
                             expose_direct_tools: checked
-                          })} /></div><p className="mt-2 text-xs text-muted-foreground">{t("admin.generated.f4a0b48a")}</p></div>
+                          })} /></div><p className="mt-2 text-xs text-muted-foreground">{tg(t, "f4a0b48a"))}</p></div>
                                                     </div>
                                                     <div className="mt-4 grid gap-4 xl:grid-cols-[0.38fr_0.62fr]">
                                                         <div className="rounded-xl border border-border/50 p-3">
@@ -833,11 +834,11 @@ export function RuntimeGovernanceWorkbench({
                                                             <div className="mt-1 text-xs text-muted-foreground">managed prefixes：{managed.prefixes.length ? managed.prefixes.join("、") : t("app.admin.dashboard.engineeringLane.none")}</div>
                                                         </div>
                                                         <div>
-                                                            <Label htmlFor={`${runtime.kind}-notes`}>{t("admin.generated.e0361480")}</Label>
+                                                            <Label htmlFor={`${runtime.kind}-notes`}>{tg(t, "e0361480"))}</Label>
                                                             <Textarea id={`${runtime.kind}-notes`} className="mt-2 min-h-[110px]" value={policy.notes} onChange={event => patchPolicy(runtime.kind, {
                           notes: event.target.value
                         })} placeholder="components.runtime.RuntimeGovernanceWorkbench.kaba1447c" />
-                                                            {runtime.promptHints?.length ? <div className="mt-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground"><Settings2 className="mr-2 inline h-3 w-3" />{t("admin.generated.b8471587")}{runtime.promptHints.join("；")}</div> : null}
+                                                            {runtime.promptHints?.length ? <div className="mt-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground"><Settings2 className="mr-2 inline h-3 w-3" />{tg(t, "b8471587"))}{runtime.promptHints.join("；")}</div> : null}
                                                         </div>
                                                     </div>
                                                 </div>;
@@ -852,17 +853,17 @@ export function RuntimeGovernanceWorkbench({
             <div className="grid gap-6 xl:grid-cols-2">
                 <Card className="border-border/60 xl:col-span-2">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.7de49f33")}</CardTitle>
+                        <CardTitle className="text-lg">{tg(t, "7de49f33"))}</CardTitle>
                         <CardDescription>
-                            {activeRuntimeKind ? t("admin.generated.c7d51e88", {
+                            {activeRuntimeKind ? tg(t, "c7d51e88"), {
               value1: runtimeNameMap.get(activeRuntimeKind) || activeRuntimeKind
-            }) : t("admin.generated.8c44493c")}
+            }) : tg(t, "8c44493c"))}
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-6 xl:grid-cols-3">
                         <div className="space-y-3">
-                            <div className="text-sm font-medium">{t("admin.generated.728a21b9")}</div>
-                            {filteredFailedRuns.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{t("admin.generated.3504228b")}</div> : filteredFailedRuns.slice(0, 6).map(run => <div key={run.id} className="rounded-2xl border border-border/60 p-4">
+                            <div className="text-sm font-medium">{tg(t, "728a21b9"))}</div>
+                            {filteredFailedRuns.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{tg(t, "3504228b"))}</div> : filteredFailedRuns.slice(0, 6).map(run => <div key={run.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap items-center gap-2">
                                             <Badge>{t(RUN_LABELS[run.status || "failed"] || run.status || "failed")}</Badge>
                                             <Badge variant="outline">{runtimeNameMap.get(inferRunRuntime(run)) || inferRunRuntime(run)}</Badge>
@@ -870,44 +871,44 @@ export function RuntimeGovernanceWorkbench({
                                         </div>
                                         <div className="mt-2 text-xs text-muted-foreground">Run: {run.id}</div>
                                         {run.session_id ? <div className="mt-1 text-xs text-muted-foreground">Session: {run.session_id}</div> : null}
-                                        <div className="mt-1 text-xs text-muted-foreground">{t("admin.generated.32d77333")}{formatWhen(run.started_at || run.created_at)}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{tg(t, "32d77333"))}{formatWhen(run.started_at || run.created_at)}</div>
                                         {run.session_id ? <Button className="mt-3" variant="outline" size="sm" onClick={() => void inspectSession(run.session_id!)}>
                                                 <Eye className="mr-2 h-4 w-4" />
-                                                {t("admin.generated.cc59de60")}
+                                                {tg(t, "cc59de60"))}
                                             </Button> : null}
                                     </div>)}
                         </div>
 
                         <div className="space-y-3">
-                            <div className="text-sm font-medium">{t("admin.generated.a3e9f963")}</div>
-                            {filteredApprovals.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{t("admin.generated.3aabdb65")}</div> : filteredApprovals.slice(0, 6).map(approval => {
+                            <div className="text-sm font-medium">{tg(t, "a3e9f963"))}</div>
+                            {filteredApprovals.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{tg(t, "3aabdb65"))}</div> : filteredApprovals.slice(0, 6).map(approval => {
               const runtimeKind = approval.run_id && runMap.has(approval.run_id) ? inferRunRuntime(runMap.get(approval.run_id)!) : approval.session_id && sessionMap.has(approval.session_id) ? sessionMap.get(approval.session_id)?.workflow?.ownerRuntime || "chat" : (approval.approval_kind || "").startsWith("rpa") ? "rpa" : "chat";
               return <div key={approval.id} className="rounded-2xl border border-border/60 p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge>{approval.approval_kind || "approval"}</Badge>
                                                 <Badge variant="outline">{runtimeNameMap.get(runtimeKind) || runtimeKind}</Badge>
                                             </div>
-                                            <div className="mt-2 text-xs text-muted-foreground">{approval.request?.question || approval.request?.prompt || t("admin.generated.7ab8b802")}</div>
+                                            <div className="mt-2 text-xs text-muted-foreground">{approval.request?.question || approval.request?.prompt || tg(t, "7ab8b802"))}</div>
                                             {approval.session_id ? <Button className="mt-3" variant="outline" size="sm" onClick={() => void inspectSession(approval.session_id!)}>
                                                     <Eye className="mr-2 h-4 w-4" />
-                                                    {t("admin.generated.cc59de60")}
+                                                    {tg(t, "cc59de60"))}
                                                 </Button> : null}
                                         </div>;
             })}
                         </div>
 
                         <div className="space-y-3">
-                            <div className="text-sm font-medium">{t("admin.generated.0801745d")}</div>
-                            {filteredRecoverableSessions.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{t("admin.generated.c0272102")}</div> : filteredRecoverableSessions.slice(0, 6).map(session => <div key={session.id} className="rounded-2xl border border-border/60 p-4">
+                            <div className="text-sm font-medium">{tg(t, "0801745d"))}</div>
+                            {filteredRecoverableSessions.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{tg(t, "c0272102"))}</div> : filteredRecoverableSessions.slice(0, 6).map(session => <div key={session.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap items-center gap-2">
                                             <Badge variant="outline">{runtimeNameMap.get(session.workflow?.ownerRuntime || "chat") || session.workflow?.ownerRuntime || "chat"}</Badge>
                                             <Badge>{session.workflow?.status || session.recoverableView?.workflowStatus || "recoverable"}</Badge>
                                         </div>
                                         <div className="mt-2 text-sm font-medium">{session.title || session.id}</div>
-                                        <div className="mt-1 text-xs text-muted-foreground">{session.summary?.previewExcerpt || t("admin.generated.96f0ac0d")}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{session.summary?.previewExcerpt || tg(t, "96f0ac0d"))}</div>
                                         <Button className="mt-3" variant="outline" size="sm" onClick={() => void inspectSession(session.id)}>
                                             <Eye className="mr-2 h-4 w-4" />
-                                            {t("admin.generated.cc59de60")}
+                                            {tg(t, "cc59de60"))}
                                         </Button>
                                     </div>)}
                         </div>
@@ -916,13 +917,13 @@ export function RuntimeGovernanceWorkbench({
 
                 {selectedSessionId ? <Card className="border-border/60 xl:col-span-2">
                         <CardHeader>
-                            <CardTitle className="flex items-center gap-2 text-lg"><Eye className="h-5 w-5 text-primary" />{t("admin.generated.6a2ef7e7")}</CardTitle>
-                            <CardDescription>{selectedSessionId}{selectedSessionDetail?.source ? t("admin.generated.424cef36", {
+                            <CardTitle className="flex items-center gap-2 text-lg"><Eye className="h-5 w-5 text-primary" />{tg(t, "6a2ef7e7"))}</CardTitle>
+                            <CardDescription>{selectedSessionId}{selectedSessionDetail?.source ? tg(t, "424cef36"), {
               value1: selectedSessionDetail.source
             }) : ""}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                            {detailLoading ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.b337421b")}</div> : selectedSessionDetail ? <>
+                            {detailLoading ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "b337421b"))}</div> : selectedSessionDetail ? <>
                                     <div className="grid gap-4 md:grid-cols-4">
                                         <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">workflow</div><div className="mt-2 text-sm font-medium">{selectedSessionDetail.workflow?.status || selectedSessionDetail.recoverable?.workflowStatus || "unknown"}</div></div>
                                         <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">owner runtime</div><div className="mt-2 text-sm font-medium">{runtimeNameMap.get(selectedSessionDetail.workflow?.ownerRuntime || "chat") || selectedSessionDetail.workflow?.ownerRuntime || "chat"}</div></div>
@@ -973,7 +974,7 @@ export function RuntimeGovernanceWorkbench({
                                                                     <div>requiredCapabilities：{asStringArray(taskBrief.requiredCapabilities).join(" / ") || "n/a"}</div>
                                                                     <div>acceptance：{asString(taskBrief.acceptanceContract) || "n/a"}</div>
                                                                 </div>
-                                                            </div>) : <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{t("admin.generated.b0094e1b")}</div>}
+                                                            </div>) : <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{tg(t, "b0094e1b"))}</div>}
                                                     </div>
                                                 </div>
                                                 <div className="space-y-4">
@@ -984,7 +985,7 @@ export function RuntimeGovernanceWorkbench({
                                                                     <div className="font-medium text-foreground">{asString(item.targetLabel) || asString(item.targetId) || "delegation target"}</div>
                                                                     <div className="mt-1">lane：{asString(item.lane) || "n/a"} · status：{asString(item.status) || "n/a"}</div>
                                                                     <div className="mt-1">taskBriefId：{asString(item.taskBriefId) || "n/a"}</div>
-                                                                </div>) : <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{t("admin.generated.7968d4a5")}</div>}
+                                                                </div>) : <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{tg(t, "7968d4a5"))}</div>}
                                                         </div>
                                                     </div>
                                                     <div className="rounded-lg border border-border/50 p-3">
@@ -1000,7 +1001,7 @@ export function RuntimeGovernanceWorkbench({
                                         </div> : null}
                                     <div className="grid gap-4 xl:grid-cols-[0.42fr_0.58fr]">
                                         <div className="rounded-xl border border-border/50 p-4">
-                                            <div className="text-sm font-medium">{t("admin.generated.4bafdc6d")}</div>
+                                            <div className="text-sm font-medium">{tg(t, "4bafdc6d"))}</div>
                                             <div className="mt-3 space-y-2 text-xs text-muted-foreground">
                                                 <div>canResume：{selectedSessionDetail.controls?.canResume ? "true" : "false"}</div>
                                                 <div>canRetry：{selectedSessionDetail.controls?.canRetry ? "true" : "false"}</div>
@@ -1009,16 +1010,16 @@ export function RuntimeGovernanceWorkbench({
                                             </div>
                                         </div>
                                         <div className="rounded-xl border border-border/50 p-4">
-                                            <div className="text-sm font-medium">{t("admin.generated.61f44e37")}</div>
+                                            <div className="text-sm font-medium">{tg(t, "61f44e37"))}</div>
                                             <div className="mt-3 space-y-3">
                                                 {(selectedSessionDetail.messages || []).slice(-3).map((message, index) => <div key={message.id || `${message.role || "msg"}:${index}`} className="rounded-lg bg-muted/40 p-3">
                                                         <div className="text-xs text-muted-foreground">{message.role || "message"} · {formatWhen(message.createdAt)}</div>
-                                                        <div className="mt-2 whitespace-pre-wrap text-sm">{message.content || t("admin.generated.e6598f07")}</div>
+                                                        <div className="mt-2 whitespace-pre-wrap text-sm">{message.content || tg(t, "e6598f07"))}</div>
                                                     </div>)}
                                             </div>
                                         </div>
                                     </div>
-                                </> : <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("admin.generated.c3c86707")}</div>}
+                                </> : <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "c3c86707"))}</div>}
                         </CardContent>
                     </Card> : null}
 

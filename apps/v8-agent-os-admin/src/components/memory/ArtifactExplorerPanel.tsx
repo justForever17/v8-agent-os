@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { tg } from "@/i18n/admin-legacy";
 
 type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "file";
 
@@ -191,7 +192,7 @@ export function ArtifactExplorerPanel() {
   }, []);
 
   const saveArtifactBudget = useCallback(async () => {
-    if (!window.confirm(t("admin.generated.904b788f"))) return;
+    if (!window.confirm(tg(t, "904b788f")))) return;
     const statsResponse = await fetch("/api/storage-retention/stats", { cache: "no-store" });
     const stats = await statsResponse.json().catch(() => null);
     const config = stats?.config || {};
@@ -341,7 +342,7 @@ export function ArtifactExplorerPanel() {
                     <div className="flex flex-col gap-3 rounded-xl border border-border/60 bg-muted/10 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
                         <div>
                             <div className="font-medium text-foreground">Artifact space budget</div>
-                            <div>{t("admin.generated.297318c2")} {artifactBudgetUsedMb ?? "-"} {t("admin.generated.dde85c50")}</div>
+                            <div>{tg(t, "297318c2"))} {artifactBudgetUsedMb ?? "-"} {tg(t, "dde85c50"))}</div>
                         </div>
                         <div className="flex items-center gap-2">
                             <Input

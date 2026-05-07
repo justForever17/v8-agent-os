@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { tg } from "@/i18n/admin-legacy";
 type SummaryPayload = {
   pendingApprovals: number;
   recentRuns: number;
@@ -1043,7 +1044,7 @@ function RunLedgerPanel({
   const refs = ledger?.refs || {};
   return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
-                <AdminHoverInfo content={t("admin.generated.2d4b9c7f")}>
+                <AdminHoverInfo content={tg(t, "2d4b9c7f"))}>
                     <div>
                         <h2 className="text-lg font-semibold text-slate-950">Run Ledger</h2>
                         <p className="mt-1 font-mono text-xs text-slate-500">{runId}</p>

@@ -5410,7 +5410,7 @@ export default function ChatScreen() {
                             <EdgeActionRail
                                 side="left"
                                 open={leftRailOpen}
-                                expandedWidth={174}
+                                expandedWidth={154}
                                 top={10}
                                 onOpen={() => {
                                     setLeftRailOpen(true);
@@ -5420,7 +5420,7 @@ export default function ChatScreen() {
                             >
                                 <View style={styles.leftEdgeRailContent}>
                                     <Pressable
-                                        style={[styles.edgeIconButton, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}
+                                        style={[styles.edgeIconButton, { backgroundColor: palette.surfaceStrong, borderColor: "transparent" }]}
                                         onPress={() => {
                                             setLeftRailOpen(false);
                                             setHistoryOpen(true);
@@ -5435,7 +5435,7 @@ export default function ChatScreen() {
                                             styles.edgeIconButton,
                                             {
                                                 backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : palette.surfaceStrong,
-                                                borderColor: workspaceInfoOpen || workspaceChooserVisible ? `${palette.primary}33` : palette.border,
+                                                borderColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primary : "transparent",
                                             },
                                         ]}
                                         onPress={() => {
@@ -5761,14 +5761,14 @@ const styles = StyleSheet.create({
     leftEdgeRailContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
+        gap: 3,
     },
     edgeIconButton: {
-        width: 40,
-        height: 40,
+        width: 36,
+        height: 36,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 20,
+        borderRadius: 18,
         borderWidth: 1,
     },
     scopeTrigger: {

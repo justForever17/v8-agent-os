@@ -53,6 +53,26 @@ export function createTranslator(locale: Locale) {
         applyParams(key, resolveMessage(locale, key), params);
 }
 
+export function resolveClientLocale(): Locale {
+    if (typeof document !== "undefined") {
+        const docLocale = parseLocale(document.documentElement.lang);
+        if (docLocale) {
+            return docLocale;
+        }
+    }
+    if (typeof navigator !== "undefined") {
+        const navLocale = parseLocale(navigator.language);
+        if (navLocale) {
+            return navLocale;
+        }
+    }
+    return "zh-CN";
+}
+
+export function translateCurrentClient(key: TranslationKey, params?: TranslationParams) {
+    return createTranslator(resolveClientLocale())(key, params);
+}
+
 export function resolveText(
     locale: Locale,
     value: string,

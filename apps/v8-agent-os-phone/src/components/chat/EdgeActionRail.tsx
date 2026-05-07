@@ -1,7 +1,6 @@
 import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Animated, PanResponder, Pressable, StyleSheet, View } from "react-native";
 
-import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 
 export const EdgeActionRail = memo(function EdgeActionRail({
@@ -23,7 +22,6 @@ export const EdgeActionRail = memo(function EdgeActionRail({
     onOpen: () => void;
     onClose: () => void;
 }) {
-    const { colors, themeMode } = useUiPrefs();
     const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
     const closedOffset = side === "left" ? -(expandedWidth - collapsedPeekWidth) : expandedWidth - collapsedPeekWidth;
 
@@ -65,8 +63,8 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                         top,
                         width: expandedWidth,
                         transform: [{ translateX }],
-                        backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.82)" : "rgba(255,255,255,0.86)",
-                        borderColor: `${colors.border}CC`,
+                        backgroundColor: "transparent",
+                        borderColor: "transparent",
                     },
                 ]}
             >
@@ -74,7 +72,7 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     style={[
                         styles.peekHandle,
                         side === "left" ? styles.leftHandle : styles.rightHandle,
-                        { borderColor: `${colors.border}CC`, backgroundColor: colors.surfaceStrong },
+                        { borderColor: "transparent", backgroundColor: "transparent" },
                     ]}
                     onPress={open ? onClose : onOpen}
                     hitSlop={10}
@@ -92,15 +90,12 @@ const styles = StyleSheet.create({
         position: "absolute",
         zIndex: 30,
         minHeight: 48,
-        borderWidth: 1,
+        borderWidth: 0,
         borderRadius: radii.pill,
-        paddingHorizontal: 4,
-        paddingVertical: 4,
-        shadowColor: "#0F172A",
-        shadowOpacity: 0.10,
-        shadowRadius: 18,
-        shadowOffset: { width: 0, height: 8 },
-        elevation: 5,
+        paddingHorizontal: 2,
+        paddingVertical: 2,
+        shadowOpacity: 0,
+        elevation: 0,
     },
     leftRail: {
         left: 0,
@@ -116,9 +111,9 @@ const styles = StyleSheet.create({
     peekHandle: {
         position: "absolute",
         top: 7,
-        width: 18,
-        height: 34,
-        borderWidth: 1,
+        width: 20,
+        height: 38,
+        borderWidth: 0,
     },
     leftHandle: {
         right: -9,

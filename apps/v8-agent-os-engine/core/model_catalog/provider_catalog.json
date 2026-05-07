@@ -1186,13 +1186,25 @@
             "web_search"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/mimo_doubao_streaming.json"
+              },
+              {
+                "source": "xiaomi_mimo_docs",
+                "url": "https://platform.xiaomimimo.com/docs/zh-CN/welcome"
+              }
+            ],
+            "notes": "V8 fixture verifies MiMo v2.5 Pro streams reasoning separately through OpenAI-compatible reasoning_content."
           }
         },
         {
@@ -1232,13 +1244,25 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/mimo_doubao_streaming.json"
+              },
+              {
+                "source": "xiaomi_mimo_docs",
+                "url": "https://platform.xiaomimimo.com/docs/zh-CN/welcome"
+              }
+            ],
+            "notes": "V8 fixture verifies MiMo v2.5 streams reasoning separately through OpenAI-compatible reasoning_content."
           }
         },
         {
@@ -1371,13 +1395,25 @@
             "web_search"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/mimo_doubao_streaming.json"
+              },
+              {
+                "source": "xiaomi_mimo_tokenplan_docs",
+                "url": "https://platform.xiaomimimo.com/docs/zh-CN/api/chat/anthropic-api"
+              }
+            ],
+            "notes": "V8 fixture verifies MiMo v2.5 Pro through TokenPlan streams reasoning separately through OpenAI-compatible reasoning_content."
           }
         },
         {
@@ -1431,7 +1467,73 @@
         "url": "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
       },
       "confidence": "provider_docs",
-      "models": [],
+      "models": [
+        {
+          "id": "doubao-seed-2-0-pro-260215",
+          "contextWindow": 256000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output"
+          ],
+          "reasoningSurface": {
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/mimo_doubao_streaming.json"
+              },
+              {
+                "source": "volcengine_ark_docs",
+                "url": "https://www.volcengine.com/docs/82379"
+              }
+            ],
+            "notes": "V8 fixture verifies Doubao Seed 2.0 Pro streams reasoning separately through OpenAI-compatible reasoning_content."
+          }
+        },
+        {
+          "id": "doubao-seed-2-0-code-preview-260215",
+          "contextWindow": 256000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "structured_output",
+            "code"
+          ],
+          "reasoningSurface": {
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/mimo_doubao_streaming.json"
+              },
+              {
+                "source": "volcengine_ark_docs",
+                "url": "https://www.volcengine.com/docs/82379"
+              }
+            ],
+            "notes": "V8 fixture verifies Doubao Seed 2.0 Code Preview streams reasoning separately through OpenAI-compatible reasoning_content."
+          }
+        }
+      ],
       "providerKind": "chat",
       "credentialRealm": "volcengine_ark",
       "logoAsset": "/model-assets/lobe/volcengine-color.svg"

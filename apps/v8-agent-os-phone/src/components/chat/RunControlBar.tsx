@@ -203,7 +203,7 @@ export function RunControlBar({
 
     return (
         <View
-            style={[styles.wrap, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
+            style={[styles.wrap, { backgroundColor: "transparent", borderColor: "transparent" }]}
             accessibilityLabel={runId ? `${t("src.components.chat.runcontrolbar.run_controls")} ${runId}` : t("src.components.chat.runcontrolbar.run_controls")}
         >
             <Pressable
@@ -272,20 +272,20 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 6,
+        gap: 3,
         borderRadius: radii.pill,
-        borderWidth: 1,
-        paddingHorizontal: 4,
-        paddingVertical: 4,
-        width: 82,
-        minWidth: 82,
-        maxWidth: 82,
+        borderWidth: 0,
+        paddingHorizontal: 0,
+        paddingVertical: 2,
+        width: 69,
+        minWidth: 69,
+        maxWidth: 69,
         flexShrink: 0,
     },
     iconSlot: {
-        width: 32,
-        height: 32,
-        borderRadius: 16,
+        width: 33,
+        height: 33,
+        borderRadius: 17,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",

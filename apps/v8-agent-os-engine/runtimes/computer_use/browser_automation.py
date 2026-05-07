@@ -15,6 +15,12 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import requests
 
+from core.agent_browser_profile import (
+    agent_browser_profile_summary,
+    default_agent_browser_profile_root,
+    normalize_agent_browser_kind,
+    resolve_agent_browser_profile_dir,
+)
 from runtimes.computer_use.input_policy import looks_like_url
 
 
@@ -45,7 +51,7 @@ _PERSISTENT_PROFILE_BLOCKED_ARGS = {
     "--inprivate",
 }
 _DEDICATED_PROFILE_MODE = "dedicated_debug_profile"
-_DEFAULT_PROFILE_ROOT = Path.home() / ".v8-agent-os" / "browser-profiles" / "computer_use"
+_DEFAULT_PROFILE_ROOT = default_agent_browser_profile_root()
 
 
 def _basename(value: str | None) -> str:
@@ -301,10 +307,23 @@ class BrowserAutomationProvider:
         return "chromium"
 
     def _dedicated_user_data_dir(self, browser_kind: str) -> Path:
-        normalized = str(browser_kind or "chromium").strip().lower() or "chromium"
-        if self._user_data_dir and self._user_data_dir.name.lower() in {"chrome", "edge", "chromium"}:
-            return self._user_data_dir
-        return self._profile_root() / normalized
+        return resolve_agent_browser_profile_dir(
+            browser_kind=browser_kind,
+            configured_user_data_dir=self._user_data_dir,
+        )
+
+    def agent_browser_profile_summary(self, browser_kind: str | None = None) -> Dict[str, Any]:
+        kind = normalize_agent_browser_kind(browser_kind)
+        payload = agent_browser_profile_summary(kind)
+        payload.update(
+            {
+                "enabled": self._enabled,
+                "provider": self._provider_id,
+                "targetPort": self._target_port,
+                "proxyPort": self._proxy_port,
+            }
+        )
+        return payload
 
     def _is_profile_arg(self, value: str) -> bool:
         lowered = str(value or "").strip().lower()
@@ -623,6 +642,81 @@ class BrowserAutomationProvider:
             return None
         self._managed_launches.pop(app_key, None)
         return None
+
+    def open_agent_browser(self, *, browser_kind: str | None = None, url: str = "about:blank") -> Dict[str, Any]:
+        kind = normalize_agent_browser_kind(browser_kind)
+        target_url = str(url or "").strip() or "about:blank"
+        if not self._enabled:
+            return {
+                "ok": False,
+                "failureClass": "browser_lane_disabled",
+                "summary": "Computer Use browser lane 未启用，无法打开 Agent 专用浏览器。",
+                "recommendedNextAction": "在 Admin / Desktop Automation 启用 Computer Use browser lane 后重试。",
+            }
+        if not self._node_path:
+            return {
+                "ok": False,
+                "failureClass": "node_unavailable",
+                "summary": "当前环境缺少 node，无法打开 Agent 专用浏览器。",
+                "recommendedNextAction": "安装/配置 Node.js 后重试。",
+            }
+        if not self._helper_script_path().exists():
+            return {
+                "ok": False,
+                "failureClass": "helper_script_missing",
+                "summary": "browser automation helper 缺失，无法打开 Agent 专用浏览器。",
+                "recommendedNextAction": "检查 Engine 安装完整性。",
+            }
+        if not self._probe_playwright_dependency().get("available"):
+            return {
+                "ok": False,
+                "failureClass": "playwright_module_missing",
+                "summary": "Playwright 依赖不可用，无法打开 Agent 专用浏览器。",
+                "recommendedNextAction": "安装 workspace 依赖或检查 Python/Node Playwright 驱动。",
+            }
+        profile_dir = self._dedicated_user_data_dir(kind)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        target_port = self._target_port
+        managed_started = False
+        if not self._is_debug_port_reachable(target_port):
+            decision = self._start_managed_chromium_debug_browser(app_id=kind, app_name=kind)
+            if decision is None or not decision.available:
+                return {
+                    "ok": False,
+                    "failureClass": "managed_browser_launch_failed",
+                    "summary": "未能拉起 Agent 专用浏览器。",
+                    "browserKind": kind,
+                    "profile": self.agent_browser_profile_summary(kind),
+                    "recommendedNextAction": "确认 Chrome/Edge 已安装，或在 browserLane.userDataDir 中配置可写 profile 目录。",
+                }
+            target_port = int(decision.target_port or target_port)
+            managed_started = True
+        lane = BrowserLaneDecision(
+            enabled=True,
+            available=True,
+            family="chromium",
+            reason="agent_browser_profile_opened",
+            target_port=target_port,
+            managed_launch=managed_started,
+        )
+        tab: Dict[str, Any] | None = None
+        try:
+            tab = self.open_tab(url=target_url, decision=lane)
+        except Exception:
+            tab = None
+        return {
+            "ok": True,
+            "kind": "agent_browser_profile",
+            "summary": "Agent 专用浏览器已打开。请在弹出的浏览器里手动完成登录；登录态会保存在该 profile。",
+            "browserKind": kind,
+            "url": target_url,
+            "profile": self.agent_browser_profile_summary(kind),
+            "targetPort": target_port,
+            "proxyPort": self._proxy_port,
+            "managedStarted": managed_started,
+            "tab": tab,
+            "recommendedNextAction": "完成登录后回到对话或工具链继续任务；不要把密码、cookie 或 token 粘贴给模型。",
+        }
 
     def decide_lane(
         self,

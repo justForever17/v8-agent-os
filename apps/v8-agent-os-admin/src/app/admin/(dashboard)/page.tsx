@@ -11,6 +11,7 @@ import { RuntimeDashboardCards } from "@/components/runtime/RuntimeDashboardCard
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 
 const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#7C3AED", "#F43F5E", "#14B8A6", "#F97316"];
+const DASHBOARD_WINDOW_DAYS = 7;
 
 type PromptCacheInvocationSummary = {
     profileId?: string;
@@ -214,7 +215,7 @@ export default function DashboardPage() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch("/api/stats?days=1", { cache: "no-store" })
+        fetch(`/api/stats?days=${DASHBOARD_WINDOW_DAYS}`, { cache: "no-store" })
             .then(async (res) => {
                 const payload = await res.json().catch(() => ({}));
                 const normalized = normalizeDashboardData(payload);

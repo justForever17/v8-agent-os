@@ -716,7 +716,7 @@ class ModelTelemetryService:
             }
         )
 
-    def build_dashboard_overview(self, days: int = 1) -> Dict[str, Any]:
+    def build_dashboard_overview(self, days: int = 7) -> Dict[str, Any]:
         days = max(1, min(int(days or 1), 30))
         counts = db.get_counts_snapshot()
         daily = db.get_daily_telemetry_activity(days=days)

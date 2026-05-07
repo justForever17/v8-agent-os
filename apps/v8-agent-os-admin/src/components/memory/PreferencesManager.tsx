@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
+import { tg } from "@/i18n/admin-legacy";
 interface PreferenceRow {
   id: string;
   key: string;
@@ -106,20 +107,20 @@ export function PreferencesManager() {
       }
       await loadPreferences();
       toast({
-        title: t("admin.generated.a9677acb"),
-        description: t("admin.generated.4191e7e2", { value1: record.key })
+        title: tg(t, "a9677acb")),
+        description: tg(t, "4191e7e2"), { value1: record.key })
       });
     } catch (error) {
       console.error("Failed to restore quarantined preference:", error);
       toast({
-        title: t("admin.generated.76842a03"),
-        description: t("admin.generated.b01dce71"),
+        title: tg(t, "76842a03")),
+        description: tg(t, "b01dce71")),
         variant: "destructive"
       });
     }
   }, [loadPreferences, toast]);
   const handleDeleteQuarantined = useCallback(async (record: QuarantinedPreferenceRecord) => {
-    if (!window.confirm(t("admin.generated.0011ed75", { value1: record.key }))) {
+    if (!window.confirm(tg(t, "0011ed75"), { value1: record.key }))) {
       return;
     }
     try {
@@ -133,14 +134,14 @@ export function PreferencesManager() {
       }
       await loadPreferences();
       toast({
-        title: t("admin.generated.6a51586b"),
-        description: t("admin.generated.23a1462d", { value1: record.key })
+        title: tg(t, "6a51586b")),
+        description: tg(t, "23a1462d"), { value1: record.key })
       });
     } catch (error) {
       console.error("Failed to delete quarantined preference:", error);
       toast({
         title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0915ccdf"),
-        description: t("admin.generated.982f281a"),
+        description: tg(t, "982f281a")),
         variant: "destructive"
       });
     }
@@ -300,9 +301,9 @@ export function PreferencesManager() {
             {quarantinedGlobalPreferences.length > 0 ?
     <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
                     <CardHeader>
-                        <CardTitle className="text-lg">{t("admin.generated.b9aeaf18")}</CardTitle>
+                        <CardTitle className="text-lg">{tg(t, "b9aeaf18"))}</CardTitle>
                         <CardDescription>
-                            {t("admin.generated.5efc831b")}
+                            {tg(t, "5efc831b"))}
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -315,13 +316,13 @@ export function PreferencesManager() {
                                 <div className="min-w-0 space-y-1">
                                     <div className="text-sm">{record.value}</div>
                                     <div className="text-xs text-muted-foreground">
-                                        {t("admin.generated.0f93c2bb")}{record.reason || "unspecified"}
+                                        {tg(t, "0f93c2bb"))}{record.reason || "unspecified"}
                                     </div>
                                 </div>
                                 <div className="flex items-center justify-end gap-2">
                                     <Button variant="outline" size="sm" onClick={() => void handleRestoreQuarantined(record)}>
                                         <Save className="mr-2 h-4 w-4" />
-                                        {t("admin.generated.79748ca1")}
+                                        {tg(t, "79748ca1"))}
                                     </Button>
                                     <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => void handleDeleteQuarantined(record)}>
                                         <Trash2 className="h-4 w-4" />

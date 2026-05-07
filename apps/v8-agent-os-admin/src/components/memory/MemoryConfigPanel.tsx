@@ -12,6 +12,7 @@ import { Loader2, Save } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { tg } from "@/i18n/admin-legacy";
 interface SysModel {
   id: string;
   modelRef?: string;
@@ -639,9 +640,9 @@ export default function MemoryConfigPanel() {
                 <CardContent className="space-y-5">
                     <div className="space-y-3 rounded-lg border p-4">
                         <div className="space-y-1">
-                            <Label>{t("admin.generated.5076490a")}</Label>
+                            <Label>{tg(t, "5076490a"))}</Label>
                             <p className="text-xs text-muted-foreground">
-                                {t("admin.generated.0f7616e0")}{DURABLE_POLICY_PRESET_LABELS[recommendedDurablePreset] || t("components.memory.MemoryConfigPanel.k0f34dd0d")}”。
+                                {tg(t, "0f7616e0"))}{DURABLE_POLICY_PRESET_LABELS[recommendedDurablePreset] || t("components.memory.MemoryConfigPanel.k0f34dd0d")}”。
                             </p>
                         </div>
                         <div className="grid gap-3 md:grid-cols-3">
@@ -649,10 +650,10 @@ export default function MemoryConfigPanel() {
 
                                     <div className="flex items-center justify-between gap-3">
                                         <span className="text-sm font-semibold">{DURABLE_POLICY_PRESET_LABELS[presetKey] || presetKey}</span>
-                                        {presetKey === recommendedDurablePreset ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">{t("admin.generated.62b46f24")}</span> : null}
+                                        {presetKey === recommendedDurablePreset ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">{tg(t, "62b46f24"))}</span> : null}
                                     </div>
                                     <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                                        {DURABLE_POLICY_PRESET_DESCRIPTIONS[presetKey] || t("admin.generated.88ee9dc4")}
+                                        {DURABLE_POLICY_PRESET_DESCRIPTIONS[presetKey] || tg(t, "88ee9dc4"))}
                                     </p>
                                     <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
                                         pref {presetValues.preference_importance_threshold}/{presetValues.preference_confidence_threshold.toFixed(2)} · global {presetValues.global_knowledge_importance_threshold}/{presetValues.global_knowledge_confidence_threshold.toFixed(2)}
@@ -660,7 +661,7 @@ export default function MemoryConfigPanel() {
                                 </button>)}
                         </div>
                         <p className="text-xs text-muted-foreground">
-                            {t("admin.generated.70f73798")}{currentDurablePreset === "custom" ? t("admin.generated.14f3ad14") : DURABLE_POLICY_PRESET_LABELS[currentDurablePreset] || currentDurablePreset}
+                            {tg(t, "70f73798"))}{currentDurablePreset === "custom" ? tg(t, "14f3ad14")) : DURABLE_POLICY_PRESET_LABELS[currentDurablePreset] || currentDurablePreset}
                         </p>
                     </div>
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

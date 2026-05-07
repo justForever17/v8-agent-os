@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { getPlatformLoginPresetConfig, inferPlatformLoginPreset, PLATFORM_LOGIN_PRESETS, type PlatformLoginPreset } from "@/lib/models/provider-admin";
+import { tg } from "@/i18n/admin-legacy";
 interface AIModel {
   id: string;
   modelRef?: string;
@@ -550,14 +551,14 @@ export default function ProviderConfigPage({ params
                                     <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.models.providers.id.page.k6223be05")}</SelectItem>
                                     <SelectItem value="EMBEDDING">{t("app.admin.dashboard.models.providers.id.page.k9b398ad1")}</SelectItem>
                                     <SelectItem value="RERANK">{t("app.admin.dashboard.models.providers.id.page.k318b19b4")}</SelectItem>
-                                    <SelectItem value="MEDIA">{t("admin.generated.da54438b")}</SelectItem>
+                                    <SelectItem value="MEDIA">{tg(t, "da54438b"))}</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
                         {modelType === "TEXT" || modelType === "MULTIMODAL" ? <div className="grid grid-cols-2 gap-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="contextWindow">{t("app.admin.dashboard.models.providers.id.page.k20e21cd2")}</Label>
-                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("admin.generated.9cbd0194")} />
+                                <Input id="contextWindow" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={tg(t, "9cbd0194"))} />
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="maxTokens">{t("app.admin.dashboard.models.providers.id.page.k317345b1")}</Label>
@@ -577,7 +578,7 @@ export default function ProviderConfigPage({ params
                             </p>
                         </div> : null}
                         {modelType === "MEDIA" ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-muted-foreground">
-                            {t("admin.generated.b0ee49ef")}
+                            {tg(t, "b0ee49ef"))}
                         </div> : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.models.providers.id.page.kb7dfaded")}</Button>
                     </form>

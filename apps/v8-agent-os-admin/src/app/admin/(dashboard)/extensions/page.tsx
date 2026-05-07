@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { tg } from "@/i18n/admin-legacy";
 type ExtensionCatalogResponse = {
   startupState?: "cold" | "refreshing" | "ready" | "error";
   snapshotFreshness?: "cold" | "cached" | "live";
@@ -912,7 +913,7 @@ export default function ExtensionsPage() {
     const normalizedName = String(serverName || "").trim();
     if (!normalizedName)
     return;
-    const confirmed = window.confirm(isZh ? t("admin.generated.731f1b28", { value1:
+    const confirmed = window.confirm(isZh ? tg(t, "731f1b28"), { value1:
       normalizedName }) :
     `Delete MCP server "${normalizedName}" and hot-reload tools?`);
     if (!confirmed)
@@ -923,7 +924,7 @@ export default function ExtensionsPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const validationError = extractValidationPayload(data);
-        throw new Error(localizeMcpValidationPayload(validationError, t) || String(data?.detail || data?.error || t("admin.generated.f6f40de6")));
+        throw new Error(localizeMcpValidationPayload(validationError, t) || String(data?.detail || data?.error || tg(t, "f6f40de6"))));
       }
       setCatalog((previous) => previous ? {
         ...previous,
@@ -933,17 +934,17 @@ export default function ExtensionsPage() {
         }
       } : previous);
       toast({
-        title: data?.alreadyRemovedFromConfig ? t("admin.generated.93607b46") : t("admin.generated.92b60366"),
+        title: data?.alreadyRemovedFromConfig ? tg(t, "93607b46")) : tg(t, "92b60366")),
 
 
-        description: t("admin.generated.2ec10ec7")
+        description: tg(t, "2ec10ec7"))
       });
       await loadData();
     }
     catch (error) {
       toast({
-        title: t("admin.generated.8cc73e26"),
-        description: error instanceof Error ? error.message : t("admin.generated.2fb13dfc"),
+        title: tg(t, "8cc73e26")),
+        description: error instanceof Error ? error.message : tg(t, "2fb13dfc")),
         variant: "destructive"
       });
     } finally
@@ -957,8 +958,8 @@ export default function ExtensionsPage() {
     return;
     const skillName = String(skill.name || skillId);
     const isGlobal = String(skill.visibility || "global") !== "scoped";
-    const confirmed = window.confirm(isZh ? t("admin.generated.1cea8488", { value1:
-      skillName, value2: t("admin.generated.20494ad9") }) :
+    const confirmed = window.confirm(isZh ? tg(t, "1cea8488"), { value1:
+      skillName, value2: tg(t, "20494ad9")) }) :
     `Delete Skill "${skillName}" and its directory? ${isGlobal ? "This is a global Skill; confirm no workspace depends on it." : "Only the scoped workspace Skill will be deleted."}`);
     if (!confirmed)
     return;
@@ -975,18 +976,18 @@ export default function ExtensionsPage() {
       const res = await fetch(`/api/extensions/skills/${encodeURIComponent(skillId)}?${params.toString()}`, { method: "DELETE" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(String(data?.detail || data?.error || t("admin.generated.e83e6c41")));
+        throw new Error(String(data?.detail || data?.error || tg(t, "e83e6c41"))));
       }
       toast({
-        title: t("admin.generated.e95e338d"),
-        description: t("admin.generated.955629d4")
+        title: tg(t, "e95e338d")),
+        description: tg(t, "955629d4"))
       });
       await loadData();
     }
     catch (error) {
       toast({
-        title: t("admin.generated.a4e79e03"),
-        description: error instanceof Error ? error.message : t("admin.generated.2fb13dfc"),
+        title: tg(t, "a4e79e03")),
+        description: error instanceof Error ? error.message : tg(t, "2fb13dfc")),
         variant: "destructive"
       });
     } finally
@@ -1054,10 +1055,10 @@ export default function ExtensionsPage() {
             {runtimeStartupState === "error" ? <StatusNotice title={"app.admin.dashboard.extensions.page.kc3221dca"} description={health.lastRefreshError || catalog.lastRefreshError || t("app.admin.dashboard.extensions.page.ka1c8eb51")} tone="warning" /> : null}
             <StatusNotice title={silkAvailable ? "app.admin.dashboard.extensions.page.kdba6ed3d" : "app.admin.dashboard.extensions.page.kf4e67cdf"} description={silkAvailable ?
     t("app.admin.dashboard.extensions.page.kc090216b", {
-      silkVersion_silkVersion: silkVersion ? t("admin.generated.be614a10", { value1: silkVersion }) : "",
-      silkRoot_silkRoot: silkRoot ? t("admin.generated.a91318cc", { value1: silkRoot }) : ""
+      silkVersion_silkVersion: silkVersion ? tg(t, "be614a10"), { value1: silkVersion }) : "",
+      silkRoot_silkRoot: silkRoot ? tg(t, "a91318cc"), { value1: silkRoot }) : ""
     }) : t("app.admin.dashboard.extensions.page.k8c0be031", {
-      silkRoot_silkRoot: silkRoot ? t("admin.generated.3baf9380", { value1: silkRoot }) : ""
+      silkRoot_silkRoot: silkRoot ? tg(t, "3baf9380"), { value1: silkRoot }) : ""
     })} tone={silkAvailable ? "success" : "warning"} />
 
             <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"}>
@@ -1088,28 +1089,28 @@ export default function ExtensionsPage() {
                         <div className="grid gap-4 xl:grid-cols-2">
                             <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{t("admin.generated.79736210")}</div>
+                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "79736210"))}</div>
                                     <Badge variant="outline">{skillsPolicyBadge}</Badge>
                                 </div>
-                                <PolicyToggleCard title={t("admin.generated.49bc8921")} description={t("admin.generated.20cdf19c")} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "49bc8921"))} description={tg(t, "20cdf19c"))} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { stage1Enabled: checked })
               })}>
-                                    <SliderField label={t("admin.generated.ca97d660")} value={skillsStage1TopK} min={1} max={100} disabled={!skillsStage1Enabled} onValueChange={(value) => updateConfig({
+                                    <SliderField label={tg(t, "ca97d660"))} value={skillsStage1TopK} min={1} max={100} disabled={!skillsStage1Enabled} onValueChange={(value) => updateConfig({
                   prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
                     stage1TopK: clampRange(value, 1, 100)
                   })
-                })} hint={t("admin.generated.2656f849")} />
+                })} hint={tg(t, "2656f849"))} />
                                 </PolicyToggleCard>
-                                <PolicyToggleCard title={t("admin.generated.ab537e9f")} description={t("admin.generated.ff8dca4e")} checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "ab537e9f"))} description={tg(t, "ff8dca4e"))} checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { llmEnabled: checked })
               })}>
                                     <div className="grid gap-4 md:grid-cols-2">
-                                        <SliderField label={t("admin.generated.bbcb0c2a")} value={skillsStage2TopK} min={1} max={50} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
+                                        <SliderField label={tg(t, "bbcb0c2a"))} value={skillsStage2TopK} min={1} max={50} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
                     prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
                       stage2TopK: clampRange(value, 1, 50)
                     })
                   })} />
-                                        <SliderField label={t("admin.generated.8cb99dde")} value={skillsLlmTimeoutSeconds} min={5} max={10} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
+                                        <SliderField label={tg(t, "8cb99dde"))} value={skillsLlmTimeoutSeconds} min={5} max={10} disabled={!skillsLlmEnabled} onValueChange={(value) => updateConfig({
                     prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
                       llmTimeoutSeconds: clampRange(value, 5, 10)
                     })
@@ -1120,28 +1121,28 @@ export default function ExtensionsPage() {
 
                             <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{t("admin.generated.48ba093e")}</div>
+                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "48ba093e"))}</div>
                                     <Badge variant="outline">{mcpPolicyBadge}</Badge>
                                 </div>
-                                <PolicyToggleCard title={t("admin.generated.49bc8921")} description={t("admin.generated.0abf4d17")} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "49bc8921"))} description={tg(t, "0abf4d17"))} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { stage1Enabled: checked })
               })}>
-                                    <SliderField label={t("admin.generated.ca97d660")} value={mcpStage1TopK} min={1} max={100} disabled={!mcpStage1Enabled} onValueChange={(value) => updateConfig({
+                                    <SliderField label={tg(t, "ca97d660"))} value={mcpStage1TopK} min={1} max={100} disabled={!mcpStage1Enabled} onValueChange={(value) => updateConfig({
                   prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
                     stage1TopK: clampRange(value, 1, 100)
                   })
-                })} hint={t("admin.generated.0e9110ba")} />
+                })} hint={tg(t, "0e9110ba"))} />
                                 </PolicyToggleCard>
-                                <PolicyToggleCard title={t("admin.generated.ab537e9f")} description={t("admin.generated.71de3a30")} checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "ab537e9f"))} description={tg(t, "71de3a30"))} checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { llmEnabled: checked })
               })}>
                                     <div className="grid gap-4 md:grid-cols-2">
-                                        <SliderField label={t("admin.generated.bbcb0c2a")} value={mcpStage2TopK} min={1} max={50} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
+                                        <SliderField label={tg(t, "bbcb0c2a"))} value={mcpStage2TopK} min={1} max={50} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
                     prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
                       stage2TopK: clampRange(value, 1, 50)
                     })
                   })} />
-                                        <SliderField label={t("admin.generated.8cb99dde")} value={mcpLlmTimeoutSeconds} min={5} max={10} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
+                                        <SliderField label={tg(t, "8cb99dde"))} value={mcpLlmTimeoutSeconds} min={5} max={10} disabled={!mcpLlmEnabled} onValueChange={(value) => updateConfig({
                     prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
                       llmTimeoutSeconds: clampRange(value, 5, 10)
                     })
@@ -1156,11 +1157,11 @@ export default function ExtensionsPage() {
                         <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.stability.strategy.page.k2837705a")}</div>
                         <div className="flex items-center justify-between gap-3"><span>{t("app.admin.dashboard.extensions.page.k626da329")}</span><Badge variant={prefilterEnabled ? "default" : "secondary"}>{prefilterEnabled ? t("app.admin.dashboard.extensions.page.kdb6c0cc1") : t("app.admin.dashboard.extensions.page.k12b31ba6")}</Badge></div>
                         <div className="flex items-center justify-between gap-3"><span>{t("app.admin.dashboard.extensions.page.k154a393b")}</span><Badge variant="outline">{prefilterModel || t("app.admin.dashboard.extensions.page.k54745147")}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{t("admin.generated.67306bc1")}</span><Badge variant="outline">{skillsPolicyBadge}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{t("admin.generated.3f37427c")}</span><Badge variant="outline">{mcpPolicyBadge}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{t("admin.generated.2d1ba0ff")}</span><Badge variant="outline">{t("admin.generated.e23e4778")}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{tg(t, "67306bc1"))}</span><Badge variant="outline">{skillsPolicyBadge}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{tg(t, "3f37427c"))}</span><Badge variant="outline">{mcpPolicyBadge}</Badge></div>
+                        <div className="flex items-center justify-between gap-3"><span>{tg(t, "2d1ba0ff"))}</span><Badge variant="outline">{tg(t, "e23e4778"))}</Badge></div>
                         <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs leading-6 text-slate-500">
-                            {t("admin.generated.4b107a8b")
+                            {tg(t, "4b107a8b"))
 
             }
                         </div>
@@ -1177,7 +1178,7 @@ export default function ExtensionsPage() {
                     <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)_120px]">
                         <Select value={previewScope} onValueChange={setPreviewScope}>
                             <SelectTrigger className="h-11">
-                                <SelectValue placeholder={t("admin.generated.0a0abb6e")} />
+                                <SelectValue placeholder={tg(t, "0a0abb6e"))} />
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="default">{t("app.admin.dashboard.projects.workspaces.page.defaultCard.title")}</SelectItem>
@@ -1201,39 +1202,39 @@ export default function ExtensionsPage() {
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-xs leading-5 text-slate-500">
                         {selectedPreviewProject ?
-          isZh ? t("admin.generated.f5181fbd", { value1:
+          isZh ? tg(t, "f5181fbd"), { value1:
             selectedPreviewProject.name || selectedPreviewProject.id, value2: selectedPreviewProject.workspacePath || "" }) :
           `Preview bound to project workspace: ${selectedPreviewProject.name || selectedPreviewProject.id} · ${selectedPreviewProject.workspacePath || ""}` :
-          isZh ? t("admin.generated.0b6e9949", { value1:
+          isZh ? tg(t, "0b6e9949"), { value1:
             defaultWorkspacePath || t("app.admin.dashboard.system.base.page.k6ed9c299") }) :
           `Preview bound to default workspace: ${defaultWorkspacePath || "not set"}`}
                     </div>
 
                     {previewResult ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-                            <StatPill label={t("admin.generated.b9b6b6e7")} value={previewCounts?.skillInventoryCount ?? previewCounts?.skillPoolSize ?? 0} />
-                            <StatPill label={t("admin.generated.2d31de55")} value={previewCounts?.skillStage1ShortlistCount ?? previewSkillStage1Entries.length} />
-                            <StatPill label={t("admin.generated.00365fb5")} value={previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length} />
-                            <StatPill label={t("admin.generated.c92c805c")} value={previewCounts?.mcpInventoryCount ?? previewCounts?.mcpServerPoolSize ?? previewCounts?.mcpFamilyPoolSize ?? 0} />
-                            <StatPill label={t("admin.generated.fc4516cc")} value={previewCounts?.mcpStage1ShortlistCount ?? previewMcpStage1Servers.length} />
-                            <StatPill label={t("admin.generated.3819c372")} value={previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length} />
+                            <StatPill label={tg(t, "b9b6b6e7"))} value={previewCounts?.skillInventoryCount ?? previewCounts?.skillPoolSize ?? 0} />
+                            <StatPill label={tg(t, "2d31de55"))} value={previewCounts?.skillStage1ShortlistCount ?? previewSkillStage1Entries.length} />
+                            <StatPill label={tg(t, "00365fb5"))} value={previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length} />
+                            <StatPill label={tg(t, "c92c805c"))} value={previewCounts?.mcpInventoryCount ?? previewCounts?.mcpServerPoolSize ?? previewCounts?.mcpFamilyPoolSize ?? 0} />
+                            <StatPill label={tg(t, "fc4516cc"))} value={previewCounts?.mcpStage1ShortlistCount ?? previewMcpStage1Servers.length} />
+                            <StatPill label={tg(t, "3819c372"))} value={previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length} />
                         </div> : null}
 
                     {previewResult ? <div className="grid gap-3 lg:grid-cols-3">
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">{t("admin.generated.15779211")}</div>
+                                <div className="text-xs uppercase tracking-wide text-slate-500">{tg(t, "15779211"))}</div>
                                 <div className="mt-2 font-medium text-slate-900">{previewCounts?.routingMode || previewCounts?.mode || "stage1_only"}</div>
                                 <div className="mt-2 text-xs leading-6 text-slate-500">
                                     {`skills=${previewCounts?.skillsRoutingMode || "stage1_only"} · mcp=${previewCounts?.mcpRoutingMode || "stage1_only"}`}
                                 </div>
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">{t("admin.generated.912c7155")}</div>
+                                <div className="text-xs uppercase tracking-wide text-slate-500">{tg(t, "912c7155"))}</div>
                                 <div className="mt-2 text-slate-900">
                                     {`stage1=${previewSkillsStage1Enabled ? `on(${previewCounts?.stage1TopK?.skills ?? 0})` : "off"}, hits=${previewCounts?.skillStage1HitCount ?? 0}, shortlist=${previewCounts?.skillStage1ShortlistCount ?? previewSkillStage1Entries.length}, stage2=${previewCounts?.stage2Enabled?.skills ? previewCounts?.stage2TopK?.skills ?? 0 : "off"}, final=${previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length}, timeout=${previewCounts?.llmTimeoutSeconds?.skills ?? 0}s`}
                                 </div>
                             </div>
                             <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">{t("admin.generated.eaa43b49")}</div>
+                                <div className="text-xs uppercase tracking-wide text-slate-500">{tg(t, "eaa43b49"))}</div>
                                 <div className="mt-2 text-slate-900">
                                     {`stage1=${previewMcpStage1Enabled ? `on(${previewCounts?.stage1TopK?.mcp ?? 0})` : "off"}, hits=${previewCounts?.mcpStage1HitCount ?? 0}, shortlist=${previewCounts?.mcpStage1ShortlistCount ?? previewMcpStage1Servers.length}, stage2=${previewCounts?.stage2Enabled?.mcp ? previewCounts?.stage2TopK?.mcp ?? 0 : "off"}, final=${previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length}, timeout=${previewCounts?.llmTimeoutSeconds?.mcp ?? 0}s`}
                                 </div>
@@ -1243,11 +1244,11 @@ export default function ExtensionsPage() {
                     {previewResult ? <div className="grid gap-6 xl:grid-cols-2">
                             <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{t("admin.generated.fbecfab2")}</div>
+                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "fbecfab2"))}</div>
                                     <Badge variant="outline">{previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length}</Badge>
                                 </div>
                                 {previewSkillFinalEntries.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                        {t("admin.generated.34558308")}
+                                        {tg(t, "34558308"))}
                                     </div> : <div className="max-h-[42rem] space-y-3 overflow-y-auto pr-1">
                                         {previewSkillFinalEntries.map((skill) => <div key={`final:${skill.skillId || skill.instructionPath || skill.skillRoot || skill.skillName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                                                 <div className="flex flex-wrap items-center gap-2">
@@ -1266,11 +1267,11 @@ export default function ExtensionsPage() {
 
                             <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{t("admin.generated.2c0b2ebf")}</div>
+                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "2c0b2ebf"))}</div>
                                     <Badge variant="outline">{previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length}</Badge>
                                 </div>
                                 {previewMcpFinalServers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                        {t("admin.generated.657e53a4")}
+                                        {tg(t, "657e53a4"))}
                                     </div> : <div className="max-h-[42rem] space-y-3 overflow-y-auto pr-1">
                                         {previewMcpFinalServers.map((server) => <div key={`final:${server.serverKey || server.familyKey || server.serverName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                                                 <div className="flex flex-wrap items-center gap-2">
@@ -1312,21 +1313,21 @@ export default function ExtensionsPage() {
 
             <SourceMetaRow source={configEnvelope.source} savePath={configEnvelope.savePath} reloadRequired={configEnvelope.reloadRequired} />
 
-            <ConfigCard title={t("admin.generated.75497cb2")} description={t("admin.generated.ee842ada")} variant="list">
+            <ConfigCard title={tg(t, "75497cb2"))} description={tg(t, "ee842ada"))} variant="list">
                 <div className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-3">
                         <StatPill label={t("app.admin.dashboard.rpa.page.kc6ff9900")} value={skillSafetyDisabledCount} />
-                        <StatPill label={t("admin.generated.eaae1132")} value={skillSafetyReviewCount} />
-                        <StatPill label={t("admin.generated.65c814f7")} value={skillSafetyApprovedCount} />
+                        <StatPill label={tg(t, "eaae1132"))} value={skillSafetyReviewCount} />
+                        <StatPill label={tg(t, "65c814f7"))} value={skillSafetyApprovedCount} />
                     </div>
                     <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm leading-6 text-slate-500">
-                        {skillSafetyReviews.length === 0 ? t("admin.generated.c38e628d") : t("admin.generated.f2b2b3a6")
+                        {skillSafetyReviews.length === 0 ? tg(t, "c38e628d")) : tg(t, "f2b2b3a6"))
 
           }
                     </div>
                     <div className="flex justify-end">
                         <Button asChild variant="outline">
-                            <a href="/admin/safety-control">{t("admin.generated.fc2a86a8")}</a>
+                            <a href="/admin/safety-control">{tg(t, "fc2a86a8"))}</a>
                         </Button>
                     </div>
                 </div>
@@ -1342,20 +1343,20 @@ export default function ExtensionsPage() {
                             </div>
                             <div className="grid gap-2 md:grid-cols-2">
                                 <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{t("admin.generated.7279ecd4")}</div>
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{tg(t, "7279ecd4"))}</div>
                                     <div className="mt-1 text-xs text-slate-700">{String(catalog.catalogScope?.mode || "default")}</div>
                                     {catalog.catalogScope?.projectId ? <div className="mt-1 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{catalog.catalogScope.projectId}</div> : null}
                                     {catalog.catalogScope?.workspacePath ? <div className="mt-1 break-all text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{catalog.catalogScope.workspacePath}</div> : null}
                                 </div>
                                 <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{t("admin.generated.161c82a4")}</div>
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{tg(t, "161c82a4"))}</div>
                                     <div className="mt-1 break-all text-xs text-slate-700">{catalog.skills?.visibleRootSignature || catalog.visibleRootSignature || "—"}</div>
-                                    <div className="mt-1 text-[11px] text-slate-500">{t("admin.generated.b23c239c")}{String(catalog.skills?.discoveryRevision || "—")}</div>
-                                    <div className="mt-1 text-[11px] text-slate-500">{t("admin.generated.1a5ed9ee")}{String(catalog.skills?.scopedRefreshMode || "base")}</div>
+                                    <div className="mt-1 text-[11px] text-slate-500">{tg(t, "b23c239c"))}{String(catalog.skills?.discoveryRevision || "—")}</div>
+                                    <div className="mt-1 text-[11px] text-slate-500">{tg(t, "1a5ed9ee"))}{String(catalog.skills?.scopedRefreshMode || "base")}</div>
                                 </div>
                             </div>
                             <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{t("admin.generated.88063e8d")}</div>
+                                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{tg(t, "88063e8d"))}</div>
                                 <div className="mt-2">
                                     {(catalog.skills?.changedRoots || []).length ?
                 <div className="space-y-1">
@@ -1366,7 +1367,7 @@ export default function ExtensionsPage() {
                   )}
                                         </div> :
 
-                <div className="text-xs text-slate-500">{t("admin.generated.0c294602")}</div>
+                <div className="text-xs text-slate-500">{tg(t, "0c294602"))}</div>
                 }
                                 </div>
                             </div>
@@ -1404,7 +1405,7 @@ export default function ExtensionsPage() {
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-                  title={t("admin.generated.8d0a9426")}
+                  title={tg(t, "8d0a9426"))}
                   onClick={() => void deleteSkill(skill)}
                   disabled={!skill.skillId || deletingSkillId === skill.skillId}>
 
@@ -1440,7 +1441,7 @@ export default function ExtensionsPage() {
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-                  title={t("admin.generated.3d2ba7c9")}
+                  title={tg(t, "3d2ba7c9"))}
                   onClick={() => void deleteMcpServer(server.name)}
                   disabled={deletingMcpServer === server.name}>
 

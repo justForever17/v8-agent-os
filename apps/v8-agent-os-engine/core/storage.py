@@ -1075,6 +1075,8 @@ class StorageManager:
                     os.getenv("V8_AGENT_OS_WEB_FETCH_ADAPTIVE_STORAGE_FILE")
                     or (Path(cache_dir) / "adaptive" / "global.db")
                 ),
+                "useAgentBrowserProfile": False,
+                "agentBrowserProfileAllowlist": [],
             },
             "desktopTools": {
                 "tesseractPath": str(os.getenv("TESSERACT_PATH") or ""),
@@ -2468,6 +2470,8 @@ class StorageManager:
             "adaptiveStorageFile",
             str(Path(normalized["webFetch"]["cacheDir"]) / "adaptive" / "global.db"),
         )
+        normalized["webFetch"].setdefault("useAgentBrowserProfile", False)
+        normalized["webFetch"].setdefault("agentBrowserProfileAllowlist", [])
         normalized.setdefault("desktopTools", {})
         normalized.pop("channels", None)
         normalized.setdefault("desktopLive", {})

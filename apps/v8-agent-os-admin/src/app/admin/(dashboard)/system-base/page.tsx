@@ -31,6 +31,8 @@ type SystemBaseData = {
         bypassProxyEnv?: boolean;
         cacheDir?: string;
         adaptiveStorageFile?: string;
+        useAgentBrowserProfile?: boolean;
+        agentBrowserProfileAllowlist?: string[];
     };
     desktopTools?: {
         tesseractPath?: string;
@@ -407,6 +409,42 @@ export default function SystemBasePage() {
                                     }))
                                 }
                             />
+                        </div>
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
+                            <div className="space-y-1">
+                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.webFetch.agentProfile.title")}</div>
+                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.webFetch.agentProfile.description")}</div>
+                            </div>
+                            <Switch
+                                checked={Boolean(webFetch.useAgentBrowserProfile)}
+                                onCheckedChange={(checked) =>
+                                    updateData((current) => ({
+                                        ...current,
+                                        webFetch: { ...(current.webFetch || {}), useAgentBrowserProfile: checked },
+                                    }))
+                                }
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>{t("app.admin.dashboard.system.base.webFetch.agentProfile.allowlist")}</Label>
+                            <Textarea
+                                value={(webFetch.agentBrowserProfileAllowlist || []).join("\n")}
+                                onChange={(event) =>
+                                    updateData((current) => ({
+                                        ...current,
+                                        webFetch: {
+                                            ...(current.webFetch || {}),
+                                            agentBrowserProfileAllowlist: event.target.value
+                                                .split(/\r?\n|,/)
+                                                .map((item) => item.trim())
+                                                .filter(Boolean),
+                                        },
+                                    }))
+                                }
+                                placeholder={"github.com\nnotion.so\nmetaso.cn"}
+                                className="min-h-[96px]"
+                            />
+                            <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.webFetch.agentProfile.allowlistHelp")}</div>
                         </div>
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.system.base.page.k2bd98420")}</Label>

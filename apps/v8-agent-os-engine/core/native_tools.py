@@ -1081,10 +1081,10 @@ def _agent_count_nodes(value: Any) -> int:
     return 1 if value not in (None, "") else 0
 
 
-def _creative_media_artifact_summary(artifact: Any) -> dict[str, Any]:
+def _creative_media_artifact_summary(artifact: Any, *, detail: bool = False) -> dict[str, Any]:
     from runtimes.creative_media.tool_surface import artifact_summary
 
-    return artifact_summary(artifact)
+    return artifact_summary(artifact, detail=detail)
 
 
 def _creative_media_job_summary(job: Any) -> dict[str, Any]:
@@ -1116,7 +1116,6 @@ def _creative_media_asset_summary(asset: Any) -> dict[str, Any]:
             "title": asset.get("title"),
             "label": asset.get("label"),
             "recipeId": asset.get("recipeId"),
-            "sourcePath": asset.get("sourcePath"),
             "createdAt": asset.get("createdAt"),
             "updatedAt": asset.get("updatedAt"),
         }
@@ -1180,18 +1179,19 @@ def _creative_media_edit_plan_summary(plan: Any, *, detail: bool = False) -> dic
         "planId": plan.get("planId"),
         "projectId": plan.get("projectId"),
         "workspaceId": plan.get("workspaceId"),
-        "workspacePath": plan.get("workspacePath"),
         "recipeId": plan.get("recipeId"),
         "status": plan.get("status"),
         "timelineCount": len(timeline),
         "trackCounts": {key: len(list(value or [])) for key, value in tracks.items()},
         "subtitleCount": len(subtitles),
-        "output": plan.get("output"),
-        "qualityGates": plan.get("qualityGates"),
         "createdAt": plan.get("createdAt"),
         "updatedAt": plan.get("updatedAt"),
+        "detailTool": "creative_media_get_edit_plan(plan_id=...)",
     }
     if detail:
+        payload["workspacePath"] = plan.get("workspacePath")
+        payload["output"] = plan.get("output")
+        payload["qualityGates"] = plan.get("qualityGates")
         payload["timeline"] = [
             _agent_compact_dict(
                 {
@@ -1221,22 +1221,24 @@ def _creative_media_render_summary(render: Any, *, detail: bool = False) -> dict
         "renderJobId": render.get("renderJobId"),
         "projectId": render.get("projectId"),
         "workspaceId": render.get("workspaceId"),
-        "workspacePath": render.get("workspacePath"),
         "planId": render.get("planId"),
         "status": render.get("status"),
         "artifactCount": len(artifacts),
-        "artifacts": [_creative_media_artifact_summary(item) for item in artifacts[:4] if isinstance(item, dict)],
-        "outputPath": render.get("outputPath") or render.get("output"),
         "returnCode": execution.get("returnCode") or execution.get("returncode"),
-        "stdoutPreview": _agent_preview_text(execution.get("stdout") or render.get("stdoutTail"), limit=500),
-        "stderrPreview": _agent_preview_text(execution.get("stderr") or render.get("stderrTail"), limit=700),
-        "stderrOmittedChars": max(0, len(str(execution.get("stderr") or render.get("stderrTail") or "")) - 700),
         "error": _agent_preview_text(render.get("error"), limit=360),
         "createdAt": render.get("createdAt"),
         "updatedAt": render.get("updatedAt"),
         "completedAt": render.get("completedAt"),
+        "detailTool": "creative_media_get_render(render_job_id=...)",
     }
     if detail:
+        stderr_text = str(execution.get("stderr") or render.get("stderrTail") or "")
+        payload["workspacePath"] = render.get("workspacePath")
+        payload["artifacts"] = [_creative_media_artifact_summary(item, detail=True) for item in artifacts[:4] if isinstance(item, dict)]
+        payload["outputPath"] = render.get("outputPath") or render.get("output")
+        payload["stdoutPreview"] = _agent_preview_text(execution.get("stdout") or render.get("stdoutTail"), limit=500)
+        payload["stderrPreview"] = _agent_preview_text(stderr_text, limit=700)
+        payload["stderrOmittedChars"] = max(0, len(stderr_text) - 700)
         payload["inputs"] = _agent_limited_list(render.get("inputs"), limit=_AGENT_DETAIL_LIST_LIMIT)
     return _agent_compact_dict(payload)
 
@@ -2278,20 +2280,20 @@ def _computer_use_compact_observation(
         },
     )
     elements = []
-    for item in list(observation.get("elements") or [])[:40]:
+    total_elements = len(list(observation.get("elements") or []))
+    for item in list(observation.get("elements") or [])[:12]:
         if not isinstance(item, dict):
             continue
         elements.append(
-            {
-                "elementId": item.get("elementId"),
-                "role": item.get("role"),
-                "name": item.get("name"),
-                "automationId": item.get("automationId"),
-                "className": item.get("className"),
-                "actions": list(item.get("actions") or []),
-                "bounds": item.get("bounds"),
-                "confidence": item.get("confidence"),
-            }
+            _agent_compact_dict(
+                {
+                    "elementId": item.get("elementId"),
+                    "role": item.get("role"),
+                    "name": _agent_preview_text(item.get("name"), limit=120),
+                    "actions": _agent_limited_list(item.get("actions"), limit=4),
+                    "confidence": item.get("confidence"),
+                }
+            )
         )
     payload = {
         "ok": True,
@@ -2314,10 +2316,8 @@ def _computer_use_compact_observation(
             "blockerState": scene_assessment.get("blockerState") or "none",
             "transitionState": scene_assessment.get("transitionState") or "observed",
             "confidence": scene_assessment.get("confidence") or metadata.get("pageIdentityConfidence") or "low",
-            "reasons": list(scene_assessment.get("reasons") or []),
-            "screenHash": observation.get("screenHash"),
-            "treeHash": observation.get("treeHash"),
-            "elementCount": len(list(observation.get("elements") or [])),
+            "reasons": _agent_limited_list(scene_assessment.get("reasons"), limit=4),
+            "elementCount": total_elements,
         },
         "bindingAssessment": {
             "status": binding_assessment.get("status"),
@@ -2325,18 +2325,15 @@ def _computer_use_compact_observation(
             "score": binding_assessment.get("score"),
             "strictBindingRequired": bool(binding_assessment.get("strictBindingRequired")),
             "requiresUpdateRequest": bool(binding_assessment.get("requiresUpdateRequest")),
-            "matches": dict(binding_assessment.get("matches") or {}),
-            "reasons": list(binding_assessment.get("reasons") or []),
+            "reasons": _agent_limited_list(binding_assessment.get("reasons"), limit=4),
         },
-        "environmentSignalSummary": environment_signal_summary,
-        "browserAutomation": dict(metadata.get("browserAutomation") or {}),
-        "appAdapter": dict(metadata.get("appAdapter") or {}),
+        "environmentSignalFlags": _agent_signal_flags(environment_signal_summary),
         "elements": elements,
-        "screenshotArtifact": observation.get("screenshotArtifact"),
-        "sessionId": raw_result.get("sessionId"),
-        "runId": raw_result.get("runId"),
+        "omittedElementCount": max(0, total_elements - len(elements)),
+        "recommendedNextAction": "Use the visible elementId/name for click/type tools, or request detail/rawRef if the target is missing.",
+        "detailTool": "computer_use_observe_scene(..., depth_limit=..., element_limit=...) plus tool_observation_detail(rawRef)",
     }
-    browser_automation = dict(payload.get("browserAutomation") or {})
+    browser_automation = dict(metadata.get("browserAutomation") or {})
     browser_session_mode = str(browser_automation.get("profilePersistenceMode") or "").strip() or None
     if browser_session_mode:
         browser_automation["preservesLoginState"] = browser_session_mode in {
@@ -2344,13 +2341,13 @@ def _computer_use_compact_observation(
             "attached_existing_debug_browser",
             "default_user_profile_launch",
         }
-        payload["browserAutomation"] = browser_automation
-    payload["browserSession"] = {
-        "mode": browser_session_mode,
-        "preservesLoginState": bool(browser_automation.get("preservesLoginState")),
-        "attachedExistingBrowser": bool(browser_automation.get("attachedExistingBrowser")),
-        "reusedExistingBrowserWindow": bool(browser_automation.get("reusedExistingBrowserWindow")),
-    } if browser_automation else None
+    if browser_automation:
+        payload["browserSession"] = {
+            "mode": browser_session_mode,
+            "preservesLoginState": bool(browser_automation.get("preservesLoginState")),
+            "attachedExistingBrowser": bool(browser_automation.get("attachedExistingBrowser")),
+            "reusedExistingBrowserWindow": bool(browser_automation.get("reusedExistingBrowserWindow")),
+        }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -3168,6 +3165,67 @@ def _computer_use_compact_driver_capabilities(*, detail_level: str = "summary") 
         for key, value in capabilities.items()
         if isinstance(value, dict)
     }
+    if normalized_detail not in {"diagnostic", "detail", "full"}:
+        current_platform = (
+            raw_capability_truth.get("currentPlatform")
+            or availability_details.get("platform")
+            or sys.platform
+        )
+        current_platform_status = None
+        for key, value in compact_truth_platforms.items():
+            if isinstance(value, dict) and value.get("currentHost"):
+                current_platform = value.get("displayPlatform") or key
+                current_platform_status = value.get("statusCounts")
+                break
+        current_display = dict(availability_details.get("currentDisplay") or {})
+        browser_lane = dict(availability_details.get("browserLane") or {})
+        browser_profile = dict(availability_details.get("browserProfilePersistence") or {})
+        compact_driver = {
+            key: _agent_compact_dict(
+                {
+                    "available": value.get("available"),
+                    "status": value.get("status"),
+                    "validationLevel": value.get("validationLevel"),
+                }
+            )
+            for key, value in capabilities.items()
+            if isinstance(value, dict)
+        }
+        summary_payload = {
+            "ok": True,
+            "action": "desktop_capabilities",
+            "detailLevel": normalized_detail,
+            "summary": "Current desktop host capability snapshot; use diagnostic detail for platform matrix and driver notes.",
+            "currentHost": {
+                "platform": current_platform,
+                "statusCounts": current_platform_status,
+            },
+            "driverHealth": compact_driver,
+            "browser": {
+                "enabled": browser_lane.get("enabled"),
+                "provider": browser_lane.get("provider"),
+                "profilePersistent": browser_profile.get("persistent"),
+            },
+            "display": _agent_compact_dict(
+                {
+                    "width": current_display.get("width"),
+                    "height": current_display.get("height"),
+                    "scaleFactor": current_display.get("scaleFactor"),
+                }
+            ),
+            "knownGaps": _agent_limited_list(
+                availability_details.get("knownGaps") or capability_truth.get("knownGaps"),
+                limit=5,
+            ),
+            "primitiveMatrix": dict((primitive_validation_matrix().get("summary")) or {}),
+            "recommendedNextAction": "Use computer_use_observe_scene for current UI state or detail_level='diagnostic' for full matrix.",
+            "detailTool": "computer_use_desktop_capabilities(detail_level='diagnostic')",
+        }
+        return json.dumps(
+            _agent_compact_dict(summary_payload),
+            ensure_ascii=False,
+            indent=2,
+        )
     payload = {
         "ok": True,
         "action": "desktop_capabilities",
@@ -3505,8 +3563,8 @@ def execute_system_command(
     CRITICAL USAGE RULES:
     1. This tool blocks execution. If the command asks for user input (e.g., 'y/n', selecting from a menu), IT WILL HANG AND TIMEOUT.
     2. Therefore, you MUST ALWAYS provide non-interactive flags (like `-y`, `--no-fund`, `--silent`) when using this tool.
-    3. If you CANNOT avoid interaction, or if the command is a long-running server/process, you MUST use `run_system_command(mode="session")` instead.
-    4. Do not use this tool for project scaffolding, dependency installs, dev servers, or CLIs that may prompt; use `command_session_broker(mode="start")`.
+    3. If you CANNOT avoid interaction, or if the command is a long-running server/process, use `run_system_command(mode="auto")` instead.
+    4. Do not use this tool for project scaffolding, dependency installs, dev servers, or CLIs that may prompt; `run_system_command(mode="auto")` will choose the recoverable path.
     
     Arguments:
         command (str): The command to execute natively.
@@ -3542,7 +3600,6 @@ def execute_system_command(
                     "cwd": cwd or None,
                     "resolvedCwd": workspace_preflight.get("resolvedCwd"),
                     "violations": workspace_preflight.get("violations") or [],
-                    "workspaceBinding": workspace_preflight.get("binding"),
                     "recommendedNextAction": "在当前 Active Workspace Root 内重试，或由用户显式授予额外 workspace/root。",
                 },
                 ensure_ascii=False,
@@ -3581,35 +3638,14 @@ def execute_system_command(
                 )
         stdout, stdout_encoding = _decode_completed_process_bytes(result.stdout or b"", stream_name="stdout")
         stderr, stderr_encoding = _decode_completed_process_bytes(result.stderr or b"", stream_name="stderr")
-        output = stdout or ""
-        if stderr:
-            output += f"\n[STDERR]:\n{stderr}"
         encoding_diagnostics = {
             "stdout": stdout_encoding,
             "stderr": stderr_encoding,
         }
-            
-        if not output.strip() and result.returncode == 0:
-            return "Command executed successfully with no output."
-            
-        # Truncate if insanely long (protect LLM context)
-        if len(output) > 20000:
-            output = output[:20000] + f"\n\n...[OUTPUT TRUNCATED] ({len(output)} chars total). Use grep_search or read_native_file with lines to analyze further."
-
         noisy_encoding_states = {
             str(stdout_encoding.get("state") or ""),
             str(stderr_encoding.get("state") or ""),
         } - {"", "empty", "clean"}
-        if noisy_encoding_states:
-            output += "\n\n[encodingDiagnostics]: " + json.dumps(
-                {
-                    "state": sorted(noisy_encoding_states),
-                    "stdoutEncoding": stdout_encoding.get("encoding"),
-                    "stderrEncoding": stderr_encoding.get("encoding"),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
 
         safety_guardian.observe_post_action(
             action_family="command",
@@ -3625,7 +3661,37 @@ def execute_system_command(
         )
         if result.returncode == 0:
             _notify_skills_inventory_command_completed(command)
-        return output
+        stdout_preview = _agent_preview_text(stdout, limit=5000)
+        stderr_preview = _agent_preview_text(stderr, limit=5000)
+        stdout_chars = len(stdout or "")
+        stderr_chars = len(stderr or "")
+        payload: dict[str, Any] = {
+            "ok": result.returncode == 0,
+            "kind": "command_result",
+            "summary": "命令执行成功。" if result.returncode == 0 else f"命令执行失败，退出码 {result.returncode}。",
+            "cwd": resolved_cwd,
+            "returnCode": result.returncode,
+            "keyOutput": stdout_preview,
+            "keyErrors": stderr_preview,
+            "recommendedNextAction": "none" if result.returncode == 0 else "根据 stderr/stdout 摘要修复问题后重跑；若输出不足，请缩小命令范围或使用更具体的检查命令。",
+        }
+        if stdout_preview and "...[omitted " in stdout_preview:
+            payload["stdoutTruncated"] = True
+            payload["stdoutChars"] = stdout_chars
+        if stderr_preview and "...[omitted " in stderr_preview:
+            payload["stderrTruncated"] = True
+            payload["stderrChars"] = stderr_chars
+        if noisy_encoding_states:
+            payload["encodingDiagnostics"] = {
+                "state": sorted(noisy_encoding_states),
+                "stdoutEncoding": stdout_encoding.get("encoding"),
+                "stderrEncoding": stderr_encoding.get("encoding"),
+            }
+        return json.dumps(
+            {key: val for key, val in payload.items() if val not in (None, "", [], {})},
+            ensure_ascii=False,
+            indent=2,
+        )
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error executing command: {str(e)}"
@@ -3808,9 +3874,11 @@ def workspace_broker(
     path: str = ".",
     depth: int = 2,
     max_entries: int = 80,
+    detail_level: str = "summary",
 ) -> str:
     """Inspect the active workspace and mint a run-scoped inventory token before scaffold/install/bulk-write operations."""
     normalized_mode = str(mode or "inspect").strip().lower()
+    normalized_detail = str(detail_level or "summary").strip().lower()
     if normalized_mode != "inspect":
         return json.dumps(
             {
@@ -3832,7 +3900,7 @@ def workspace_broker(
                 "error": path_preflight.get("error"),
                 "inputPath": path,
                 "resolvedPath": path_preflight.get("resolvedPath"),
-                "workspaceBinding": path_preflight.get("binding"),
+                "recommendedNextAction": "Use a path inside the active workspace or request an explicit extra root.",
             },
             ensure_ascii=False,
         )
@@ -3841,6 +3909,7 @@ def workspace_broker(
         root = root.parent
     binding = build_workspace_binding(runtime_context)
     workspace_root = Path(binding.active_workspace_root)
+    tree_requested = normalized_detail in {"tree", "detail", "diagnostic", "full"}
     bounded_depth = max(1, min(int(depth or 2), 4))
     bounded_entries = max(20, min(int(max_entries or 80), 200))
     items, omitted = _workspace_tree_preview(root, max_entries=bounded_entries, depth=bounded_depth)
@@ -3860,22 +3929,41 @@ def workspace_broker(
         for item in items
         if item.get("type") == "dir" and re.search(r"(?i)(werewolf|ai[-_]?werewolf|game|app)", str(item.get("path") or ""))
     ][:12]
+    top_dirs = [
+        item.get("path")
+        for item in items
+        if item.get("type") == "dir" and str(item.get("path") or "").strip()
+    ][:12]
+    payload: dict[str, Any] = {
+        "ok": True,
+        "kind": "workspace_inventory",
+        "summary": "已完成当前工作区盘点；后续脚手架/依赖安装/批量写入需要基于该结果选择目标目录。",
+        "workspaceRoot": str(workspace_root),
+        "inspectedPath": str(root),
+        "token": token.get("token"),
+        "nonEmpty": bool(items),
+        "itemCount": len(items),
+        "projectMarkerCount": len(markers),
+        "topDirs": top_dirs,
+        "projectMarkers": markers[:12],
+        "potentialConflicts": potential_conflicts,
+        "recommendedNextAction": "若已有目标项目，继续该目录；若要新建，请明确子目录名；若冲突不清楚，先询问用户。",
+        "detailTool": "workspace_broker(mode='inspect', detail_level='tree')",
+    }
+    if tree_requested:
+        payload.update(
+            {
+                "detailLevel": normalized_detail,
+                "workspaceBinding": binding.as_dict(),
+                "tokenDetail": token,
+                "items": items,
+                "omitted": {"entries": omitted, "maxEntries": bounded_entries, "depth": bounded_depth},
+            }
+        )
     return json.dumps(
-        {
-            "ok": True,
-            "kind": "workspace_inventory",
-            "summary": "已完成当前工作区盘点；后续脚手架/依赖安装/批量写入需要基于该结果选择目标目录。",
-            "workspaceBinding": binding.as_dict(),
-            "workspaceRoot": str(workspace_root),
-            "inspectedPath": str(root),
-            "token": token,
-            "items": items,
-            "omitted": {"entries": omitted, "maxEntries": bounded_entries, "depth": bounded_depth},
-            "projectMarkers": markers,
-            "potentialConflicts": potential_conflicts,
-            "recommendedNextAction": "若已有目标项目，继续该目录；若要新建，请明确子目录名；若冲突不清楚，先询问用户。",
-        },
+        _agent_compact_dict(payload),
         ensure_ascii=False,
+        indent=2,
     )
 
 
@@ -4820,9 +4908,8 @@ def _runtime_broker_payload(
         group_items = [
             {
                 "group": str(item.get("group") or ""),
-                "runtimeKind": str(item.get("runtimeKind") or ""),
+                "kind": str(item.get("runtimeKind") or ""),
                 "label": str(item.get("label") or item.get("group") or ""),
-                "summary": str(item.get("summary") or ""),
             }
             for item in group_items
             if isinstance(item, dict)
@@ -4831,11 +4918,11 @@ def _runtime_broker_payload(
         "mode": mode,
         "ok": ok,
         "summary": summary,
-        "activeGrants": list(grants or []),
+        "activeGrants": [str((item or {}).get("group") or item) for item in list(grants or [])],
         "availableGroups": group_items,
         "rejected": list(rejected or []),
         "detailMode": normalized_detail if normalized_detail in {"catalog", "detail", "full"} else "summary",
-        "detailTool": "runtime_broker(mode='list', detail_level='catalog')",
+        "detailTool": "runtime_broker(mode='list', detail_level='catalog') for toolNames",
     }
     if changed is not None:
         payload["changed"] = list(changed or [])
@@ -4845,7 +4932,6 @@ def _runtime_broker_payload(
         omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
         payload["omitted"] = {
             "toolNames": omitted_tools,
-            "reason": "system content already lists runtime capability cards; broker default only reports state and grants.",
         }
     if error:
         payload["error"] = error
@@ -4885,7 +4971,7 @@ def runtime_broker(
                                 for group in runtime_access_from_route_context(route_context)
                             ],
                             detail_level=detail_level,
-                            next_action="Grant a needed group with runtime_broker(mode='grant', tool_group='...'); request detail_level='catalog' only when tool names are required.",
+                            next_action="Grant one needed group, e.g. runtime_broker(mode='grant', tool_group='research.core').",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -4916,7 +5002,7 @@ def runtime_broker(
                                 for group in active_groups
                             ],
                             detail_level=detail_level,
-                            next_action="Continue with currently granted tools, or grant/revoke a runtime group as needed.",
+                            next_action="Use granted tools or grant/revoke a group.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -4937,7 +5023,7 @@ def runtime_broker(
                                 ok=False,
                                 summary="runtime_broker(mode=grant) requires tool_group or tool_groups.",
                                 error="missing_tool_group",
-                                next_action="Call runtime_broker(mode='list') to see group ids, then grant one.",
+                                next_action="Call list, then grant a group id.",
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -4969,7 +5055,7 @@ def runtime_broker(
                             error="unknown_tool_group" if rejected else None,
                             detail_level=detail_level,
                             changed=grants,
-                            next_action="On the next supervisor step, use the newly granted runtime tools; do not call list again unless another group is needed.",
+                            next_action="Next step can use the granted tools.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -5052,12 +5138,36 @@ def creative_media_catalog(
 
 
 @tool
-def creative_media_resolutions() -> str:
+def creative_media_resolutions(detail_level: str = "summary") -> str:
     """Return CreativeMediaRuntime resolution presets for image and video generation."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        return json.dumps(creative_media_runtime.resolutions(), ensure_ascii=False, indent=2)
+        normalized_detail = str(detail_level or "summary").strip().lower()
+        payload = dict(creative_media_runtime.resolutions() or {})
+        if normalized_detail not in {"matrix", "detail", "diagnostic", "full"}:
+            image_presets = dict((payload.get("image") or {}).get("presets") or {})
+            video_presets = dict((payload.get("video") or {}).get("presets") or {})
+            payload = {
+                "ok": True,
+                "detailLevel": "summary",
+                "summary": "常用创意媒体分辨率预设；完整矩阵按需读取。",
+                "ratios": _agent_limited_list(payload.get("ratios"), limit=8),
+                "imagePresets": {
+                    key: value
+                    for key, value in image_presets.items()
+                    if key in {"1K", "2K"}
+                },
+                "videoPresets": {
+                    key: value
+                    for key, value in video_presets.items()
+                    if key in {"720P", "1080P"}
+                },
+                "detailTool": "creative_media_resolutions(detail_level='matrix')",
+            }
+        else:
+            payload["detailLevel"] = normalized_detail
+        return json.dumps(_agent_compact_dict(payload), ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error reading CreativeMedia resolutions: {str(e)}"
 
@@ -5089,15 +5199,25 @@ async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
 
 
 @tool
-def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[str] = None, limit: int = 20) -> str:
+def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[str] = None, limit: int = 20, detail_level: str = "summary") -> str:
     """List CreativeMediaRuntime jobs, optionally filtered by modality or status."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
         jobs = creative_media_runtime.list_jobs(modality=modality, status=status)
+        normalized_detail = str(detail_level or "summary").strip().lower()
         effective_limit = max(1, min(int(limit or 20), 50))
+        if normalized_detail == "summary":
+            effective_limit = min(effective_limit, 5)
+        status_counts: dict[str, int] = {}
+        for item in jobs:
+            state = str((item or {}).get("status") or "unknown")
+            status_counts[state] = status_counts.get(state, 0) + 1
         return json.dumps(
             {
+                "ok": True,
+                "summary": "Creative Media jobs listed; use detailTool for a single job.",
+                "statusCounts": status_counts,
                 "jobs": [_creative_media_job_summary(item) for item in jobs[:effective_limit]],
                 "count": len(jobs),
                 "limit": effective_limit,
@@ -5200,13 +5320,16 @@ def creative_media_list_assets(modality: Optional[str] = None, role: Optional[st
         from runtimes.creative_media.runtime import creative_media_runtime
 
         assets = creative_media_runtime.list_assets(modality=modality, role=role)
-        effective_limit = max(1, min(int(limit or 20), 50))
+        effective_limit = max(1, min(int(limit or 20), 5))
         return json.dumps(
             {
+                "ok": True,
+                "summary": "Creative Media assets listed; source paths and provider details stay in detail records/raw evidence.",
                 "assets": [_creative_media_asset_summary(item) for item in assets[:effective_limit]],
                 "count": len(assets),
                 "limit": effective_limit,
                 "hasMore": len(assets) > effective_limit,
+                "detailTool": "Use related creative_media_get_* tools or rawRef for source paths and full ledger details.",
             },
             ensure_ascii=False,
             indent=2,
@@ -5353,13 +5476,21 @@ def creative_media_list_edit_plans(recipe_id: Optional[str] = None, limit: int =
         from runtimes.creative_media.runtime import creative_media_runtime
 
         plans = creative_media_runtime.list_edit_plans(recipe_id=recipe_id)
-        effective_limit = max(1, min(int(limit or 20), 50))
+        effective_limit = max(1, min(int(limit or 20), 5))
+        status_counts: dict[str, int] = {}
+        for item in plans:
+            state = str((item or {}).get("status") or "unknown")
+            status_counts[state] = status_counts.get(state, 0) + 1
         return json.dumps(
             {
+                "ok": True,
+                "summary": "Creative Media edit plans listed; timeline, paths, and quality gates are available through detailTool.",
+                "statusCounts": status_counts,
                 "editPlans": [_creative_media_edit_plan_summary(item) for item in plans[:effective_limit]],
                 "count": len(plans),
                 "limit": effective_limit,
                 "hasMore": len(plans) > effective_limit,
+                "detailTool": "creative_media_get_edit_plan(plan_id=...)",
             },
             ensure_ascii=False,
             indent=2,
@@ -5395,19 +5526,30 @@ def creative_media_get_render(render_job_id: str) -> str:
 
 
 @tool
-def creative_media_list_renders(plan_id: Optional[str] = None, status: Optional[str] = None, limit: int = 20) -> str:
+def creative_media_list_renders(plan_id: Optional[str] = None, status: Optional[str] = None, limit: int = 20, detail_level: str = "summary") -> str:
     """List CreativeMedia render jobs, optionally filtered by edit plan or status."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
         renders = creative_media_runtime.list_renders(plan_id=plan_id, status=status)
+        normalized_detail = str(detail_level or "summary").strip().lower()
         effective_limit = max(1, min(int(limit or 20), 50))
+        if normalized_detail == "summary":
+            effective_limit = min(effective_limit, 5)
+        status_counts: dict[str, int] = {}
+        for item in renders:
+            state = str((item or {}).get("status") or "unknown")
+            status_counts[state] = status_counts.get(state, 0) + 1
         return json.dumps(
             {
+                "ok": True,
+                "summary": "Creative Media render jobs listed; use detailTool for artifacts and paths.",
+                "statusCounts": status_counts,
                 "renders": [_creative_media_render_summary(item) for item in renders[:effective_limit]],
                 "count": len(renders),
                 "limit": effective_limit,
                 "hasMore": len(renders) > effective_limit,
+                "detailTool": "creative_media_get_render(render_job_id=...)",
             },
             ensure_ascii=False,
             indent=2,
@@ -6250,6 +6392,10 @@ def _strip_terminal_bootstrap_noise(text: str, env_overrides: dict[str, str] | N
             continue
         if "cmd.exe" in lowered and any(marker in lowered for marker in removable_lines):
             continue
+        if lowered.startswith("cd /d "):
+            continue
+        if "__v8_command_exit_" in lowered:
+            continue
         filtered_lines.append(line)
     while filtered_lines and not filtered_lines[0].strip():
         filtered_lines.pop(0)
@@ -6952,6 +7098,12 @@ class BackgroundProcess:
         self.worker_result_raw_buffer = ""
         self.pending_input_echo = ""
         self.terminal_env_overrides = _build_terminal_env_overrides()
+        self.exit_sentinel = (
+            f"__V8_COMMAND_EXIT_{uuid.uuid4().hex[:12]}__"
+            if sys.platform == "win32" and HAS_WINPTY and not interactive
+            else ""
+        )
+        self.command_completed_by_sentinel = False
         self.command_diagnostics = _extend_command_diagnostics_for_terminal(
             _build_command_diagnostics_snapshot(command, cwd=self.cwd),
             env_overrides=self.terminal_env_overrides,
@@ -6967,6 +7119,8 @@ class BackgroundProcess:
             _write_winpty_input(self.pty_win, f'cd /d "{self.cwd}"\n')
             time.sleep(0.2)
             _write_winpty_input(self.pty_win, f"{command}\n")
+            if self.exit_sentinel:
+                _write_winpty_input(self.pty_win, f"echo {self.exit_sentinel}:%ERRORLEVEL%\n")
         elif sys.platform != "win32":
             pid, self.fd = pty.fork()
             if pid == 0:
@@ -7215,6 +7369,21 @@ class BackgroundProcess:
                 return None
         return None
 
+    def _maybe_mark_command_exit_sentinel(self, *, now: float | None = None) -> None:
+        sentinel = str(getattr(self, "exit_sentinel", "") or "")
+        if not sentinel or self.command_completed_by_sentinel:
+            return
+        match = re.search(rf"{re.escape(sentinel)}:(-?\d+)", str(self.worker_result_raw_buffer or ""))
+        if not match:
+            return
+        try:
+            self.return_code = int(match.group(1))
+        except Exception:
+            self.return_code = 1
+        self.command_completed_by_sentinel = True
+        self.is_running = False
+        self.completed_at = now or time.time()
+
     def _ingest_output(self, data: str) -> None:
         if not data:
             return
@@ -7234,6 +7403,7 @@ class BackgroundProcess:
                 "preview": self.last_raw_frame_preview,
             }
         )
+        self._maybe_mark_command_exit_sentinel(now=now)
         if self.uses_tty:
             previous_snapshot = self.screen_snapshot_cache
             self.screen.feed(data)
@@ -7278,7 +7448,9 @@ class BackgroundProcess:
         finally:
             self.is_running = False
             self.completed_at = time.time()
-            self.return_code = self._read_return_code()
+            read_return_code = self._read_return_code()
+            if self.return_code is None:
+                self.return_code = read_return_code
             if self.return_code in (None, 0):
                 _notify_skills_inventory_command_completed(self.command)
 
@@ -7581,15 +7753,15 @@ def run_system_command(
 
     mode=auto:
     - 短命令/非交互命令直接同步执行并返回结果
-    - 交互式或长驻命令返回 redirect，要求使用 command_session_broker(mode=start)
-    - 脚手架、依赖安装、dev server、可能等待输入的 CLI 一律推荐 session
+    - 交互式、脚手架、依赖安装或长驻命令自动启动可观察 command session 并返回 sessionId/commandId
+    - 后续需要输入、观察或终止时再使用 command_session_broker
 
     mode=sync:
     - 强制同步执行，适合短命令
     - 不允许用于脚手架、依赖安装、dev server 或可能交互的命令
 
     mode=session:
-    - 兼容模式：强制后台/交互模式，建议新调用改用 command_session_broker(mode=start)
+    - 兼容模式：强制后台/交互模式
 
     profile:
     - auto: 自动识别 shell / chat_cli
@@ -7610,26 +7782,9 @@ def run_system_command(
     effective_mode = normalized_mode
     if normalized_mode == "auto":
         if prefer_session:
-            return json.dumps(
-                {
-                    "ok": True,
-                    "mode": "auto",
-                    "kind": "command_session_redirect",
-                    "summary": "检测到命令更适合命令会话 broker。",
-                    "reason": interactive_reason or session_reason or "命令更适合后台会话模式",
-                    "redirect": {
-                        "tool": "command_session_broker",
-                        "args": {
-                            "mode": "start",
-                            "command": command,
-                            "profile": normalized_profile,
-                            "cwd": cwd,
-                        },
-                    },
-                },
-                ensure_ascii=False,
-            )
-        effective_mode = "sync"
+            effective_mode = "session"
+        else:
+            effective_mode = "sync"
 
     if effective_mode == "sync":
         if prefer_session:
@@ -7658,6 +7813,8 @@ def run_system_command(
     if effective_mode == "session":
         try:
             launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=normalized_profile, cwd=cwd)
+            status = dict(launched.get("status") or {})
+            state = _command_session_state_from_status(status)
             payload = {
                 "ok": True,
                 "kind": "command_session",
@@ -7666,19 +7823,30 @@ def run_system_command(
                 "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
                 "profile": launched["profile"],
-                "tty": launched["tty"],
                 "cwd": launched.get("cwd"),
-                "workspaceBinding": launched.get("workspaceBinding"),
                 "runId": launched["runId"],
                 "reason": interactive_reason or session_reason or "显式 session 模式",
-                "summary": "已启动后台命令会话。",
-                "recommendedNextAction": "observe",
+                "summary": _command_session_summary_for_state(
+                    mode="start",
+                    state=state,
+                    interactive=bool(launched["interactive"]),
+                    delta_text=str(launched.get("initialOutput") or "").strip(),
+                ),
+                "recommendedNextAction": _command_session_recommended_next_action(
+                    mode="start",
+                    state=state,
+                    awaiting_input=bool(status.get("awaiting_input")),
+                    has_more=bool(launched["interactive"] and state not in {"completed", "failed"}),
+                ),
+                "state": state,
+                "awaitingInput": bool(status.get("awaiting_input")),
+                "returnCode": status.get("return_code"),
             }
             if launched["initialOutput"]:
                 initial_preview, initial_truncated = _command_session_preview_text(str(launched["initialOutput"] or ""))
                 if initial_preview:
-                    payload["initialPreview"] = initial_preview
-                    payload["initialPreviewTruncated"] = initial_truncated
+                    payload["finalPreview" if state in {"completed", "failed"} else "initialPreview"] = initial_preview
+                    payload["finalPreviewTruncated" if state in {"completed", "failed"} else "initialPreviewTruncated"] = initial_truncated
             return json.dumps(payload, ensure_ascii=False, indent=2)
         except Exception as exc:
             _raise_runtime_governance_exception_if_needed(exc)
@@ -7788,6 +7956,41 @@ def _command_session_debug_payload(
     if delta_text:
         payload["deltaPreview"] = delta_text
     return payload
+
+
+def _command_session_result_preview_fields(
+    *,
+    state: str,
+    interactive: bool,
+    delta_text: str = "",
+    screen_preview: str = "",
+    raw_frame_preview: str = "",
+    raw_buffer: str = "",
+    limit: int = 1200,
+) -> dict[str, Any]:
+    """Build the compact result surface an agent needs when a command has no fresh delta."""
+    if state not in {"completed", "failed", "recoverable_stalled", "render_stalled"} and not delta_text:
+        return {}
+    if interactive and state not in {"completed", "failed"}:
+        return {}
+    source = "\n".join(
+        part
+        for part in [
+            str(delta_text or "").strip(),
+            str(screen_preview or "").strip(),
+            str(raw_buffer or "").strip(),
+            str(raw_frame_preview or "").strip(),
+        ]
+        if str(part or "").strip()
+    )
+    preview, truncated = _command_session_preview_text(source, limit=limit)
+    if not preview:
+        return {}
+    field_name = "finalPreview" if state in {"completed", "failed"} else "outputPreview"
+    return {
+        field_name: preview,
+        f"{field_name}Truncated": truncated,
+    }
 
 
 def _command_session_payload(
@@ -8064,9 +8267,9 @@ def command_session_broker(
     - terminate: stop the session
 
     Usage guidance:
-    - Keep using run_system_command for short synchronous commands; run_system_command(mode=auto) redirects long-running or interactive commands here.
-    - Use this broker for long-running tasks, interactive CLIs/REPLs, AI CLIs, and server/dev processes.
-    - Use this broker for project scaffolding and dependency installs even when the command is expected to be non-interactive; observe until it completes or reports the next required input.
+    - Prefer run_system_command(mode=auto) as the agent-facing shell entry; it starts this broker internally when needed.
+    - Use this broker directly only after you already have a sessionId/commandId, or when you need explicit observe/input/terminate control.
+    - Use observe until the session completes, reports the next required input, or returns a compact outputPreview/finalPreview.
     - Treat summary, recommendedNextAction, awaitingInput, hasMore, state/status, and returnCode as the compact truth for the next step.
     - profile=auto may enable chat_cli semantics for known AI CLIs so observe reports the latest semantic delta instead of replaying the whole screen.
     - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
@@ -8150,20 +8353,11 @@ def command_session_broker(
                 profile=launched.get("profile"),
                 reason=launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
                 cwd=launched.get("cwd"),
-                workspaceBinding=launched.get("workspaceBinding"),
                 awaitingInput=bool(status.get("awaiting_input")),
                 terminalMenu=terminal_menu or None,
                 state=state,
                 initialPreview=initial_preview or None,
                 initialPreviewTruncated=initial_truncated if initial_preview else None,
-                linkedProcess={
-                    "processId": str(launched.get("commandId") or ""),
-                    "commandId": str(launched.get("commandId") or ""),
-                    "sessionId": str(launched.get("commandId") or ""),
-                    "chatSessionId": launched.get("sessionId"),
-                    "runId": launched.get("runId"),
-                    "cwd": launched.get("cwd"),
-                },
                 runId=launched.get("runId"),
                 debug=debug_payload,
             )
@@ -8230,6 +8424,14 @@ def command_session_broker(
                 str(semantic_state.get("semantic_view") or screen_preview or new_output or ""),
                 variant=bg_proc.chat_cli_variant,
             ) if bg_proc.profile == "chat_cli" else 0
+            result_fields = _command_session_result_preview_fields(
+                state=state,
+                interactive=bool(status.get("interactive")),
+                delta_text=delta_preview,
+                screen_preview=screen_preview,
+                raw_frame_preview=raw_frame_preview,
+                raw_buffer=str(getattr(bg_proc, "worker_result_raw_buffer", "") or ""),
+            )
             debug_payload = None
             if debug:
                 debug_payload = _command_session_debug_payload(
@@ -8256,7 +8458,6 @@ def command_session_broker(
                 ),
                 state=state,
                 cwd=status.get("cwd"),
-                workspaceBinding=status.get("workspace_binding"),
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
                 semanticTextTail=semantic_tail or None,
@@ -8269,6 +8470,7 @@ def command_session_broker(
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
                 debug=debug_payload,
+                **result_fields,
             )
 
         if normalized_mode == "input":
@@ -8363,6 +8565,17 @@ def command_session_broker(
                 str(semantic_state.get("semantic_view") or new_output or ""),
                 variant=bg_proc.chat_cli_variant,
             ) if bg_proc.profile == "chat_cli" else 0
+            result_fields = _command_session_result_preview_fields(
+                state=state,
+                interactive=bool(status.get("interactive")),
+                delta_text=delta_preview,
+                screen_preview=str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
+                raw_frame_preview=str(status.get("last_raw_frame_preview") or "").strip(),
+                raw_buffer=str(getattr(bg_proc, "worker_result_raw_buffer", "") or ""),
+            )
+            # For input calls the agent needs whether the input landed and the immediate delta.
+            # Full screen/final previews are available via observe/rawRef and otherwise duplicate the key output.
+            result_fields = {}
             debug_payload = None
             if debug:
                 debug_payload = _command_session_debug_payload(
@@ -8389,26 +8602,20 @@ def command_session_broker(
                 ),
                 state=state,
                 cwd=status.get("cwd"),
-                workspaceBinding=status.get("workspace_binding"),
                 acceptedInputPreview=input_preview,
                 acceptedInputTruncated=input_truncated if input_preview else None,
                 submittedEnter=submitted_enter,
                 acceptedKeys=accepted_keys or None,
-                inputBytesPreview=input_bytes_preview or None,
-                screenAfterInput=screen_after_preview or None,
-                screenAfterInputTruncated=screen_after_truncated if screen_after_preview else None,
-                deltaText=delta_preview or None,
-                deltaTruncated=delta_truncated if delta_preview else None,
-                semanticTextTail=semantic_tail or None,
-                semanticTextTailTruncated=semantic_tail_truncated if semantic_tail else None,
+                keyOutput=delta_preview or semantic_tail or None,
+                keyOutputTruncated=bool(delta_truncated or semantic_tail_truncated) if (delta_preview or semantic_tail) else None,
                 workerResultDetected=worker_result_detected or None,
-                workerResultBlock=worker_result_block or None,
                 noiseFilteredLineCount=noise_filtered_count or None,
                 awaitingInput=bool(status.get("awaiting_input")),
                 terminalMenu=terminal_menu or None,
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
                 debug=debug_payload,
+                **result_fields,
             )
 
         status_before = bg_proc.status_snapshot()
@@ -8417,13 +8624,16 @@ def command_session_broker(
         final_output = bg_proc.get_new_output()
         status = bg_proc.status_snapshot()
         _bg_processes.pop(resolved_session_id, None)
-        final_preview, final_truncated = _command_session_preview_text(str(final_output or "").strip())
+        screen_preview = str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip()
+        raw_frame_preview = str(status.get("last_raw_frame_preview") or "").strip()
+        final_source = str(final_output or getattr(bg_proc, "worker_result_raw_buffer", "") or "").strip()
+        final_preview, final_truncated = _command_session_preview_text(final_source, limit=600)
         debug_payload = None
         if debug:
             debug_payload = _command_session_debug_payload(
                 status=status or status_before,
-                screen_preview=str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
-                raw_frame_preview=str(status.get("last_raw_frame_preview") or "").strip(),
+                screen_preview=screen_preview,
+                raw_frame_preview=raw_frame_preview,
                 delta_text=final_preview,
             )
         return _command_session_payload(
@@ -8441,10 +8651,9 @@ def command_session_broker(
             terminated=True,
             state=_command_session_state_from_status(status),
             cwd=status.get("cwd"),
-            workspaceBinding=status.get("workspace_binding"),
             returnCode=status.get("return_code"),
-            finalPreview=final_preview or None,
-            finalPreviewTruncated=final_truncated if final_preview else None,
+            keyOutput=final_preview or None if debug else None,
+            keyOutputTruncated=final_truncated if debug and final_preview else None,
             debug=debug_payload,
         )
     except Exception as exc:
@@ -8469,7 +8678,6 @@ def command_session_broker(
                 error=str(structured_error.get("error") or structured_error.get("kind") or error_text),
                 kind=structured_error.get("kind"),
                 suggestedCommand=structured_error.get("suggestedCommand"),
-                workspaceBinding=structured_error.get("workspaceBinding"),
                 detailTool=structured_error.get("detailTool"),
             )
         return _command_session_payload(
@@ -9085,6 +9293,8 @@ def read_background_output(command_id: str) -> str:
     Arguments:
         command_id (str): The ID returned by `run_system_command(mode="session")`.
     """
+    return command_session_broker.func(mode="observe", command_id=command_id)
+
     _prune_stale_background_processes()
     if command_id not in _bg_processes:
         return f"Error: No active background command with ID {command_id}."
@@ -9248,6 +9458,8 @@ def send_background_input(command_id: str, input_text: str) -> str:
         command_id (str): The ID of the command.
         input_text (str): The text to send to stdin.
     """
+    return command_session_broker.func(mode="input", command_id=command_id, input_text=input_text)
+
     if command_id not in _bg_processes:
         return f"Error: No active background command with ID {command_id}."
     bg_proc = _bg_processes[command_id]
@@ -9317,6 +9529,8 @@ def terminate_background_command(command_id: str) -> str:
     Arguments:
         command_id (str): The ID of the command.
     """
+    return command_session_broker.func(mode="terminate", command_id=command_id)
+
     if command_id not in _bg_processes:
         return f"Error: No active background command with ID {command_id}."
     bg_proc = _bg_processes[command_id]
@@ -10095,6 +10309,7 @@ def computer_use_list_apps(
     limit: int = 8,
     include_running: bool = True,
     force_refresh: bool = False,
+    detail_level: str = "summary",
 ) -> str:
     """List desktop applications in a Supervisor-friendly way.
 
@@ -10107,6 +10322,7 @@ def computer_use_list_apps(
             include_running=include_running,
             force_refresh=force_refresh,
         )
+        normalized_detail = str(detail_level or "summary").strip().lower()
         apps = []
         for item in list(payload.get("apps") or [])[: max(1, min(limit, 20))]:
             if not isinstance(item, dict):
@@ -10125,17 +10341,25 @@ def computer_use_list_apps(
                         }
                     )
                 )
-            apps.append(
-                {
-                    "appId": item.get("appId"),
-                    "displayName": item.get("displayName"),
-                    "isRunning": item.get("isRunning"),
-                    "launchable": item.get("launchable"),
-                    "profileBound": item.get("profileBound"),
-                    "runningWindows": windows,
-                    "aliases": list(item.get("aliases") or [])[:8],
-                }
-            )
+            top_window = windows[0] if windows else {}
+            app_payload = {
+                "appId": item.get("appId"),
+                "displayName": item.get("displayName"),
+                "isRunning": item.get("isRunning"),
+                "launchable": item.get("launchable"),
+                "topWindowTitle": top_window.get("title"),
+                "topWindowVisible": top_window.get("isVisible"),
+                "aliases": list(item.get("aliases") or [])[:3],
+            }
+            if normalized_detail in {"detail", "diagnostic", "full"}:
+                app_payload.update(
+                    {
+                        "profileBound": item.get("profileBound"),
+                        "runningWindows": windows,
+                        "aliases": list(item.get("aliases") or [])[:8],
+                    }
+                )
+            apps.append(_agent_compact_dict(app_payload))
         return json.dumps(
             {
                 "ok": True,
@@ -10144,6 +10368,7 @@ def computer_use_list_apps(
                 "summary": payload.get("summary"),
                 "platform": payload.get("platform"),
                 "backend": payload.get("backend"),
+                "detailTool": "computer_use_list_apps(detail_level='detail')",
             },
             ensure_ascii=False,
             indent=2,

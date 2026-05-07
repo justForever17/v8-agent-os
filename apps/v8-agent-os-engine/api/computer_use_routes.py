@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from .models import (
+    ComputerUseAgentBrowserOpenPayload,
     ComputerUseAppQueryPayload,
     ComputerUseClickPayload,
     ComputerUseElementQueryPayload,
@@ -49,6 +50,21 @@ def _real_host_matrix_service():
 async def get_computer_use_availability():
     try:
         return _computer_use_runtime().availability()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/computer-use/agent-browser/open")
+async def open_computer_use_agent_browser(payload: ComputerUseAgentBrowserOpenPayload):
+    try:
+        runtime = _computer_use_runtime()
+        browser_automation = getattr(runtime, "browser_automation", None)
+        if browser_automation is None:
+            raise RuntimeError("Computer Use browser automation provider is unavailable.")
+        return browser_automation.open_agent_browser(
+            browser_kind=payload.browser_kind,
+            url=payload.url or "about:blank",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
+import { tg } from "@/i18n/admin-legacy";
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
   loading: () => <div className="flex h-[620px] items-center justify-center rounded-3xl border border-border/60 bg-muted/10">
@@ -733,7 +734,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                                 <div className="flex flex-wrap justify-end gap-2">
                                     <Button variant="outline" size="sm" onClick={() => void handleCreateRelation()} disabled={mutating || !connectTarget.trim()}>
                                         <Plus className="mr-2 h-4 w-4" />
-                                        {t("admin.generated.25f51fce")}
+                                        {tg(t, "25f51fce"))}
                                     </Button>
                                     <Button size="sm" onClick={() => void handleCreateRelation()} disabled={mutating}>
                                         <Sparkles className="mr-2 h-4 w-4" />

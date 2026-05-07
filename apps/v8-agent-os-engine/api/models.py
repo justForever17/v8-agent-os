@@ -317,6 +317,13 @@ class ComputerUseAppQueryPayload(ComputerUseSessionPayload):
     force_refresh: bool = Field(default=False, alias="forceRefresh")
 
 
+class ComputerUseAgentBrowserOpenPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    browser_kind: Optional[str] = Field(default="chrome", alias="browserKind")
+    url: Optional[str] = Field(default="about:blank")
+
+
 class ComputerUseObservePayload(ComputerUseSessionPayload):
     model_config = ConfigDict(populate_by_name=True)
 

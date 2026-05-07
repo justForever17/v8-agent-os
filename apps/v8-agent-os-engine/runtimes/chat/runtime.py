@@ -4017,11 +4017,11 @@ class ChatRuntime:
             "linkedProcess": candidate.get("linkedProcess"),
             "error": candidate.get("error"),
         }
-        for key in ("initialPreview", "deltaText", "acceptedInputPreview", "finalPreview"):
+        for key in ("initialPreview", "deltaText", "acceptedInputPreview", "screenAfterInput", "outputPreview", "finalPreview"):
             preview = str(candidate.get(key) or "").strip()
             if not preview:
                 continue
-            trimmed, truncated = cls._trim_preview_text(preview, limit=800)
+            trimmed, truncated = cls._trim_preview_text(preview, limit=1200 if key in {"outputPreview", "finalPreview"} else 800)
             compact[key] = trimmed
             if truncated:
                 compact[f"{key}Truncated"] = True
@@ -4209,6 +4209,25 @@ class ChatRuntime:
     def _compact_run_system_command_result(cls, value: Any) -> Any:
         candidate = cls._coerce_json_like_value(value)
         if isinstance(candidate, dict):
+            if str(candidate.get("kind") or "").strip() == "command_result":
+                compact: dict[str, Any] = {
+                    "ok": candidate.get("ok"),
+                    "kind": "command_result",
+                    "summary": candidate.get("summary"),
+                    "cwd": candidate.get("cwd"),
+                    "returnCode": candidate.get("returnCode"),
+                    "recommendedNextAction": candidate.get("recommendedNextAction"),
+                    "encodingDiagnostics": candidate.get("encodingDiagnostics"),
+                }
+                for key in ("stdoutPreview", "stderrPreview"):
+                    preview = str(candidate.get(key) or "").strip()
+                    if not preview:
+                        continue
+                    trimmed, truncated = cls._trim_preview_text(preview, limit=1400)
+                    compact[key] = trimmed
+                    if truncated or bool(candidate.get(f"{key[:-7]}Truncated")):
+                        compact[f"{key[:-7]}Truncated"] = True
+                return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
             if str(candidate.get("kind") or "").strip() == "command_session_redirect":
                 compact: dict[str, Any] = {
                     "kind": "command_session_redirect",
@@ -4230,14 +4249,20 @@ class ChatRuntime:
                     "profile": candidate.get("profile"),
                     "runId": candidate.get("runId"),
                     "reason": candidate.get("reason"),
+                    "state": candidate.get("state"),
+                    "returnCode": candidate.get("returnCode"),
+                    "recommendedNextAction": candidate.get("recommendedNextAction"),
                 }
-                initial_output = str(candidate.get("initialOutput") or "").strip()
-                if initial_output:
-                    preview, truncated = cls._trim_preview_text(initial_output, limit=800)
-                    compact["stdoutPreview"] = preview
-                    compact["lineCount"] = cls._line_count(initial_output)
+                for key in ("initialPreview", "finalPreview"):
+                    preview_text = str(candidate.get(key) or candidate.get("initialOutput") or "").strip()
+                    if not preview_text:
+                        continue
+                    preview, truncated = cls._trim_preview_text(preview_text, limit=1000)
+                    compact[key] = preview
+                    compact["lineCount"] = cls._line_count(preview_text)
                     if truncated:
-                        compact["truncated"] = True
+                        compact[f"{key}Truncated"] = True
+                    break
                 return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
             preview = json.dumps(candidate, ensure_ascii=False)
             trimmed, truncated = cls._trim_preview_text(preview, limit=1200)

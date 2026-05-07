@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "purpose": "V8 adapter-level reasoning surface fixtures for OpenAI-compatible providers that stream display-safe reasoning separately from message content.",
+  "fixtures": [
+    {
+      "providerId": "xiaomi-mimo",
+      "modelId": "mimo-v2.5-pro",
+      "rawDelta": {
+        "additional_kwargs": {
+          "reasoning_content": "先分析需求和已有工作区状态。"
+        },
+        "content": ""
+      },
+      "reasoningSeparatedFromText": true,
+      "stableField": "additional_kwargs.reasoning_content"
+    },
+    {
+      "providerId": "xiaomi-mimo",
+      "modelId": "mimo-v2.5",
+      "rawDelta": {
+        "additional_kwargs": {
+          "reasoning_content": "判断需要先检查项目结构。"
+        },
+        "content": ""
+      },
+      "reasoningSeparatedFromText": true,
+      "stableField": "additional_kwargs.reasoning_content"
+    },
+    {
+      "providerId": "volcengine-ark",
+      "modelId": "doubao-seed-2-0-pro-260215",
+      "rawDelta": {
+        "additional_kwargs": {
+          "reasoning_content": "先建立任务分解，再决定是否进入工程主链。"
+        },
+        "content": ""
+      },
+      "reasoningSeparatedFromText": true,
+      "stableField": "additional_kwargs.reasoning_content"
+    },
+    {
+      "providerId": "volcengine-ark",
+      "modelId": "doubao-seed-2-0-code-preview-260215",
+      "rawDelta": {
+        "additional_kwargs": {
+          "reasoning_content": "检查 TypeScript 错误并定位相关文件。"
+        },
+        "content": ""
+      },
+      "reasoningSeparatedFromText": true,
+      "stableField": "additional_kwargs.reasoning_content"
+    }
+  ]
+}

@@ -17,9 +17,15 @@ from urllib.parse import quote_plus, urljoin, urlparse
 from bs4 import BeautifulSoup
 import certifi
 from langchain_core.tools import InjectedToolCallId, tool
+import requests
 from scrapling.core.storage import SQLiteStorageSystem
 from scrapling.parser import Selector
 
+from core.agent_browser_profile import (
+    agent_browser_profile_allowed_for_url,
+    agent_browser_profile_summary,
+    configured_agent_browser_profile_dir,
+)
 from core.system_base import get_web_fetch_config
 from core.storage import storage
 from erc.runtime_context import get_runtime_context
@@ -30,7 +36,8 @@ WebFetchMode = Literal["auto", "static", "dynamic", "stealth"]
 WebExtractMode = Literal["article", "links", "metadata", "media"]
 WebRefererMode = Literal["none", "google", "custom"]
 WebFetchIntent = Literal["auto", "read", "extract", "search"]
-WebSearchEngine = Literal["auto", "bing", "google", "baidu", "duckduckgo"]
+WebSearchEngine = Literal["auto", "metaso", "bing", "google", "baidu", "duckduckgo"]
+WebSearchVertical = Literal["all", "web", "document", "academic", "image", "video", "podcast"]
 WEB_CONTAINER_SELECTOR = "main, article, [role='main'], body"
 MAX_SELECTOR_CANDIDATES = 12
 DEFAULT_CONTAINER_SELECTORS = (
@@ -78,13 +85,29 @@ MAX_LINKS = 20
 MAX_MEDIA = 12
 WEB_READ_TIMEOUT_SECONDS = 45.0
 WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 20.0
+WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 45.0
+METASO_HOME_URL = "https://metaso.cn/"
+METASO_SEARCH_ENDPOINT = "https://metaso.cn/api/searchV2"
+METASO_VERTICAL_ENGINE_TYPES: dict[str, str] = {
+    "all": "",
+    "web": "",
+    "document": "pdf",
+    "academic": "scholar",
+    "image": "image",
+    "video": "video",
+    "podcast": "podcast",
+}
 SEARCH_PROVIDER_URLS: dict[str, str] = {
+    "metaso": "https://metaso.cn/?q={query}",
     "bing": "https://www.bing.com/search?q={query}",
     "google": "https://www.google.com/search?q={query}&hl=en",
     "baidu": "https://www.baidu.com/s?wd={query}",
     "duckduckgo": "https://html.duckduckgo.com/html/?q={query}",
 }
-SEARCH_PROVIDER_ORDER = ("bing", "google", "baidu", "duckduckgo")
+# Prefer MetaSo and scrape-friendly lightweight HTML endpoints first. Bing is
+# frequently unavailable behind some VPN/proxy routes; Google/Baidu may return
+# challenge pages. All providers remain available explicitly or via config override.
+SEARCH_PROVIDER_ORDER = ("metaso", "duckduckgo", "baidu", "bing", "google")
 WINDOWS_CA_BUNDLE_NAME = "windows-system-ca.pem"
 WINDOWS_CA_BUNDLE_MAX_AGE_SECONDS = 24 * 60 * 60
 PROXY_ENV_KEYS = (
@@ -120,6 +143,9 @@ class WebPagePayload:
     links: List[Dict[str, str]]
     media: List[Dict[str, str]]
     warnings: List[str]
+    agent_browser_profile_used: bool = False
+    agent_browser_profile_host: str = ""
+    agent_browser_profile_dir: str = ""
 
 
 def _enforce_safety_decision(decision, *, tool_call_id: str, question: str) -> tuple[bool, str | None]:
@@ -162,6 +188,51 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
+    if blocked:
+        return "blocked_by_safety"
+    lowered = _safe_text(error).lower()
+    timeout_needles = (
+        "timeout",
+        "timed_out",
+        "deadline_exceeded",
+        "err_connection_timed_out",
+        "net::err_connection_timed_out",
+    )
+    if any(needle in lowered for needle in timeout_needles):
+        return "network_timeout"
+    if "invalid argument" in lowered or "expected `int`" in lowered:
+        return "tool_configuration_error"
+    if "no active session available" in lowered:
+        return "tool_context_unavailable"
+    if "agent_browser_profile_not_allowed" in lowered:
+        return "agent_browser_profile_not_allowed"
+    if "needs_login" in lowered or "login_required" in lowered or "auth_required" in lowered:
+        return "needs_login"
+    return "web_fetch_failed"
+
+
+def _search_provider_order(requested_provider: str) -> list[str]:
+    if requested_provider != "auto":
+        return [requested_provider] if requested_provider in SEARCH_PROVIDER_URLS else []
+
+    config = get_web_fetch_config()
+    configured = config.get("searchProviderOrder")
+    if isinstance(configured, list):
+        providers = [_safe_text(item).lower() for item in configured]
+    else:
+        providers = list(SEARCH_PROVIDER_ORDER)
+
+    ordered: list[str] = []
+    for provider in providers:
+        if provider in SEARCH_PROVIDER_URLS and provider not in ordered:
+            ordered.append(provider)
+    for provider in SEARCH_PROVIDER_ORDER:
+        if provider not in ordered:
+            ordered.append(provider)
+    return ordered
+
+
 def _is_loopback_sink_proxy(value: str) -> bool:
     parsed = urlparse(value)
     host = (parsed.hostname or "").lower()
@@ -178,6 +249,13 @@ def _should_bypass_proxy_env() -> bool:
     values = [_safe_text(os.getenv(key)) for key in PROXY_ENV_KEYS]
     active = [value for value in values if value]
     return bool(active) and all(_is_loopback_sink_proxy(value) for value in active if "://" in value)
+
+
+def _agent_browser_profile_allowed(url: str) -> tuple[bool, str | None]:
+    config = get_web_fetch_config()
+    if not bool(config.get("useAgentBrowserProfile")):
+        return False, None
+    return agent_browser_profile_allowed_for_url(url, config.get("agentBrowserProfileAllowlist") or [])
 
 
 @contextmanager
@@ -345,6 +423,7 @@ def _build_fetch_options(
     referer_mode: WebRefererMode,
     referer_url: str,
     timeout_seconds: float,
+    agent_browser_profile_dir: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     extra_headers: dict[str, str] = {}
     static_headers: dict[str, str] = {}
@@ -357,7 +436,10 @@ def _build_fetch_options(
     shared = {
         "google_search": referer_mode == "google",
         "extra_headers": extra_headers or None,
-        "retries": 0,
+        # Scrapling/Playwright validates this as an integer >= 1. Use one
+        # attempt at the fetcher layer and keep higher-level retry decisions in
+        # V8's tool envelope so the agent sees honest failures quickly.
+        "retries": 1,
         "retry_delay": 0,
     }
     browser = {
@@ -365,6 +447,8 @@ def _build_fetch_options(
         "headless": headless,
         "timeout": max(1000, int(timeout_seconds * 1000)),
     }
+    if agent_browser_profile_dir:
+        browser["user_data_dir"] = agent_browser_profile_dir
     static = {
         **shared,
         "headers": static_headers or None,
@@ -382,6 +466,7 @@ def _fetch_with_scrapling_internal(
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
     timeout_seconds: float | None = None,
+    use_agent_browser_profile: bool = False,
 ) -> WebPagePayload:
     attempted_modes: list[str] = []
     errors: dict[str, str] = {}
@@ -460,6 +545,9 @@ def _fetch_with_scrapling_internal(
             ca_bundle_path="",
             proxy_bypass_used=False,
             warnings=list(warnings),
+            agent_browser_profile_used=bool(agent_browser_profile_dir),
+            agent_browser_profile_host=agent_browser_profile_host,
+            agent_browser_profile_dir=agent_browser_profile_dir,
         )
 
     def _fetch_stealth() -> WebPagePayload:
@@ -480,6 +568,9 @@ def _fetch_with_scrapling_internal(
             ca_bundle_path="",
             proxy_bypass_used=False,
             warnings=list(warnings),
+            agent_browser_profile_used=bool(agent_browser_profile_dir),
+            agent_browser_profile_host=agent_browser_profile_host,
+            agent_browser_profile_dir=agent_browser_profile_dir,
         )
 
     plans: list[tuple[str, Any]]
@@ -495,13 +586,30 @@ def _fetch_with_scrapling_internal(
             ("dynamic", _fetch_dynamic),
             ("stealth", _fetch_stealth),
         ]
+    if use_agent_browser_profile:
+        plans = [(label, runner) for label, runner in plans if label in {"dynamic", "stealth"}]
+        if not plans:
+            raise RuntimeError("agent_browser_profile_requires_browser_mode: use dynamic/stealth/auto when useAgentBrowserProfile=true.")
     total_timeout = float(timeout_seconds or WEB_READ_TIMEOUT_SECONDS)
     per_mode_timeout = max(5.0, total_timeout / max(len(plans), 1))
+    agent_browser_profile_dir = ""
+    agent_browser_profile_host = ""
+    if use_agent_browser_profile:
+        allowed, matched_host = _agent_browser_profile_allowed(url)
+        if not allowed:
+            raise RuntimeError(
+                "agent_browser_profile_not_allowed:"
+                " useAgentBrowserProfile=true requires systemBase.webFetch.useAgentBrowserProfile=true"
+                " and a matching agentBrowserProfileAllowlist domain."
+            )
+        agent_browser_profile_dir = str(configured_agent_browser_profile_dir("chrome"))
+        agent_browser_profile_host = matched_host or ""
     static_fetch_options, browser_fetch_options = _build_fetch_options(
         headless=headless,
         referer_mode=referer_mode,
         referer_url=referer_url,
         timeout_seconds=per_mode_timeout,
+        agent_browser_profile_dir=agent_browser_profile_dir,
     )
 
     for label, runner in plans:
@@ -533,6 +641,9 @@ def _build_payload(
     ca_bundle_path: str,
     proxy_bypass_used: bool,
     warnings: list[str],
+    agent_browser_profile_used: bool = False,
+    agent_browser_profile_host: str = "",
+    agent_browser_profile_dir: str = "",
 ) -> WebPagePayload:
     html = _safe_text(getattr(response, "html_content", "")) or _safe_text(getattr(response, "text", ""))
     final_url = _safe_text(getattr(response, "url", "")) or requested_url
@@ -570,6 +681,9 @@ def _build_payload(
         links=links,
         media=media,
         warnings=warnings,
+        agent_browser_profile_used=agent_browser_profile_used,
+        agent_browser_profile_host=agent_browser_profile_host,
+        agent_browser_profile_dir=agent_browser_profile_dir,
     )
 
 
@@ -1041,7 +1155,36 @@ def _build_analysis_hints(page: WebPagePayload) -> list[str]:
         hints.append("该页面正文较少但媒体较多，可能更适合走视觉分析而不是纯文本抽取。")
     if page.warnings:
         hints.append("当前抓取存在降级或环境告警，必要时可改用 dynamic/stealth 或交给浏览器自动化链路。")
+    if page.agent_browser_profile_used:
+        hints.append("本次读取使用了 Agent 专用浏览器 profile；结果可能包含该 profile 的登录态视角。")
     return hints
+
+
+def _detect_login_wall(page: WebPagePayload) -> dict[str, Any] | None:
+    final_url = _safe_text(page.final_url or page.url).lower()
+    title = _safe_text(page.title).lower()
+    text = _safe_text(page.text).lower()
+    haystack = " ".join([final_url, title, text[:2000]])
+    status = int(page.status or 0)
+    if status in {401, 407}:
+        return {"failureClass": "needs_login", "reason": f"http_status_{status}"}
+    login_needles = (
+        "/login",
+        "/signin",
+        "/sign-in",
+        "login required",
+        "sign in to continue",
+        "please sign in",
+        "log in to continue",
+        "需要登录",
+        "请登录",
+        "登录后",
+        "账号登录",
+        "登录 / 注册",
+    )
+    if any(needle in haystack for needle in login_needles):
+        return {"failureClass": "needs_login", "reason": "login_wall_detected"}
+    return None
 
 
 def _guess_remote_mime(url: str, fallback: str = "application/octet-stream") -> str:
@@ -1127,6 +1270,15 @@ def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
         "analysisHints": _build_analysis_hints(page),
         "visionCandidates": vision_candidates,
         "visionRecommended": bool(vision_candidates),
+        "agentBrowserProfile": (
+            {
+                "used": True,
+                "matchedHost": page.agent_browser_profile_host,
+                "profile": agent_browser_profile_summary("chrome", include_security_note=False),
+            }
+            if page.agent_browser_profile_used
+            else {"used": False}
+        ),
     }
 
 
@@ -1145,13 +1297,7 @@ def _render_error_payload(
 ) -> str:
     normalized_error = _safe_text(error)
     if not failure_class:
-        lowered = normalized_error.lower()
-        if "timeout" in lowered or "timed_out" in lowered or "deadline" in lowered or "err_connection_timed_out" in lowered:
-            failure_class = "network_timeout"
-        elif blocked:
-            failure_class = "blocked_by_safety"
-        else:
-            failure_class = "web_fetch_failed"
+        failure_class = _classify_web_fetch_failure(normalized_error, blocked=blocked)
     return json.dumps(
         {
             "ok": False,
@@ -1168,9 +1314,46 @@ def _render_error_payload(
             "recommendedNextAction": (
                 "该 URL 当前不可达；不要等待 watchdog。请换可访问来源、改用 research_broker 多源调研，或把失败源标记为 unavailable。"
                 if failure_class == "network_timeout"
+                else "目标可能需要登录。请在 Admin / Desktop Automation 打开 Agent 专用浏览器完成登录；若要让 web/research 使用该登录态，需要显式 useAgentBrowserProfile=true 且域名命中 allowlist。"
+                if failure_class == "needs_login"
+                else "Agent 浏览器 profile 未启用或目标域名未命中 allowlist；请在 Admin / System Base 配置 useAgentBrowserProfile 与 allowlist，或改用无登录公开来源。"
+                if failure_class == "agent_browser_profile_not_allowed"
                 else "根据 failureClass 决定换源、缩小请求或停止该工具链。"
             ),
             "error": normalized_error,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _render_needs_login_payload(*, page: WebPagePayload, use_agent_browser_profile: bool) -> str:
+    login_wall = _detect_login_wall(page) or {"failureClass": "needs_login", "reason": "login_required"}
+    text_preview = "" if page.agent_browser_profile_used else _safe_text(page.text)[:500]
+    return json.dumps(
+        {
+            "ok": False,
+            "failureClass": "needs_login",
+            "reason": login_wall.get("reason"),
+            "url": page.url,
+            "finalUrl": page.final_url,
+            "title": page.title,
+            "status": page.status,
+            "fetchMode": page.fetch_mode,
+            "attemptedModes": page.attempted_modes,
+            "useAgentBrowserProfile": bool(use_agent_browser_profile),
+            "agentBrowserProfile": (
+                {
+                    "used": True,
+                    "matchedHost": page.agent_browser_profile_host,
+                    "profile": agent_browser_profile_summary("chrome", include_security_note=False),
+                }
+                if page.agent_browser_profile_used
+                else {"used": False}
+            ),
+            "retryable": True,
+            "recommendedNextAction": "请在 Admin / Desktop Automation 点击“打开 Agent 专用浏览器”并手动登录目标网站；登录后可用 useAgentBrowserProfile=true 重试，目标域名必须在 systemBase.webFetch.agentBrowserProfileAllowlist 中。",
+            "textPreview": text_preview,
         },
         ensure_ascii=False,
         indent=2,
@@ -1311,6 +1494,7 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
                     "summary": f"搜索到 {len(results)} 条结果。" if results else "没有找到可用结果。",
                     "query": query,
                     "provider": provider or None,
+                    "searchVertical": payload.get("searchVertical") or None,
                     "resultCount": payload.get("resultCount") if payload.get("resultCount") is not None else len(results),
                     "quality": quality,
                     "sourceQualitySummary": {
@@ -1370,10 +1554,21 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
         warnings = payload.get("warnings")
         if isinstance(warnings, list) and warnings:
             compact["warnings"] = warnings
+        if isinstance(payload.get("agentBrowserProfile"), dict) and payload["agentBrowserProfile"].get("used"):
+            compact["agentBrowserProfile"] = payload.get("agentBrowserProfile")
     else:
+        failure_class = str(payload.get("failureClass") or "").strip()
+        if failure_class == "needs_login":
+            summary = "目标页面需要登录；请在 Admin 打开 Agent 专用浏览器完成登录后重试。"
+        elif failure_class == "agent_browser_profile_not_allowed":
+            summary = "Agent 浏览器 profile 未启用或目标域名未命中 allowlist。"
+        elif failure_class == "network_timeout":
+            summary = "目标网络请求超时；请换源或稍后重试。"
+        else:
+            summary = _safe_text(payload.get("error")) or "Web broker 执行失败。"
         compact.update(
             {
-                "summary": _safe_text(payload.get("error")) or "Web broker 执行失败。",
+                "summary": summary,
                 "error": payload.get("error"),
                 "failureClass": payload.get("failureClass"),
                 "attemptedModes": payload.get("attemptedModes"),
@@ -1390,6 +1585,8 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             compact["query"] = payload.get("query")
         if payload.get("attemptedProviders") not in (None, "", [], {}):
             compact["attemptedProviders"] = payload.get("attemptedProviders")
+        if isinstance(payload.get("agentBrowserProfile"), dict):
+            compact["agentBrowserProfile"] = payload.get("agentBrowserProfile")
 
     for key in (
         "requestedMode",
@@ -1462,6 +1659,242 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
     return results
 
 
+def _search_page_failure(payload: WebPagePayload, soup: BeautifulSoup, *, provider: str, result_count: int) -> dict[str, Any] | None:
+    if result_count > 0:
+        return None
+    final_url = _safe_text(payload.final_url or payload.url).lower()
+    title = _safe_text(payload.title).lower()
+    text_preview = _safe_text(soup.get_text(" ", strip=True))[:1000].lower()
+    if int(payload.status or 0) in {403, 429}:
+        return {"status": "challenge", "failureClass": "provider_challenge", "reason": f"http_status_{payload.status}"}
+    if provider == "google" and (
+        "/sorry/" in final_url
+        or "/httpservice/retry/enablejs" in text_preview
+        or "please click here if you are not redirected" in text_preview
+    ):
+        return {"status": "challenge", "failureClass": "provider_challenge", "reason": "google_requires_js_or_captcha"}
+    if provider == "baidu" and (
+        "wappass.baidu.com" in final_url
+        or "百度安全验证" in title
+        or "网络不给力，请稍后重试" in text_preview
+    ):
+        return {"status": "challenge", "failureClass": "provider_challenge", "reason": "baidu_safety_verification"}
+    return {"status": "empty", "failureClass": "no_results", "reason": "no_search_results_extracted"}
+
+
+def _normalize_search_vertical(value: str) -> str:
+    normalized = _safe_text(value).lower().replace("-", "_")
+    aliases = {
+        "": "all",
+        "auto": "all",
+        "default": "all",
+        "metaso": "all",
+        "all": "all",
+        "web": "web",
+        "网页": "web",
+        "全网": "all",
+        "document": "document",
+        "documents": "document",
+        "doc": "document",
+        "pdf": "document",
+        "library": "document",
+        "文库": "document",
+        "academic": "academic",
+        "scholar": "academic",
+        "paper": "academic",
+        "papers": "academic",
+        "学术": "academic",
+        "image": "image",
+        "images": "image",
+        "图片": "image",
+        "video": "video",
+        "videos": "video",
+        "视频": "video",
+        "podcast": "podcast",
+        "podcasts": "podcast",
+        "播客": "podcast",
+    }
+    return aliases.get(normalized, normalized if normalized in METASO_VERTICAL_ENGINE_TYPES else "all")
+
+
+def _metaso_extract_token(html: str) -> str:
+    match = re.search(r'<meta[^>]+id=["\']meta-token["\'][^>]+content=["\']([^"\']+)["\']', html)
+    return match.group(1) if match else ""
+
+
+def _metaso_result_from_item(item: dict[str, Any], *, rank: int, vertical: str) -> dict[str, str]:
+    url = _safe_text(item.get("link") or item.get("url") or item.get("origin_url") or item.get("previewUrl"))
+    title = _safe_text(item.get("title") or item.get("orig_title") or item.get("orig_o_title") or item.get("displaySource"))
+    snippet = _safe_text(
+        item.get("matched_snippet")
+        or item.get("snippet")
+        or item.get("abstract")
+        or item.get("caption")
+        or item.get("export")
+    )
+    source = _safe_text(item.get("displaySource") or item.get("source") or item.get("institution"))
+    date = _safe_text(item.get("date") or item.get("publish_date_str") or item.get("publish_date"))
+    result: dict[str, str] = {
+        "title": title[:300],
+        "url": url,
+        "snippet": snippet[:700],
+        "source": source[:160],
+        "date": date[:80],
+        "vertical": vertical,
+        "rank": str(rank),
+    }
+    if vertical == "image":
+        image_url = _safe_text(
+            item.get("thumbnail")
+            or item.get("pic")
+            or item.get("image")
+            or item.get("imageUrl")
+            or item.get("url")
+        )
+        if image_url:
+            result["imageUrl"] = image_url[:700]
+    return {key: value for key, value in result.items() if value not in ("", None)}
+
+
+def _metaso_search_public(query: str, *, limit: int, vertical: str, timeout_seconds: float) -> dict[str, Any]:
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    normalized_vertical = _normalize_search_vertical(vertical)
+    engine_type = METASO_VERTICAL_ENGINE_TYPES.get(normalized_vertical, "")
+    session = requests.Session()
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+        ),
+        "metaso-pc": "pc",
+    }
+    with _bypass_proxy_env(_should_bypass_proxy_env()):
+        home_timeout = max(1.0, min(8.0, deadline - time.monotonic()))
+        home = session.get(METASO_HOME_URL, headers=headers, timeout=home_timeout)
+        token = _metaso_extract_token(home.text)
+        if not token:
+            return {
+                "ok": False,
+                "failureClass": "provider_challenge",
+                "reason": "metaso_token_not_found",
+                "retryable": True,
+            }
+
+        payload = {
+            "question": query,
+            "mode": "detail",
+            "model": "fast_thinking",
+            "deepResearchModel": "fast",
+            "engineType": engine_type,
+            "scholarSearchDomain": "all",
+            "debug": False,
+            "url": METASO_HOME_URL,
+            "lang": "zh",
+            "enableMix": True,
+            "newEngine": True,
+            "enableImage": normalized_vertical == "image",
+            "metaso-pc": "pc",
+            "token": token,
+        }
+        request_headers = {
+            **headers,
+            "accept": "text/event-stream",
+            "content-type": "application/json",
+            "origin": "https://metaso.cn",
+            "referer": METASO_HOME_URL,
+            "token": token,
+        }
+        stream_timeout = max(1.0, deadline - time.monotonic())
+        response = session.post(
+            METASO_SEARCH_ENDPOINT,
+            headers=request_headers,
+            json=payload,
+            stream=True,
+            timeout=stream_timeout,
+        )
+
+        results: list[dict[str, str]] = []
+        seen: set[str] = set()
+        events_seen = 0
+        error_event: dict[str, Any] | None = None
+        result_id = ""
+        group_id = ""
+        max_results = max(1, min(int(limit or 5), 10))
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if time.monotonic() >= deadline:
+                error_event = {"failureClass": "deadline_exceeded", "reason": "metaso_provider_deadline_exceeded"}
+                break
+            if not raw_line:
+                continue
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            if data == "[TOO_MANY_REQUESTS]":
+                error_event = {"failureClass": "provider_rate_limited", "reason": "metaso_too_many_requests"}
+                break
+            try:
+                event = json.loads(data)
+            except Exception:
+                continue
+            events_seen += 1
+            event_type = _safe_text(event.get("type"))
+            if event_type == "error":
+                error_event = {
+                    "failureClass": "provider_rate_limited" if int(event.get("code") or 0) == 4001 else "provider_error",
+                    "reason": _safe_text(event.get("msg") or event.get("message") or "metaso_error"),
+                    "code": event.get("code"),
+                }
+                break
+            if event_type == "session-created" and isinstance(event.get("data"), dict):
+                group_id = _safe_text(event["data"].get("groupId") or event["data"].get("id"))
+            if event_type in {"query", "set-reference"}:
+                result_id = _safe_text(event.get("debugId") or event.get("resultId") or result_id)
+            if event_type in {"set-reference", "update-reference"} and isinstance(event.get("list"), list):
+                for item in event["list"]:
+                    if not isinstance(item, dict):
+                        continue
+                    result = _metaso_result_from_item(item, rank=len(results) + 1, vertical=normalized_vertical)
+                    identity = _safe_text(result.get("url") or item.get("id") or item.get("docId"))
+                    if not identity or identity in seen:
+                        continue
+                    seen.add(identity)
+                    results.append(result)
+                    if len(results) >= max_results:
+                        return {
+                            "ok": True,
+                            "provider": "metaso",
+                            "searchVertical": normalized_vertical,
+                            "engineType": engine_type,
+                            "resultId": result_id,
+                            "groupId": group_id,
+                            "eventsSeen": events_seen,
+                            "results": results,
+                        }
+        if results:
+            return {
+                "ok": True,
+                "provider": "metaso",
+                "searchVertical": normalized_vertical,
+                "engineType": engine_type,
+                "resultId": result_id,
+                "groupId": group_id,
+                "eventsSeen": events_seen,
+                "results": results[:max_results],
+            }
+        if error_event:
+            return {"ok": False, **error_event, "eventsSeen": events_seen, "searchVertical": normalized_vertical}
+        return {
+            "ok": False,
+            "failureClass": "no_results",
+            "reason": "metaso_no_public_results",
+            "eventsSeen": events_seen,
+            "searchVertical": normalized_vertical,
+        }
+
+
 @tool
 def web_read(
     url: str,
@@ -1469,6 +1902,7 @@ def web_read(
     headless: bool = True,
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
+    useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Read a webpage with Scrapling and return a compact, structured article-style result.
@@ -1481,6 +1915,9 @@ def web_read(
     - static: 仅静态抓取
     - dynamic: 仅动态页面抓取
     - stealth: 仅反反爬抓取
+
+    useAgentBrowserProfile:
+    - 默认 false。只有目标域名命中 systemBase.webFetch.agentBrowserProfileAllowlist 且 Admin 已开启该能力时，才可设为 true 使用 Agent 专用浏览器登录态。
     """
     allowed, error_message = _guard_url(url, tool_call_id=tool_call_id)
     if not allowed:
@@ -1501,7 +1938,10 @@ def web_read(
             referer_mode=referer_mode,
             referer_url=referer_url,
             timeout_seconds=WEB_READ_TIMEOUT_SECONDS,
+            use_agent_browser_profile=bool(useAgentBrowserProfile),
         )
+        if _detect_login_wall(payload):
+            return _render_needs_login_payload(page=payload, use_agent_browser_profile=bool(useAgentBrowserProfile))
         return json.dumps(_render_page_summary(payload), ensure_ascii=False, indent=2)
     except Exception as exc:
         error = str(exc)
@@ -1527,6 +1967,7 @@ def web_extract(
     adaptive: bool = False,
     adaptive_id: str = "",
     adaptive_threshold: int = 70,
+    useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Extract structured webpage content with Scrapling.
@@ -1535,6 +1976,8 @@ def web_extract(
     - article: 提取正文、标题与摘要信息
     - links: 提取页面主要链接
     - metadata: 提取 meta 数据
+
+    useAgentBrowserProfile 同 web_read：必须显式为 true，且目标域名命中 allowlist。
     """
     allowed, error_message = _guard_url(url, tool_call_id=tool_call_id)
     if not allowed:
@@ -1555,7 +1998,10 @@ def web_extract(
             referer_mode=referer_mode,
             referer_url=referer_url,
             timeout_seconds=WEB_READ_TIMEOUT_SECONDS,
+            use_agent_browser_profile=bool(useAgentBrowserProfile),
         )
+        if _detect_login_wall(payload):
+            return _render_needs_login_payload(page=payload, use_agent_browser_profile=bool(useAgentBrowserProfile))
         resolved_adaptive_id = adaptive_id.strip() or _default_adaptive_id(payload.final_url or payload.url, extract)
         container, adaptive_signals, selector_signals = _resolve_extract_container(
             payload,
@@ -1631,47 +2077,181 @@ def web_search(
     query: str,
     limit: int = 5,
     search_engine: WebSearchEngine = "auto",
+    search_vertical: WebSearchVertical = "all",
     mode: WebFetchMode = "auto",
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
+    useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Search the public web with a lightweight HTML search page and return structured results.
+    """Search the public web with a lightweight search provider and return structured results.
 
     For multi-source research, current facts, source confidence, or parallel query decomposition, request
     research.core and use research_broker instead of doing ad-hoc one-shot searches.
+
+    search_vertical is honored by MetaSo public search:
+    - all/web: 全网
+    - document: 文库
+    - academic: 学术
+    - image/video/podcast: 图片/视频/播客
+
+    useAgentBrowserProfile 仅用于需要登录态的 browser-backed 搜索/读取路径；默认不用 Agent 浏览器 profile。
     """
     requested_provider = str(search_engine or "auto").strip().lower()
-    providers = [requested_provider] if requested_provider != "auto" else list(SEARCH_PROVIDER_ORDER)
+    requested_vertical = _normalize_search_vertical(str(search_vertical or "all"))
+    providers = _search_provider_order(requested_provider)
     attempted_providers: list[dict[str, Any]] = []
-    last_error_payload: str | None = None
+    started_at = time.monotonic()
+    last_error = ""
+
+    if not providers:
+        return json.dumps(
+            {
+                "ok": False,
+                "query": query,
+                "requestedProvider": requested_provider,
+                "searchVertical": requested_vertical,
+                "attemptedProviders": attempted_providers,
+                "failureClass": "unsupported_operation",
+                "retryable": False,
+                "recommendedNextAction": "使用 search_engine=auto，或选择 metaso/duckduckgo/baidu/bing/google 中的一个。",
+                "error": f"Unsupported search provider: {requested_provider}",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     for provider in providers:
+        elapsed = time.monotonic() - started_at
+        remaining = WEB_SEARCH_TOTAL_TIMEOUT_SECONDS - elapsed
+        if remaining <= 0:
+            attempted_providers.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "deadline_exceeded",
+                    "reason": "search_total_deadline_exceeded",
+                    "elapsedMs": int(elapsed * 1000),
+                }
+            )
+            break
         search_url = SEARCH_PROVIDER_URLS[provider].format(query=quote_plus(query))
         allowed, error_message = _guard_url(search_url, tool_call_id=tool_call_id)
         if not allowed:
             attempted_providers.append({"provider": provider, "status": "blocked", "reason": error_message or "blocked"})
-            last_error_payload = _render_error_payload(
-                url=search_url,
-                requested_mode=mode,
-                referer_mode=referer_mode,
-                referer_url=referer_url,
-                error=error_message or "Safety Guardian 已阻止网页搜索。",
-                blocked=True,
-            )
+            last_error = error_message or "Safety Guardian 已阻止网页搜索。"
             continue
 
         try:
+            provider_timeout = max(1.0, min(WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS, remaining))
+            if provider == "metaso":
+                metaso_result = _metaso_search_public(
+                    query,
+                    limit=limit,
+                    vertical=requested_vertical,
+                    timeout_seconds=provider_timeout,
+                )
+                if not bool(metaso_result.get("ok")):
+                    attempted_providers.append(
+                        {
+                            "provider": provider,
+                            "status": "error",
+                            "failureClass": metaso_result.get("failureClass") or "search_failed",
+                            "reason": metaso_result.get("reason") or "metaso_public_search_failed",
+                            "searchVertical": requested_vertical,
+                            "eventsSeen": metaso_result.get("eventsSeen"),
+                        }
+                    )
+                    last_error = _safe_text(metaso_result.get("reason") or metaso_result.get("failureClass"))
+                    if requested_provider == "auto":
+                        continue
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "query": query,
+                            "requestedProvider": requested_provider,
+                            "searchVertical": requested_vertical,
+                            "attemptedProviders": attempted_providers,
+                            "failureClass": metaso_result.get("failureClass") or "search_failed",
+                            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                            "retryable": metaso_result.get("failureClass") in {"provider_rate_limited", "network_timeout", "deadline_exceeded", "no_results"},
+                            "recommendedNextAction": "MetaSo 公共搜索当前限流或无结果；请稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。",
+                            "error": last_error,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                results = metaso_result.get("results") if isinstance(metaso_result.get("results"), list) else []
+                attempted_providers.append(
+                    {
+                        "provider": provider,
+                        "status": "ok",
+                        "resultCount": len(results),
+                        "searchVertical": requested_vertical,
+                        "resultId": metaso_result.get("resultId"),
+                    }
+                )
+                response = {
+                    "ok": True,
+                    "query": query,
+                    "provider": provider,
+                    "requestedProvider": requested_provider,
+                    "searchVertical": requested_vertical,
+                    "attemptedProviders": attempted_providers,
+                    "searchUrl": search_url,
+                    "resultCount": len(results),
+                    "results": results,
+                    "metaso": {
+                        "engineType": metaso_result.get("engineType"),
+                        "resultId": metaso_result.get("resultId"),
+                        "groupId": metaso_result.get("groupId"),
+                        "eventsSeen": metaso_result.get("eventsSeen"),
+                    },
+                }
+                return json.dumps(response, ensure_ascii=False, indent=2)
             payload = _fetch_with_scrapling_internal(
                 search_url,
                 mode=mode,
                 headless=True,
                 referer_mode=referer_mode,
                 referer_url=referer_url,
-                timeout_seconds=WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS,
+                timeout_seconds=provider_timeout,
+                use_agent_browser_profile=bool(useAgentBrowserProfile),
             )
             soup = BeautifulSoup(payload.html, "html.parser")
             results = _extract_search_results(soup, provider=provider, limit=limit)
+            page_failure = _search_page_failure(payload, soup, provider=provider, result_count=len(results))
+            if page_failure:
+                attempted_providers.append(
+                    {
+                        "provider": provider,
+                        "status": page_failure["status"],
+                        "failureClass": page_failure["failureClass"],
+                        "reason": page_failure["reason"],
+                        "resultCount": 0,
+                        "finalUrl": payload.final_url,
+                        "statusCode": payload.status,
+                    }
+                )
+                last_error = str(page_failure["reason"])
+                if requested_provider == "auto":
+                    continue
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "query": query,
+                        "requestedProvider": requested_provider,
+                        "searchVertical": requested_vertical,
+                        "attemptedProviders": attempted_providers,
+                        "failureClass": page_failure["failureClass"],
+                        "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                        "retryable": page_failure["failureClass"] in {"provider_challenge", "no_results"},
+                        "recommendedNextAction": "该搜索源返回验证页或没有可抽取结果；请换 provider、换关键词，或使用 research_broker 多源调研。",
+                        "error": str(page_failure["reason"]),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
             attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
             if not results and requested_provider == "auto":
                 continue
@@ -1681,6 +2261,7 @@ def web_search(
                 "query": query,
                 "provider": provider,
                 "requestedProvider": requested_provider,
+                "searchVertical": requested_vertical,
                 "attemptedProviders": attempted_providers,
                 "searchUrl": search_url,
                 "requestedMode": payload.requested_mode,
@@ -1701,30 +2282,47 @@ def web_search(
             return json.dumps(response, ensure_ascii=False, indent=2)
         except Exception as exc:
             error = str(exc)
+            last_error = error
+            failure_class = _classify_web_fetch_failure(error)
             attempted_providers.append({
                 "provider": provider,
                 "status": "error",
-                "failureClass": "network_timeout" if "timeout" in error.lower() or "deadline" in error.lower() else "web_fetch_failed",
-                "reason": error,
+                "failureClass": failure_class,
+                "reason": error[:1000],
                 "elapsedMs": _error_elapsed_ms(error),
             })
-            last_error_payload = _render_error_payload(
-                url=search_url,
-                requested_mode=mode,
-                referer_mode=referer_mode,
-                referer_url=referer_url,
-                error=f"Error searching the web with Scrapling: {error}",
-                attempted_modes=_error_attempted_modes(error),
-                elapsed_ms=_error_elapsed_ms(error),
-            )
 
-    return last_error_payload or json.dumps(
+    aggregate_failure = "search_failed"
+    non_blocked_attempts = [item for item in attempted_providers if item.get("status") != "blocked"]
+    if non_blocked_attempts and all(item.get("failureClass") == "network_timeout" for item in non_blocked_attempts):
+        aggregate_failure = "network_timeout"
+    elif any(item.get("failureClass") == "tool_configuration_error" for item in attempted_providers):
+        aggregate_failure = "tool_configuration_error"
+    elif any(item.get("failureClass") == "tool_context_unavailable" for item in attempted_providers):
+        aggregate_failure = "tool_context_unavailable"
+    elif any(item.get("failureClass") == "provider_challenge" for item in attempted_providers):
+        aggregate_failure = "provider_challenge"
+    elif attempted_providers and all(item.get("failureClass") == "no_results" for item in attempted_providers):
+        aggregate_failure = "no_results"
+    elif any(item.get("status") == "blocked" for item in attempted_providers):
+        aggregate_failure = "blocked_by_safety"
+
+    return json.dumps(
         {
             "ok": False,
             "query": query,
             "requestedProvider": requested_provider,
+            "searchVertical": requested_vertical,
             "attemptedProviders": attempted_providers,
-            "error": "No search provider returned usable results.",
+            "failureClass": aggregate_failure,
+            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+            "retryable": aggregate_failure in {"network_timeout", "search_failed", "provider_challenge", "no_results"},
+            "recommendedNextAction": (
+                "部分搜索源当前不可用；优先使用 MetaSo/DuckDuckGo，或换 search_vertical/缩小关键词，或改用 research_broker 记录 failed_source。"
+                if aggregate_failure in {"network_timeout", "search_failed", "provider_challenge", "no_results"}
+                else "检查工具配置/安全审批上下文；不要继续盲等 watchdog。"
+            ),
+            "error": last_error or "No search provider returned usable results.",
         },
         ensure_ascii=False,
         indent=2,
@@ -1737,6 +2335,7 @@ def web_fetch(
     intent: WebFetchIntent = "auto",
     extract: WebExtractMode = "article",
     search_engine: WebSearchEngine = "auto",
+    search_vertical: WebSearchVertical = "all",
     mode: WebFetchMode = "auto",
     headless: bool = True,
     referer_mode: WebRefererMode = "none",
@@ -1745,6 +2344,7 @@ def web_fetch(
     adaptive_id: str = "",
     adaptive_threshold: int = 70,
     limit: int = 5,
+    useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Unified web entrypoint for read / extract / search.
@@ -1753,7 +2353,9 @@ def web_fetch(
     - auto: URL 走 read，非 URL 走 search
     - read: 返回网页摘要
     - extract: 返回结构化内容
-    - search: 返回公开搜索结果
+    - search: 返回公开搜索结果；search_vertical 可选择 MetaSo 的全网/文库/学术/图片/视频/播客
+
+    useAgentBrowserProfile 必须显式为 true，并且目标域名命中 Admin/System Base 的 allowlist。
     """
     normalized_intent = str(intent or "auto").strip().lower()
     if normalized_intent == "auto":
@@ -1766,6 +2368,7 @@ def web_fetch(
             headless=headless,
             referer_mode=referer_mode,
             referer_url=referer_url,
+            useAgentBrowserProfile=bool(useAgentBrowserProfile),
             tool_call_id=tool_call_id,
         )
     if normalized_intent == "extract":
@@ -1779,6 +2382,7 @@ def web_fetch(
             adaptive=adaptive,
             adaptive_id=adaptive_id,
             adaptive_threshold=adaptive_threshold,
+            useAgentBrowserProfile=bool(useAgentBrowserProfile),
             tool_call_id=tool_call_id,
         )
     if normalized_intent == "search":
@@ -1786,9 +2390,11 @@ def web_fetch(
             query=target,
             limit=limit,
             search_engine=search_engine,
+            search_vertical=search_vertical,
             mode=mode,
             referer_mode=referer_mode,
             referer_url=referer_url,
+            useAgentBrowserProfile=bool(useAgentBrowserProfile),
             tool_call_id=tool_call_id,
         )
     return json.dumps(
@@ -1804,6 +2410,7 @@ def web_broker(
     mode: str = "fetch",
     extract: WebExtractMode = "article",
     search_engine: WebSearchEngine = "auto",
+    search_vertical: WebSearchVertical = "all",
     fetch_mode: WebFetchMode = "auto",
     headless: bool = True,
     referer_mode: WebRefererMode = "none",
@@ -1812,6 +2419,7 @@ def web_broker(
     adaptive_id: str = "",
     adaptive_threshold: int = 70,
     limit: int = 5,
+    useAgentBrowserProfile: bool = False,
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
@@ -1823,11 +2431,14 @@ def web_broker(
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search
     - read: read a single page and return compact text/title/link results
     - extract: 抽取结构化内容，适合 article / links / metadata / media
-    - search: 公开搜索，返回搜索结果列表
+    - search: 公开搜索，返回搜索结果列表；search_vertical 可选择 MetaSo 的全网/文库/学术/图片/视频/播客
 
     debug:
     - 默认 false，只返回对 agent 真正有价值的精简结果
     - true 时把 transport / TLS / fallback / selector 等调试字段放进 debug 子对象
+
+    useAgentBrowserProfile:
+    - 默认 false。遇到登录墙时工具会返回 needs_login；需要登录态时，先让用户在 Admin 打开 Agent 专用浏览器登录，再显式传 true。
     """
     normalized_mode = str(mode or "fetch").strip().lower()
     if normalized_mode not in {"fetch", "read", "extract", "search"}:
@@ -1848,6 +2459,7 @@ def web_broker(
         intent=intent,
         extract=extract,
         search_engine=search_engine,
+        search_vertical=search_vertical,
         mode=fetch_mode,
         headless=headless,
         referer_mode=referer_mode,
@@ -1856,6 +2468,7 @@ def web_broker(
         adaptive_id=adaptive_id,
         adaptive_threshold=adaptive_threshold,
         limit=limit,
+        useAgentBrowserProfile=bool(useAgentBrowserProfile),
         tool_call_id=tool_call_id,
     )
     try:

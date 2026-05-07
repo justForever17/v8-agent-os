@@ -20,7 +20,10 @@ type LabelDomain =
     | "networkEnrollmentMode"
     | "networkScopeMode"
     | "networkPeerSource"
-    | "dependencyRequiredness";
+    | "dependencyRequiredness"
+    | "workerType"
+    | "workerCwdPolicy"
+    | "workerSessionMode";
 
 const LABEL_DOMAINS: Record<LabelDomain, LabelOption[]> = {
     providerType: [
@@ -77,6 +80,7 @@ const LABEL_DOMAINS: Record<LabelDomain, LabelOption[]> = {
         { value: "contextual_auto", labelKey: "admin.enums.toolExposurePolicy.contextualAuto" },
         { value: "explicit_only", labelKey: "admin.enums.toolExposurePolicy.explicitOnly" },
         { value: "none", labelKey: "admin.enums.toolExposurePolicy.none" },
+        { value: "task_brief_driven", labelKey: "admin.enums.toolExposurePolicy.taskBriefDriven" },
     ],
     networkEnrollmentMode: [
         { value: "manual", labelKey: "admin.enums.networkEnrollmentMode.manual" },
@@ -87,6 +91,8 @@ const LABEL_DOMAINS: Record<LabelDomain, LabelOption[]> = {
         { value: "open", labelKey: "admin.enums.networkScopeMode.open" },
     ],
     networkPeerSource: [
+        { value: "lan", labelKey: "admin.enums.networkPeerSource.lan" },
+        { value: "bootstrap", labelKey: "admin.enums.networkPeerSource.bootstrap" },
         { value: "manual", labelKey: "admin.enums.networkPeerSource.manual" },
         { value: "trusted", labelKey: "admin.enums.networkPeerSource.trusted" },
         { value: "discovered", labelKey: "admin.enums.networkPeerSource.discovered" },
@@ -95,6 +101,20 @@ const LABEL_DOMAINS: Record<LabelDomain, LabelOption[]> = {
         { value: "required", labelKey: "admin.enums.dependencyRequiredness.required" },
         { value: "conditional", labelKey: "admin.enums.dependencyRequiredness.conditional" },
         { value: "optional", labelKey: "admin.enums.dependencyRequiredness.optional" },
+    ],
+    workerType: [
+        { value: "custom", labelKey: "admin.enums.workerType.custom" },
+        { value: "claude_code", labelKey: "admin.enums.workerType.claudeCode" },
+    ],
+    workerCwdPolicy: [
+        { value: "inherit_workspace", labelKey: "admin.enums.workerCwdPolicy.inheritWorkspace" },
+        { value: "runtime_temp", labelKey: "admin.enums.workerCwdPolicy.runtimeTemp" },
+        { value: "explicit", labelKey: "admin.enums.workerCwdPolicy.explicit" },
+    ],
+    workerSessionMode: [
+        { value: "interactive", labelKey: "admin.enums.workerSessionMode.interactive" },
+        { value: "oneshot", labelKey: "admin.enums.workerSessionMode.oneshot" },
+        { value: "print", labelKey: "admin.enums.workerSessionMode.print" },
     ],
 };
 

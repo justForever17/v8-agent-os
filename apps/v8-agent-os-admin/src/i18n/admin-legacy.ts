@@ -46,3 +46,7 @@ export function ti(
 ) {
     return t(ik(id), params);
 }
+
+export function ir(id: keyof typeof INTERNAL_READABLE) {
+    return INTERNAL_READABLE[id];
+}

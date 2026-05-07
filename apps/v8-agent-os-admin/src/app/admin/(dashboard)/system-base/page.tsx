@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { resolveAdminLabel } from "@/lib/admin-labels";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 
 type SystemBaseData = {
@@ -46,6 +47,40 @@ type SystemBaseData = {
         singleViewerOnly?: boolean;
         idleReleaseSeconds?: number;
         captureDisplay?: string;
+    };
+    remoteLink?: {
+        enabled?: boolean;
+        activeProfileId?: string;
+        transportProfiles?: Array<{
+            id?: string;
+            kind?: string;
+            label?: string;
+            enabled?: boolean;
+            adminBaseUrl?: string;
+            engineBaseUrl?: string;
+            peerBaseUrl?: string;
+        }>;
+    };
+    remoteLinkManifest?: {
+        transportKind?: string;
+        activeProfileId?: string;
+        admin?: {
+            baseUrl?: string;
+            apiBaseUrl?: string;
+        };
+        engine?: {
+            baseUrl?: string;
+            apiBaseUrl?: string;
+        };
+        warnings?: string[];
+        diagnostics?: {
+            warnings?: string[];
+            candidateIps?: Array<{ address?: string; family?: string; private?: boolean }>;
+            vpn?: {
+                wireguardDetected?: boolean;
+                tailscaleDetected?: boolean;
+            };
+        };
     };
     s3?: {
         endpoint?: string;
@@ -129,6 +164,15 @@ function formatOriginsSummary(origins: string[] | undefined, t: (value: string) 
     return `${normalized[0]} · ${normalized.length}`;
 }
 
+function transportLabel(kind: string | undefined, t: (value: string) => string) {
+    const normalized = String(kind || "manual_url").replace(/-/g, "_");
+    if (normalized === "lan") return "LAN";
+    if (normalized === "wireguard") return "WireGuard";
+    if (normalized === "tailscale") return "Tailscale";
+    if (normalized === "custom_vpn") return t("app.admin.dashboard.system.base.remoteLink.customVpn");
+    return t("app.admin.dashboard.system.base.remoteLink.manualUrl");
+}
+
 function looksLikeLoopbackOrigin(value?: string) {
     const normalized = String(value || "").trim();
     return /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(normalized);
@@ -170,12 +214,6 @@ function deriveDesktopLivePreset(config?: SystemBaseData["desktopLive"]): Deskto
         && preset.values.targetFps === fps
     ));
     return matchedPreset?.id || "custom";
-}
-
-function requirednessLabel(value: string | undefined, t: (value: string) => string) {
-    if (value === "required") return t("app.admin.dashboard.system.base.page.k0b1e02c7");
-    if (value === "conditional") return t("app.admin.dashboard.system.base.page.k32a81d87");
-    return t("app.admin.dashboard.system.base.page.k6f487abb");
 }
 
 export default function SystemBasePage() {
@@ -268,6 +306,10 @@ export default function SystemBasePage() {
     const webFetch = envelope.data.webFetch || {};
     const desktopTools = envelope.data.desktopTools || {};
     const desktopLive = envelope.data.desktopLive || {};
+    const remoteLink = envelope.data.remoteLink || {};
+    const remoteLinkManifest = envelope.data.remoteLinkManifest || {};
+    const remoteLinkProfiles = remoteLink.transportProfiles || [];
+    const activeRemoteLinkProfile = remoteLinkProfiles.find((profile) => profile.id === remoteLink.activeProfileId) || remoteLinkProfiles[0] || {};
     const desktopLivePreset = deriveDesktopLivePreset(desktopLive);
     const s3 = envelope.data.s3 || {};
     const runtimeInfo = envelope.data.runtimeInfo || {};
@@ -383,6 +425,132 @@ export default function SystemBasePage() {
                                 className="min-h-[108px]"
                             />
                             <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k7c90244a")}</div>
+                        </div>
+                    </div>
+                </ConfigCard>
+
+                <ConfigCard
+                    title={t("app.admin.dashboard.system.base.remoteLink.title")}
+                    description={t("app.admin.dashboard.system.base.remoteLink.description")}
+                    variant="editor"
+                    bodyHeight="clamp"
+                    bodyScroll="auto"
+                >
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
+                            <div className="space-y-1">
+                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.remoteLink.enabled")}</div>
+                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.enabledHelp")}</div>
+                            </div>
+                            <Switch
+                                checked={remoteLink.enabled !== false}
+                                onCheckedChange={(checked) =>
+                                    updateData((current) => ({
+                                        ...current,
+                                        remoteLink: { ...(current.remoteLink || {}), enabled: checked },
+                                    }))
+                                }
+                            />
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <Label>{t("app.admin.dashboard.system.base.remoteLink.activeProfile")}</Label>
+                                <Select
+                                    value={remoteLink.activeProfileId || activeRemoteLinkProfile.id || "manual-local"}
+                                    onValueChange={(value) =>
+                                        updateData((current) => ({
+                                            ...current,
+                                            remoteLink: { ...(current.remoteLink || {}), activeProfileId: value },
+                                        }))
+                                    }
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue placeholder={t("app.admin.dashboard.system.base.remoteLink.chooseProfile")} />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {remoteLinkProfiles.map((profile) => (
+                                            <SelectItem key={profile.id || profile.kind} value={profile.id || ""}>
+                                                {profile.label || profile.id} · {transportLabel(profile.kind, t)}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-2">
+                                <Label>{t("app.admin.dashboard.system.base.remoteLink.currentRoute")}</Label>
+                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                    {transportLabel(remoteLinkManifest.transportKind || activeRemoteLinkProfile.kind, t)}
+                                    {remoteLinkManifest.activeProfileId ? ` · ${remoteLinkManifest.activeProfileId}` : ""}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-3">
+                            {(["adminBaseUrl", "engineBaseUrl", "peerBaseUrl"] as const).map((field) => (
+                                <div key={field} className="space-y-2">
+                                    <Label>
+                                        {field === "adminBaseUrl"
+                                            ? t("app.admin.dashboard.system.base.remoteLink.adminUrl")
+                                            : field === "engineBaseUrl"
+                                                ? t("app.admin.dashboard.system.base.remoteLink.engineUrl")
+                                                : t("app.admin.dashboard.system.base.remoteLink.peerUrl")}
+                                    </Label>
+                                    <Input
+                                        value={String(activeRemoteLinkProfile[field] || "")}
+                                        onChange={(event) =>
+                                            updateData((current) => {
+                                                const currentRemote = current.remoteLink || {};
+                                                const activeId = currentRemote.activeProfileId || activeRemoteLinkProfile.id || "manual-local";
+                                                const nextProfiles = (currentRemote.transportProfiles || remoteLinkProfiles).map((profile) => (
+                                                    profile.id === activeId ? { ...profile, [field]: event.target.value } : profile
+                                                ));
+                                                return {
+                                                    ...current,
+                                                    remoteLink: { ...currentRemote, transportProfiles: nextProfiles },
+                                                };
+                                            })
+                                        }
+                                        placeholder={field === "adminBaseUrl" ? "http://192.168.x.x:9528" : "http://192.168.x.x:9530"}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs leading-5 text-slate-600">
+                            <div className="mb-2 font-semibold text-slate-900">{t("app.admin.dashboard.system.base.remoteLink.diagnostics")}</div>
+                            <div>
+                                {t("app.admin.dashboard.system.base.remoteLink.candidateIps")}{" "}
+                                {(remoteLinkManifest.diagnostics?.candidateIps || []).map((item) => item.address).filter(Boolean).join(" · ")
+                                    || t("app.admin.dashboard.system.base.page.k6ed9c299")}
+                            </div>
+                            <div>
+                                WireGuard: {remoteLinkManifest.diagnostics?.vpn?.wireguardDetected ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1f3ec640")}
+                                {" · "}
+                                Tailscale: {remoteLinkManifest.diagnostics?.vpn?.tailscaleDetected ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1f3ec640")}
+                            </div>
+                            {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).length > 0 ? (
+                                <div className="mt-2 text-amber-700">
+                                    {t("app.admin.dashboard.system.base.remoteLink.warnings")}{" "}
+                                    {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).slice(0, 4).join(" · ")}
+                                </div>
+                            ) : null}
+                            <div className="mt-2 text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.readOnlyNotice")}</div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void navigator.clipboard?.writeText(remoteLinkManifest.admin?.baseUrl || bridge.adminBaseUrl || "")}
+                            >
+                                {t("app.admin.dashboard.system.base.remoteLink.copyAdmin")}
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void navigator.clipboard?.writeText(remoteLinkManifest.engine?.baseUrl || bridge.engineBaseUrl || "")}
+                            >
+                                {t("app.admin.dashboard.system.base.remoteLink.copyEngine")}
+                            </Button>
                         </div>
                     </div>
                 </ConfigCard>
@@ -809,7 +977,7 @@ export default function SystemBasePage() {
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <div className="text-sm font-semibold text-slate-900">{item.label}</div>
                                                 <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 ring-1 ring-slate-200">
-                                                    {requirednessLabel(item.requiredness, t)}
+                                                    {resolveAdminLabel(t, "dependencyRequiredness", item.requiredness)}
                                                 </span>
                                             </div>
                                             <div className="mt-3 space-y-1.5 text-xs leading-5 text-slate-600">

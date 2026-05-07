@@ -10,9 +10,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
+import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import type { CanonicalConfigDiagnostics, LegacyPortNotice } from "@/lib/server/bridge-config";
 type PeerItem = {
     peerId: string;
@@ -256,18 +258,6 @@ const detail = (value: unknown, fallback: string) => {
     const payload = value as Record<string, unknown>;
     return String(payload.detail || payload.error || fallback);
 };
-const sourceLabel = (value: string) => {
-    switch (String(value || "").trim().toLowerCase()) {
-        case "lan":
-            return "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd8ac6d6d";
-        case "trusted":
-            return "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k05965884";
-        case "bootstrap":
-            return "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k00e04aa2";
-        default:
-            return value || "—";
-    }
-};
 function mergeConfig(value?: Partial<RuntimeConfig>): RuntimeConfig {
     const payload = value || {};
     return {
@@ -370,6 +360,10 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const anthropicCompatModelsUrl = `${anthropicCompatBaseUrl}/v1/models`;
     const primaryModelAlias = (config.openaiCompat.modelAliases || ["v8os"]).find((item) => String(item || "").trim()) || "v8os";
     const primaryToken = tokens[0]?.token || "";
+    const scopeModeOptions = getAdminOptions("networkScopeMode");
+    const enrollmentModeOptions = getAdminOptions("networkEnrollmentMode");
+    const hasCurrentScopeModeOption = scopeModeOptions.some((option) => option.value === config.openaiCompat.defaultScopeMode);
+    const hasCurrentEnrollmentModeOption = enrollmentModeOptions.some((option) => option.value === config.trust.enrollmentMode);
     const curlExample = `curl ${compatChatUrl} \\
   -H "Authorization: Bearer ${primaryToken || "<API_KEY>"}" \\
   -H "Content-Type: application/json" \\
@@ -935,7 +929,15 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                                 </div>
                                 <div className="space-y-2">
                                     <Label htmlFor="openai-compat-scope-mode">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatScopeMode")}</Label>
-                                    <Input id="openai-compat-scope-mode" value={config.openaiCompat.defaultScopeMode} onChange={(event) => setOpenAICompat({ defaultScopeMode: event.target.value })}/>
+                                    <Select value={config.openaiCompat.defaultScopeMode} onValueChange={(value) => setOpenAICompat({ defaultScopeMode: value })}>
+                                        <SelectTrigger id="openai-compat-scope-mode">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {!hasCurrentScopeModeOption && config.openaiCompat.defaultScopeMode ? <SelectItem value={config.openaiCompat.defaultScopeMode}>{resolveAdminLabel(t, "networkScopeMode", config.openaiCompat.defaultScopeMode)}</SelectItem> : null}
+                                            {scopeModeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
                                 </div>
                             </div>
                             <Button type="button" onClick={() => {
@@ -1038,7 +1040,15 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     <div className="grid gap-5 border-t border-slate-100 pt-5 lg:grid-cols-3">
                         <div className="space-y-2">
                             <Label htmlFor="network-enrollment">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf830fbd8")}</Label>
-                            <Input id="network-enrollment" value={config.trust.enrollmentMode} onChange={(event) => setTrust({ enrollmentMode: event.target.value === "open" ? "open" : "manual" })}/>
+                            <Select value={config.trust.enrollmentMode} onValueChange={(value: "manual" | "open") => setTrust({ enrollmentMode: value })}>
+                                <SelectTrigger id="network-enrollment">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {!hasCurrentEnrollmentModeOption && config.trust.enrollmentMode ? <SelectItem value={config.trust.enrollmentMode}>{resolveAdminLabel(t, "networkEnrollmentMode", config.trust.enrollmentMode)}</SelectItem> : null}
+                                    {enrollmentModeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                </SelectContent>
+                            </Select>
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="network-allowed-scopes">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0e27e25f")}</Label>
@@ -1146,7 +1156,7 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                                                 <div className="font-medium text-slate-900">{peer.displayName || peer.peerId}</div>
                                                 <Badge variant="outline">{peer.peerId}</Badge>
                                                 <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
-                                                {peer.source ? <Badge variant="secondary">{t(sourceLabel(peer.source))}</Badge> : null}
+                                                {peer.source ? <Badge variant="secondary">{resolveAdminLabel(t, "networkPeerSource", peer.source)}</Badge> : null}
                                             </div>
                                             <div className="mt-2 space-y-1 text-xs text-slate-500">
                                                 <div className="break-all">{peer.baseUrl || "—"}</div>

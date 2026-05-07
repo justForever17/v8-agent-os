@@ -8,7 +8,8 @@ import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ik, ir } from "@/i18n/admin-legacy";
+import type { TranslationKey } from "@/lib/locale";
 interface ModelCardV2Props {
   model: {
     id: string;
@@ -64,7 +65,7 @@ const ROLE_LABELS: Record<string, string> = {
 };
 type CapabilityIconItem = {
   key: string;
-  label: string;
+  labelKey: TranslationKey;
   Icon: LucideIcon;
 };
 type RoleDoctorFinding = {
@@ -88,26 +89,26 @@ function buildCapabilityIconItems(modelType: string, capabilityTags: string[], c
   const normalizedType = String(modelType || "").toUpperCase();
   const mediaType = new Set(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]).has(normalizedType);
   const items: CapabilityIconItem[] = [];
-  const add = (key: string, label: string, Icon: LucideIcon) => {
+  const add = (key: string, labelKey: TranslationKey, Icon: LucideIcon) => {
     if (!items.some(item => item.key === key)) items.push({
       key,
-      label,
+      labelKey,
       Icon
     });
   };
-  if (cap("chat") || has("chat", "text", INTERNAL_READABLE.k00d4cbafea, INTERNAL_READABLE.kf1926e9b33) || !capabilityTags.length && !mediaType) add("chat", INTERNAL_READABLE.k06ebe4c255, MessageCircle);
-  if (cap("toolCalling") || has("tool", "function", INTERNAL_READABLE.ka72ef18d9a)) add("tools", INTERNAL_READABLE.k8adb5022e0, Wrench);
-  if (cap("streaming") || has("stream", INTERNAL_READABLE.ke4d8c16cd2)) add("streaming", INTERNAL_READABLE.kf8dcd16381, Radio);
-  if (cap("vision") || has("vision", INTERNAL_READABLE.k6e81cc46a2)) add("vision", INTERNAL_READABLE.kc92bedaae6, Eye);
-  if (cap("multimodal") || has("multimodal", INTERNAL_READABLE.ka32fe198ed)) add("multimodal", INTERNAL_READABLE.k25e957df46, Eye);
-  if (cap("image") || has("image", INTERNAL_READABLE.kbe8da62ea1, INTERNAL_READABLE.k0a0ce84dde)) add("image", INTERNAL_READABLE.k9cdef12b3b, ImageIcon);
-  if (cap("video") || has("video", INTERNAL_READABLE.kfa4e33b698)) add("video", INTERNAL_READABLE.k0ce3738b06, Video);
-  if (cap("voice") || has("voice", INTERNAL_READABLE.k7a73e125c1, "tts", "speech")) add("voice", INTERNAL_READABLE.k29b7ed2939, Mic2);
-  if (cap("music") || has("music", "song", INTERNAL_READABLE.kafb3c40c39)) add("music", INTERNAL_READABLE.k9f5bd01411, Music);
-  if ((cap("audio") || has("audio", INTERNAL_READABLE.k461189f186)) && !items.some(item => item.key === "voice" || item.key === "music")) add("audio", INTERNAL_READABLE.k958adb2f96, Volume2);
-  if (cap("embedding") || has("embedding", "vector", INTERNAL_READABLE.kfae158475e)) add("embedding", INTERNAL_READABLE.k57b695c73d, Database);
-  if (cap("rerank") || has("rerank", INTERNAL_READABLE.k675b0ee116)) add("rerank", INTERNAL_READABLE.k8864544e99, ListOrdered);
-  if (cap("reasoning") || has("reasoning", INTERNAL_READABLE.kc9d3b085e2)) add("reasoning", INTERNAL_READABLE.kcc24fe7a77, Brain);
+  if (cap("chat") || has("chat", "text", ir("k00d4cbafea"), ir("kf1926e9b33")) || !capabilityTags.length && !mediaType) add("chat", ik("k06ebe4c255"), MessageCircle);
+  if (cap("toolCalling") || has("tool", "function", ir("ka72ef18d9a"))) add("tools", ik("k8adb5022e0"), Wrench);
+  if (cap("streaming") || has("stream", ir("ke4d8c16cd2"))) add("streaming", ik("kf8dcd16381"), Radio);
+  if (cap("vision") || has("vision", ir("k6e81cc46a2"))) add("vision", ik("kc92bedaae6"), Eye);
+  if (cap("multimodal") || has("multimodal", ir("ka32fe198ed"))) add("multimodal", ik("k25e957df46"), Eye);
+  if (cap("image") || has("image", ir("kbe8da62ea1"), ir("k0a0ce84dde"))) add("image", ik("k9cdef12b3b"), ImageIcon);
+  if (cap("video") || has("video", ir("kfa4e33b698"))) add("video", ik("k0ce3738b06"), Video);
+  if (cap("voice") || has("voice", ir("k7a73e125c1"), "tts", "speech")) add("voice", ik("k29b7ed2939"), Mic2);
+  if (cap("music") || has("music", "song", ir("kafb3c40c39"))) add("music", ik("k9f5bd01411"), Music);
+  if ((cap("audio") || has("audio", ir("k461189f186"))) && !items.some(item => item.key === "voice" || item.key === "music")) add("audio", ik("k958adb2f96"), Volume2);
+  if (cap("embedding") || has("embedding", "vector", ir("kfae158475e"))) add("embedding", ik("k57b695c73d"), Database);
+  if (cap("rerank") || has("rerank", ir("k675b0ee116"))) add("rerank", ik("k8864544e99"), ListOrdered);
+  if (cap("reasoning") || has("reasoning", ir("kc9d3b085e2"))) add("reasoning", ik("kcc24fe7a77"), Brain);
   return items;
 }
 export function ModelCardV2({
@@ -164,9 +165,9 @@ export function ModelCardV2({
                         <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
                             {capabilityIconItems.map(({
               key,
-              label,
+              labelKey,
               Icon
-            }) => <span key={`${modelRef}:${key}`} title={label} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+            }) => <span key={`${modelRef}:${key}`} title={t(labelKey)} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
                                     <Icon className="h-2.5 w-2.5" />
                                 </span>)}
                         </div>

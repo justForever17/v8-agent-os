@@ -35,7 +35,7 @@ export default function DocumentUploader() {
         if (Number.isNaN(date.getTime())) {
             return value;
         }
-        return date.toLocaleString(locale === "en" ? "en-US" : "zh-CN", {
+        return date.toLocaleString(locale.startsWith("en") ? "en-US" : "zh-CN", {
             hour12: false,
         });
     }, [locale]);

@@ -23,6 +23,7 @@ from core.prompt_budget import (
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from core.system_base import detect_desktop_tools_readiness
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
+from core.v8_link import build_link_manifest, normalize_remote_link_config
 from core.v8_agent_os_identity import render_system_identity_block
 from core.v8_agent_os_paths import COMPUTER_USE_JSON_PATH, CONFIG_JSON_PATH, V8_AGENT_OS_HOME
 from core.workspace_guard import build_workspace_path_status
@@ -988,15 +989,23 @@ def _build_system_base_domain() -> dict[str, Any]:
     system_base = storage.get_system_base_config()
     desktop_readiness = detect_desktop_tools_readiness()
     dependency_status = build_dependency_status()
+    bridge = dict(system_base.get("bridge") or {})
+    remote_link = normalize_remote_link_config(
+        dict(system_base.get("remoteLink") or {}),
+        admin_base_url=bridge.get("adminBaseUrl") or "",
+        engine_base_url=bridge.get("engineBaseUrl") or "",
+    )
     return {
         "domain": "system-base",
         "title": "系统基础配置",
         "summary": "设置服务联通、内部密钥、抓取缓存、桌面依赖和对象存储。",
         "data": {
-            "bridge": dict(system_base.get("bridge") or {}),
+            "bridge": bridge,
             "webFetch": dict(system_base.get("webFetch") or {}),
             "desktopTools": dict(system_base.get("desktopTools") or {}),
             "desktopLive": dict(system_base.get("desktopLive") or {}),
+            "remoteLink": remote_link,
+            "remoteLinkManifest": build_link_manifest(),
             "s3": dict(system_base.get("s3") or {}),
             "desktopReadiness": {
                 "status": desktop_readiness.get("status"),
@@ -1017,7 +1026,7 @@ def _build_system_base_domain() -> dict[str, Any]:
         "savePath": _config_save_path("systemBase"),
         "reloadRequired": False,
         "warnings": [],
-        "advancedFields": ["webFetch", "desktopTools", "desktopLive", "detectedDesktopTools", "dependencyStatus", "runtimeInfo"],
+        "advancedFields": ["webFetch", "desktopTools", "desktopLive", "remoteLink", "detectedDesktopTools", "dependencyStatus", "runtimeInfo"],
     }
 
 
@@ -1028,6 +1037,7 @@ def _save_system_base_domain(payload: dict[str, Any]) -> dict[str, Any]:
         "webFetch": dict(data.get("webFetch") or {}),
         "desktopTools": dict(data.get("desktopTools") or {}),
         "desktopLive": dict(data.get("desktopLive") or {}),
+        "remoteLink": dict(data.get("remoteLink") or {}),
         "s3": dict(data.get("s3") or {}),
     }
     storage.save_system_base_config(next_payload)

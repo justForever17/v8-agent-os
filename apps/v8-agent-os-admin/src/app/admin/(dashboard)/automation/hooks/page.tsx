@@ -91,7 +91,7 @@ export default function HooksPage() {
     const [sourceMetadataText, setSourceMetadataText] = useState("{}");
     const loadDocumentation = async () => {
         try {
-            const response = await fetch(locale === "en" ? "/HOOKS.en.md" : "/HOOKS.zh-CN.md");
+            const response = await fetch(locale.startsWith("en") ? "/HOOKS.en.md" : "/HOOKS.zh-CN.md");
             const fallback = await fetch("/HOOKS.zh-CN.md");
             const text = response.ok ? await response.text() : await fallback.text();
             setDocContent(text);

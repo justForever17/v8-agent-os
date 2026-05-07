@@ -17,8 +17,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
-import { tg } from "@/i18n/admin-legacy";
+import { tg, ti } from "@/i18n/admin-legacy";
 type SummaryPayload = {
   pendingApprovals: number;
   recentRuns: number;
@@ -259,7 +258,7 @@ function StorageRetentionPanel() {
   };
   const saveBudgets = async () => {
     if (!stats?.config) return;
-    if (!window.confirm(INTERNAL_READABLE.k595dde7c31)) return;
+    if (!window.confirm(ti(t, "k595dde7c31"))) return;
     setLoading(true);
     try {
       const budgets: Record<string, unknown> = {
@@ -299,7 +298,7 @@ function StorageRetentionPanel() {
                 <div>
                     <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.storageRetention.title")}</div>
                     <div className="text-xs leading-5 text-slate-500">
-                        {INTERNAL_READABLE.ka0d7a179bf}
+                        {ti(t, "ka0d7a179bf")}
                     </div>
                 </div>
                 <div className="flex gap-2">
@@ -309,7 +308,7 @@ function StorageRetentionPanel() {
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => void run("dry-run")} disabled={loading}>{t("app.admin.dashboard.operations.center.advanced.dryRun")}</Button>
                     <Button size="sm" onClick={() => void run("prune")} disabled={loading}>{t("app.admin.dashboard.operations.center.advanced.prune")}</Button>
-                    <Button variant="outline" size="sm" onClick={() => void saveBudgets()} disabled={loading}>{INTERNAL_READABLE.kf8d9ddff2f}</Button>
+                    <Button variant="outline" size="sm" onClick={() => void saveBudgets()} disabled={loading}>{ti(t, "kf8d9ddff2f")}</Button>
                 </div>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
@@ -421,7 +420,7 @@ function SystemDoctorPanel() {
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                     <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")}</div>
-                    <div className="text-xs leading-5 text-slate-500">{INTERNAL_READABLE.k6e8c71c3b5}</div>
+                    <div className="text-xs leading-5 text-slate-500">{ti(t, "k6e8c71c3b5")}</div>
                     <div className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
                         {t("app.admin.dashboard.operations.center.advanced.systemDoctor.description")}
                     </div>
@@ -473,7 +472,7 @@ function SystemDoctorPanel() {
                     <div className="mb-2 font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.repairPlan")}</div>
                     {actions.map(action => <div key={action.id} className="mb-2">
                             <span className="font-medium text-slate-900">{action.title}</span>
-                            <span className="text-slate-500"> · {action.requiresConfirmation ? INTERNAL_READABLE.k9deb52e20d : INTERNAL_READABLE.k6530601635}</span>
+                            <span className="text-slate-500"> · {action.requiresConfirmation ? ti(t, "k9deb52e20d") : ti(t, "k6530601635")}</span>
                             <div>{action.description}</div>
                         </div>)}
                 </div> : null}
@@ -519,7 +518,7 @@ function ConfigMigrationPanel() {
     }
   };
   const apply = async () => {
-    if (!window.confirm(INTERNAL_READABLE.k42be496f31)) return;
+    if (!window.confirm(ti(t, "k42be496f31"))) return;
     setLoading(true);
     setError(null);
     try {
@@ -557,11 +556,11 @@ function ConfigMigrationPanel() {
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                     <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.configMigration.title")}</div>
-                    <div className="text-xs leading-5 text-slate-500">{INTERNAL_READABLE.k10851755fd}</div>
+                    <div className="text-xs leading-5 text-slate-500">{ti(t, "k10851755fd")}</div>
                 </div>
                 <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{INTERNAL_READABLE.k38108eaa1d}</Button>
-                    <Button size="sm" onClick={() => void apply()} disabled={loading || !migrationReady}>{INTERNAL_READABLE.k458914f447}</Button>
+                    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{ti(t, "k38108eaa1d")}</Button>
+                    <Button size="sm" onClick={() => void apply()} disabled={loading || !migrationReady}>{ti(t, "k458914f447")}</Button>
                 </div>
             </div>
             {error ? <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700">
@@ -1044,7 +1043,7 @@ function RunLedgerPanel({
   const refs = ledger?.refs || {};
   return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
-                <AdminHoverInfo content={tg(t, "2d4b9c7f"))}>
+                <AdminHoverInfo content={tg(t, "2d4b9c7f")}>
                     <div>
                         <h2 className="text-lg font-semibold text-slate-950">Run Ledger</h2>
                         <p className="mt-1 font-mono text-xs text-slate-500">{runId}</p>
@@ -1052,19 +1051,19 @@ function RunLedgerPanel({
                 </AdminHoverInfo>
                 <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
                     {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                    {INTERNAL_READABLE.k38108eaa1d}
+                    {ti(t, "k38108eaa1d")}
                 </Button>
             </div>
             {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
             {ledger ? <div className="mt-4 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
                     <div className="space-y-2 rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600">
-                        <div>{INTERNAL_READABLE.kbf0ac89783}<span className="font-medium text-slate-950">{ledger.status || "-"}</span></div>
+                        <div>{ti(t, "kbf0ac89783")}<span className="font-medium text-slate-950">{ledger.status || "-"}</span></div>
                         <div>Runtime：<span className="font-medium text-slate-950">{ledger.runtimeKind || "-"}</span></div>
-                        <div>{INTERNAL_READABLE.k9c9db830ea}<span className="font-medium text-slate-950">{ledger.nextAction || "-"}</span></div>
+                        <div>{ti(t, "k9c9db830ea")}<span className="font-medium text-slate-950">{ledger.nextAction || "-"}</span></div>
                         {Object.entries(refs).map(([key, value]) => <div key={key}>{key}: <span className="font-mono text-xs text-slate-700">{Array.isArray(value) ? value.length : 0}</span></div>)}
                     </div>
                     <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
-                        {timeline.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">{INTERNAL_READABLE.k0e212bccad}</div> : timeline.map(item => <div key={item.id || `${item.type}-${item.ts}`} className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+                        {timeline.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">{ti(t, "k0e212bccad")}</div> : timeline.map(item => <div key={item.id || `${item.type}-${item.ts}`} className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
                                 <div className="flex flex-wrap items-center gap-2 text-xs">
                                     <span className="rounded-full bg-slate-950 px-2 py-0.5 font-medium text-white">{item.type || "event"}</span>
                                     <span className="text-slate-500">{item.source || "-"}</span>
@@ -1076,7 +1075,7 @@ function RunLedgerPanel({
                                     </pre> : null}
                             </div>)}
                     </div>
-                </div> : !loading && !error ? <div className="mt-4 rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">{INTERNAL_READABLE.k22fc006983}</div> : null}
+                </div> : !loading && !error ? <div className="mt-4 rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">{ti(t, "k22fc006983")}</div> : null}
         </div>;
 }
 export default function OperationsCenterPage() {

@@ -734,7 +734,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                                 <div className="flex flex-wrap justify-end gap-2">
                                     <Button variant="outline" size="sm" onClick={() => void handleCreateRelation()} disabled={mutating || !connectTarget.trim()}>
                                         <Plus className="mr-2 h-4 w-4" />
-                                        {tg(t, "25f51fce"))}
+                                        {tg(t, "25f51fce")}
                                     </Button>
                                     <Button size="sm" onClick={() => void handleCreateRelation()} disabled={mutating}>
                                         <Sparkles className="mr-2 h-4 w-4" />

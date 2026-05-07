@@ -46,6 +46,8 @@ class TrustedPeerConfig(BaseModel):
     display_name: Optional[str] = Field(default=None, alias="displayName")
     base_url: str = Field(alias="baseUrl")
     ws_url: Optional[str] = Field(default=None, alias="wsUrl")
+    transport_profile_id: Optional[str] = Field(default=None, alias="transportProfileId")
+    peer_base_url: Optional[str] = Field(default=None, alias="peerBaseUrl")
     public_key: str = Field(alias="publicKey")
     allowed_scopes: List[str] = Field(default_factory=list, alias="allowedScopes")
     allowed_workspaces: List[str] = Field(default_factory=list, alias="allowedWorkspaces")
@@ -61,6 +63,8 @@ class NetworkNodeConfig(BaseModel):
         default="ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
         alias="advertisedWsUrl",
     )
+    transport_profile_id: Optional[str] = Field(default=None, alias="transportProfileId")
+    peer_base_url: Optional[str] = Field(default=None, alias="peerBaseUrl")
 
 
 class NetworkDiscoveryConfig(BaseModel):
@@ -141,6 +145,8 @@ class NetworkPeerMutationPayload(BaseModel):
     display_name: Optional[str] = Field(default=None, alias="displayName")
     base_url: Optional[str] = Field(default=None, alias="baseUrl")
     ws_url: Optional[str] = Field(default=None, alias="wsUrl")
+    transport_profile_id: Optional[str] = Field(default=None, alias="transportProfileId")
+    peer_base_url: Optional[str] = Field(default=None, alias="peerBaseUrl")
     public_key: Optional[str] = Field(default=None, alias="publicKey")
     allowed_scopes: Optional[List[str]] = Field(default=None, alias="allowedScopes")
     allowed_workspaces: Optional[List[str]] = Field(default=None, alias="allowedWorkspaces")

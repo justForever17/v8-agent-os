@@ -488,6 +488,8 @@
   "src.screens.connectscreen.unreachable": "Unreachable",
   "src.screens.connectscreen.untitled_project": "Untitled project",
   "src.screens.connectscreen.unverified": "Unverified",
+  "src.screens.connectscreen.v8_link_route": "V8 Link route",
+  "src.screens.connectscreen.vpn_diagnostics": "VPN diagnostics",
   "src.screens.desktoplivescreen.returning_to_chat": "Returning to chat...",
   "src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id": "Enter an existing robot file path or script ID.",
   "src.screens.rpascreen.enter_at_least_one_run_id": "Enter at least one Run ID.",

@@ -17,8 +17,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ti } from "@/i18n/admin-legacy";
 type MachinePosture = "dedicated_runtime_host" | "developer_mixed_host";
 type ModelOption = {
   id?: string;
@@ -329,6 +330,7 @@ function detectPreset(config: SafetyData) {
   return config.machinePosture;
 }
 export default function SafetyControlPage() {
+  const t = useT();
   const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SafetyData> | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -368,7 +370,7 @@ export default function SafetyControlPage() {
     const skillScanSummary = data?.skillScanSummary || {};
     return {
       posture: data?.machinePosture || "dedicated_runtime_host",
-      reviewModel: data?.modelBindings?.safetyReviewModel || INTERNAL_READABLE.k3bf179d8d0,
+      reviewModel: data?.modelBindings?.safetyReviewModel || ti(t, "k3bf179d8d0"),
       auditCount: Number(runtimeSummary.auditCount || 0),
       reviewCount: Number(runtimeSummary.reviewCount || 0),
       blockCount: Number(runtimeSummary.blockCount || 0),
@@ -483,7 +485,7 @@ export default function SafetyControlPage() {
                         <InlineSaveState saving={saving} saved={saved} />
                         <Button onClick={() => void saveData(data)} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                            {INTERNAL_READABLE.k5e4644a2c8}
+                            {ti(t, "k5e4644a2c8")}
                         </Button>
                     </div>} />
 
@@ -504,13 +506,13 @@ export default function SafetyControlPage() {
       }]} />
 
 
-                <StatusNotice tone={data.machinePosture === "developer_mixed_host" ? "warning" : "success"} title={data.machinePosture === "developer_mixed_host" ? INTERNAL_READABLE.k0a54999adc : INTERNAL_READABLE.k2de6238fbe} description={data.machinePosture === "developer_mixed_host" ? INTERNAL_READABLE.kfea74a25fa : INTERNAL_READABLE.kc22f677125} />
+                <StatusNotice tone={data.machinePosture === "developer_mixed_host" ? "warning" : "success"} title={data.machinePosture === "developer_mixed_host" ? ti(t, "k0a54999adc") : ti(t, "k2de6238fbe")} description={data.machinePosture === "developer_mixed_host" ? ti(t, "kfea74a25fa") : ti(t, "kc22f677125")} />
 
 
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="text-base">{INTERNAL_READABLE.kac3aa53ae3}</CardTitle>
-                        <CardDescription>{INTERNAL_READABLE.ked7bf764bd}</CardDescription>
+                        <CardTitle className="text-base">{ti(t, "kac3aa53ae3")}</CardTitle>
+                        <CardDescription>{ti(t, "ked7bf764bd")}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <div className="space-y-2">
@@ -527,7 +529,7 @@ export default function SafetyControlPage() {
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="dedicated_runtime_host">{INTERNAL_READABLE.ka171f0c349}</SelectItem>
+                                    <SelectItem value="dedicated_runtime_host">{ti(t, "ka171f0c349")}</SelectItem>
                                     <SelectItem value="developer_mixed_host">developer_mixed_host</SelectItem>
                                 </SelectContent>
                             </Select>
@@ -569,8 +571,8 @@ export default function SafetyControlPage() {
                         </div>
                         <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
                             <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k4d4a2abe6e}</div>
-                                <div className="text-xs leading-5 text-slate-500">{INTERNAL_READABLE.ke57511582a}</div>
+                                <div className="text-sm font-medium text-slate-900">{ti(t, "k4d4a2abe6e")}</div>
+                                <div className="text-xs leading-5 text-slate-500">{ti(t, "ke57511582a")}</div>
                             </div>
                             <Switch checked={Boolean(data.enabled)} onCheckedChange={checked => setEnvelope(previous => previous ? {
               ...previous,
@@ -586,48 +588,48 @@ export default function SafetyControlPage() {
 
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="text-base">{INTERNAL_READABLE.k8f7932ff92}</CardTitle>
+                        <CardTitle className="text-base">{ti(t, "k8f7932ff92")}</CardTitle>
                         <CardDescription>{activePreset.description}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k0fad073470}</div>
+                            <div className="text-sm font-medium text-slate-900">{ti(t, "k0fad073470")}</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {INTERNAL_READABLE.kda13a9cff5}<span className="font-medium text-slate-900">{data.skillRules?.declarationVerdict}</span>
+                                {ti(t, "kda13a9cff5")}<span className="font-medium text-slate-900">{data.skillRules?.declarationVerdict}</span>
                                 <br />
-                                {INTERNAL_READABLE.k8595ba0815}<span className="font-medium text-slate-900">{data.skillRules?.localSecretReadVerdict}</span>
+                                {ti(t, "k8595ba0815")}<span className="font-medium text-slate-900">{data.skillRules?.localSecretReadVerdict}</span>
                                 <br />
-                                {INTERNAL_READABLE.kdda26d8b82}<span className="font-medium text-slate-900">{data.skillRules?.browserProfileAccessVerdict?.developer_mixed_host}</span>
+                                {ti(t, "kdda26d8b82")}<span className="font-medium text-slate-900">{data.skillRules?.browserProfileAccessVerdict?.developer_mixed_host}</span>
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k3991c727ed}</div>
+                            <div className="text-sm font-medium text-slate-900">{ti(t, "k3991c727ed")}</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {INTERNAL_READABLE.k8b9f7fc0ed}<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host}</span>
+                                {ti(t, "k8b9f7fc0ed")}<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host}</span>
                                 <br />
-                                {INTERNAL_READABLE.k546f1f657f}<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host}</span>
+                                {ti(t, "k546f1f657f")}<span className="font-medium text-slate-900">{data.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host}</span>
                                 <br />
-                                {INTERNAL_READABLE.kd9abd67eaa}<span className="font-medium text-slate-900">{data.networkMutationRules?.sensitivePayloadVerdict}</span>
+                                {ti(t, "kd9abd67eaa")}<span className="font-medium text-slate-900">{data.networkMutationRules?.sensitivePayloadVerdict}</span>
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
                             <div className="text-sm font-medium text-slate-900">Computer Use</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {INTERNAL_READABLE.k9e4884053a}<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host}</span>
+                                {ti(t, "k9e4884053a")}<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host}</span>
                                 <br />
-                                {INTERNAL_READABLE.k426e3712e7}<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.developer_mixed_host}</span>
+                                {ti(t, "k426e3712e7")}<span className="font-medium text-slate-900">{data.computerUseRules?.defaultMutationVerdict?.developer_mixed_host}</span>
                                 <br />
-                                {INTERNAL_READABLE.k5b4d128734}<span className="font-medium text-slate-900">{data.computerUseRules?.hotkeyLifecycleVerdict}</span>
+                                {ti(t, "k5b4d128734")}<span className="font-medium text-slate-900">{data.computerUseRules?.hotkeyLifecycleVerdict}</span>
                             </div>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k94ba148b3e}</div>
+                            <div className="text-sm font-medium text-slate-900">{ti(t, "k94ba148b3e")}</div>
                             <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {INTERNAL_READABLE.ke64e2476ba}<span className="font-medium text-slate-900">{data.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host}</span>
+                                {ti(t, "ke64e2476ba")}<span className="font-medium text-slate-900">{data.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host}</span>
                                 <br />
-                                {INTERNAL_READABLE.k1c9f944a8e}<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedConfigWriteVerdict}</span>
+                                {ti(t, "k1c9f944a8e")}<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedConfigWriteVerdict}</span>
                                 <br />
-                                {INTERNAL_READABLE.kf5ed0ffb9c}<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedRuntimeProcessVerdict}</span>
+                                {ti(t, "kf5ed0ffb9c")}<span className="font-medium text-slate-900">{data.v8IntegrityRules?.protectedRuntimeProcessVerdict}</span>
                             </div>
                         </div>
                     </CardContent>
@@ -636,12 +638,12 @@ export default function SafetyControlPage() {
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
                         <CardTitle className="text-base">Recent Skill Scan Summary</CardTitle>
-                        <CardDescription>{INTERNAL_READABLE.k3b8428667f}</CardDescription>
+                        <CardDescription>{ti(t, "k3b8428667f")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                        {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k906ff562fc}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                        {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k906ff562fc")}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
                                     <div className="flex flex-wrap items-center gap-3">
-                                        <div className="text-sm font-medium text-slate-900">{item.skillName || INTERNAL_READABLE.k233cfa7db1}</div>
+                                        <div className="text-sm font-medium text-slate-900">{item.skillName || ti(t, "k233cfa7db1")}</div>
                                         <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{item.verdict || "unknown"}</div>
                                         {item.confidence != null ? <div className="text-xs text-slate-500">confidence {item.confidence}</div> : null}
                                     </div>
@@ -679,17 +681,17 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">{INTERNAL_READABLE.k0bd4eb9e51}</CardTitle>
-                                <CardDescription>{INTERNAL_READABLE.k53b0056fae}</CardDescription>
+                                <CardTitle className="text-base">{ti(t, "k0bd4eb9e51")}</CardTitle>
+                                <CardDescription>{ti(t, "k53b0056fae")}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 p-4">
                                     <div className="space-y-1">
                                         <div className="text-sm font-medium text-slate-900">
-                                            {data.activeDefense?.enabled ? INTERNAL_READABLE.k938cd2b63d : INTERNAL_READABLE.kb3eb9f1698}
+                                            {data.activeDefense?.enabled ? ti(t, "k938cd2b63d") : ti(t, "kb3eb9f1698")}
                                         </div>
                                         <div className="text-xs leading-5 text-slate-500">
-                                            {INTERNAL_READABLE.k01f122f48b} {data.activeDefense?.sampleIntervalSeconds || 20}{INTERNAL_READABLE.k4d7902113a} {data.activeDefense?.maxInjectedProcesses || 3} {INTERNAL_READABLE.k4b584a4a03}
+                                            {ti(t, "k01f122f48b")} {data.activeDefense?.sampleIntervalSeconds || 20}{ti(t, "k4d7902113a")} {data.activeDefense?.maxInjectedProcesses || 3} {ti(t, "k4b584a4a03")}
                                         </div>
                                     </div>
                                     <Switch checked={Boolean(data.activeDefense?.enabled)} onCheckedChange={checked => setEnvelope(previous => previous ? {
@@ -724,7 +726,7 @@ export default function SafetyControlPage() {
                                         <div className="text-xs uppercase tracking-[0.18em] text-slate-400">known tunnels</div>
                                         <div className="mt-2 text-sm font-medium text-slate-900">{(dashboard?.activeDefense?.knownNetworkTools || []).length}</div>
                                         <div className="mt-1 line-clamp-2 text-xs text-slate-500">
-                                            {(dashboard?.activeDefense?.knownNetworkTools || []).join(", ") || INTERNAL_READABLE.k37be479791}
+                                            {(dashboard?.activeDefense?.knownNetworkTools || []).join(", ") || ti(t, "k37be479791")}
                                         </div>
                                     </div>
                                 </div>
@@ -732,7 +734,7 @@ export default function SafetyControlPage() {
                                 {dashboard?.activeDefense?.lastError ? <StatusNotice tone="warning" title="Sentinel sampling error" description={dashboard.activeDefense.lastError} /> : null}
 
                                 {(dashboard?.activeDefense?.incidents || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
-                                        {INTERNAL_READABLE.k8e279a292f}
+                                        {ti(t, "k8e279a292f")}
                                     </div> : <div className="space-y-3">
                                         {(dashboard?.activeDefense?.incidents || []).slice(0, 8).map(incident => <div key={incident.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
@@ -748,11 +750,11 @@ export default function SafetyControlPage() {
                                                     </div> : null}
                                                 <div className="mt-3 flex justify-end gap-2">
                                                     {incident.riskCode === "network_tunnel_first_seen" || incident.riskCode === "unknown_listening_port" ? <Button size="sm" variant="outline" disabled={governanceBusy === `active-defense:confirm:${incident.id}`} onClick={() => void handleActiveDefenseIncidentAction(incident.id, "confirm")}>
-                                                            {INTERNAL_READABLE.kaba11b75f9}
+                                                            {ti(t, "kaba11b75f9")}
                                                         
                       </Button> : null}
                                                     <Button size="sm" variant="ghost" disabled={governanceBusy === `active-defense:ignore:${incident.id}`} onClick={() => void handleActiveDefenseIncidentAction(incident.id, "ignore")}>
-                                                        {INTERNAL_READABLE.kd84129b8be}
+                                                        {ti(t, "kd84129b8be")}
                                                     
                       </Button>
                                                 </div>
@@ -763,32 +765,32 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">{INTERNAL_READABLE.k207d54bdcb}</CardTitle>
-                                <CardDescription>{INTERNAL_READABLE.k31e671581a}</CardDescription>
+                                <CardTitle className="text-base">{ti(t, "k207d54bdcb")}</CardTitle>
+                                <CardDescription>{ti(t, "k31e671581a")}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                {(dashboard?.pendingSafetyApprovals || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k8943074568}</div> : (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map(approval => <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
+                                {(dashboard?.pendingSafetyApprovals || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k8943074568")}</div> : (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map(approval => <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant="outline">{approval.approval_kind || "safety_review"}</Badge>
                                                 <Badge variant={approval.verdict === "block" ? "destructive" : "secondary"}>{approval.riskCode || "unknown"}</Badge>
                                                 <span className="text-xs text-slate-500">Run {approval.run_id || "-"}</span>
                                             </div>
-                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{approval.question || approval.reason || INTERNAL_READABLE.k82b3e41793}</p>
+                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{approval.question || approval.reason || ti(t, "k82b3e41793")}</p>
                                             {approval.allowlistCandidate ? <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
                                                     <input type="checkbox" checked={Boolean(rememberAllowlist[approval.id])} onChange={event => setRememberAllowlist(previous => ({
                     ...previous,
                     [approval.id]: event.target.checked
                   }))} />
-                                                    {INTERNAL_READABLE.kfabda685a2}
+                                                    {ti(t, "kfabda685a2")}
                                                 
                   </label> : null}
                                             <div className="mt-3 flex justify-end gap-2">
                                                 <Button type="button" variant="outline" disabled={governanceBusy === `approval:reject:${approval.id}` || governanceBusy === `approval:approve:${approval.id}`} onClick={() => void handleApprovalAction(approval.id, false)}>
-                                                    {INTERNAL_READABLE.k03e210a66d}
+                                                    {ti(t, "k03e210a66d")}
                                                 
                     </Button>
                                                 <Button type="button" disabled={governanceBusy === `approval:approve:${approval.id}` || governanceBusy === `approval:reject:${approval.id}`} onClick={() => void handleApprovalAction(approval.id, true)}>
-                                                    {INTERNAL_READABLE.kdcc4233255}
+                                                    {ti(t, "kdcc4233255")}
                                                 
                     </Button>
                                             </div>
@@ -800,10 +802,10 @@ export default function SafetyControlPage() {
                             <Card className="rounded-2xl border-slate-200 shadow-sm">
                                 <CardHeader>
                                     <CardTitle className="text-base">Skill Safety Ledger</CardTitle>
-                                    <CardDescription>{INTERNAL_READABLE.k0e783e6a82}</CardDescription>
+                                    <CardDescription>{ti(t, "k0e783e6a82")}</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
-                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k4fd29dc28e}</div> : (dashboard?.skillSafetyReviews || []).slice(0, 8).map(review => <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k4fd29dc28e")}</div> : (dashboard?.skillSafetyReviews || []).slice(0, 8).map(review => <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <span className="font-medium text-slate-950">{review.skill_name || review.skill_id || "Unknown skill"}</span>
                                                     <Badge variant={review.disabled ? "destructive" : "outline"}>{review.disabled ? "disabled" : review.effective_verdict || "unknown"}</Badge>
@@ -812,10 +814,10 @@ export default function SafetyControlPage() {
                                                 <div className="mt-2 line-clamp-1 text-xs text-slate-500">{review.skill_path || "-"}</div>
                                                 {Array.isArray(review.reasons) && review.reasons.length ? <div className="mt-2 text-sm text-slate-600">{review.reasons.slice(0, 2).join(" / ")}</div> : null}
                                                 <div className="mt-3 flex flex-wrap justify-end gap-2">
-                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "approve")}>{INTERNAL_READABLE.k0a6f0a30a8}</Button>
-                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "disable")}>{INTERNAL_READABLE.kbe70be5a2e}</Button>
-                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "revoke")}>{INTERNAL_READABLE.k9fcefd8dc8}</Button>
-                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "rescan")}>{INTERNAL_READABLE.kd5847a438e}</Button>
+                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "approve")}>{ti(t, "k0a6f0a30a8")}</Button>
+                                                    <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "disable")}>{ti(t, "kbe70be5a2e")}</Button>
+                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "revoke")}>{ti(t, "k9fcefd8dc8")}</Button>
+                                                    <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "rescan")}>{ti(t, "kd5847a438e")}</Button>
                                                 </div>
                                             </div>)}
                                 </CardContent>
@@ -824,10 +826,10 @@ export default function SafetyControlPage() {
                             <Card className="rounded-2xl border-slate-200 shadow-sm">
                                 <CardHeader>
                                     <CardTitle className="text-base">Safety Allowlist</CardTitle>
-                                    <CardDescription>{INTERNAL_READABLE.k24d5d908de}</CardDescription>
+                                    <CardDescription>{ti(t, "k24d5d908de")}</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
-                                    {(dashboard?.allowlistEntries || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.kc83fd439cd}</div> : (dashboard?.allowlistEntries || []).slice(0, 8).map(entry => <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.allowlistEntries || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "kc83fd439cd")}</div> : (dashboard?.allowlistEntries || []).slice(0, 8).map(entry => <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <Badge variant={entry.enabled ? "secondary" : "outline"}>{entry.enabled ? "active" : "revoked"}</Badge>
                                                     <Badge variant="outline">{entry.risk_code || "unknown"}</Badge>
@@ -836,7 +838,7 @@ export default function SafetyControlPage() {
                                                 <div className="mt-2 break-all text-sm text-slate-700">{entry.normalized_target_label || entry.id}</div>
                                                 {entry.enabled ? <div className="mt-3 flex justify-end">
                                                         <Button size="sm" variant="outline" disabled={governanceBusy === `allowlist:revoke:${entry.id}`} onClick={() => void handleAllowlistRevoke(entry.id)}>
-                                                            {INTERNAL_READABLE.kb31883bd20}
+                                                            {ti(t, "kb31883bd20")}
                                                         </Button>
                                                     </div> : null}
                                             </div>)}
@@ -846,11 +848,11 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">{INTERNAL_READABLE.k82e119eb54}</CardTitle>
-                                <CardDescription>{INTERNAL_READABLE.kf3c79e2420}</CardDescription>
+                                <CardTitle className="text-base">{ti(t, "k82e119eb54")}</CardTitle>
+                                <CardDescription>{ti(t, "kf3c79e2420")}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                {(dashboard?.recentDecisions || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{INTERNAL_READABLE.k08fd2c0902}</div> : (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                                {(dashboard?.recentDecisions || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k08fd2c0902")}</div> : (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant={event.verdict === "block" ? "destructive" : "outline"}>{event.verdict || event.status || "unknown"}</Badge>
                                                 <Badge variant="secondary">{event.riskCode || "unknown"}</Badge>

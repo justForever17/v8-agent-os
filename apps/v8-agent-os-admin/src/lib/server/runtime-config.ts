@@ -1,5 +1,4 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
 import {
     readCanonicalAdminRuntimeConfig,
@@ -29,6 +28,23 @@ type SystemBaseConfig = {
         enginePython?: string;
     };
     desktopLive?: DesktopLiveConfig;
+    remoteLink?: RemoteLinkConfig;
+};
+
+type RemoteLinkProfile = {
+    id?: string;
+    kind?: string;
+    label?: string;
+    enabled?: boolean;
+    adminBaseUrl?: string;
+    engineBaseUrl?: string;
+    peerBaseUrl?: string;
+};
+
+type RemoteLinkConfig = {
+    enabled?: boolean;
+    activeProfileId?: string;
+    transportProfiles?: RemoteLinkProfile[];
 };
 
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
@@ -105,6 +121,97 @@ export function resolveDesktopLiveBridgeBaseUrl() {
 export function resolveAdminPublicBaseUrl() {
     const apiBaseUrl = resolveAdminApiBaseUrl();
     return apiBaseUrl.endsWith("/api") ? apiBaseUrl.slice(0, -4) : apiBaseUrl;
+}
+
+function stripApiSuffix(value: unknown) {
+    const raw = String(value || "").trim().replace(/\/$/, "");
+    if (raw.endsWith("/api")) return raw.slice(0, -4);
+    if (raw.endsWith("/v1")) return raw.slice(0, -3);
+    return raw;
+}
+
+function withApiSuffix(value: unknown, suffix: string) {
+    const base = stripApiSuffix(value);
+    return base ? `${base}/${suffix.replace(/^\/+/, "")}` : "";
+}
+
+function normalizeTransportKind(value: unknown) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+    return ["manual_url", "lan", "wireguard", "tailscale", "custom_vpn"].includes(normalized)
+        ? normalized
+        : "manual_url";
+}
+
+export function buildAdminLinkManifest(requestOrigin?: string) {
+    const config = readCanonicalAdminRuntimeConfig();
+    const systemBase = (config.systemBase || {}) as SystemBaseConfig;
+    const remoteLink = systemBase.remoteLink || {};
+    const adminBaseUrl = stripApiSuffix(requestOrigin || resolveAdminApiBaseUrl());
+    const engineBaseUrl = stripApiSuffix(resolveEngineBaseUrl());
+    const defaultProfiles: RemoteLinkProfile[] = [
+        { id: "manual-local", kind: "manual_url", label: "Manual / Local", enabled: true, adminBaseUrl, engineBaseUrl, peerBaseUrl: engineBaseUrl },
+        { id: "lan", kind: "lan", label: "LAN", enabled: true },
+        { id: "wireguard", kind: "wireguard", label: "WireGuard", enabled: true },
+        { id: "tailscale", kind: "tailscale", label: "Tailscale", enabled: true },
+        { id: "custom-vpn", kind: "custom_vpn", label: "Custom VPN", enabled: true },
+    ];
+    const profilesById = new Map<string, RemoteLinkProfile>();
+    defaultProfiles.forEach((profile) => profile.id && profilesById.set(profile.id, profile));
+    (remoteLink.transportProfiles || []).forEach((profile) => {
+        const id = String(profile?.id || "").trim();
+        if (!id) return;
+        const merged = { ...(profilesById.get(id) || {}), ...profile };
+        merged.kind = normalizeTransportKind(merged.kind);
+        merged.adminBaseUrl = stripApiSuffix(merged.adminBaseUrl || "");
+        merged.engineBaseUrl = stripApiSuffix(merged.engineBaseUrl || "");
+        merged.peerBaseUrl = stripApiSuffix(merged.peerBaseUrl || "");
+        profilesById.set(id, merged);
+    });
+    const profiles = Array.from(profilesById.values());
+    const activeProfileId = String(remoteLink.activeProfileId || "manual-local");
+    const activeProfile = profiles.find((profile) => profile.id === activeProfileId) || profiles[0] || {};
+    const transportKind = normalizeTransportKind(activeProfile.kind);
+    const warnings = [
+        adminBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "admin_loopback_not_reachable_from_phone" : "",
+        engineBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "engine_loopback_not_reachable_from_phone" : "",
+    ].filter(Boolean);
+    return {
+        ok: true,
+        kind: "v8_link_manifest",
+        version: "1",
+        transportKind,
+        activeProfileId: activeProfile.id || activeProfileId,
+        admin: {
+            baseUrl: adminBaseUrl,
+            apiBaseUrl: withApiSuffix(adminBaseUrl, "api"),
+            configuredApiBaseUrl: resolveAdminApiBaseUrl(),
+        },
+        engine: {
+            baseUrl: engineBaseUrl,
+            apiBaseUrl: withApiSuffix(engineBaseUrl, "v1"),
+            directExposure: false,
+        },
+        profiles: profiles.map((profile) => ({
+            id: profile.id || "",
+            kind: normalizeTransportKind(profile.kind),
+            label: profile.label || profile.id || "",
+            enabled: profile.enabled !== false,
+            adminBaseUrl: stripApiSuffix(profile.adminBaseUrl || ""),
+            engineBaseUrl: stripApiSuffix(profile.engineBaseUrl || ""),
+            peerBaseUrl: stripApiSuffix(profile.peerBaseUrl || ""),
+        })),
+        capabilities: {
+            adminProxy: true,
+            phoneUpload: true,
+            runtimeEvents: true,
+            networkSupervisorPeers: true,
+        },
+        diagnostics: {
+            readOnly: true,
+            warnings,
+        },
+        warnings,
+    };
 }
 
 export function isReachableClientSurfaceOrigin(baseUrl: string) {

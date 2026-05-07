@@ -8,15 +8,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { useLocale, useT } from "@/components/providers/LocaleProvider";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
-import { tg } from "@/i18n/admin-legacy";
+import { useT } from "@/components/providers/LocaleProvider";
+import { ir, tg, ti } from "@/i18n/admin-legacy";
 interface AIModel {
   id: string;
   modelRef?: string;
@@ -50,7 +48,7 @@ type PromptBudgetDiagnostic = {
   saveRejected?: boolean;
   omittedReason?: string;
 };
-const NATIVE_TOOL_SERVER_NAME = INTERNAL_READABLE.ka6155cb12a;
+const NATIVE_TOOL_SERVER_NAME = ir("ka6155cb12a");
 const SUPERVISOR_PROMPT_BUDGET_TOKENS = 10000;
 const TEMPERATURE_PRESET = 0.7;
 const MIN_CONFIG_TEMPERATURE = 0.05;
@@ -88,26 +86,23 @@ function temperatureSliderValue(value: string) {
   if (!Number.isFinite(parsed)) return TEMPERATURE_PRESET;
   return Math.max(Math.min(parsed, 2), MIN_CONFIG_TEMPERATURE);
 }
-function temperatureStatusText(value: string, locale: string) {
+function temperatureStatusText(t: ReturnType<typeof useT>, value: string) {
   if (String(value || "").trim()) {
-    return locale === "en" ? `Override ${formatDecimal(temperatureSliderValue(value))}` : INTERNAL_READABLE.k7d84e1319b + formatDecimal(temperatureSliderValue(value));
+    return `${ti(t, "k7d84e1319b")}${formatDecimal(temperatureSliderValue(value))}`;
   }
-  return locale === "en" ? `Recommended ${formatDecimal(TEMPERATURE_PRESET)} (not enabled)` : INTERNAL_READABLE.k630e24cd54 + formatDecimal(TEMPERATURE_PRESET) + INTERNAL_READABLE.kc10e7c65e4;
+  return `${ti(t, "k630e24cd54")}${formatDecimal(TEMPERATURE_PRESET)}${ti(t, "kc10e7c65e4")}`;
 }
-function temperatureDefaultText(locale: string) {
-  return locale === "en" ? "model config / provider default" : INTERNAL_READABLE.k833e316858;
+function temperatureDefaultText(t: ReturnType<typeof useT>) {
+  return ti(t, "k833e316858");
 }
 export default function SupervisorPage() {
   const t = useT();
-  const {
-    locale
-  } = useLocale();
   const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedModelId, setSelectedModelId] = useState<string>("default");
   const [visionModelId, setVisionModelId] = useState<string>("__empty__");
   const [visionModelSource, setVisionModelSource] = useState<string | null>(null);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
-  const [name, setName] = useState(tg(t, "8537cbcf")));
+  const [name, setName] = useState(tg(t, "8537cbcf"));
   const [roleLabel, setRoleLabel] = useState(t("components.models.ModelCardV2.kf45c6152"));
   const [avatar, setAvatar] = useState("");
   const [supervisorTemperature, setSupervisorTemperature] = useState("");
@@ -137,7 +132,7 @@ export default function SupervisorPage() {
       const res = await fetch("/api/mcp/tools");
       if (res.ok) {
         const data = await res.json();
-        const hasTools = (data.mcpTools as MCPTool[]).some(tool => tool.serverName === serverName || serverName === tg(t, "c740945b")) && !tool.serverName);
+        const hasTools = (data.mcpTools as MCPTool[]).some(tool => tool.serverName === serverName || serverName === tg(t, "c740945b") && !tool.serverName);
         if (hasTools) {
           toast({
             title: t("app.admin.dashboard.supervisor.page.k40bd808e"),
@@ -387,7 +382,7 @@ export default function SupervisorPage() {
                                             {isUploading ? t("app.admin.dashboard.supervisor.page.k94dfe70e") : t("app.admin.dashboard.supervisor.page.k819aecae")}
                                         </Button>
                                         <Button type="button" variant="ghost" size="sm" onClick={() => {
-                    const url = window.prompt(tg(t, "67cc1ee4")), avatar || "");
+                    const url = window.prompt(tg(t, "67cc1ee4"), avatar || "");
                     if (url !== null) {
                       setAvatar(url.trim());
                     }
@@ -413,10 +408,10 @@ export default function SupervisorPage() {
                         <ModelSelect models={models} value={selectedModelId} emptyValue="default" emptyLabel={t("app.admin.dashboard.supervisor.page.k534ef300")} emptyOutputValue="default" placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")} onValueChange={setSelectedModelId} />
 
                         <p className="text-xs text-muted-foreground">
-                            {tg(t, "dbdc66e6"))}
+                            {tg(t, "dbdc66e6")}
                         </p>
                         {defaultModelId ? <p className="text-xs text-muted-foreground">
-                                {locale === "en" ? `Current default reply model: ${defaultModelId}` : tg(t, "4c85d452"), {
+                                {tg(t, "4c85d452", {
               value1: defaultModelId
             })}
                             </p> : null}
@@ -425,36 +420,36 @@ export default function SupervisorPage() {
                     <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
                         <div className="space-y-3">
                             <div className="flex items-center justify-between gap-3">
-                                <Label>{tg(t, "bd753fce"))}</Label>
+                                <Label>{tg(t, "bd753fce")}</Label>
                                 <span className="text-xs font-medium text-muted-foreground">
-                                    {temperatureStatusText(supervisorTemperature, locale)}
+                                    {temperatureStatusText(t, supervisorTemperature)}
                                 </span>
                             </div>
                             <Slider value={[temperatureSliderValue(supervisorTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSupervisorTemperature(formatDecimal(value))} />
 
                             <Button type="button" variant="outline" size="sm" onClick={() => setSupervisorTemperature("")}>
-                                {tg(t, "89699da9"))}
+                                {tg(t, "89699da9")}
                             </Button>
                             <p className="text-xs leading-5 text-muted-foreground">
-                                {locale === "en" ? `Default saves null and falls back to ${temperatureDefaultText(locale)}. 0 is not a configurable temperature.` : tg(t, "e3097bad"), {
-                value1: temperatureDefaultText(locale)
+                                {tg(t, "e3097bad", {
+                value1: temperatureDefaultText(t)
               })}
                             </p>
                         </div>
                         <div className="space-y-3">
                             <div className="flex items-center justify-between gap-3">
-                                <Label>{tg(t, "4cc6e647"))}</Label>
+                                <Label>{tg(t, "4cc6e647")}</Label>
                                 <span className="text-xs font-medium text-muted-foreground">
-                                    {temperatureStatusText(subagentTemperature, locale)}
+                                    {temperatureStatusText(t, subagentTemperature)}
                                 </span>
                             </div>
                             <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
 
                             <Button type="button" variant="outline" size="sm" onClick={() => setSubagentTemperature("")}>
-                                {tg(t, "89699da9"))}
+                                {tg(t, "89699da9")}
                             </Button>
                             <p className="text-xs leading-5 text-muted-foreground">
-                                {locale === "en" ? `Applies after save. Default saves null; explicit runtime calls may still pass temperature=0.` : tg(t, "3949675c"))}
+                                {tg(t, "3949675c")}
                             </p>
                         </div>
                     </div>
@@ -467,7 +462,7 @@ export default function SupervisorPage() {
                             {t("app.admin.dashboard.supervisor.page.k948f683d")}
                         </p>
                         {visionModelSource ? <p className="text-xs text-muted-foreground">
-                                {locale === "en" ? `Source: ${visionModelSource}` : tg(t, "83b1a316"), {
+                                {tg(t, "83b1a316", {
               value1: visionModelSource
             })}
                             </p> : null}
@@ -501,7 +496,7 @@ export default function SupervisorPage() {
                             <div className="rounded-md border bg-background p-3">
                                 <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k988cfeb5")}</div>
                                 <div className="mt-2 text-sm font-medium text-foreground">
-                                    {runtimeManagedTools.length > 0 ? locale === "en" ? `Managed by ${new Set(runtimeManagedTools.map(tool => tool.runtimeLabel || tool.runtimeKind || "runtime")).size} runtime paths` : tg(t, "372bd827"), {
+                                    {runtimeManagedTools.length > 0 ? tg(t, "372bd827", {
                   value1: new Set(runtimeManagedTools.map(tool => tool.runtimeLabel || tool.runtimeKind || "runtime")).size
                 }) : t("app.admin.dashboard.supervisor.page.k3a8f88de")}
                                 </div>
@@ -556,7 +551,7 @@ export default function SupervisorPage() {
                         <Label>{t("app.admin.dashboard.supervisor.page.kd6a7fff1")}</Label>
                         <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k98541b0f")}</p>
                         {detachedSelectedTools.length > 0 ? <div className="rounded-md border border-violet-300/50 bg-violet-50 px-3 py-2 text-xs text-violet-900">
-                                {locale === "en" ? `${detachedSelectedTools.length} saved MCP tools are currently offline: ${detachedSelectedTools.join(", ")}. They stay preserved until you remove them or the service reconnects.` : tg(t, "6322f71f"), {
+                                {tg(t, "6322f71f", {
               value1: detachedSelectedTools.length,
               value2: detachedSelectedTools.join(", ")
             })}
@@ -575,7 +570,7 @@ export default function SupervisorPage() {
                         {showManualMcpTools ? <div className="border rounded-md bg-muted/30 max-h-[400px] overflow-y-auto mt-2">
                             {editableMcpTools.length > 0 ? (() => {
               const grouped = editableMcpTools.reduce((acc, tool) => {
-                const srv = tool.serverName || tg(t, "c740945b"));
+                const srv = tool.serverName || tg(t, "c740945b");
                 if (!acc[srv]) acc[srv] = [];
                 acc[srv].push(tool);
                 return acc;

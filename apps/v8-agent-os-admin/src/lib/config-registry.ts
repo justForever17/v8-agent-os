@@ -1,4 +1,5 @@
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ik } from "@/i18n/admin-legacy";
+import { translateCurrentClient } from "@/lib/locale";
 export type ConfigRegistryEnvelope<T = Record<string, unknown>> = {
   domain: string;
   title: string;
@@ -24,7 +25,7 @@ export async function fetchConfigDomain<T = Record<string, unknown>>(domain: str
       error?: string;
     }).detail || (data as {
       error?: string;
-    }).error || INTERNAL_READABLE.kfc8bd476af);
+    }).error || translateCurrentClient(ik("kfc8bd476af")));
   }
   return data as ConfigRegistryEnvelope<T>;
 }
@@ -46,7 +47,7 @@ export async function saveConfigDomain<T = Record<string, unknown>>(domain: stri
       error?: string;
     }).detail || (data as {
       error?: string;
-    }).error || INTERNAL_READABLE.k83498cb523);
+    }).error || translateCurrentClient(ik("k83498cb523")));
   }
   return data as ConfigRegistryEnvelope<T>;
 }

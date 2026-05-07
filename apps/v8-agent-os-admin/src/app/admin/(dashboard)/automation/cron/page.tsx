@@ -343,7 +343,7 @@ export default function ScheduledTasksPage() {
 
     const loadDocumentation = async () => {
         try {
-            const response = await fetch(locale === "en" ? "/CRON.en.md" : "/CRON.zh-CN.md");
+            const response = await fetch(locale.startsWith("en") ? "/CRON.en.md" : "/CRON.zh-CN.md");
             const fallback = await fetch("/CRON.zh-CN.md");
             const text = response.ok ? await response.text() : await fallback.text();
             setDocContent(text);

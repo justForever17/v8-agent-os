@@ -1,7 +1,8 @@
 "use client";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { useT } from "@/components/providers/LocaleProvider";
+import { ti } from "@/i18n/admin-legacy";
 export type AdminModelSelectOption = {
   id?: string;
   modelRef?: string;
@@ -106,7 +107,7 @@ export function ModelSelect({
   models,
   value,
   onValueChange,
-  placeholder = INTERNAL_READABLE.k4e769dd289,
+  placeholder,
   emptyValue = "__empty__",
   emptyLabel,
   emptyOutputValue = "",
@@ -127,8 +128,10 @@ export function ModelSelect({
   minimumContextWindow?: number;
   className?: string;
 }) {
+  const t = useT();
   const resolved = resolveModelSelectValue(value, models, emptyValue);
   const seen = new Set<string>();
+  const resolvedPlaceholder = placeholder || ti(t, "k4e769dd289");
   const options = models.map(model => ({
     model,
     value: modelOptionValue(model),
@@ -146,12 +149,12 @@ export function ModelSelect({
             <Select value={resolved.selectValue} onValueChange={next => onValueChange(next === emptyValue ? emptyOutputValue : next)}>
 
                 <SelectTrigger className="w-full">
-                    <SelectValue placeholder={placeholder} />
+                    <SelectValue placeholder={resolvedPlaceholder} />
                 </SelectTrigger>
                 <SelectContent>
                     {emptyLabel ? <SelectItem value={emptyValue}>{emptyLabel}</SelectItem> : null}
                     {hasStaleItem ? <SelectItem value={resolved.selectValue} disabled>
-                            {INTERNAL_READABLE.k5f8877b2d7}{resolved.selectValue}
+                            {ti(t, "k5f8877b2d7")}{resolved.selectValue}
                         </SelectItem> : null}
                     {options.map(item => <SelectItem key={item.value} value={item.value} disabled={Boolean(item.invalidReason)}>
                             {item.label}
@@ -160,7 +163,7 @@ export function ModelSelect({
                 </SelectContent>
             </Select>
             {resolvedInvalidReason ? <p className="text-xs leading-5 text-amber-700">
-                    {INTERNAL_READABLE.ka0af8f7df5} {resolved.selectValue} {resolvedInvalidReason}{INTERNAL_READABLE.k89878d272c} {minimumContextWindow} {INTERNAL_READABLE.k9dea91123a}
+                    {ti(t, "ka0af8f7df5")} {resolved.selectValue} {resolvedInvalidReason}{ti(t, "k89878d272c")} {minimumContextWindow} {ti(t, "k9dea91123a")}
                 </p> : null}
             {showCompatibilityHint && resolved.message ? <p className="text-xs leading-5 text-amber-700">{resolved.message}</p> : null}
         </div>;

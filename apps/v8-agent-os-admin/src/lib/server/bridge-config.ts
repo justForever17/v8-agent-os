@@ -39,6 +39,19 @@ export type CanonicalConfig = {
             captureDisplay?: string;
             singleViewerOnly?: boolean;
         };
+        remoteLink?: {
+            enabled?: boolean;
+            activeProfileId?: string;
+            transportProfiles?: Array<{
+                id?: string;
+                kind?: string;
+                label?: string;
+                enabled?: boolean;
+                adminBaseUrl?: string;
+                engineBaseUrl?: string;
+                peerBaseUrl?: string;
+            }>;
+        };
     };
     workspace?: {
         agent_workspace_path?: string;

@@ -1,8 +1,8 @@
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ik } from "@/i18n/admin-legacy";
+import { translateCurrentClient } from "@/lib/locale";
 function getLocaleAwareFallback(fallback?: string) {
   if (fallback) return fallback;
-  const locale = typeof navigator !== "undefined" ? navigator.language : Intl.DateTimeFormat().resolvedOptions().locale;
-  return locale.toLowerCase().startsWith("zh") ? INTERNAL_READABLE.k9e636642d6 : "Just now";
+  return translateCurrentClient(ik("k9e636642d6"));
 }
 function normalizeTimestampInput(value: string) {
   const normalized = String(value || "").trim();

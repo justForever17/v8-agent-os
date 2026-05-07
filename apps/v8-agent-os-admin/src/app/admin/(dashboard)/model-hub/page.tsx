@@ -22,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { fetchConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
 import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
 type AIProvider = {
@@ -1140,11 +1141,9 @@ export default function ModelHubPage() {
                 setProviderOauthPath("");
             }
         }}>
-                                <SelectTrigger id="provider-type"><SelectValue /></SelectTrigger>
+                                    <SelectTrigger id="provider-type"><SelectValue>{resolveAdminLabel(t, "providerType", providerType)}</SelectValue></SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="API">API</SelectItem>
-                                    <SelectItem value="LOCAL">{t("app.admin.dashboard.model.hub.page.kde244a7f")}</SelectItem>
-                                    <SelectItem value="PLATFORM">{t("app.admin.dashboard.model.hub.page.k2093dbe7")}</SelectItem>
+                                    {getAdminOptions("providerType").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                 </SelectContent>
                             </Select>
                         </div>
@@ -1171,13 +1170,7 @@ export default function ModelHubPage() {
                                 </div>
                                 <div className="space-y-2">
                                     <Label htmlFor="provider-api-standard-readonly">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
-                                    <Input id="provider-api-standard-readonly" value={providerApiStandard === "openai"
-                ? t("app.admin.dashboard.model.hub.page.kdab0f774")
-                : providerApiStandard === "anthropic"
-                    ? t("app.admin.dashboard.model.hub.page.k504d12c7")
-                    : providerApiStandard === "comfyui"
-                        ? "ComfyUI"
-                        : t("app.admin.dashboard.model.hub.page.k560df989")} readOnly/>
+                                    <Input id="provider-api-standard-readonly" value={resolveAdminLabel(t, "providerApiStandard", providerApiStandard)} readOnly/>
                                     <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 </div>
                             </>) : providerType === "LOCAL" ? (<>
@@ -1210,12 +1203,9 @@ export default function ModelHubPage() {
                                 <Label htmlFor="provider-api-standard">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
                                 <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 <Select value={providerApiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini" | "comfyui") => setProviderApiStandard(value)}>
-                                    <SelectTrigger id="provider-api-standard"><SelectValue /></SelectTrigger>
+                                    <SelectTrigger id="provider-api-standard"><SelectValue>{resolveAdminLabel(t, "providerApiStandard", providerApiStandard)}</SelectValue></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="openai">{t("app.admin.dashboard.model.hub.page.kdab0f774")}</SelectItem>
-                                        <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.page.k504d12c7")}</SelectItem>
-                                        <SelectItem value="gemini">{t("app.admin.dashboard.model.hub.page.k560df989")}</SelectItem>
-                                        <SelectItem value="comfyui">ComfyUI</SelectItem>
+                                        {getAdminOptions("providerApiStandard").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                     </SelectContent>
                                 </Select>
                             </div>)}
@@ -1243,10 +1233,9 @@ export default function ModelHubPage() {
                                 <Label htmlFor="provider-credential-mode">{t("app.admin.dashboard.model.hub.page.k1947a36f")}</Label>
                                 <input type="hidden" name="credentialMode" value={providerCredentialMode}/>
                                 <Select value={providerCredentialMode} onValueChange={(value: "apiKey" | "oauthFile") => setProviderCredentialMode(value)}>
-                                    <SelectTrigger id="provider-credential-mode"><SelectValue /></SelectTrigger>
+                                    <SelectTrigger id="provider-credential-mode"><SelectValue>{resolveAdminLabel(t, "providerCredentialMode", providerCredentialMode)}</SelectValue></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="apiKey">API Key</SelectItem>
-                                        <SelectItem value="oauthFile">{t("app.admin.dashboard.model.hub.page.ke507bb9a")}</SelectItem>
+                                        {getAdminOptions("providerCredentialMode").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                     </SelectContent>
                                 </Select>
                             </div>) : (<input type="hidden" name="credentialMode" value="oauthFile"/>)}
@@ -1258,7 +1247,7 @@ export default function ModelHubPage() {
                                     </div>
                                 <p className={`text-xs ${(platformProviderSelected ? activePlatformPreset.supportState === "preset-only" : providerApiStandard === "gemini") ? "text-amber-600" : "text-muted-foreground"}`}>{oauthHint}</p>
                             </div>) : (<div className="space-y-2">
-                                <Label htmlFor="provider-api-key">API Key</Label>
+                            <Label htmlFor="provider-api-key">{t("admin.enums.providerCredentialMode.apiKey")}</Label>
                                 <Input id="provider-api-key" name="apiKey" type="password" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} placeholder={providerType === "LOCAL" ? localBackendConfig.apiKey : ""}/>
                                 {providerType === "LOCAL" ? (<p className="text-xs text-muted-foreground">{t(localBackendConfig.helpText)}</p>) : null}
                             </div>)}
@@ -1292,19 +1281,9 @@ export default function ModelHubPage() {
                             <Label htmlFor="model-type">{t("app.admin.dashboard.model.hub.page.k0bce4283")}</Label>
                             <input type="hidden" name="type" value={modelType}/>
                             <Select value={modelType} onValueChange={setModelType}>
-                                <SelectTrigger id="model-type"><SelectValue /></SelectTrigger>
+                                <SelectTrigger id="model-type"><SelectValue>{resolveAdminLabel(t, "modelType", modelType)}</SelectValue></SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="TEXT">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</SelectItem>
-                                    <SelectItem value="MULTIMODAL">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</SelectItem>
-                                    <SelectItem value="IMAGE">{t("app.admin.dashboard.model.hub.catalog.typeImage")}</SelectItem>
-                                    <SelectItem value="VIDEO">{t("app.admin.dashboard.model.hub.catalog.typeVideo")}</SelectItem>
-                                    <SelectItem value="VOICE">{t("app.admin.dashboard.model.hub.catalog.typeVoice")}</SelectItem>
-                                    <SelectItem value="MUSIC">{t("app.admin.dashboard.model.hub.catalog.typeMusic")}</SelectItem>
-                                    <SelectItem value="WORKFLOW">{t("app.admin.dashboard.model.hub.catalog.typeWorkflow")}</SelectItem>
-                                    <SelectItem value="MODEL3D">{t("app.admin.dashboard.model.hub.catalog.typeModel3d")}</SelectItem>
-                                    <SelectItem value="MEDIA">{t("app.admin.dashboard.model.hub.catalog.typeMediaCompat")}</SelectItem>
-                                    <SelectItem value="EMBEDDING">{t("app.admin.dashboard.model.hub.page.kc1798b61")}</SelectItem>
-                                    <SelectItem value="RERANK">{t("app.admin.dashboard.model.hub.page.k81ac6b74")}</SelectItem>
+                                    {["TEXT", "MULTIMODAL", "IMAGE", "VIDEO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D", "MEDIA", "EMBEDDING", "RERANK"].map((value) => <SelectItem key={value} value={value}>{resolveAdminLabel(t, "modelType", value)}</SelectItem>)}
                                 </SelectContent>
                             </Select>
                         </div>
@@ -1312,11 +1291,11 @@ export default function ModelHubPage() {
                                 <Label htmlFor="model-rerank-flavor">{t("app.admin.dashboard.model.hub.page.k51b60583")}</Label>
                                 <input type="hidden" name="rerankApiFlavor" value={rerankApiFlavor}/>
                                 <Select value={rerankApiFlavor} onValueChange={setRerankApiFlavor}>
-                                    <SelectTrigger id="model-rerank-flavor"><SelectValue /></SelectTrigger>
+                                    <SelectTrigger id="model-rerank-flavor"><SelectValue>{resolveAdminLabel(t, "rerankApiFlavor", rerankApiFlavor)}</SelectValue></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="generic">{t("app.admin.dashboard.model.hub.page.k2b007f7f")}</SelectItem>
-                                        <SelectItem value="vllm">{t("app.admin.dashboard.model.hub.page.k83238674")}</SelectItem>
-                                        <SelectItem value="nexa">{t("app.admin.dashboard.model.hub.page.ke12df81e")}</SelectItem>
+                                        <SelectItem value="generic">{resolveAdminLabel(t, "rerankApiFlavor", "generic")}</SelectItem>
+                                        <SelectItem value="vllm">{resolveAdminLabel(t, "localBackendPreset", "vllm")}</SelectItem>
+                                        <SelectItem value="nexa">{resolveAdminLabel(t, "localBackendPreset", "nexa")}</SelectItem>
                                     </SelectContent>
                                 </Select>
                                 <p className="text-xs text-muted-foreground">

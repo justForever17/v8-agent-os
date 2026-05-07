@@ -9,7 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { useT } from "@/components/providers/LocaleProvider";
+import { ti } from "@/i18n/admin-legacy";
 type MachinePosture = "dedicated_runtime_host" | "developer_mixed_host";
 type SafetyGuardianConfig = {
   enabled: boolean;
@@ -170,6 +171,7 @@ function VerdictSelect<T extends string>({
         </Select>;
 }
 export function SafetyGuardianPanel() {
+  const t = useT();
   const [config, setConfig] = useState<SafetyGuardianConfig>(DEFAULT_CONFIG);
   const [rawJson, setRawJson] = useState(JSON.stringify(DEFAULT_CONFIG, null, 2));
   const [loading, setLoading] = useState(true);
@@ -196,7 +198,7 @@ export function SafetyGuardianPanel() {
   useEffect(() => {
     void loadConfig();
   }, [loadConfig]);
-  const summaryBadges = useMemo(() => [config.enabled ? INTERNAL_READABLE.k59469aaf39 : INTERNAL_READABLE.k962178f2c8, `posture=${config.machinePosture}`, `skill=${config.skillRules?.declarationVerdict ?? "audit"} / ${config.skillRules?.localSecretReadVerdict ?? "review"}`], [config]);
+  const summaryBadges = useMemo(() => [config.enabled ? ti(t, "k59469aaf39") : ti(t, "k962178f2c8"), `posture=${config.machinePosture}`, `skill=${config.skillRules?.declarationVerdict ?? "audit"} / ${config.skillRules?.localSecretReadVerdict ?? "review"}`], [config]);
   const updateAndSync = (updater: (previous: SafetyGuardianConfig) => SafetyGuardianConfig) => {
     setConfig(previous => {
       const next = normalizeConfig(updater(previous));
@@ -220,14 +222,14 @@ export function SafetyGuardianPanel() {
       const payload = response.ok ? await response.json().catch(() => ({})) : {};
       syncConfig(payload?.config || parsed);
     } catch (error) {
-      setParseError(error instanceof Error ? error.message : INTERNAL_READABLE.k2a0c230780);
+      setParseError(error instanceof Error ? error.message : ti(t, "k2a0c230780"));
     } finally {
       setSaving(false);
     }
   };
   if (loading) {
     return <Card className="rounded-2xl border-slate-200 shadow-sm">
-                <CardContent className="py-8 text-sm text-slate-500">{INTERNAL_READABLE.k5030156a3f}</CardContent>
+                <CardContent className="py-8 text-sm text-slate-500">{ti(t, "k5030156a3f")}</CardContent>
             </Card>;
   }
   return <div className="space-y-6">
@@ -237,18 +239,18 @@ export function SafetyGuardianPanel() {
                         <div className="space-y-2">
                             <CardTitle className="flex items-center gap-2 text-base">
                                 <ShieldCheck className="h-4 w-4 text-sky-600" />
-                                {INTERNAL_READABLE.kc93d1a8986}
+                                {ti(t, "kc93d1a8986")}
                             </CardTitle>
-                            <CardDescription>{INTERNAL_READABLE.k1d79ff5b87}</CardDescription>
+                            <CardDescription>{ti(t, "k1d79ff5b87")}</CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
                             <Button variant="outline" size="sm" onClick={() => void loadConfig()} disabled={saving}>
                                 <RefreshCw className="mr-2 h-4 w-4" />
-                                {INTERNAL_READABLE.k38108eaa1d}
+                                {ti(t, "k38108eaa1d")}
                             </Button>
                             <Button size="sm" onClick={() => void saveConfig()} disabled={saving}>
                                 <Save className="mr-2 h-4 w-4" />
-                                {saving ? INTERNAL_READABLE.k6644f06197 : INTERNAL_READABLE.kf5d4126103}
+                                {saving ? ti(t, "k6644f06197") : ti(t, "kf5d4126103")}
                             </Button>
                         </div>
                     </div>
@@ -262,8 +264,8 @@ export function SafetyGuardianPanel() {
 
             <Card className="rounded-2xl border-slate-200 shadow-sm">
                 <CardHeader>
-                    <CardTitle className="text-base">{INTERNAL_READABLE.k7014655986}</CardTitle>
-                    <CardDescription>{INTERNAL_READABLE.ka5024c64d9}</CardDescription>
+                    <CardTitle className="text-base">{ti(t, "k7014655986")}</CardTitle>
+                    <CardDescription>{ti(t, "ka5024c64d9")}</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
@@ -282,8 +284,8 @@ export function SafetyGuardianPanel() {
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
                         <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k3ba0189e84}</div>
-                            <div className="text-xs text-slate-500">{INTERNAL_READABLE.k47ef7efee1}</div>
+                            <div className="text-sm font-medium text-slate-900">{ti(t, "k3ba0189e84")}</div>
+                            <div className="text-xs text-slate-500">{ti(t, "k47ef7efee1")}</div>
                         </div>
                         <Switch checked={config.enabled} onCheckedChange={checked => updateAndSync(previous => ({
             ...previous,
@@ -291,7 +293,7 @@ export function SafetyGuardianPanel() {
           }))} />
                     </div>
                     <div className="space-y-2">
-                        <Label>{INTERNAL_READABLE.kca5e86463f}</Label>
+                        <Label>{ti(t, "kca5e86463f")}</Label>
                         <VerdictSelect<"allow" | "audit" | "review"> value={config.skillRules?.declarationVerdict ?? "audit"} onChange={next => updateAndSync(previous => ({
             ...previous,
             skillRules: {
@@ -311,7 +313,7 @@ export function SafetyGuardianPanel() {
 
                     </div>
                     <div className="space-y-2">
-                        <Label>{INTERNAL_READABLE.k99a0615912}</Label>
+                        <Label>{ti(t, "k99a0615912")}</Label>
                         <VerdictSelect<"audit" | "review" | "block"> value={config.skillRules?.localSecretReadVerdict ?? "review"} onChange={next => updateAndSync(previous => ({
             ...previous,
             skillRules: {
@@ -331,7 +333,7 @@ export function SafetyGuardianPanel() {
 
                     </div>
                     <div className="space-y-2">
-                        <Label>{INTERNAL_READABLE.k701cb8bdf7}</Label>
+                        <Label>{ti(t, "k701cb8bdf7")}</Label>
                         <VerdictSelect<"audit" | "review"> value={config.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host ?? "audit"} onChange={next => updateAndSync(previous => ({
             ...previous,
             networkMutationRules: {
@@ -351,7 +353,7 @@ export function SafetyGuardianPanel() {
 
                     </div>
                     <div className="space-y-2">
-                        <Label>{INTERNAL_READABLE.k5b0d1c630a}</Label>
+                        <Label>{ti(t, "k5b0d1c630a")}</Label>
                         <VerdictSelect<"audit" | "review"> value={config.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host ?? "audit"} onChange={next => updateAndSync(previous => ({
             ...previous,
             computerUseRules: {
@@ -371,7 +373,7 @@ export function SafetyGuardianPanel() {
 
                     </div>
                     <div className="space-y-2">
-                        <Label>{INTERNAL_READABLE.k56c6e05480}</Label>
+                        <Label>{ti(t, "k56c6e05480")}</Label>
                         <VerdictSelect<"review" | "block"> value={config.skillRules?.browserProfileAccessVerdict?.developer_mixed_host ?? "block"} onChange={next => updateAndSync(previous => ({
             ...previous,
             skillRules: {
@@ -392,8 +394,8 @@ export function SafetyGuardianPanel() {
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
                         <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.k87828ffb47}</div>
-                            <div className="text-xs text-slate-500">{INTERNAL_READABLE.k196fd9bec5}</div>
+                            <div className="text-sm font-medium text-slate-900">{ti(t, "k87828ffb47")}</div>
+                            <div className="text-xs text-slate-500">{ti(t, "k196fd9bec5")}</div>
                         </div>
                         <Switch checked={Boolean(config.channelGroupGuard?.auditOnly)} onCheckedChange={checked => updateAndSync(previous => ({
             ...previous,
@@ -406,8 +408,8 @@ export function SafetyGuardianPanel() {
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
                         <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{INTERNAL_READABLE.kb33c9229a3}</div>
-                            <div className="text-xs text-slate-500">{INTERNAL_READABLE.k8a574f21e1}</div>
+                            <div className="text-sm font-medium text-slate-900">{ti(t, "kb33c9229a3")}</div>
+                            <div className="text-xs text-slate-500">{ti(t, "k8a574f21e1")}</div>
                         </div>
                         <Switch checked={Boolean(config.skillRules?.llmReviewEnabledFor?.includes("review"))} onCheckedChange={checked => updateAndSync(previous => ({
             ...previous,
@@ -423,8 +425,8 @@ export function SafetyGuardianPanel() {
 
             <Card className="rounded-2xl border-slate-200 shadow-sm">
                 <CardHeader>
-                    <CardTitle className="text-base">{INTERNAL_READABLE.k255b15c831}</CardTitle>
-                    <CardDescription>{INTERNAL_READABLE.ke883c314b7}</CardDescription>
+                    <CardTitle className="text-base">{ti(t, "k255b15c831")}</CardTitle>
+                    <CardDescription>{ti(t, "ke883c314b7")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                     <Textarea value={rawJson} onChange={event => setRawJson(event.target.value)} className="min-h-[420px] font-mono text-xs" />

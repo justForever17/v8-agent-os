@@ -33,6 +33,15 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConnectionSummary, ProjectSummary } from "@/src/types/admin";
 
+function formatTransportKind(kind?: string) {
+    const normalized = String(kind || "manual_url").replace(/-/g, "_");
+    if (normalized === "lan") return "LAN";
+    if (normalized === "wireguard") return "WireGuard";
+    if (normalized === "tailscale") return "Tailscale";
+    if (normalized === "custom_vpn") return "Custom VPN";
+    return "Manual URL";
+}
+
 export default function ConnectScreen() {
     const { status, user, adminBaseUrl, setAdminBaseUrl, signOut, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
@@ -219,6 +228,15 @@ export default function ConnectScreen() {
                             <Text style={styles.summaryValue}>{summary?.connection?.bridgeMode || "unknown"}</Text>
                         </View>
                         <View style={styles.summaryRow}>
+                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.v8_link_route")}</Text>
+                            <Text style={styles.summaryValue}>
+                                {formatTransportKind(summary?.connection?.transportKind || summary?.linkManifest?.transportKind)}
+                                {(summary?.connection?.transportProfileId || summary?.linkManifest?.activeProfileId)
+                                    ? ` · ${summary?.connection?.transportProfileId || summary?.linkManifest?.activeProfileId}`
+                                    : ""}
+                            </Text>
+                        </View>
+                        <View style={styles.summaryRow}>
                             <Text style={styles.summaryLabel}>Engine</Text>
                             <Text style={styles.summaryValue}>{summary?.connection?.engineBaseUrl || t("src.screens.artifactsscreen.unknown")}</Text>
                         </View>
@@ -232,6 +250,14 @@ export default function ConnectScreen() {
                                 {summary?.connection?.reachable ? t("src.screens.connectscreen.reachable") : t("src.screens.connectscreen.unverified")}
                             </Text>
                         </View>
+                        {(summary?.connection?.vpnDiagnostics?.warnings || summary?.linkManifest?.diagnostics?.warnings || []).length > 0 ? (
+                            <View style={styles.summaryRow}>
+                                <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.vpn_diagnostics")}</Text>
+                                <Text style={[styles.summaryValue, styles.warnText]} numberOfLines={2}>
+                                    {(summary?.connection?.vpnDiagnostics?.warnings || summary?.linkManifest?.diagnostics?.warnings || []).slice(0, 3).join(" · ")}
+                                </Text>
+                            </View>
+                        ) : null}
                         <View style={styles.summaryRow}>
                             <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.current_user")}</Text>
                             <Text style={styles.summaryValue}>{summary?.user?.name || user?.name || user?.login || t("src.screens.connectscreen.unknown_user")}</Text>
@@ -300,6 +326,7 @@ export default function ConnectScreen() {
                                                 <Text style={styles.profileMeta} numberOfLines={1}>
                                                     {[
                                                         profile.bridgeMode || "",
+                                                        profile.transportKind ? formatTransportKind(profile.transportKind) : "",
                                                         profile.reachable === true ? t("src.screens.connectscreen.reachable_2") : profile.reachable === false ? t("src.screens.connectscreen.unreachable") : "",
                                                         profile.lastUsedAt ? new Date(profile.lastUsedAt).toLocaleString() : "",
                                                     ].filter(Boolean).join(" · ")}

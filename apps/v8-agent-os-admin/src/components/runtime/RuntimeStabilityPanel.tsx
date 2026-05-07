@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ti } from "@/i18n/admin-legacy";
 type SessionLanePolicy = "queue" | "reject" | "interrupt_then_replace";
 type RuntimeStabilityPayload = {
   strictSupervisorDurability?: boolean;
@@ -41,6 +42,7 @@ const POLICY_OPTIONS: Array<{
   description: "components.runtime.RuntimeStabilityPanel.k33ce5a8c"
 }];
 export function RuntimeStabilityPanel() {
+  const t = useT();
   const {
     toast
   } = useToast();
@@ -60,7 +62,7 @@ export function RuntimeStabilityPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data?.detail || data?.error || INTERNAL_READABLE.k408658f78d);
+        throw new Error(data?.detail || data?.error || ti(t, "k408658f78d"));
       }
       setConfig({
         strictSupervisorDurability: Boolean(data?.strictSupervisorDurability ?? true),
@@ -72,7 +74,7 @@ export function RuntimeStabilityPanel() {
       toast({
         variant: "destructive",
         title: "components.runtime.RuntimeStabilityPanel.k4e9dbcba",
-        description: error instanceof Error ? error.message : INTERNAL_READABLE.k5f76edc5de
+        description: error instanceof Error ? error.message : ti(t, "k5f76edc5de")
       });
     } finally {
       setLoading(false);
@@ -96,7 +98,7 @@ export function RuntimeStabilityPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data?.detail || data?.error || INTERNAL_READABLE.k66d4f1d131);
+        throw new Error(data?.detail || data?.error || ti(t, "k66d4f1d131"));
       }
       toast({
         title: "components.runtime.RuntimeStabilityPanel.k9bfe7d6d",
@@ -112,7 +114,7 @@ export function RuntimeStabilityPanel() {
       toast({
         variant: "destructive",
         title: "components.runtime.RuntimeStabilityPanel.k12769ce1",
-        description: error instanceof Error ? error.message : INTERNAL_READABLE.k5f76edc5de
+        description: error instanceof Error ? error.message : ti(t, "k5f76edc5de")
       });
     } finally {
       setSaving(false);
@@ -126,14 +128,14 @@ export function RuntimeStabilityPanel() {
   return <div className="space-y-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">{INTERNAL_READABLE.k04f443a030}</h1>
+                    <h1 className="text-3xl font-bold tracking-tight">{ti(t, "k04f443a030")}</h1>
                     <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-                        {INTERNAL_READABLE.ke4a88fb83d}
+                        {ti(t, "ke4a88fb83d")}
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Badge variant="outline">{INTERNAL_READABLE.k66c99c8687}</Badge>
-                    <Badge variant="secondary">{INTERNAL_READABLE.kae782f2aeb}</Badge>
+                    <Badge variant="outline">{ti(t, "k66c99c8687")}</Badge>
+                    <Badge variant="secondary">{ti(t, "kae782f2aeb")}</Badge>
                 </div>
             </div>
 
@@ -142,18 +144,18 @@ export function RuntimeStabilityPanel() {
                     <CardHeader>
                         <div className="flex items-center gap-2">
                             <ShieldCheck className="h-5 w-5 text-emerald-600" />
-                            <CardTitle>{INTERNAL_READABLE.k939ee6c6e2}</CardTitle>
+                            <CardTitle>{ti(t, "k939ee6c6e2")}</CardTitle>
                         </div>
                         <CardDescription>
-                            {config.summaries?.strictSupervisorDurability || INTERNAL_READABLE.k2e9a23fd54}
+                            {config.summaries?.strictSupervisorDurability || ti(t, "k2e9a23fd54")}
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="flex items-center justify-between rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
                             <div className="space-y-1">
-                                <div className="text-sm font-medium">{INTERNAL_READABLE.k38c8aca2ba}</div>
+                                <div className="text-sm font-medium">{ti(t, "k38c8aca2ba")}</div>
                                 <div className="text-xs text-muted-foreground">
-                                    {INTERNAL_READABLE.k16fe2a63d8}
+                                    {ti(t, "k16fe2a63d8")}
                                 </div>
                             </div>
                             <Switch checked={Boolean(config.strictSupervisorDurability)} onCheckedChange={checked => setConfig(current => ({
@@ -164,7 +166,7 @@ export function RuntimeStabilityPanel() {
                         </div>
 
                         <div className="rounded-xl border border-border/60 bg-background px-4 py-3 text-sm">
-                            <div className="font-medium">{INTERNAL_READABLE.kbf1a6e9f9c}</div>
+                            <div className="font-medium">{ti(t, "kbf1a6e9f9c")}</div>
                             <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.configPath || "~/.v8-agent-os/config.json#runtimeStability"}</div>
                         </div>
                     </CardContent>
@@ -174,13 +176,13 @@ export function RuntimeStabilityPanel() {
                     <CardHeader>
                         <div className="flex items-center gap-2">
                             <Database className="h-5 w-5 text-sky-600" />
-                            <CardTitle>{INTERNAL_READABLE.k2f74f4c7f8}</CardTitle>
+                            <CardTitle>{ti(t, "k2f74f4c7f8")}</CardTitle>
                         </div>
-                        <CardDescription>{INTERNAL_READABLE.kc1f24be8ba}</CardDescription>
+                        <CardDescription>{ti(t, "kc1f24be8ba")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3 text-sm">
                         <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
-                            <div className="font-medium">{INTERNAL_READABLE.ke00981dabb}</div>
+                            <div className="font-medium">{ti(t, "ke00981dabb")}</div>
                             <div className="mt-1 font-mono text-xs text-muted-foreground">{config.paths?.stateDbPath || "~/.v8-agent-os/state.db"}</div>
                         </div>
                         <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
@@ -195,10 +197,10 @@ export function RuntimeStabilityPanel() {
                 <CardHeader>
                     <div className="flex items-center gap-2">
                         <TrafficCone className="h-5 w-5 text-amber-600" />
-                        <CardTitle>{INTERNAL_READABLE.kb05897cb29}</CardTitle>
+                        <CardTitle>{ti(t, "kb05897cb29")}</CardTitle>
                     </div>
                     <CardDescription>
-                        {config.summaries?.sessionLanePolicy?.[config.sessionLanePolicy || "queue"] || INTERNAL_READABLE.kfe367770b4}
+                        {config.summaries?.sessionLanePolicy?.[config.sessionLanePolicy || "queue"] || ti(t, "kfe367770b4")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 lg:grid-cols-3">
@@ -218,11 +220,11 @@ export function RuntimeStabilityPanel() {
 
             <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button variant="outline" onClick={() => void loadConfig()} disabled={saving}>
-                    {INTERNAL_READABLE.k7784972fc8}
+                    {ti(t, "k7784972fc8")}
                 </Button>
                 <Button onClick={() => void saveConfig()} disabled={saving}>
                     {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                    {INTERNAL_READABLE.k45de6be9e3}
+                    {ti(t, "k45de6be9e3")}
                 </Button>
             </div>
         </div>;

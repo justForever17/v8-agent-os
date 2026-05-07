@@ -138,15 +138,15 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       }
       await loadKnowledge();
       toast({
-        title: tg(t, "8564783d")),
-        description: tg(t, "76752b5b"), { value1: item.id })
+        title: tg(t, "8564783d"),
+        description: tg(t, "76752b5b", { value1: item.id })
       });
     }
     catch (err) {
       console.error("Restore knowledge failed:", err);
       toast({
-        title: tg(t, "76842a03")),
-        description: tg(t, "1968e3d4")),
+        title: tg(t, "76842a03"),
+        description: tg(t, "1968e3d4"),
         variant: "destructive"
       });
     }
@@ -159,15 +159,15 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       }
       await loadKnowledge();
       toast({
-        title: tg(t, "ec481ba6")),
-        description: tg(t, "b93d054c"), { value1: item.id })
+        title: tg(t, "ec481ba6"),
+        description: tg(t, "b93d054c", { value1: item.id })
       });
     }
     catch (err) {
       console.error("Revalidate knowledge failed:", err);
       toast({
-        title: tg(t, "86bc5b62")),
-        description: tg(t, "d3334e5d")),
+        title: tg(t, "86bc5b62"),
+        description: tg(t, "d3334e5d"),
         variant: "destructive"
       });
     }
@@ -437,9 +437,9 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                     {quarantinedGlobalKnowledge.length > 0 ?
         <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
                             <CardHeader>
-                                <CardTitle className="text-lg">{tg(t, "f803638e"))}{quarantinedGlobalKnowledge.length})</CardTitle>
+                                <CardTitle className="text-lg">{tg(t, "f803638e")}{quarantinedGlobalKnowledge.length})</CardTitle>
                                 <CardDescription>
-                                    {tg(t, "9ac2a5e0"))}
+                                    {tg(t, "9ac2a5e0")}
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
@@ -457,7 +457,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                                             <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                                                 <Button variant="outline" size="sm" onClick={() => void handleRestoreKnowledge(item)}>
                                                     <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                                                    {tg(t, "79748ca1"))}
+                                                    {tg(t, "79748ca1")}
                                                 </Button>
                                                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => void handleDeleteKnowledge(item.id)}>
                                                     <Trash2 className="h-4 w-4" />
@@ -509,7 +509,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                                                 {item.lifecycle_state === "stale" ?
                   <Button variant="outline" size="sm" onClick={() => void handleRevalidateKnowledge(item)}>
                                                         <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                                                        {tg(t, "b38c92c3"))}
+                                                        {tg(t, "b38c92c3")}
                                                     </Button> :
                   null}
                                                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => handleEditKnowledge(item)}>

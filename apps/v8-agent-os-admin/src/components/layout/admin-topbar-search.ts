@@ -1,7 +1,7 @@
 import { ADMIN_NAV_GROUPS, type AdminNavItem } from "@/lib/admin-navigation";
 import { getTranslationVariants } from "@/lib/locale";
 import { RUNTIME_CONTROL_HREF } from "@/lib/runtime-admin";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ir } from "@/i18n/admin-legacy";
 export type AdminTopbarSearchEntry = {
   id: string;
   title: string;
@@ -33,7 +33,7 @@ const MEMORY_TAB_ENTRIES: AdminTopbarSearchEntry[] = [{
   title: "components.memory.MemorySectionNav.contextManagement",
   subtitle: "components.layout.admin.topbar.search.kd5b4901a",
   href: "/admin/memory?tab=context",
-  aliases: ["context", "context management", "rag context", INTERNAL_READABLE.k5d0afe63f2]
+  aliases: ["context", "context management", "rag context", ir("k5d0afe63f2")]
 }, {
   id: "memory-preferences",
   title: "components.layout.admin.topbar.search.ka5cb9483",
@@ -45,7 +45,7 @@ const MEMORY_TAB_ENTRIES: AdminTopbarSearchEntry[] = [{
   title: "components.memory.MemorySectionNav.logsLedger",
   subtitle: "components.layout.admin.topbar.search.kd5b4901a",
   href: "/admin/memory?tab=logs",
-  aliases: ["memory logs", "daily logs", "journal", INTERNAL_READABLE.k6a167136fc, "daily summaries"]
+  aliases: ["memory logs", "daily logs", "journal", ir("k6a167136fc"), "daily summaries"]
 }, {
   id: "memory-workflows",
   title: "components.memory.MemorySectionNav.workflowMemory",

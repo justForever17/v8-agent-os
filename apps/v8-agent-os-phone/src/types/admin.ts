@@ -48,8 +48,37 @@ export type ConnectionSummary = {
         reachable?: boolean;
         engineBaseUrl?: string;
         desktopLiveBridgeBaseUrl?: string;
+        transportKind?: string;
+        transportProfileId?: string;
+        linkManifest?: V8LinkManifest;
+        vpnDiagnostics?: V8LinkDiagnostics;
     };
+    linkManifest?: V8LinkManifest;
     user?: PhoneUser;
+};
+
+export type V8LinkDiagnostics = {
+    warnings?: string[];
+    candidateIps?: Array<{ address?: string; family?: string; private?: boolean }>;
+    vpn?: {
+        wireguardDetected?: boolean;
+        tailscaleDetected?: boolean;
+    };
+};
+
+export type V8LinkManifest = {
+    transportKind?: string;
+    activeProfileId?: string;
+    admin?: {
+        baseUrl?: string;
+        apiBaseUrl?: string;
+    };
+    engine?: {
+        baseUrl?: string;
+        apiBaseUrl?: string;
+    };
+    warnings?: string[];
+    diagnostics?: V8LinkDiagnostics;
 };
 
 export type ProjectSummary = {

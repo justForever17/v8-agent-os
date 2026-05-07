@@ -16,10 +16,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
-import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { useT } from "@/components/providers/LocaleProvider";
 import { ArrowLeft, BrainCircuit, Cable, ChevronDown, Loader2, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
-import { tg } from "@/i18n/admin-legacy";
+import { ir, tg, ti } from "@/i18n/admin-legacy";
+import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 type Agent = {
   id: string;
   name: string;
@@ -269,22 +269,22 @@ const MAX_SPECIALIST_FAMILY_MEMBERS = 50;
 const DEFAULT_SPECIALIST_FAMILIES: SubagentFamilySummary[] = [{
   familyId: "engineering",
   displayName: "Engineering",
-  aliases: [INTERNAL_READABLE.ke42503f328, "coding", "project_coding"],
+  aliases: [ir("ke42503f328"), "coding", "project_coding"],
   description: "Code, architecture, tests, migration, debugging, and repository implementation work."
 }, {
   familyId: "creative_media",
   displayName: "Creative Media",
-  aliases: [INTERNAL_READABLE.kfbd01caa81, "media", "multimedia"],
+  aliases: [ir("kfbd01caa81"), "media", "multimedia"],
   description: "Image, video, voice, music brief, recipe, asset, and post-production specialist work."
 }, {
   familyId: "writing",
   displayName: "Writing",
-  aliases: [INTERNAL_READABLE.k2e33ad4230, "docs", "documentation"],
+  aliases: [ir("k2e33ad4230"), "docs", "documentation"],
   description: "Documentation, research synthesis, handoff, proposals, and narrative delivery."
 }, {
   familyId: "research",
   displayName: "Research",
-  aliases: [INTERNAL_READABLE.kf04090805c, INTERNAL_READABLE.k6d53e9d515, "web_research", "source_quality"],
+  aliases: [ir("kf04090805c"), ir("k6d53e9d515"), "web_research", "source_quality"],
   description: "Web research planning, source ranking, evidence bundles, confidence, and citation synthesis."
 }];
 const FAMILY_AVATAR_COLORS = [{
@@ -370,14 +370,14 @@ function temperatureSliderValue(value: string) {
   if (!Number.isFinite(parsed)) return TEMPERATURE_PRESET;
   return Math.max(Math.min(parsed, 2), MIN_CONFIG_TEMPERATURE);
 }
-function temperatureStatusText(value: string, locale: string) {
+function temperatureStatusText(t: ReturnType<typeof useT>, value: string) {
   if (String(value || "").trim()) {
-    return locale === "en" ? `Override ${formatDecimal(temperatureSliderValue(value))}` : INTERNAL_READABLE.k7d84e1319b + formatDecimal(temperatureSliderValue(value));
+    return `${ti(t, "k7d84e1319b")}${formatDecimal(temperatureSliderValue(value))}`;
   }
-  return locale === "en" ? `Recommended ${formatDecimal(TEMPERATURE_PRESET)} (not enabled)` : INTERNAL_READABLE.k630e24cd54 + formatDecimal(TEMPERATURE_PRESET) + INTERNAL_READABLE.kc10e7c65e4;
+  return `${ti(t, "k630e24cd54")}${formatDecimal(TEMPERATURE_PRESET)}${ti(t, "kc10e7c65e4")}`;
 }
-function temperatureDefaultText(locale: string) {
-  return locale === "en" ? "model config / provider default" : INTERNAL_READABLE.k833e316858;
+function temperatureDefaultText(t: ReturnType<typeof useT>) {
+  return ti(t, "k833e316858");
 }
 function splitListText(value: string) {
   return String(value || "").split(/[,，\n]/).map(item => item.trim()).filter(Boolean);
@@ -552,9 +552,6 @@ function classifySelector(selector: string, skillNames: Set<string>, mcpNames: S
 export default function SubagentsPage() {
   const t = useT();
   const {
-    locale
-  } = useLocale();
-  const {
     toast
   } = useToast();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -675,17 +672,9 @@ export default function SubagentsPage() {
     });
   }, [defaultModelId, models, t]);
   const resolveToolModeLabel = useCallback((value?: string | null) => {
-    const normalized = String(value || "").trim().toLowerCase();
-    if (normalized === "contextual_auto") {
-      return t("app.admin.dashboard.subagents.page.toolMode.contextualAuto");
-    }
-    if (normalized === "explicit") {
-      return t("app.admin.dashboard.subagents.page.toolMode.explicit");
-    }
-    if (!normalized) {
-      return t("app.admin.dashboard.subagents.page.toolMode.unknown");
-    }
-    return normalized.replace(/[_-]+/g, " ");
+    return resolveAdminLabel(t, "toolMode", value, {
+      fallbackKey: "app.admin.dashboard.subagents.page.toolMode.unknown"
+    });
   }, [t]);
   const mcpServiceCount = extensionsSummary.mcpServerCount;
   const connectedMcpServiceCount = extensionsSummary.connectedMcpServerCount;
@@ -1019,8 +1008,8 @@ export default function SubagentsPage() {
     const descriptor = externalWorkerFormToDescriptor(externalWorkerForm);
     if (!descriptor.id) {
       toast({
-        title: tg(t, "229f534d")),
-        description: tg(t, "938eda35")),
+        title: tg(t, "229f534d"),
+        description: tg(t, "938eda35"),
         variant: "destructive"
       });
       return;
@@ -1028,7 +1017,7 @@ export default function SubagentsPage() {
     const nextWorkers = externalWorkers.some(item => item.id === editingExternalWorkerId || item.id === descriptor.id) ? externalWorkers.map(item => item.id === editingExternalWorkerId || item.id === descriptor.id ? descriptor : item) : [...externalWorkers, descriptor];
     syncExternalWorkers(nextWorkers);
     setEditingExternalWorkerId(descriptor.id);
-  }, [editingExternalWorkerId, externalWorkerForm, externalWorkers, locale, syncExternalWorkers, toast]);
+  }, [editingExternalWorkerId, externalWorkerForm, externalWorkers, syncExternalWorkers, t, toast]);
   const handleDeleteExternalWorker = useCallback((workerId: string) => {
     syncExternalWorkers(externalWorkers.filter(item => item.id !== workerId));
   }, [externalWorkers, syncExternalWorkers]);
@@ -1140,20 +1129,20 @@ export default function SubagentsPage() {
       setFamilyModeEnabled(registry.familyModeEnabled !== false);
       setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Number(registry.maxMembersPerFamily || 10) || 10)));
       toast({
-        title: tg(t, "cfa3e507")),
-        description: registry.familyModeEnabled === false ? tg(t, "c64065eb")) : tg(t, "1660f7ec"))
+        title: tg(t, "cfa3e507"),
+        description: registry.familyModeEnabled === false ? tg(t, "c64065eb") : tg(t, "1660f7ec")
       });
     } catch (error) {
       console.error("Failed to save specialist registry config", error);
       toast({
-        title: tg(t, "7982f619")),
+        title: tg(t, "7982f619"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError"),
         variant: "destructive"
       });
     } finally {
       setIsSavingSpecialistRegistry(false);
     }
-  }, [familyModeEnabled, locale, maxMembersPerFamily, supervisorDomainData, toast]);
+  }, [familyModeEnabled, maxMembersPerFamily, supervisorDomainData, t, toast]);
   const handleSaveResearchConfig = useCallback(async () => {
     setIsSavingResearch(true);
     const nextDefault = Math.max(1, Math.min(30, Math.round(researchDefaultShards)));
@@ -1190,20 +1179,20 @@ export default function SubagentsPage() {
       setResearchMaxShards(Math.max(1, Math.min(30, Number(research.maxShardCount || nextMax) || nextMax)));
       setResearchMaxRounds(Math.max(1, Math.min(5, Number(research.maxRounds || nextRounds) || nextRounds)));
       toast({
-        title: tg(t, "a331007b")),
-        description: tg(t, "f2bbe54c"))
+        title: tg(t, "a331007b"),
+        description: tg(t, "f2bbe54c")
       });
     } catch (error) {
       console.error("Failed to save research config", error);
       toast({
-        title: tg(t, "d6d079f9")),
+        title: tg(t, "d6d079f9"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError"),
         variant: "destructive"
       });
     } finally {
       setIsSavingResearch(false);
     }
-  }, [locale, researchDefaultShards, researchEnabled, researchMaxRounds, researchMaxShards, supervisorDomainData, toast]);
+  }, [researchDefaultShards, researchEnabled, researchMaxRounds, researchMaxShards, supervisorDomainData, t, toast]);
   const handleSaveSubagentTemperature = useCallback(async () => {
     setIsSavingSubagentTemperature(true);
     const parsedTemperature = parseOptionalTemperature(subagentTemperature);
@@ -1235,20 +1224,20 @@ export default function SubagentsPage() {
       const temperature = data?.data?.modelParameters?.subagent?.temperature;
       setSubagentTemperature(temperature === null || temperature === undefined ? "" : String(temperature));
       toast({
-        title: tg(t, "15a67709")),
-        description: tg(t, "0a7919e7"))
+        title: tg(t, "15a67709"),
+        description: tg(t, "0a7919e7")
       });
     } catch (error) {
       console.error("Failed to save subagent temperature", error);
       toast({
-        title: tg(t, "e315020e")),
+        title: tg(t, "e315020e"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError"),
         variant: "destructive"
       });
     } finally {
       setIsSavingSubagentTemperature(false);
     }
-  }, [subagentTemperature, supervisorDomainData, toast]);
+  }, [subagentTemperature, supervisorDomainData, t, toast]);
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm(t("app.admin.dashboard.subagents.page.ka7d365b9"))) return;
     try {
@@ -1307,7 +1296,7 @@ export default function SubagentsPage() {
                 <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
                     <CardHeader className="space-y-1 p-3 pb-1">
                         <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.subagents.page.k00bf2013")} tooltip={<div>
-                                    <div>{tg(t, "47f887c9"))}: {baselineToolNames.length}</div>
+                                    <div>{tg(t, "47f887c9")}: {baselineToolNames.length}</div>
                                     <div className="mt-1 break-words font-mono text-xs text-slate-200">
                                         {baselineToolNames.slice(0, 12).join(", ") || "none"}
                                     </div>
@@ -1342,16 +1331,16 @@ export default function SubagentsPage() {
                     <CardHeader className="space-y-1 p-3 pb-1">
                         <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={t("app.admin.dashboard.subagents.page.k11cd990c")} tooltip={<div>
                                     <div>Broker: fan-out / join</div>
-                                    <div>{tg(t, "b109c831"))}</div>
-                                    <div>{tg(t, "495fdf53"))}: {enabledSubagentCount}</div>
-                                    <div>{tg(t, "fb1073a6"))}: {enabledExternalWorkerCount} / {externalWorkerTemplateCount}</div>
+                                    <div>{tg(t, "b109c831")}</div>
+                                    <div>{tg(t, "495fdf53")}: {enabledSubagentCount}</div>
+                                    <div>{tg(t, "fb1073a6")}: {enabledExternalWorkerCount} / {externalWorkerTemplateCount}</div>
                                     <div className="mt-1 text-xs text-slate-300">
-                                        {tg(t, "0159e367"))}
+                                        {tg(t, "0159e367")}
                                     </div>
                                 </div>} />
 
                         <CardDescription className="truncate text-xs">
-                            {tg(t, "1940e65b"))}
+                            {tg(t, "1940e65b")}
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-1 px-3 pb-3 text-xs text-slate-500">
@@ -1361,15 +1350,15 @@ export default function SubagentsPage() {
                 </Card>
                 <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
                     <CardHeader className="space-y-1 p-3 pb-1">
-                        <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "520dbe37"))} tooltip={<div>
-                                    <div>{tg(t, "8c3999bf"))}: {formatDecimal(TEMPERATURE_PRESET)}</div>
-                                    <div>{tg(t, "a9f873a8"))}: {subagentTemperature.trim() ? formatDecimal(temperatureSliderValue(subagentTemperature)) : temperatureDefaultText(locale)}</div>
+                        <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "520dbe37")} tooltip={<div>
+                                    <div>{tg(t, "8c3999bf")}: {formatDecimal(TEMPERATURE_PRESET)}</div>
+                                    <div>{tg(t, "a9f873a8")}: {subagentTemperature.trim() ? formatDecimal(temperatureSliderValue(subagentTemperature)) : temperatureDefaultText(t)}</div>
                                     <div className="mt-1 text-xs text-slate-300">
-                                        {tg(t, "00f4e417"))}
+                                        {tg(t, "00f4e417")}
                                     </div>
                                 </div>} />
 
-                        <CardDescription className="truncate text-xs">{temperatureStatusText(subagentTemperature, locale)}</CardDescription>
+                        <CardDescription className="truncate text-xs">{temperatureStatusText(t, subagentTemperature)}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 px-3 pb-3">
                         <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
@@ -1392,16 +1381,16 @@ export default function SubagentsPage() {
                     <div className="space-y-1">
                         <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                             <BrainCircuit className="h-4 w-4 text-indigo-600" />
-                            {tg(t, "cd5d78a6"))}
+                            {tg(t, "cd5d78a6")}
                             <Badge variant={familyModeEnabled ? "secondary" : "destructive"}>{familyModeEnabled ? "compact" : "full"}</Badge>
                         </div>
                         <p className="text-xs leading-5 text-slate-500">
-                            {familyModeEnabled ? tg(t, "d096101e")) : tg(t, "571f4a11"))}
+                            {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
                         </p>
                     </div>
                     <div className="space-y-2">
                         <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs">{tg(t, "7074eefa"))}：{maxMembersPerFamily}</Label>
+                            <Label className="text-xs">{tg(t, "7074eefa")}：{maxMembersPerFamily}</Label>
                             <Switch checked={familyModeEnabled} onCheckedChange={setFamilyModeEnabled} />
                         </div>
                         <Slider value={[maxMembersPerFamily]} min={1} max={MAX_SPECIALIST_FAMILY_MEMBERS} step={1} disabled={!familyModeEnabled} onValueChange={([value]) => setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Math.round(value))))} />
@@ -1409,7 +1398,7 @@ export default function SubagentsPage() {
                     </div>
                     <Button onClick={() => void handleSaveSpecialistRegistry()} disabled={isSavingSpecialistRegistry}>
                         {isSavingSpecialistRegistry ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                        {tg(t, "a518dc17"))}
+                        {tg(t, "a518dc17")}
                     </Button>
                 </CardContent>
             </Card>
@@ -1419,26 +1408,26 @@ export default function SubagentsPage() {
                     <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
                             <SearchCheck className="h-4 w-4 text-cyan-600" />
-                            {tg(t, "ed0fa816"))}
+                            {tg(t, "ed0fa816")}
                             <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
                         </div>
                         <p className="text-xs leading-5 text-slate-500">
-                            {tg(t, "a1c3fdb1"))}
+                            {tg(t, "a1c3fdb1")}
                         </p>
                         <div className="flex flex-wrap gap-2 text-xs">
-                            <Badge variant="outline">{tg(t, "6f6a45fc"))}</Badge>
-                            <Badge variant="outline">{tg(t, "cfd045a5"))}</Badge>
-                            <Badge variant="outline">{locale === "en" ? "Evidence ledger TTL" : "Evidence ledger TTL"} 6h</Badge>
+                            <Badge variant="outline">{tg(t, "6f6a45fc")}</Badge>
+                            <Badge variant="outline">{tg(t, "cfd045a5")}</Badge>
+                            <Badge variant="outline">{t("admin.pages.subagents.research.evidenceLedgerTtl")} 6h</Badge>
                         </div>
                     </div>
                     <div className="space-y-4">
                         <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs">{tg(t, "2a5c9f81"))}</Label>
+                            <Label className="text-xs">{tg(t, "2a5c9f81")}</Label>
                             <Switch checked={researchEnabled} onCheckedChange={setResearchEnabled} />
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs">{tg(t, "d6c520d8"))}：{researchDefaultShards}</Label>
+                                <Label className="text-xs">{tg(t, "d6c520d8")}：{researchDefaultShards}</Label>
                                 <span className="text-xs text-slate-500">1-30</span>
                             </div>
                             <Slider value={[researchDefaultShards]} min={1} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => {
@@ -1450,7 +1439,7 @@ export default function SubagentsPage() {
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs">{tg(t, "03514d16"))}：{researchMaxShards}</Label>
+                                <Label className="text-xs">{tg(t, "03514d16")}：{researchMaxShards}</Label>
                                 <span className="text-xs text-slate-500">max 30</span>
                             </div>
                             <Slider value={[researchMaxShards]} min={researchDefaultShards} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxShards(Math.max(researchDefaultShards, Math.min(30, Math.round(value))))} />
@@ -1458,7 +1447,7 @@ export default function SubagentsPage() {
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs">{tg(t, "d28b7ea4"))}：{researchMaxRounds}</Label>
+                                <Label className="text-xs">{tg(t, "d28b7ea4")}：{researchMaxRounds}</Label>
                                 <span className="text-xs text-slate-500">1-5</span>
                             </div>
                             <Slider value={[researchMaxRounds]} min={1} max={5} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxRounds(Math.max(1, Math.min(5, Math.round(value))))} />
@@ -1467,7 +1456,7 @@ export default function SubagentsPage() {
                     </div>
                     <Button onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch}>
                         {isSavingResearch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                        {tg(t, "cdd9d125"))}
+                        {tg(t, "cdd9d125")}
                     </Button>
                 </CardContent>
             </Card>
@@ -1524,7 +1513,7 @@ export default function SubagentsPage() {
                                         <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.subagents.page.k1dc6b253")}</div>
                                         {renderToolBadgeSummary(selectors)}
                                     </div> : <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-xs leading-5 text-slate-500">
-                                        <div className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.toolMode.contextualAuto")}</div>
+                                        <div className="font-medium text-slate-900">{resolveToolModeLabel("contextual_auto")}</div>
                                         <div>{t("app.admin.dashboard.subagents.page.kf913a2e6")}</div>
                                     </div>}
                             </CardContent>
@@ -1557,14 +1546,14 @@ export default function SubagentsPage() {
                             </Button>
                         </div>
                         <Badge variant="secondary">
-                            {tg(t, "ac5c1f76"))} {enabledExternalWorkerCount}/{externalWorkerTemplateCount}
+                            {tg(t, "ac5c1f76")} {enabledExternalWorkerCount}/{externalWorkerTemplateCount}
                         </Badge>
                     </div>
 
                     <div className="grid gap-5 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,1.35fr)]">
                         <div className="space-y-3">
                             {externalWorkers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-5 text-sm text-slate-500">
-                                    {tg(t, "bbb79e84"))}
+                                    {tg(t, "bbb79e84")}
                                 </div> : null}
                             {externalWorkers.map(worker => {
               const isActive = worker.id === editingExternalWorkerId;
@@ -1577,11 +1566,11 @@ export default function SubagentsPage() {
                                                 <div className="mt-1 truncate font-mono text-xs text-slate-500">{worker.id}</div>
                                             </div>
                                             <Badge variant={isEnabledTarget ? "default" : "secondary"}>
-                                                {isEnabledTarget ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "06d0f38d"))}
+                                                {isEnabledTarget ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "06d0f38d")}
                                             </Badge>
                                         </div>
                                         <div className="mt-3 text-xs leading-5 text-slate-500">
-                                            {worker.workerType || "custom"} · {worker.launchProfile.cwdPolicy || "inherit_workspace"}
+                                            {resolveAdminLabel(t, "workerType", worker.workerType || "custom")} · {resolveAdminLabel(t, "workerCwdPolicy", worker.launchProfile.cwdPolicy || "inherit_workspace")}
                                         </div>
                                     </button>;
             })}
@@ -1590,22 +1579,22 @@ export default function SubagentsPage() {
                         <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                             <div className="grid gap-3 md:grid-cols-4">
                                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={tg(t, "8263f1ae"))} tooltip={tg(t, "b70ead00"))} />
+                                    <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={tg(t, "8263f1ae")} tooltip={tg(t, "b70ead00")} />
 
-                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.workerType || "custom"}</div>
+                                    <div className="mt-2 truncate text-xs text-slate-500">{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType || "custom")}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "f17bef17"))} tooltip={tg(t, "4a77fff3"))} />
+                                    <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "f17bef17")} tooltip={tg(t, "4a77fff3")} />
 
                                     <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.agentClass || "external_worker"}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.automation.cron.page.k3936c4f6")} tooltip={tg(t, "77b8a673"))} />
+                                    <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.automation.cron.page.k3936c4f6")} tooltip={tg(t, "77b8a673")} />
 
-                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.enabled ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "cfb6d117"))}</div>
+                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.enabled ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "cfb6d117")}</div>
                                 </div>
                                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<Wrench className="h-4 w-4 shrink-0 text-slate-600" />} title={tg(t, "6dac0d10"))} tooltip={tg(t, "e1efa4b4"))} />
+                                    <StatusCardTitle icon={<Wrench className="h-4 w-4 shrink-0 text-slate-600" />} title={tg(t, "6dac0d10")} tooltip={tg(t, "e1efa4b4")} />
 
                                     <div className="mt-2 truncate text-xs text-slate-500">V8_WORKER_RESULT</div>
                                 </div>
@@ -1613,7 +1602,7 @@ export default function SubagentsPage() {
 
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <WorkerConfigLabel label={t("app.admin.dashboard.creativeMedia.tableName")} tooltip={tg(t, "c94b6fbd"))} />
+                                    <WorkerConfigLabel label={t("app.admin.dashboard.creativeMedia.tableName")} tooltip={tg(t, "c94b6fbd")} />
 
                                     <Input value={externalWorkerForm.name} onChange={event => setExternalWorkerForm(current => ({
                   ...current,
@@ -1622,7 +1611,7 @@ export default function SubagentsPage() {
 
                                 </div>
                                 <div className="space-y-2">
-                                    <WorkerConfigLabel label={tg(t, "93b2f9c3"))} tooltip={tg(t, "be1620ca"))} />
+                                    <WorkerConfigLabel label={tg(t, "93b2f9c3")} tooltip={tg(t, "be1620ca")} />
 
                                     <Input value={externalWorkerForm.agentClass} onChange={event => setExternalWorkerForm(current => ({
                   ...current,
@@ -1631,16 +1620,16 @@ export default function SubagentsPage() {
 
                                 </div>
                                 <div className="space-y-2 md:col-span-2">
-                                    <WorkerConfigLabel label={tg(t, "16536cdf"))} tooltip={tg(t, "4cc8846a"))} />
+                                    <WorkerConfigLabel label={tg(t, "16536cdf")} tooltip={tg(t, "4cc8846a")} />
 
                                     <Input value={externalWorkerForm.description} onChange={event => setExternalWorkerForm(current => ({
                   ...current,
                   description: event.target.value
-                }))} placeholder={tg(t, "052ddc5f"))} />
+                }))} placeholder={tg(t, "052ddc5f")} />
 
                                 </div>
                                 <div className="space-y-2">
-                                    <WorkerConfigLabel label={tg(t, "49aa0a72"))} tooltip={tg(t, "20fb46f5"))} />
+                                    <WorkerConfigLabel label={tg(t, "49aa0a72")} tooltip={tg(t, "20fb46f5")} />
 
                                     <Input value={externalWorkerForm.domainTagsText} onChange={event => setExternalWorkerForm(current => ({
                   ...current,
@@ -1649,7 +1638,7 @@ export default function SubagentsPage() {
 
                                 </div>
                                 <div className="space-y-2">
-                                    <WorkerConfigLabel label={tg(t, "396f27fd"))} tooltip={tg(t, "cf125faf"))} />
+                                    <WorkerConfigLabel label={tg(t, "396f27fd")} tooltip={tg(t, "cf125faf")} />
 
                                     <Input value={externalWorkerForm.operationCapabilitiesText} onChange={event => setExternalWorkerForm(current => ({
                   ...current,
@@ -1661,11 +1650,11 @@ export default function SubagentsPage() {
 
                             <details className="rounded-2xl border border-slate-200 bg-white/80 p-3">
                                 <summary className="cursor-pointer text-sm font-medium text-slate-900">
-                                    {tg(t, "976a39ef"))}
+                                    {tg(t, "976a39ef")}
                                 </summary>
                                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label="Worker ID" tooltip={tg(t, "02087023"))} />
+                                        <WorkerConfigLabel label="Worker ID" tooltip={tg(t, "02087023")} />
 
                                         <Input value={externalWorkerForm.id} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1674,16 +1663,21 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "c7209605"))} tooltip={tg(t, "db37b9b6"))} />
+                                        <WorkerConfigLabel label={tg(t, "c7209605")} tooltip={tg(t, "db37b9b6")} />
 
-                                        <Input value={externalWorkerForm.workerType} onChange={event => setExternalWorkerForm(current => ({
+                                        <Select value={externalWorkerForm.workerType} onValueChange={value => setExternalWorkerForm(current => ({
                     ...current,
-                    workerType: event.target.value
-                  }))} placeholder="custom / claude_code" />
-
+                    workerType: value
+                  }))}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                {!getAdminOptions("workerType").some((option) => option.value === externalWorkerForm.workerType) && externalWorkerForm.workerType ? <SelectItem value={externalWorkerForm.workerType}>{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType)}</SelectItem> : null}
+                                                {getAdminOptions("workerType").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                            </SelectContent>
+                                        </Select>
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <WorkerConfigLabel label={tg(t, "3ce5c87e"))} tooltip={tg(t, "734fe4f1"), { task_brief_b64: "{task_brief_b64}" })} />
+                                        <WorkerConfigLabel label={tg(t, "3ce5c87e")} tooltip={tg(t, "734fe4f1", { task_brief_b64: "{task_brief_b64}" })} />
 
                                         <Textarea value={externalWorkerForm.commandTemplate} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1692,7 +1686,7 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "5a843790"))} tooltip={tg(t, "51924d82"))} />
+                                        <WorkerConfigLabel label={tg(t, "5a843790")} tooltip={tg(t, "51924d82")} />
 
                                         <Select value={externalWorkerForm.cwdPolicy} onValueChange={value => setExternalWorkerForm(current => ({
                     ...current,
@@ -1700,14 +1694,13 @@ export default function SubagentsPage() {
                   }))}>
                                             <SelectTrigger><SelectValue /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="inherit_workspace">inherit_workspace</SelectItem>
-                                                <SelectItem value="runtime_temp">runtime_temp</SelectItem>
-                                                <SelectItem value="explicit">explicit</SelectItem>
+                                                {!getAdminOptions("workerCwdPolicy").some((option) => option.value === externalWorkerForm.cwdPolicy) && externalWorkerForm.cwdPolicy ? <SelectItem value={externalWorkerForm.cwdPolicy}>{resolveAdminLabel(t, "workerCwdPolicy", externalWorkerForm.cwdPolicy)}</SelectItem> : null}
+                                                {getAdminOptions("workerCwdPolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                             </SelectContent>
                                         </Select>
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "7764f97e"))} tooltip={tg(t, "ccd23c9d"))} />
+                                        <WorkerConfigLabel label={tg(t, "7764f97e")} tooltip={tg(t, "ccd23c9d")} />
 
                                         <Input type="number" min={3} max={120} value={externalWorkerForm.startupTimeoutSeconds} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1716,7 +1709,7 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "9633e050"))} tooltip={tg(t, "7dc5d6fa"))} />
+                                        <WorkerConfigLabel label={tg(t, "9633e050")} tooltip={tg(t, "7dc5d6fa")} />
 
                                         <Select value={externalWorkerForm.sessionMode} onValueChange={value => setExternalWorkerForm(current => ({
                     ...current,
@@ -1724,13 +1717,13 @@ export default function SubagentsPage() {
                   }))}>
                                             <SelectTrigger><SelectValue /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="interactive">interactive</SelectItem>
-                                                <SelectItem value="oneshot">oneshot</SelectItem>
+                                                {!getAdminOptions("workerSessionMode").some((option) => option.value === externalWorkerForm.sessionMode) && externalWorkerForm.sessionMode ? <SelectItem value={externalWorkerForm.sessionMode}>{resolveAdminLabel(t, "workerSessionMode", externalWorkerForm.sessionMode)}</SelectItem> : null}
+                                                {getAdminOptions("workerSessionMode").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                             </SelectContent>
                                         </Select>
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label="env passthrough" tooltip={tg(t, "fc1f4a2f"))} />
+                                        <WorkerConfigLabel label={tg(t, "5f90878e")} tooltip={tg(t, "fc1f4a2f")} />
 
                                         <Input value={externalWorkerForm.envPassThroughText} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1739,7 +1732,7 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "7b11bd2b"))} tooltip={tg(t, "761aca19"))} />
+                                        <WorkerConfigLabel label={tg(t, "7b11bd2b")} tooltip={tg(t, "761aca19")} />
 
                                         <Input value={externalWorkerForm.allowedSideEffectsText} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1748,16 +1741,21 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "9d1f7d68"))} tooltip={tg(t, "9b2ec4bf"))} />
+                                        <WorkerConfigLabel label={tg(t, "9d1f7d68")} tooltip={tg(t, "9b2ec4bf")} />
 
-                                        <Input value={externalWorkerForm.toolExposurePolicy} onChange={event => setExternalWorkerForm(current => ({
+                                        <Select value={externalWorkerForm.toolExposurePolicy} onValueChange={value => setExternalWorkerForm(current => ({
                     ...current,
-                    toolExposurePolicy: event.target.value
-                  }))} placeholder="task_brief_driven" />
-
+                    toolExposurePolicy: value
+                  }))}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                {!getAdminOptions("toolExposurePolicy").some((option) => option.value === externalWorkerForm.toolExposurePolicy) && externalWorkerForm.toolExposurePolicy ? <SelectItem value={externalWorkerForm.toolExposurePolicy}>{resolveAdminLabel(t, "toolExposurePolicy", externalWorkerForm.toolExposurePolicy)}</SelectItem> : null}
+                                                {getAdminOptions("toolExposurePolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                            </SelectContent>
+                                        </Select>
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "3a3a388f"))} tooltip={tg(t, "abc3953d"))} />
+                                        <WorkerConfigLabel label={tg(t, "3a3a388f")} tooltip={tg(t, "abc3953d")} />
 
                                         <Input value={externalWorkerForm.runtimeAffinitiesText} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1766,7 +1764,7 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <WorkerConfigLabel label={tg(t, "8f472ae1"))} tooltip={tg(t, "63d27c83"))} />
+                                        <WorkerConfigLabel label={tg(t, "8f472ae1")} tooltip={tg(t, "63d27c83")} />
 
                                         <Input value={externalWorkerForm.resultMarkersText} onChange={event => setExternalWorkerForm(current => ({
                     ...current,
@@ -1784,7 +1782,7 @@ export default function SubagentsPage() {
                   enabled: Boolean(next)
                 }))} />
 
-                                    {tg(t, "dd0b58a6"))}
+                                    {tg(t, "dd0b58a6")}
                                 </label>
                                 <div className="flex gap-2">
                                     {editingExternalWorkerId ? <Button type="button" variant="ghost" className="text-rose-600" onClick={() => handleDeleteExternalWorker(editingExternalWorkerId)}>
@@ -1792,7 +1790,7 @@ export default function SubagentsPage() {
                                             {t("components.memory.MemoryWorkflowsPanel.delete")}
                                         </Button> : null}
                                     <Button type="button" variant="outline" onClick={handleApplyExternalWorkerForm}>
-                                        {tg(t, "2fb9af69"))}
+                                        {tg(t, "2fb9af69")}
                                     </Button>
                                 </div>
                             </div>
@@ -1801,7 +1799,7 @@ export default function SubagentsPage() {
 
                     <details className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4" open={showExternalWorkersJson} onToggle={event => setShowExternalWorkersJson(event.currentTarget.open)}>
                         <summary className="cursor-pointer text-sm font-medium text-slate-900">
-                            {tg(t, "30b77df9"))}
+                            {tg(t, "30b77df9")}
                         </summary>
                         <Textarea value={externalWorkersJson} onChange={event => setExternalWorkersJson(event.target.value)} className="mt-3 min-h-[220px] font-mono text-xs" placeholder='[{"id":"coding-cli-worker","enabled":false}]' />
 
@@ -1810,7 +1808,7 @@ export default function SubagentsPage() {
                                 {t("app.admin.dashboard.subagents.page.externalWorkers.hintPrefix")} <code>launchProfile.commandTemplate</code> {t("app.admin.dashboard.subagents.page.externalWorkers.hintMiddle")} <code>resultSchema.markers</code>.
                             </p>
                             <Button type="button" variant="outline" size="sm" onClick={handleApplyExternalWorkersJson}>
-                                {tg(t, "7780539e"))}
+                                {tg(t, "7780539e")}
                             </Button>
                         </div>
                     </details>
@@ -1889,8 +1887,7 @@ export default function SubagentsPage() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="contextual_auto">{t("app.admin.dashboard.subagents.page.toolMode.contextualAuto")}</SelectItem>
-                                        <SelectItem value="explicit">{t("app.admin.dashboard.subagents.page.toolMode.explicit")}</SelectItem>
+                                        {getAdminOptions("toolMode").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -1898,7 +1895,7 @@ export default function SubagentsPage() {
 
                         <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(200px,240px)] md:items-start">
                             <div className="space-y-2">
-                                <HoverHelpLabel label={tg(t, "9512faae"))} tooltip={tg(t, "5c02fc01"))} />
+                                <HoverHelpLabel label={tg(t, "9512faae")} tooltip={tg(t, "5c02fc01")} />
 
                                 <Input list="subagent-family-options" className="h-10" value={form.specialistFamily} onChange={event => setForm(current => ({
                   ...current,
@@ -1910,11 +1907,11 @@ export default function SubagentsPage() {
                                 </datalist>
                             </div>
                             <div className="space-y-2">
-                                <HoverHelpLabel label={tg(t, "93b2f9c3"))} tooltip={<div>
-                                            <div>{tg(t, "d51acc60"))}</div>
+                                <HoverHelpLabel label={tg(t, "93b2f9c3")} tooltip={<div>
+                                            <div>{tg(t, "d51acc60")}</div>
                                             <div className="mt-1 text-xs text-slate-300">researcher, writer, operator, coach, analyst, creative, skill_runtime_curator</div>
                                             <div className="mt-1 text-xs text-slate-300">
-                                                {tg(t, "ca63bded"))}
+                                                {tg(t, "ca63bded")}
                                             </div>
                                         </div>} />
 
@@ -1924,11 +1921,11 @@ export default function SubagentsPage() {
                 }))} placeholder="researcher / writer / operator" />
 
                                 <p className="min-h-10 text-xs leading-5 text-slate-500">
-                                    {tg(t, "bdfeb614"))}
+                                    {tg(t, "bdfeb614")}
                                 </p>
                             </div>
                             <div className="space-y-2">
-                                <Label>{tg(t, "ec8c5cb6"))}</Label>
+                                <Label>{tg(t, "ec8c5cb6")}</Label>
                                 <label className="flex h-10 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-4 text-sm">
                                     <Checkbox checked={form.globalExposure} onCheckedChange={next => setForm(current => ({
                     ...current,
@@ -1938,7 +1935,7 @@ export default function SubagentsPage() {
                                     <span className="font-medium text-slate-900">globalExposure</span>
                                 </label>
                                 <p className="min-h-10 text-xs leading-5 text-slate-500">
-                                    {tg(t, "8b369719"))}
+                                    {tg(t, "8b369719")}
                                 </p>
                             </div>
                         </div>
@@ -1956,40 +1953,40 @@ export default function SubagentsPage() {
                         <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
-                                    <Label>{tg(t, "49aa0a72"))}</Label>
+                                    <Label>{tg(t, "49aa0a72")}</Label>
                                     <Input value={form.domainTagsText} onChange={event => setForm(current => ({
                     ...current,
                     domainTagsText: event.target.value
                   }))} placeholder="software_engineering, frontend" />
 
                                     <p className="text-xs leading-5 text-slate-500">
-                                        {tg(t, "aa3e8d8f"))}
+                                        {tg(t, "aa3e8d8f")}
                                     </p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{tg(t, "396f27fd"))}</Label>
+                                    <Label>{tg(t, "396f27fd")}</Label>
                                     <Input value={form.operationCapabilitiesText} onChange={event => setForm(current => ({
                     ...current,
                     operationCapabilitiesText: event.target.value
                   }))} placeholder="implement, review, test" />
 
                                     <p className="text-xs leading-5 text-slate-500">
-                                        {tg(t, "172cd73c"))}
+                                        {tg(t, "172cd73c")}
                                     </p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{tg(t, "3a3a388f"))}</Label>
+                                    <Label>{tg(t, "3a3a388f")}</Label>
                                     <Input value={form.runtimeAffinitiesText} onChange={event => setForm(current => ({
                     ...current,
                     runtimeAffinitiesText: event.target.value
                   }))} placeholder="engine, admin, web" />
 
                                     <p className="text-xs leading-5 text-slate-500">
-                                        {tg(t, "0afbbc87"))}
+                                        {tg(t, "0afbbc87")}
                                     </p>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>{tg(t, "9d1f7d68"))}</Label>
+                                    <Label>{tg(t, "9d1f7d68")}</Label>
                                     <Select value={form.toolExposurePolicy} onValueChange={value => setForm(current => ({
                     ...current,
                     toolExposurePolicy: value
@@ -1998,16 +1995,14 @@ export default function SubagentsPage() {
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="contextual_auto">contextual_auto</SelectItem>
-                                            <SelectItem value="explicit_only">explicit_only</SelectItem>
-                                            <SelectItem value="none">none</SelectItem>
+                                            {getAdminOptions("toolExposurePolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
                                 </div>
                             </div>
                             <details className="rounded-xl border border-slate-200 bg-white/80 p-3">
                                 <summary className="cursor-pointer text-sm font-medium text-slate-900">
-                                    {tg(t, "58deedf1"))}
+                                    {tg(t, "58deedf1")}
                                 </summary>
                                 <Textarea value={form.capabilitySnapshotJson} onChange={event => setForm(current => ({
                   ...current,
@@ -2015,7 +2010,7 @@ export default function SubagentsPage() {
                 }))} className="mt-3 min-h-[140px] font-mono text-xs" placeholder='{"agentClass":"executor","domainTags":["software_engineering"]}' />
 
                                 <p className="mt-2 text-xs leading-5 text-slate-500">
-                                    {tg(t, "049582b6"))}
+                                    {tg(t, "049582b6")}
                                 </p>
                             </details>
                         </div>

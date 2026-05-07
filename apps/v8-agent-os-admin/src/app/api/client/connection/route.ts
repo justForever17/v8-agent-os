@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireClientContext } from "@/lib/server/client-proxy";
 import {
+    buildAdminLinkManifest,
     resolveAdminApiBaseUrl,
     resolveDesktopLiveBridgeBaseUrl,
     resolveEngineBaseUrl,
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest) {
     }
 
     const requestOrigin = new URL(req.url).origin;
+    const linkManifest = buildAdminLinkManifest(requestOrigin);
     return NextResponse.json({
         connection: {
             adminBaseUrl: requestOrigin,
@@ -23,7 +25,12 @@ export async function GET(req: NextRequest) {
             reachable: true,
             engineBaseUrl: resolveEngineBaseUrl(),
             desktopLiveBridgeBaseUrl: resolveDesktopLiveBridgeBaseUrl(),
+            transportKind: linkManifest.transportKind,
+            transportProfileId: linkManifest.activeProfileId,
+            linkManifest,
+            vpnDiagnostics: linkManifest.diagnostics,
         },
+        linkManifest,
         user: {
             id: context.user.id,
             login: context.user.login,

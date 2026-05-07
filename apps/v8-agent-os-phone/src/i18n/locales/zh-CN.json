@@ -488,6 +488,8 @@
   "src.screens.connectscreen.unreachable": "未连通",
   "src.screens.connectscreen.untitled_project": "未命名项目",
   "src.screens.connectscreen.unverified": "未验证",
+  "src.screens.connectscreen.v8_link_route": "V8 Link 路由",
+  "src.screens.connectscreen.vpn_diagnostics": "VPN 诊断",
   "src.screens.desktoplivescreen.returning_to_chat": "正在返回聊天主界面…",
   "src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id": "请填写既有的 robot 文件路径或脚本 ID。",
   "src.screens.rpascreen.enter_at_least_one_run_id": "请至少输入一个 Run ID。",

@@ -340,7 +340,7 @@ export default function EngineeringLanePage() {
   const [running, setRunning] = useState(false);
   const [proofLoading, setProofLoading] = useState(true);
   const [refreshingProof, setRefreshingProof] = useState(false);
-  const [dryRunText, setDryRunText] = useState(tg(t, "2a585054")));
+  const [dryRunText, setDryRunText] = useState(tg(t, "2a585054"));
   const [dryRunMode, setDryRunMode] = useState<"auto" | "force" | "off">("auto");
   const [dryRunResult, setDryRunResult] = useState<Record<string, unknown> | null>(null);
   const [proofEntries, setProofEntries] = useState<ProofEntry[]>([]);
@@ -1134,7 +1134,7 @@ export default function EngineeringLanePage() {
                   }
                             </ConfigCard>
 
-                            <ConfigCard title="Workset Observation" description={tg(t, "e3dcd9d4"))} bodyScroll="auto" bodyHeight={360}>
+                            <ConfigCard title="Workset Observation" description={tg(t, "e3dcd9d4")} bodyScroll="auto" bodyHeight={360}>
                                 {visibleWorksetObservations.length ?
                   <div className="space-y-3">
                                         {visibleWorksetObservations.slice(0, 16).map((entry) => {
@@ -1168,7 +1168,7 @@ export default function EngineeringLanePage() {
                                     </div> :
 
                   <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
-                                        {tg(t, "06796e5a"))}
+                                        {tg(t, "06796e5a")}
                                     </div>
                   }
                             </ConfigCard>

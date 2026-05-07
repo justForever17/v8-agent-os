@@ -131,7 +131,7 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
 }) {
     const { locale } = useLocale();
     const t = useT();
-    const uiLocale = locale === "en" ? "en-US" : "zh-CN";
+    const uiLocale = locale.startsWith("en") ? "en-US" : "zh-CN";
     const extractionSummary = data?.extractions?.summary || {};
     const recentExtractions = (data?.extractions?.recent || []) as ExtractionRun[];
     const memoryMapHealth = data?.memoryMap || {};

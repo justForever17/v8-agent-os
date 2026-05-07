@@ -29,6 +29,7 @@ from . import config_migration_routes as config_migration_routes_module
 from . import config_registry_routes as config_registry_routes_module
 from . import creative_media_routes as creative_media_routes_module
 from . import engineering_routes as engineering_routes_module
+from . import link_routes as link_routes_module
 from . import model_cache_routes as model_cache_routes_module
 from . import observability_routes as observability_routes_module
 from . import platform_routes as platform_routes_module
@@ -125,6 +126,7 @@ router.include_router(config_migration_routes_module.router)
 router.include_router(config_registry_routes_module.router)
 router.include_router(creative_media_routes_module.router)
 router.include_router(engineering_routes_module.router)
+router.include_router(link_routes_module.router)
 router.include_router(model_cache_routes_module.router)
 router.include_router(observability_routes_module.router)
 router.include_router(session_workflow_routes_module.router)

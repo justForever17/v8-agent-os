@@ -527,6 +527,8 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "peerId": "",
             "advertisedBaseUrl": "http://127.0.0.1:9530",
             "advertisedWsUrl": "ws://127.0.0.1:9530/v1/network-supervisor/peer/ws",
+            "transportProfileId": "",
+            "peerBaseUrl": "",
         },
         "discovery": {
             "lanEnabled": False,
@@ -1090,6 +1092,26 @@ class StorageManager:
                 "singleViewerOnly": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_SINGLE_VIEWER_ONLY") or "true").strip().lower() not in {"0", "false", "no", "off"},
                 "idleReleaseSeconds": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_IDLE_RELEASE_SECONDS") or "15")),
                 "captureDisplay": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_CAPTURE_DISPLAY") or "primary"),
+            },
+            "remoteLink": {
+                "enabled": True,
+                "activeProfileId": "manual-local",
+                "transportProfiles": [
+                    {
+                        "id": "manual-local",
+                        "kind": "manual_url",
+                        "label": "Manual / Local",
+                        "enabled": True,
+                        "adminBaseUrl": admin_base_url.replace("/api", "").rstrip("/"),
+                        "engineBaseUrl": engine_base_url.replace("/v1", "").rstrip("/"),
+                        "peerBaseUrl": engine_base_url.replace("/v1", "").rstrip("/"),
+                    },
+                    {"id": "lan", "kind": "lan", "label": "LAN", "enabled": True},
+                    {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},
+                    {"id": "tailscale", "kind": "tailscale", "label": "Tailscale", "enabled": True},
+                    {"id": "custom-vpn", "kind": "custom_vpn", "label": "Custom VPN", "enabled": True},
+                ],
+                "diagnostics": {"readOnly": True},
             },
             "s3": {},
             "legacySettings": [],
@@ -2484,6 +2506,15 @@ class StorageManager:
         desktop_live["idleReleaseSeconds"] = max(5, int(desktop_live.get("idleReleaseSeconds") or 15))
         capture_display = str(desktop_live.get("captureDisplay") or "primary").strip().lower()
         desktop_live["captureDisplay"] = capture_display if capture_display in {"primary"} else "primary"
+        normalized.setdefault("remoteLink", {})
+        remote_link = normalized["remoteLink"]
+        if not isinstance(remote_link, dict):
+            remote_link = {}
+        remote_link.setdefault("enabled", True)
+        remote_link.setdefault("activeProfileId", "manual-local")
+        if not isinstance(remote_link.get("transportProfiles"), list):
+            remote_link["transportProfiles"] = []
+        normalized["remoteLink"] = remote_link
         normalized.setdefault("s3", {})
         legacy_settings = normalized.get("legacySettings")
         if not isinstance(legacy_settings, list):

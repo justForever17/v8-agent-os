@@ -20,6 +20,7 @@ from api.models import ChatRequest
 from core.database import db
 from core.run_ledger import run_ledger_service
 from core.storage import storage
+from core.v8_link import resolve_peer_transport_endpoint
 from core.v8_agent_os_paths import (
     NETWORK_SUPERVISOR_SECRETS_PATH,
     NETWORK_SUPERVISOR_STATE_PATH,
@@ -529,6 +530,8 @@ class NetworkSupervisorService:
             "localPeerTokenFingerprint": _fingerprint(secrets_payload.get("localPeerToken") or ""),
             "advertisedBaseUrl": config.node.advertised_base_url,
             "advertisedWsUrl": config.node.advertised_ws_url,
+            "transportProfileId": config.node.transport_profile_id or "",
+            "peerBaseUrl": config.node.peer_base_url or "",
         }
 
     def _private_key(self) -> Ed25519PrivateKey:
@@ -875,6 +878,8 @@ class NetworkSupervisorService:
                     "displayName": str(packet.get("displayName") or "").strip() or peer_id,
                     "baseUrl": str(packet.get("baseUrl") or "").strip(),
                     "wsUrl": str(packet.get("wsUrl") or "").strip(),
+                    "transportProfileId": str(packet.get("transportProfileId") or "").strip(),
+                    "peerBaseUrl": str(packet.get("peerBaseUrl") or "").strip(),
                     "publicKey": public_key,
                     "publicKeyFingerprint": _fingerprint(public_key),
                     "source": "lan",
@@ -892,6 +897,8 @@ class NetworkSupervisorService:
             "displayName": self.get_config_model().node.display_name,
             "baseUrl": self.get_config_model().node.advertised_base_url,
             "wsUrl": self.get_config_model().node.advertised_ws_url,
+            "transportProfileId": self.get_config_model().node.transport_profile_id or "",
+            "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
             "publicKey": identity["publicKey"],
             "publicKeyFingerprint": identity["publicKeyFingerprint"],
             "sentAt": _utc_iso(),
@@ -963,11 +970,11 @@ class NetworkSupervisorService:
     def _peer_endpoint(self, peer_id: str) -> dict[str, Any]:
         trusted = self._trusted_peer_map().get(peer_id)
         if trusted:
-            return trusted.model_dump(by_alias=True)
+            return resolve_peer_transport_endpoint(trusted.model_dump(by_alias=True))
         state = self.read_state()
         discovered = dict(state.get("discoveredPeers") or {}).get(peer_id)
         if discovered:
-            return discovered
+            return resolve_peer_transport_endpoint(discovered)
         raise HTTPException(status_code=404, detail=f"Unknown peer: {peer_id}")
 
     def _peer_headers(self, peer_id: str) -> dict[str, str]:
@@ -982,7 +989,16 @@ class NetworkSupervisorService:
         endpoint = self._peer_endpoint(peer_id)
         base_url = str(endpoint.get("baseUrl") or "").rstrip("/")
         if not base_url:
-            raise HTTPException(status_code=400, detail=f"Peer '{peer_id}' is missing baseUrl")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "failureClass": "route_conflict",
+                    "peerId": peer_id,
+                    "transportProfileId": endpoint.get("transportProfileId") or "",
+                    "routeWarnings": endpoint.get("routeWarnings") or [],
+                    "recommendedNextAction": "Set peerBaseUrl/baseUrl or attach a TransportProfile with a peerBaseUrl.",
+                },
+            )
         client = self._http_client
         if client is None:
             client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0))
@@ -994,11 +1010,30 @@ class NetworkSupervisorService:
                 json=envelope.model_dump(by_alias=True),
             )
         except httpx.RequestError as exc:
-            raise HTTPException(status_code=503, detail=f"Peer '{peer_id}' is unreachable: {exc}") from exc
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "failureClass": "peer_unreachable",
+                    "peerId": peer_id,
+                    "baseUrl": base_url,
+                    "transportProfileId": endpoint.get("transportProfileId") or "",
+                    "reason": str(exc),
+                    "recommendedNextAction": "Check V8 Link diagnostics, VPN route/DNS/MTU, and peer auth before retrying.",
+                },
+            ) from exc
         payload = response.json().copy() if response.content else {}
         if response.is_error:
             detail = payload.get("detail") or payload.get("error") or response.text
-            raise HTTPException(status_code=response.status_code, detail=str(detail))
+            failure_class = "auth_failed" if response.status_code in {401, 403} else "peer_error"
+            raise HTTPException(
+                status_code=response.status_code,
+                detail={
+                    "failureClass": failure_class,
+                    "peerId": peer_id,
+                    "baseUrl": base_url,
+                    "detail": detail,
+                },
+            )
         return payload
 
     def _is_peer_online(
@@ -1037,6 +1072,22 @@ class NetworkSupervisorService:
             ),
             "baseUrl": trusted_peer.base_url if trusted_peer else str(discovered_peer.get("baseUrl") or "").strip(),
             "wsUrl": trusted_peer.ws_url if trusted_peer else str(discovered_peer.get("wsUrl") or "").strip(),
+            "transportProfileId": (
+                trusted_peer.transport_profile_id
+                if trusted_peer
+                else str(discovered_peer.get("transportProfileId") or "").strip()
+            ),
+            "peerBaseUrl": (
+                trusted_peer.peer_base_url
+                if trusted_peer
+                else str(discovered_peer.get("peerBaseUrl") or "").strip()
+            ),
+            "resolvedBaseUrl": resolve_peer_transport_endpoint(
+                trusted_peer.model_dump(by_alias=True) if trusted_peer else dict(discovered_peer)
+            ).get("resolvedBaseUrl", ""),
+            "transportKind": resolve_peer_transport_endpoint(
+                trusted_peer.model_dump(by_alias=True) if trusted_peer else dict(discovered_peer)
+            ).get("transportKind", "manual_url"),
             "publicKey": public_key,
             "publicKeyFingerprint": _fingerprint(public_key) if public_key else "",
             "trusted": bool(trusted_peer),
@@ -1106,6 +1157,8 @@ class NetworkSupervisorService:
                 "displayName": config.node.display_name,
                 "advertisedBaseUrl": config.node.advertised_base_url,
                 "advertisedWsUrl": config.node.advertised_ws_url,
+                "transportProfileId": config.node.transport_profile_id or "",
+                "peerBaseUrl": config.node.peer_base_url or "",
                 "publicKeyFingerprint": identity["publicKeyFingerprint"],
                 "localPeerTokenFingerprint": identity["localPeerTokenFingerprint"],
             },
@@ -1217,6 +1270,12 @@ class NetworkSupervisorService:
                 "displayName": payload.display_name if payload.display_name is not None else (existing.display_name if existing else payload.peer_id),
                 "baseUrl": payload.base_url if payload.base_url is not None else (existing.base_url if existing else ""),
                 "wsUrl": payload.ws_url if payload.ws_url is not None else (existing.ws_url if existing else ""),
+                "transportProfileId": (
+                    payload.transport_profile_id
+                    if payload.transport_profile_id is not None
+                    else (existing.transport_profile_id if existing else None)
+                ),
+                "peerBaseUrl": payload.peer_base_url if payload.peer_base_url is not None else (existing.peer_base_url if existing else None),
                 "publicKey": payload.public_key if payload.public_key is not None else (existing.public_key if existing else ""),
                 "allowedScopes": payload.allowed_scopes if payload.allowed_scopes is not None else (list(existing.allowed_scopes) if existing else []),
                 "allowedWorkspaces": payload.allowed_workspaces if payload.allowed_workspaces is not None else (list(existing.allowed_workspaces) if existing else []),
@@ -1353,6 +1412,8 @@ class NetworkSupervisorService:
                 "displayName": str(payload.get("displayName") or "").strip() or envelope.from_peer_id,
                 "baseUrl": base_url,
                 "wsUrl": str(payload.get("wsUrl") or "").strip(),
+                "transportProfileId": str(payload.get("transportProfileId") or "").strip() or None,
+                "peerBaseUrl": str(payload.get("peerBaseUrl") or "").strip() or None,
                 "publicKey": public_key,
                 "allowedScopes": list(config.trust.allowed_scopes or []),
                 "allowedWorkspaces": [],
@@ -1392,6 +1453,8 @@ class NetworkSupervisorService:
                 "displayName": self.get_config_model().node.display_name,
                 "baseUrl": self.get_config_model().node.advertised_base_url,
                 "wsUrl": self.get_config_model().node.advertised_ws_url,
+                "transportProfileId": self.get_config_model().node.transport_profile_id or "",
+                "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
                 "publicKey": local_identity["publicKey"],
                 "publicKeyFingerprint": local_identity["publicKeyFingerprint"],
                 "baseUrlHint": str(endpoint.get("baseUrl") or "").strip(),
@@ -1407,6 +1470,8 @@ class NetworkSupervisorService:
                 "displayName": str(response_envelope.payload.get("displayName") or response_envelope.from_peer_id),
                 "baseUrl": str(response_envelope.payload.get("baseUrl") or "").strip(),
                 "wsUrl": str(response_envelope.payload.get("wsUrl") or "").strip(),
+                "transportProfileId": str(response_envelope.payload.get("transportProfileId") or "").strip(),
+                "peerBaseUrl": str(response_envelope.payload.get("peerBaseUrl") or "").strip(),
                 "publicKey": verified["publicKey"],
                 "publicKeyFingerprint": _fingerprint(verified["publicKey"]),
                 "source": "join",
@@ -1630,6 +1695,8 @@ class NetworkSupervisorService:
                 "displayName": str(envelope.payload.get("displayName") or envelope.from_peer_id),
                 "baseUrl": str(envelope.payload.get("baseUrl") or "").strip(),
                 "wsUrl": str(envelope.payload.get("wsUrl") or "").strip(),
+                "transportProfileId": str(envelope.payload.get("transportProfileId") or "").strip(),
+                "peerBaseUrl": str(envelope.payload.get("peerBaseUrl") or "").strip(),
                 "publicKey": verified["publicKey"],
                 "publicKeyFingerprint": _fingerprint(verified["publicKey"]),
                 "source": "join",
@@ -1643,6 +1710,8 @@ class NetworkSupervisorService:
                 "displayName": self.get_config_model().node.display_name,
                 "baseUrl": self.get_config_model().node.advertised_base_url,
                 "wsUrl": self.get_config_model().node.advertised_ws_url,
+                "transportProfileId": self.get_config_model().node.transport_profile_id or "",
+                "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
                 "publicKey": self._local_identity()["publicKey"],
                 "publicKeyFingerprint": self._local_identity()["publicKeyFingerprint"],
                 "trusted": envelope.from_peer_id in self._trusted_peer_map(),
@@ -1661,6 +1730,8 @@ class NetworkSupervisorService:
                 "displayName": self.get_config_model().node.display_name,
                 "baseUrl": self.get_config_model().node.advertised_base_url,
                 "wsUrl": self.get_config_model().node.advertised_ws_url,
+                "transportProfileId": self.get_config_model().node.transport_profile_id or "",
+                "peerBaseUrl": self.get_config_model().node.peer_base_url or "",
                 "publicKey": self._local_identity()["publicKey"],
                 "publicKeyFingerprint": self._local_identity()["publicKeyFingerprint"],
                 "receivedAt": _utc_iso(),

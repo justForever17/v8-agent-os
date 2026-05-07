@@ -8,6 +8,8 @@ export type AdminConnectionProfile = {
     adminBaseUrl: string;
     adminApiBaseUrl?: string;
     bridgeMode?: string;
+    transportKind?: string;
+    transportProfileId?: string;
     reachable?: boolean;
     version?: string;
     lastUsedAt: string;
@@ -45,6 +47,8 @@ function sanitizeProfile(value: unknown): AdminConnectionProfile | null {
         adminBaseUrl,
         adminApiBaseUrl: typeof record.adminApiBaseUrl === "string" ? record.adminApiBaseUrl : "",
         bridgeMode: typeof record.bridgeMode === "string" ? record.bridgeMode : "",
+        transportKind: typeof record.transportKind === "string" ? record.transportKind : "",
+        transportProfileId: typeof record.transportProfileId === "string" ? record.transportProfileId : "",
         reachable: typeof record.reachable === "boolean" ? record.reachable : undefined,
         version: typeof record.version === "string" ? record.version : "",
         lastUsedAt: String(record.lastUsedAt || new Date(0).toISOString()),
@@ -110,6 +114,8 @@ export function upsertAdminConnectionProfile(
         adminBaseUrl,
         adminApiBaseUrl: summaryConnection.adminApiBaseUrl || summaryConnection.configuredAdminApiBaseUrl || existing?.adminApiBaseUrl || "",
         bridgeMode: summaryConnection.bridgeMode || existing?.bridgeMode || "",
+        transportKind: summaryConnection.transportKind || existing?.transportKind || "",
+        transportProfileId: summaryConnection.transportProfileId || existing?.transportProfileId || "",
         reachable: typeof summaryConnection.reachable === "boolean" ? summaryConnection.reachable : existing?.reachable,
         version,
         lastUsedAt: new Date().toISOString(),

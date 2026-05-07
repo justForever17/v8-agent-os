@@ -1,5 +1,5 @@
 import { buildModelRef } from "@/lib/models/model-admin";
-import { INTERNAL_READABLE } from "@/i18n/internal-readable";
+import { ik } from "@/i18n/admin-legacy";
 export type ProviderCredentialMode = "apiKey" | "oauthFile";
 export type PlatformLoginPreset = "qwenCode" | "geminiCli" | "codex";
 export type ProviderApiStandard = "openai" | "anthropic" | "gemini";
@@ -53,7 +53,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
     baseUrl: "https://portal.qwen.ai/v1",
     oauthPath: "~/.qwen/oauth_creds.json",
     supportState: "stable",
-    helpText: INTERNAL_READABLE.k55cf2fde08
+    helpText: ik("k55cf2fde08")
   },
   geminiCli: {
     id: "geminiCli",
@@ -63,7 +63,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
     baseUrl: "https://cloudcode-pa.googleapis.com",
     oauthPath: "~/.gemini/oauth_creds.json",
     supportState: "stable",
-    helpText: INTERNAL_READABLE.kfd667abf50
+    helpText: ik("kfd667abf50")
   },
   codex: {
     id: "codex",
@@ -73,7 +73,7 @@ export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPr
     baseUrl: "https://chatgpt.com/backend-api",
     oauthPath: "~/.codex/auth.json",
     supportState: "stable",
-    helpText: INTERNAL_READABLE.k67df7d0d43
+    helpText: ik("k67df7d0d43")
   }
 };
 export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPresetConfig> = {
@@ -85,7 +85,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     baseUrl: "http://127.0.0.1:11434/v1",
     apiKey: "ollama",
     supportState: "stable",
-    helpText: INTERNAL_READABLE.k3fa02debcb
+    helpText: ik("k3fa02debcb")
   },
   nexa: {
     id: "nexa",
@@ -95,7 +95,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     baseUrl: "http://127.0.0.1:18181/v1",
     apiKey: "",
     supportState: "preset-only",
-    helpText: INTERNAL_READABLE.k4e12ea189f
+    helpText: ik("k4e12ea189f")
   },
   vllm: {
     id: "vllm",
@@ -105,7 +105,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     baseUrl: "http://127.0.0.1:8000/v1",
     apiKey: "local-vllm",
     supportState: "stable",
-    helpText: INTERNAL_READABLE.k44ce4434b6
+    helpText: ik("k44ce4434b6")
   },
   lmstudio: {
     id: "lmstudio",
@@ -115,7 +115,7 @@ export const LOCAL_BACKEND_PRESETS: Record<LocalBackendPreset, LocalBackendPrese
     baseUrl: "http://127.0.0.1:1234/v1",
     apiKey: "lm-studio",
     supportState: "stable",
-    helpText: INTERNAL_READABLE.kc18d929763
+    helpText: ik("kc18d929763")
   }
 };
 function sanitizeOauthPath(filepath: string): string {

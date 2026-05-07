@@ -370,6 +370,8 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         }
         const title = node.governanceType === "safety_blocked"
             ? t("src.components.chat.messageblockitem.safety_blocked")
+            : node.governanceType === "human_guidance"
+                ? t("src.components.chat.messageblockitem.human_guidance")
             : node.governanceType === "lane_updated"
                     ? t("src.components.chat.messageblockitem.run_scheduling")
                     : node.governanceType === "approval_request"
@@ -381,7 +383,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                         : t("src.components.chat.messageblockitem.runtime_control");
         const tone = node.governanceType === "safety_blocked" || approvalKind === "safety_blocked"
             ? "safety"
-            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated"
+            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated" || node.governanceType === "human_guidance"
                 ? "control"
             : approvalKind === "safety_review"
                 ? "safety"

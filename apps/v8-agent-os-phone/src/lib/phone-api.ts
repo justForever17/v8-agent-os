@@ -19,6 +19,7 @@ import type {
     PhoneUser,
     ProfileUpdatePayload,
     ProjectSummary,
+    QueuedChatMessage,
     WorkspaceFolderNode,
     WorkspaceFolderTreeResponse,
     ScopeBindingView,
@@ -688,6 +689,37 @@ export async function submitChatMessage(
     });
 
     return readJsonOrThrow<ChatSubmitResponse>(response, translateCurrent("src.lib.phone_api.text_33"));
+}
+
+export async function promoteQueuedChatMessage(authorizedFetch: AuthorizedFetch, queueMessageId: string) {
+    return authorizedJson<{ ok?: boolean; queuedMessage?: QueuedChatMessage }>(
+        authorizedFetch,
+        `/api/client/chat-queue/${encodeURIComponent(queueMessageId)}/promote`,
+        translateCurrent("src.lib.phone_api.promote_queued_message_failed"),
+        { method: "POST" },
+    );
+}
+
+export async function cancelQueuedChatMessage(authorizedFetch: AuthorizedFetch, queueMessageId: string) {
+    return authorizedJson<{ ok?: boolean; queuedMessage?: QueuedChatMessage }>(
+        authorizedFetch,
+        `/api/client/chat-queue/${encodeURIComponent(queueMessageId)}`,
+        translateCurrent("src.lib.phone_api.cancel_queued_message_failed"),
+        { method: "DELETE" },
+    );
+}
+
+export async function updateQueuedChatMessage(authorizedFetch: AuthorizedFetch, queueMessageId: string, content: string) {
+    return authorizedJson<{ ok?: boolean; queuedMessage?: QueuedChatMessage }>(
+        authorizedFetch,
+        `/api/client/chat-queue/${encodeURIComponent(queueMessageId)}`,
+        translateCurrent("src.lib.phone_api.update_queued_message_failed"),
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content }),
+        },
+    );
 }
 
 export async function getDesktopLiveStatus(authorizedFetch: AuthorizedFetch) {

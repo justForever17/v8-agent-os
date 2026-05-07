@@ -59,6 +59,28 @@ class SnapshotService:
             return False
         return bool(db.get_messages(session_id) or db.get_runtime_events(session_id))
 
+    @staticmethod
+    def _queued_messages(session_id: str) -> list[dict[str, Any]]:
+        items = db.list_chat_user_message_queue(session_id, states=["pending", "promoted"], limit=20)
+        return [
+            {
+                "id": item.get("id"),
+                "sessionId": item.get("session_id"),
+                "runId": item.get("run_id"),
+                "clientMessageId": item.get("client_message_id"),
+                "content": item.get("content") or "",
+                "state": item.get("state") or "pending",
+                "ordinal": item.get("ordinal"),
+                "createdAt": item.get("created_at"),
+                "updatedAt": item.get("updated_at"),
+                "promotedAt": item.get("promoted_at"),
+                "injectedAt": item.get("injected_at"),
+                "consumedAt": item.get("consumed_at"),
+                "cancelledAt": item.get("cancelled_at"),
+            }
+            for item in items
+        ]
+
     def _build_projection_snapshot(
         self,
         session_id: str,
@@ -152,6 +174,7 @@ class SnapshotService:
         context_governance = extract_latest_context_governance(runtime_events)
         context_governance_history = extract_context_governance_history(runtime_events, limit=12)
         lane_view = session_admission_service.get_lane_view(session_id)
+        queued_messages = self._queued_messages(session_id)
         session_runtime = resolve_authoritative_session_runtime_state(
             session_id=session_id,
             workflow_view=workflow_view,
@@ -202,6 +225,7 @@ class SnapshotService:
                 "workflowProjection": workflow_projection,
                 "approvals": pending_approvals,
                 "askUserInteractions": ask_user_interactions,
+                "queuedMessages": queued_messages,
                 "controls": controls,
                 "recoverable": build_recoverable_view(workflow_view, controls),
                 "todos": todos,
@@ -244,6 +268,7 @@ class SnapshotService:
             "workflowProjection": workflow_projection,
             "approvals": pending_approvals,
             "askUserInteractions": ask_user_interactions,
+            "queuedMessages": queued_messages,
             "controls": controls,
             "recoverable": build_recoverable_view(workflow_view, controls),
             "todos": todos,

@@ -60,7 +60,8 @@ export interface UiGovernanceNode extends UiTimelineNodeBase {
         | 'run_controlled'
         | 'safety_blocked'
         | 'context_governance'
-        | 'lane_updated';
+        | 'lane_updated'
+        | 'human_guidance';
     
     // Approval
     approvalId?: string;

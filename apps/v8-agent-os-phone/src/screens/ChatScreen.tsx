@@ -96,6 +96,9 @@ import {
     requestTextToSpeech,
     respondAskUser,
     releaseDesktopLiveSession,
+    cancelQueuedChatMessage,
+    promoteQueuedChatMessage,
+    updateQueuedChatMessage,
     submitChatMessage,
     sendDesktopLiveCandidate,
     speechToText,
@@ -125,6 +128,7 @@ import type {
     SubagentFamilySummary,
     UploadedWorkspaceFile,
     DesktopLiveSessionPayload,
+    QueuedChatMessage,
 } from "@/src/types/admin";
 import {
     createInitialSessionRealtimeMessageState,
@@ -1479,6 +1483,20 @@ function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeS
     return null;
 }
 
+function extractQueuedMessages(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined): QueuedChatMessage[] | null {
+    const root = asRecord(payload);
+    const snapshot = asRecord(root.snapshot);
+    const candidates = [root.queuedMessages, snapshot.queuedMessages];
+    for (const candidate of candidates) {
+        if (Array.isArray(candidate)) {
+            return candidate
+                .filter((item): item is QueuedChatMessage => Boolean(item) && typeof item === "object")
+                .filter((item) => String(item.id || "").trim());
+        }
+    }
+    return null;
+}
+
 function isLegacyChatUnsupportedPayload(payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) {
     const root = asRecord(payload);
     const snapshot = asRecord(root.snapshot);
@@ -1788,6 +1806,10 @@ export default function ChatScreen() {
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [askUserInteractions, setAskUserInteractions] = useState<AskUserInteraction[]>([]);
+    const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+    const [editingQueuedMessage, setEditingQueuedMessage] = useState<QueuedChatMessage | null>(null);
+    const [queuedMessageEditText, setQueuedMessageEditText] = useState("");
+    const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
     const lastProcessSurfaceAtRef = useRef(0);
@@ -2958,9 +2980,13 @@ export default function ChatScreen() {
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const snapshotMessages = extractSnapshotMessages(payload);
         const snapshotSeq = buildSnapshotSequence(payload);
+        const snapshotQueuedMessages = extractQueuedMessages(payload);
         const targetConversationId = String(activeConversationIdRef.current || "").trim();
         if (isLegacyChatUnsupportedPayload(payload)) {
             setLegacyChatUnsupported(true);
+        }
+        if (snapshotQueuedMessages) {
+            setQueuedMessages(snapshotQueuedMessages);
         }
         if (snapshotMessages) {
             const normalizedSnapshot = normalizeMessagesForState(snapshotMessages);
@@ -3078,6 +3104,21 @@ export default function ChatScreen() {
             void runRefresh();
         }, force ? REALTIME_SNAPSHOT_FALLBACK_FORCE_DEBOUNCE_MS : REALTIME_SNAPSHOT_FALLBACK_DEBOUNCE_MS);
     }, [applyRealtimeSnapshotPayload, authorizedFetch]);
+
+    const upsertQueuedMessage = useCallback((item: QueuedChatMessage | null | undefined) => {
+        const id = String(item?.id || "").trim();
+        if (!id || !item) {
+            return;
+        }
+        const state = String(item.state || "pending").trim();
+        setQueuedMessages((current) => {
+            const without = current.filter((candidate) => candidate.id !== id);
+            if (["cancelled", "consumed", "injected"].includes(state)) {
+                return without;
+            }
+            return [...without, { ...item, state }].sort((a, b) => Number(a.ordinal || 0) - Number(b.ordinal || 0));
+        });
+    }, []);
 
     const handleRealtimeEvent = useCallback((eventName: string, payload: unknown) => {
         const upstreamDiagnostics = readRealtimeDiagnostics(payload);
@@ -3244,8 +3285,47 @@ export default function ChatScreen() {
                 || normalized.type === "error"
                 || normalized.name === "ask_user"
                 || normalized.name === "approval_requested"
+                || normalized.name === "human_guidance"
                 || normalized.name === "artifact_recorded";
             queueRuntimeMessageEvent(normalized, shouldFlushImmediately);
+        }
+
+        if (normalized.name === "human_guidance") {
+            const queuePayload = normalized.data?.queueMessage;
+            const queueMessage = queuePayload && typeof queuePayload === "object"
+                ? queuePayload as QueuedChatMessage
+                : null;
+            if (queueMessage) {
+                upsertQueuedMessage(queueMessage);
+            }
+            const guidanceSummary = String(
+                normalized.data?.summary
+                || queueMessage?.content
+                || normalized.content
+                || tRef.current("src.screens.chatscreen.mid_run_guidance_updated"),
+            ).trim();
+            appendRuntimeTimeline(
+                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildRuntimeTimelineEntry(
+                    "chat",
+                    normalized.topic || "human_guidance.updated",
+                    guidanceSummary,
+                    {
+                        id: normalized.event_id || `human-guidance:${normalized.seq || Date.now()}`,
+                        seq: normalized.seq,
+                        kind: "governance",
+                        timestamp: normalized.ts || nowMs,
+                        actorLabel: normalized.actorLabel || tRef.current("src.components.chat.messagebubble.you"),
+                        status: String(queueMessage?.state || normalized.data?.state || "pending"),
+                    },
+                ),
+            );
+            if (shouldFallbackRefresh) {
+                scheduleRealtimeSnapshotRefresh(
+                    normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
+                    { force: normalized.topic === "human_guidance.injected" },
+                );
+            }
+            return;
         }
 
         if (normalized.type === "agent_start") {
@@ -3812,6 +3892,7 @@ export default function ChatScreen() {
         patchAssistantTaskShell,
         queueRuntimeMessageEvent,
         scheduleRealtimeSnapshotRefresh,
+        upsertQueuedMessage,
     ]);
 
     const startRealtime = useCallback(async (conversationId: string, transitionToken?: number) => {
@@ -3933,6 +4014,7 @@ export default function ChatScreen() {
             messagesRef.current = normalized;
             messageConversationIdRef.current = conversationId;
             setMessages(normalized);
+            setQueuedMessages(extractQueuedMessages(detail) || []);
             applyConversationProjection(detail);
             if (Array.isArray(processSurface.processes) && processSurface.processes.length > 0) {
                 applySessionProcessSurface(processSurface.processes);
@@ -4508,6 +4590,69 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, runActionBusy, t]);
 
+    const handlePromoteQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
+        const id = String(item.id || "").trim();
+        if (!id) {
+            return;
+        }
+        try {
+            const result = await promoteQueuedChatMessage(authorizedFetch, id);
+            upsertQueuedMessage(result.queuedMessage || { ...item, state: "promoted" });
+        } catch (error) {
+            Alert.alert(
+                t("src.screens.chatscreen.promote_guidance_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_promote_guidance"),
+            );
+        }
+    }, [authorizedFetch, t, upsertQueuedMessage]);
+
+    const handleCancelQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
+        const id = String(item.id || "").trim();
+        if (!id) {
+            return;
+        }
+        try {
+            const result = await cancelQueuedChatMessage(authorizedFetch, id);
+            upsertQueuedMessage(result.queuedMessage || { ...item, state: "cancelled" });
+        } catch (error) {
+            Alert.alert(
+                t("src.screens.chatscreen.cancel_queued_message_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_cancel_queued_message"),
+            );
+        }
+    }, [authorizedFetch, t, upsertQueuedMessage]);
+
+    const handleOpenQueuedMessageEditor = useCallback((item: QueuedChatMessage) => {
+        if (String(item.state || "pending").trim() !== "pending") {
+            return;
+        }
+        setEditingQueuedMessage(item);
+        setQueuedMessageEditText(String(item.content || ""));
+    }, []);
+
+    const handleSaveQueuedMessageEdit = useCallback(async () => {
+        const item = editingQueuedMessage;
+        const id = String(item?.id || "").trim();
+        const nextContent = queuedMessageEditText.trim();
+        if (!id || !item || !nextContent || queuedMessageEditBusy) {
+            return;
+        }
+        setQueuedMessageEditBusy(true);
+        try {
+            const result = await updateQueuedChatMessage(authorizedFetch, id, nextContent);
+            upsertQueuedMessage(result.queuedMessage || { ...item, content: nextContent, state: "pending" });
+            setEditingQueuedMessage(null);
+            setQueuedMessageEditText("");
+        } catch (error) {
+            Alert.alert(
+                t("src.screens.chatscreen.edit_queued_message_failed"),
+                error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_edit_queued_message"),
+            );
+        } finally {
+            setQueuedMessageEditBusy(false);
+        }
+    }, [authorizedFetch, editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
+
     const projection = useMemo(
         () => buildPhoneChatProjection({
             conversations,
@@ -4917,6 +5062,26 @@ export default function ChatScreen() {
                 throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
             }
             submissionAccepted = true;
+            if (submitResult.queued && submitResult.queuedMessage) {
+                upsertQueuedMessage(submitResult.queuedMessage);
+                setMessages((current) => {
+                    const next = normalizeMessagesForState(current.filter((message) =>
+                        message.id !== optimisticAssistantMessageId && message.id !== optimisticUserMessageId,
+                    ));
+                    realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                        next,
+                        PHONE_STREAM_LIFECYCLE_OPTIONS,
+                    );
+                    lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                    messagesRef.current = next;
+                    return next;
+                });
+                setRuntime((current) => ({
+                    ...current,
+                    label: t("src.screens.chatscreen.message_queued"),
+                }));
+                return;
+            }
             const acceptedUserMessage = normalizeAcceptedUserMessage(submitResult.userMessage, userMessage);
             if (acceptedUserMessage) {
                 setMessages((current) => {
@@ -5011,6 +5176,7 @@ export default function ChatScreen() {
         taskPlanningMode,
         t,
         uploadedFiles,
+        upsertQueuedMessage,
     ]);
 
     if (status === "booting") {
@@ -5074,6 +5240,10 @@ export default function ChatScreen() {
     const accessoryBottomOffset = bottomLayerHeight > 0 ? bottomLayerHeight + 8 : 144;
     const hudBottomOffset = accessoryBottomOffset + 10;
     const pickerBottomOffset = accessoryBottomOffset;
+    const visibleQueuedMessages = queuedMessages.filter((item) => {
+        const state = String(item.state || "pending").trim().toLowerCase();
+        return state === "pending" || state === "promoted";
+    });
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
         setSelectedCommand(command);
@@ -5158,6 +5328,74 @@ export default function ChatScreen() {
                 }
             }}
         >
+            {activeConversationId && visibleQueuedMessages.length > 0 ? (
+                <GlassCard style={[styles.queuedMessageStrip, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                    <View style={styles.queuedMessageStripHeader}>
+                        <Text style={[styles.queuedMessageStripTitle, { color: palette.text }]}>
+                            {t("src.screens.chatscreen.queued_messages")}
+                        </Text>
+                        <Text style={[styles.queuedMessageStripHint, { color: palette.textMuted }]}>
+                            {t("src.screens.chatscreen.queued_messages_waiting_hint")}
+                        </Text>
+                    </View>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.queuedMessageList}
+                        keyboardShouldPersistTaps="handled"
+                    >
+                        {visibleQueuedMessages.map((item) => {
+                            const state = String(item.state || "pending").trim().toLowerCase();
+                            const promoted = state === "promoted";
+                            return (
+                                <View key={item.id} style={[styles.queuedMessageChip, { backgroundColor: palette.surface, borderColor: promoted ? palette.primary : palette.border }]}>
+                                    <View style={styles.queuedMessageChipHeader}>
+                                        <Text style={[styles.queuedMessageState, { color: promoted ? palette.primary : palette.textMuted }]}>
+                                            {promoted
+                                                ? t("src.screens.chatscreen.queued_message_promoted")
+                                                : t("src.screens.chatscreen.queued_message_pending")}
+                                        </Text>
+                                        <Text style={[styles.queuedMessageOrdinal, { color: palette.textSoft }]}>
+                                            #{Number(item.ordinal || 1)}
+                                        </Text>
+                                    </View>
+                                    <Text style={[styles.queuedMessagePreview, { color: palette.text }]} numberOfLines={2}>
+                                        {item.content || t("src.screens.chatscreen.empty_queued_message")}
+                                    </Text>
+                                    <View style={styles.queuedMessageActions}>
+                                        <Pressable
+                                            style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
+                                            disabled={promoted}
+                                            onPress={() => handleOpenQueuedMessageEditor(item)}
+                                        >
+                                            <Text style={[styles.queuedMessageActionText, { color: palette.textMuted }]}>
+                                                {t("src.screens.chatscreen.edit")}
+                                            </Text>
+                                        </Pressable>
+                                        <Pressable
+                                            style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
+                                            disabled={promoted}
+                                            onPress={() => void handlePromoteQueuedMessage(item)}
+                                        >
+                                            <Text style={[styles.queuedMessageActionText, { color: palette.primary }]}>
+                                                {t("src.screens.chatscreen.promote_guidance")}
+                                            </Text>
+                                        </Pressable>
+                                        <Pressable
+                                            style={[styles.queuedMessageActionButton, { borderColor: palette.border }]}
+                                            onPress={() => void handleCancelQueuedMessage(item)}
+                                        >
+                                            <Text style={[styles.queuedMessageActionText, { color: palette.danger }]}>
+                                                {t("src.screens.chatscreen.cancel")}
+                                            </Text>
+                                        </Pressable>
+                                    </View>
+                                </View>
+                            );
+                        })}
+                    </ScrollView>
+                </GlassCard>
+            ) : null}
             {activeConversationId ? (
                 <Composer
                     bodyValue={input}
@@ -5536,6 +5774,51 @@ export default function ChatScreen() {
                     onClose={handleGovernanceApprovalDismiss}
                 />
 
+                <Modal visible={Boolean(editingQueuedMessage)} transparent animationType="fade" onRequestClose={() => setEditingQueuedMessage(null)}>
+                    <View style={[styles.scopeSheetOverlay, { backgroundColor: palette.overlay }]}>
+                        <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditingQueuedMessage(null)} />
+                        <GlassCard style={[styles.queuedEditCard, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                            <Text style={[styles.queuedEditTitle, { color: palette.text }]}>
+                                {t("src.screens.chatscreen.edit_queued_message")}
+                            </Text>
+                            <Text style={[styles.queuedEditSubtitle, { color: palette.textMuted }]}>
+                                {t("src.screens.chatscreen.edit_queued_message_hint")}
+                            </Text>
+                            <TextInput
+                                value={queuedMessageEditText}
+                                onChangeText={setQueuedMessageEditText}
+                                multiline
+                                placeholder={t("src.screens.chatscreen.queued_message_placeholder")}
+                                placeholderTextColor={palette.textSoft}
+                                style={[styles.queuedEditInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border }]}
+                            />
+                            <View style={styles.queuedEditActions}>
+                                <Pressable
+                                    style={[styles.queuedEditButton, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                    onPress={() => setEditingQueuedMessage(null)}
+                                >
+                                    <Text style={[styles.queuedEditButtonText, { color: palette.textMuted }]}>
+                                        {t("src.screens.chatscreen.cancel")}
+                                    </Text>
+                                </Pressable>
+                                <Pressable
+                                    style={[styles.queuedEditButton, { backgroundColor: palette.primary, borderColor: palette.primary, opacity: queuedMessageEditText.trim() ? 1 : 0.56 }]}
+                                    disabled={!queuedMessageEditText.trim() || queuedMessageEditBusy}
+                                    onPress={() => void handleSaveQueuedMessageEdit()}
+                                >
+                                    {queuedMessageEditBusy ? (
+                                        <ActivityIndicator size="small" color="#FFFFFF" />
+                                    ) : (
+                                        <Text style={styles.queuedEditPrimaryText}>
+                                            {t("src.screens.chatscreen.save")}
+                                        </Text>
+                                    )}
+                                </Pressable>
+                            </View>
+                        </GlassCard>
+                    </View>
+                </Modal>
+
                 <Modal visible={workspaceInfoOpen} transparent animationType="fade" onRequestClose={() => setWorkspaceInfoOpen(false)}>
                     <View style={[styles.scopeSheetOverlay, { backgroundColor: palette.overlay }]}>
                         <Pressable style={StyleSheet.absoluteFill} onPress={() => setWorkspaceInfoOpen(false)} />
@@ -5845,6 +6128,130 @@ const styles = StyleSheet.create({
     },
     composerDockLandscape: {
         alignSelf: "stretch",
+    },
+    queuedMessageStrip: {
+        borderWidth: 1,
+        borderRadius: 18,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginBottom: 8,
+        gap: 8,
+    },
+    queuedMessageStripHeader: {
+        flexDirection: "row",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        gap: 10,
+    },
+    queuedMessageStripTitle: {
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    queuedMessageStripHint: {
+        flex: 1,
+        textAlign: "right",
+        fontSize: 10,
+        fontWeight: "700",
+    },
+    queuedMessageList: {
+        gap: 8,
+        paddingRight: 4,
+    },
+    queuedMessageChip: {
+        width: 236,
+        borderWidth: 1,
+        borderRadius: 14,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        gap: 6,
+    },
+    queuedMessageChipHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+    },
+    queuedMessageState: {
+        fontSize: 10,
+        fontWeight: "900",
+        textTransform: "uppercase",
+        letterSpacing: 0.6,
+    },
+    queuedMessageOrdinal: {
+        fontSize: 10,
+        fontWeight: "800",
+    },
+    queuedMessagePreview: {
+        fontSize: 12,
+        lineHeight: 17,
+        fontWeight: "700",
+    },
+    queuedMessageActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    queuedMessageActionButton: {
+        minHeight: 28,
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 9,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    queuedMessageActionText: {
+        fontSize: 10,
+        fontWeight: "900",
+    },
+    queuedEditCard: {
+        width: "90%",
+        maxWidth: 420,
+        borderRadius: 22,
+        borderWidth: 1,
+        padding: 16,
+        gap: 10,
+    },
+    queuedEditTitle: {
+        fontSize: 18,
+        fontWeight: "900",
+    },
+    queuedEditSubtitle: {
+        fontSize: 12,
+        lineHeight: 18,
+        fontWeight: "700",
+    },
+    queuedEditInput: {
+        minHeight: 124,
+        borderRadius: 16,
+        borderWidth: 1,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        textAlignVertical: "top",
+        fontSize: 14,
+        lineHeight: 20,
+        fontWeight: "700",
+    },
+    queuedEditActions: {
+        flexDirection: "row",
+        justifyContent: "flex-end",
+        gap: 8,
+    },
+    queuedEditButton: {
+        minHeight: 38,
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 16,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    queuedEditButtonText: {
+        fontSize: 12,
+        fontWeight: "900",
+    },
+    queuedEditPrimaryText: {
+        color: "#FFFFFF",
+        fontSize: 12,
+        fontWeight: "900",
     },
     hudOverlayStack: {
         position: "absolute",

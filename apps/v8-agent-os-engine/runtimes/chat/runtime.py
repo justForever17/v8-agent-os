@@ -2471,6 +2471,64 @@ class ChatRuntime:
         runner_bundle.diagnostics = diagnostics
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
+    async def create_guidance_bundle(
+        self,
+        *,
+        chat_run: ChatRunContext,
+        previous_bundle: ChatExecutionBundle,
+        queue_item: dict[str, Any],
+    ) -> ChatExecutionBundle | None:
+        snapshot = await supervisor_runner.get_state_snapshot(previous_bundle.runner_bundle)
+        if isinstance(snapshot, dict):
+            state_messages = list(snapshot.get("messages") or [])
+        else:
+            state_messages = []
+        if not state_messages:
+            state_messages = list(chat_run.lc_messages or [])
+        if not state_messages:
+            return None
+
+        guidance_content = str(queue_item.get("content") or "").strip()
+        if not guidance_content:
+            return None
+        guidance_envelope = (
+            "[V8OS 运行中用户引导]\n"
+            "用户在当前任务运行中追加了这条引导。请把它视为高优先级纠偏信息："
+            "不要重启整个任务，先简短确认理解，再调整后续计划和下一步工具调用。"
+            "如果当前工具刚完成，请基于已有结果继续。\n\n"
+            f"用户引导：{guidance_content}"
+        )
+        state_messages.append(
+            HumanMessage(
+                content=guidance_envelope,
+                id=f"human_guidance_{queue_item.get('id') or uuid.uuid4().hex}",
+            )
+        )
+        snapshot_dict = snapshot if isinstance(snapshot, dict) else {}
+        runner_bundle = await supervisor_runner.create_execution_bundle(
+            config=chat_run.request.config,
+            messages=state_messages,
+            session_id=chat_run.session_id,
+            planner_plan=snapshot_dict.get("planner_plan") if isinstance(snapshot_dict.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
+            engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
+            task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
+            explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
+            context_mentions=snapshot_dict.get("context_mentions") if isinstance(snapshot_dict.get("context_mentions"), list) else chat_run.prepared.context_mentions,
+            recursion_limit=self._recursion_limit(),
+            transport=chat_run.transport,
+        )
+        diagnostics = dict(runner_bundle.diagnostics or {})
+        diagnostics.update(
+            {
+                "guidanceQueueMessageId": queue_item.get("id"),
+                "guidanceInjected": True,
+                "guidanceChars": len(guidance_content),
+                "messageCount": len(state_messages),
+            }
+        )
+        runner_bundle.diagnostics = diagnostics
+        return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
+
     async def resolve_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         if chat_run.is_resume_request:
             return await self.create_resume_bundle(chat_run=chat_run)
@@ -2767,6 +2825,74 @@ class ChatRuntime:
             agent_id=agent_id or stream_state.current_agent,
             node=runtime_node or stream_state.current_agent,
         )
+
+    def _emit_human_guidance_injected(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        queue_item: dict[str, Any],
+    ) -> dict[str, Any]:
+        message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        queue_id = str(queue_item.get("id") or "").strip() or uuid.uuid4().hex
+        content = str(queue_item.get("content") or "").strip()
+        trace_group_id = f"{message_id}:human_guidance:{queue_id}"
+        node = {
+            "id": f"{message_id}:human_guidance:{queue_id}",
+            "kind": "governance",
+            "governanceType": "human_guidance",
+            "question": content,
+            "status": "injected",
+            "reason": "运行中用户引导",
+            "topic": "human_guidance.injected",
+            "timestamp": self._now_timestamp_ms(),
+            "agentType": "user",
+            "ownerRuntimeId": "chat",
+            "ownerAgentKind": "supervisor",
+            "ownerAgentId": "supervisor",
+            "ownerStreamKey": f"human_guidance:{queue_id}",
+            "traceGroupId": trace_group_id,
+            "displayInMessage": True,
+            "requestInfo": {
+                "queueMessageId": queue_id,
+                "clientMessageId": queue_item.get("client_message_id"),
+                "state": "injected",
+            },
+        }
+        payload = {
+            "queueMessage": {
+                "id": queue_id,
+                "sessionId": queue_item.get("session_id"),
+                "runId": queue_item.get("run_id"),
+                "clientMessageId": queue_item.get("client_message_id"),
+                "content": content,
+                "state": "injected",
+                "createdAt": queue_item.get("created_at"),
+                "promotedAt": queue_item.get("promoted_at"),
+            },
+            "content": content,
+            "state": "injected",
+            "summary": "运行中用户引导已注入当前 Supervisor 主链。",
+            "traceGroupId": trace_group_id,
+            "surfaceTargets": ["message", "runtime_card"],
+            "targets": ["message", "runtime_card"],
+            "displayInMessage": True,
+        }
+        event = self._emit_message_targeted_runtime_event(
+            chat_run,
+            stream_state,
+            topic="human_guidance.injected",
+            payload=payload,
+            node=node,
+            agent_id=None,
+            runtime_node="human_guidance_queue",
+            state="streaming",
+        )
+        db.update_chat_user_message_queue_item(
+            queue_id,
+            state="injected",
+            timestamp_field="injected_at",
+        )
+        return event
 
     @staticmethod
     def _runtime_topic_prefix(runtime_id: str) -> str:
@@ -6166,6 +6292,7 @@ class ChatRuntime:
 
                 event_stream = self.stream_runner_events(execution_bundle)
                 try:
+                    guidance_signal: dict[str, Any] | None = None
                     with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
                         async with aclosing(event_stream):
                             stream_iter = event_stream.__aiter__()
@@ -6190,6 +6317,9 @@ class ChatRuntime:
                                         continue
                                     try:
                                         control_signal = self.consume_control_signal(chat_run.active_run_id)
+                                        if control_signal and control_signal.get("command") == "guidance":
+                                            guidance_signal = control_signal
+                                            break
                                         if self.should_stop_stream(control_signal):
                                             interrupted_signal = control_signal
                                             break
@@ -6210,6 +6340,49 @@ class ChatRuntime:
                                             stream_state.watchdog.finish_event(event)
                             finally:
                                 await self._cancel_pending_stream_event_task(stream_state)
+                    if guidance_signal:
+                        for flushed_event in await self._flush_pending_text_aggregator(
+                            chat_run,
+                            stream_state,
+                            from_timer=False,
+                            final=True,
+                        ):
+                            yield flushed_event
+                        queue_id = str((guidance_signal.get("payload") or {}).get("queueMessageId") or "").strip()
+                        queue_item = db.get_chat_user_message_queue_item(queue_id) if queue_id else None
+                        if not queue_item:
+                            chat_run.emit_runtime_event(
+                                "human_guidance.missed",
+                                {
+                                    "queueMessageId": queue_id or None,
+                                    "failureClass": "queued_message_missing",
+                                    "summary": "运行中引导信号已收到，但队列项不存在或已被处理。",
+                                },
+                                agent_id=None,
+                                node="human_guidance_queue",
+                            )
+                            continuation_bundle = None
+                            break
+                        self._emit_human_guidance_injected(chat_run, stream_state, queue_item)
+                        guidance_bundle = await self.create_guidance_bundle(
+                            chat_run=chat_run,
+                            previous_bundle=execution_bundle,
+                            queue_item=queue_item,
+                        )
+                        if guidance_bundle is None:
+                            chat_run.emit_runtime_event(
+                                "human_guidance.failed",
+                                {
+                                    "queueMessageId": queue_id,
+                                    "failureClass": "guidance_continuation_unavailable",
+                                    "summary": "运行中引导已记录，但无法创建续跑执行包。",
+                                },
+                                agent_id=None,
+                                node="human_guidance_queue",
+                            )
+                            break
+                        continuation_bundle = guidance_bundle
+                        continue
                     break
                 except GraphRecursionError:
                     if continuation_count >= max_continuations:

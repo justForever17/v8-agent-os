@@ -525,6 +525,9 @@ function resolveTypedEventRuntimeId(type: string, name: string, payload: JsonRec
   if (name === "artifact_recorded" || name === "runtime_progress" || name === "runtime_event" || name === "run_controlled" || name === "safety_blocked" || name === "lane_updated" || name === "context_governance_changed") {
     return "chat";
   }
+  if (name === "human_guidance") {
+    return "chat";
+  }
   return null;
 }
 
@@ -564,6 +567,9 @@ function resolveTypedEventTargets(type: string, name: string): SessionRuntimeEve
     return ["runtime_card", "hud", "process", "terminal"];
   }
   if (name === "run_controlled" || name === "lane_updated") {
+    return ["runtime_card", "hud"];
+  }
+  if (name === "human_guidance") {
     return ["runtime_card", "hud"];
   }
   if (name === "safety_blocked") {

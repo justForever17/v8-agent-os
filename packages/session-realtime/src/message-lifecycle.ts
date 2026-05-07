@@ -107,7 +107,7 @@ export type SessionStreamExecutionNode = {
 export type SessionStreamGovernanceNode = {
   id: string;
   kind: "governance";
-  governanceType: "ask_user" | "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance" | "lane_updated";
+  governanceType: "ask_user" | "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance" | "lane_updated" | "human_guidance";
   timestamp: number;
   agentName?: string;
   agentAvatar?: string;
@@ -1264,6 +1264,47 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
           : undefined,
       timestamp: Date.now(),
       ...nextActiveAgentProfile,
+    });
+  } else if (event.type === "custom_event" && event.name === "human_guidance") {
+    const eventData = asRecord(event.data);
+    const targets = Array.isArray(event.targets) ? event.targets : [];
+    if (!targets.includes("message") && eventDisplayInMessage(event) !== true) {
+      return {
+        currentAiMsg: nextCurrentAiMsg,
+        activeAgentProfile: nextActiveAgentProfile,
+      };
+    }
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const queueMessage = asRecord(eventData.queueMessage);
+    const content = String(
+      eventData.content
+      || queueMessage.content
+      || event.content
+      || eventData.summary
+      || "",
+    ).trim();
+    const nodeId = event.node_id || String(eventData.node_id || "").trim() || nextId("node", options?.createId);
+    upsertTimelineNode(current, {
+      id: nodeId,
+      kind: "governance",
+      governanceType: "human_guidance",
+      topic: typeof eventData.topic === "string" ? eventData.topic : "human_guidance.injected",
+      status: typeof eventData.state === "string"
+        ? eventData.state
+        : typeof eventData.status === "string"
+          ? eventData.status
+          : "injected",
+      reason: typeof eventData.summary === "string" ? eventData.summary : "human_guidance",
+      question: content,
+      requestInfo: {
+        queueMessageId: queueMessage.id,
+        clientMessageId: queueMessage.clientMessageId,
+        state: queueMessage.state || eventData.state,
+      },
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+      ...ownerFields,
     });
   } else if (event.type === "done") {
     if (nextCurrentAiMsg) {

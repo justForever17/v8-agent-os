@@ -149,6 +149,7 @@ export type SessionRuntimeEventName =
   | "approval_resolved"
   | "safety_blocked"
   | "lane_updated"
+  | "human_guidance"
   | "context_governance_changed"
   | "run_controlled"
   | "done"

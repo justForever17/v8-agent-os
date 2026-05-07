@@ -245,7 +245,8 @@ export type PhoneUiGovernanceNode = PhoneUiTimelineNodeBase & {
         | "run_controlled"
         | "safety_blocked"
         | "context_governance"
-        | "lane_updated";
+        | "lane_updated"
+        | "human_guidance";
     approvalId?: string;
     approvalKind?: string;
     interactionKind?: string;
@@ -590,10 +591,28 @@ export type ChatStreamEvent = {
 
 export type ChatSubmitResponse = {
     accepted?: boolean;
+    queued?: boolean;
     session_id?: string;
     conversationId?: string;
     clientMessageId?: string;
     run_id?: string;
     runId?: string;
+    queuedMessage?: QueuedChatMessage | null;
     userMessage?: Record<string, unknown> | null;
+};
+
+export type QueuedChatMessage = {
+    id: string;
+    sessionId?: string;
+    runId?: string;
+    clientMessageId?: string;
+    content: string;
+    state?: "pending" | "promoted" | "injected" | "consumed" | "cancelled" | string;
+    ordinal?: number;
+    createdAt?: string;
+    updatedAt?: string;
+    promotedAt?: string;
+    injectedAt?: string;
+    consumedAt?: string;
+    cancelledAt?: string;
 };

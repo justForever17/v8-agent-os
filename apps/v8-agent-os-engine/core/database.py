@@ -234,6 +234,32 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS chat_user_message_queue (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT,
+                    client_message_id TEXT,
+                    content TEXT NOT NULL,
+                    attachments_json TEXT,
+                    file_urls_json TEXT,
+                    request_json TEXT,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    ordinal INTEGER NOT NULL DEFAULT 0,
+                    promoted_at TIMESTAMP,
+                    injected_at TIMESTAMP,
+                    consumed_at TIMESTAMP,
+                    consumed_run_id TEXT,
+                    cancelled_at TIMESTAMP,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL,
+                    FOREIGN KEY (consumed_run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS skill_safety_reviews (
                     id TEXT PRIMARY KEY,
                     skill_id TEXT,
@@ -773,6 +799,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_records_updated_at ON session_lane_records (updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_session_id ON session_lane_queue_entries (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_run_id ON session_lane_queue_entries (run_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_user_message_queue_session_state ON chat_user_message_queue (session_id, state, ordinal ASC, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_user_message_queue_run_id ON chat_user_message_queue (run_id, state, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_approvals_session_id ON pending_approvals (session_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_session_id ON ask_user_interactions (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_run_id ON ask_user_interactions (run_id, created_at DESC)')
@@ -1863,6 +1891,194 @@ class DatabaseManager:
                 data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
                 rows.append(data)
             return rows
+
+    # --- Chat User Message Queue Operations ---
+
+    def _hydrate_chat_user_message_queue_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["attachments"] = json.loads(data["attachments_json"]) if data.get("attachments_json") else []
+        data["fileUrls"] = json.loads(data["file_urls_json"]) if data.get("file_urls_json") else []
+        data["request"] = json.loads(data["request_json"]) if data.get("request_json") else {}
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        return data
+
+    def _next_chat_user_message_queue_ordinal(self, conn, session_id: str) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal FROM chat_user_message_queue WHERE session_id = ?',
+            (session_id,),
+        )
+        row = cursor.fetchone()
+        return int(row["next_ordinal"]) if row else 1
+
+    def add_chat_user_message_queue_item(
+        self,
+        *,
+        queue_id: str,
+        session_id: str,
+        run_id: Optional[str],
+        client_message_id: Optional[str],
+        content: str,
+        attachments: Optional[list[dict[str, Any]]] = None,
+        file_urls: Optional[list[str]] = None,
+        request_payload: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                ordinal = self._next_chat_user_message_queue_ordinal(conn, session_id)
+                conn.execute(
+                    '''
+                    INSERT INTO chat_user_message_queue
+                    (id, session_id, run_id, client_message_id, content, attachments_json, file_urls_json, request_json, state, ordinal, metadata_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                    ''',
+                    (
+                        queue_id,
+                        session_id,
+                        run_id,
+                        client_message_id,
+                        content,
+                        json.dumps(to_jsonable(attachments or []), ensure_ascii=False),
+                        json.dumps(to_jsonable(file_urls or []), ensure_ascii=False),
+                        json.dumps(to_jsonable(request_payload or {}), ensure_ascii=False),
+                        ordinal,
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.execute('UPDATE sessions SET updated_at = ? WHERE id = ?', (now_iso, session_id))
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_chat_user_message_queue_item(queue_id) or {}
+
+    def get_chat_user_message_queue_item(self, queue_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(queue_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM chat_user_message_queue WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._hydrate_chat_user_message_queue_row(dict(row))
+
+    def list_chat_user_message_queue(
+        self,
+        *,
+        session_id: str,
+        states: Optional[list[str]] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        normalized_states = [str(item).strip() for item in (states or []) if str(item).strip()]
+        params: list[Any] = [session_id]
+        query = 'SELECT * FROM chat_user_message_queue WHERE session_id = ?'
+        if normalized_states:
+            placeholders = ",".join("?" for _ in normalized_states)
+            query += f' AND state IN ({placeholders})'
+            params.extend(normalized_states)
+        query += ' ORDER BY ordinal ASC, created_at ASC LIMIT ?'
+        params.append(int(limit))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_chat_user_message_queue_row(dict(row)) for row in cursor.fetchall()]
+
+    def update_chat_user_message_queue_item(
+        self,
+        queue_id: str,
+        *,
+        content: Optional[str] = None,
+        state: Optional[str] = None,
+        run_id: Optional[str] = None,
+        consumed_run_id: Optional[str] = None,
+        metadata_updates: Optional[dict[str, Any]] = None,
+        timestamp_field: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        existing = self.get_chat_user_message_queue_item(queue_id)
+        if not existing:
+            return None
+        allowed_timestamp_fields = {"promoted_at", "injected_at", "consumed_at", "cancelled_at"}
+        now_iso = utc_now_iso()
+        next_metadata = dict(existing.get("metadata") or {})
+        if metadata_updates:
+            next_metadata.update(metadata_updates)
+
+        assignments = ["updated_at = ?", "metadata_json = ?"]
+        values: list[Any] = [now_iso, json.dumps(to_jsonable(next_metadata), ensure_ascii=False)]
+        if content is not None:
+            assignments.append("content = ?")
+            values.append(content)
+        if state is not None:
+            assignments.append("state = ?")
+            values.append(state)
+        if run_id is not None:
+            assignments.append("run_id = ?")
+            values.append(run_id)
+        if consumed_run_id is not None:
+            assignments.append("consumed_run_id = ?")
+            values.append(consumed_run_id)
+        if timestamp_field in allowed_timestamp_fields:
+            assignments.append(f"{timestamp_field} = ?")
+            values.append(now_iso)
+        values.append(queue_id)
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    f"UPDATE chat_user_message_queue SET {', '.join(assignments)} WHERE id = ?",
+                    tuple(values),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_chat_user_message_queue_item(queue_id)
+
+    def claim_next_pending_chat_user_message(self, *, session_id: str, consumed_run_id: str) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT *
+                    FROM chat_user_message_queue
+                    WHERE session_id = ? AND state = 'pending'
+                    ORDER BY ordinal ASC, created_at ASC
+                    LIMIT 1
+                    ''',
+                    (session_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                queue_id = row["id"]
+                conn.execute(
+                    '''
+                    UPDATE chat_user_message_queue
+                    SET state = 'consumed',
+                        consumed_at = ?,
+                        consumed_run_id = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (now_iso, consumed_run_id, now_iso, queue_id),
+                )
+                conn.commit()
+                data = dict(row)
+                data["state"] = "consumed"
+                data["consumed_at"] = now_iso
+                data["consumed_run_id"] = consumed_run_id
+                data["updated_at"] = now_iso
+                return self._hydrate_chat_user_message_queue_row(data)
+
+        return self._run_write_with_retry(_write)
 
     def add_runtime_artifact(
         self,

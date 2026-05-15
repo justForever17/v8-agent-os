@@ -1,4 +1,5 @@
 -r minimal.txt
+soundcard>=0.4.3
 
 robotframework
 robotframework-seleniumlibrary

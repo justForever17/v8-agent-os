@@ -90,6 +90,13 @@ type SupervisorConfigRegistryPayload = {
     } | null;
     delegation?: {
       externalWorkers?: unknown[];
+      recursive?: {
+        enabled?: boolean;
+        maxDelegationDepth?: number;
+        maxChildrenPerDelegation?: number;
+        maxTotalDelegationNodes?: number;
+        maxConcurrentDelegations?: number;
+      };
     } | null;
     specialistRegistry?: {
       familyModeEnabled?: boolean;
@@ -266,6 +273,18 @@ const CLAUDE_CODE_COMMAND_TEMPLATE = 'claude -p --permission-mode acceptEdits --
 const TEMPERATURE_PRESET = 0.7;
 const MIN_CONFIG_TEMPERATURE = 0.05;
 const MAX_SPECIALIST_FAMILY_MEMBERS = 50;
+const DEFAULT_RECURSIVE_DELEGATION = {
+  enabled: true,
+  maxDelegationDepth: 10,
+  maxChildrenPerDelegation: 10,
+  maxTotalDelegationNodes: 100,
+  maxConcurrentDelegations: 10
+};
+const clampInt = (value: unknown, fallback: number, min: number, max: number) => {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+};
 const DEFAULT_SPECIALIST_FAMILIES: SubagentFamilySummary[] = [{
   familyId: "engineering",
   displayName: "Engineering",
@@ -584,6 +603,11 @@ export default function SubagentsPage() {
   const [researchDefaultShards, setResearchDefaultShards] = useState(10);
   const [researchMaxShards, setResearchMaxShards] = useState(30);
   const [researchMaxRounds, setResearchMaxRounds] = useState(5);
+  const [recursiveDelegationEnabled, setRecursiveDelegationEnabled] = useState(DEFAULT_RECURSIVE_DELEGATION.enabled);
+  const [recursiveMaxDepth, setRecursiveMaxDepth] = useState(DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth);
+  const [recursiveMaxChildren, setRecursiveMaxChildren] = useState(DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation);
+  const [recursiveMaxTotalNodes, setRecursiveMaxTotalNodes] = useState(DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes);
+  const [recursiveMaxConcurrent, setRecursiveMaxConcurrent] = useState(DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations);
   const [isLoading, setIsLoading] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -591,6 +615,7 @@ export default function SubagentsPage() {
   const [isSavingSubagentTemperature, setIsSavingSubagentTemperature] = useState(false);
   const [isSavingSpecialistRegistry, setIsSavingSpecialistRegistry] = useState(false);
   const [isSavingResearch, setIsSavingResearch] = useState(false);
+  const [isSavingRecursiveDelegation, setIsSavingRecursiveDelegation] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [form, setForm] = useState<AgentFormState>(DEFAULT_FORM_STATE);
   const [toolPanels, setToolPanels] = useState<Record<ToolPanelKey, boolean>>({
@@ -822,6 +847,12 @@ export default function SubagentsPage() {
         setResearchDefaultShards(Math.max(1, Math.min(30, Number(research.defaultShardCount || 10) || 10)));
         setResearchMaxShards(Math.max(1, Math.min(30, Number(research.maxShardCount || 30) || 30)));
         setResearchMaxRounds(Math.max(1, Math.min(5, Number(research.maxRounds || 5) || 5)));
+        const recursive = data?.data?.delegation?.recursive || {};
+        setRecursiveDelegationEnabled(recursive.enabled !== false);
+        setRecursiveMaxDepth(clampInt(recursive.maxDelegationDepth, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100));
+        setRecursiveMaxChildren(clampInt(recursive.maxChildrenPerDelegation, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50));
+        setRecursiveMaxTotalNodes(clampInt(recursive.maxTotalDelegationNodes, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000));
+        setRecursiveMaxConcurrent(clampInt(recursive.maxConcurrentDelegations, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50));
         syncExternalWorkers(data?.data?.delegation?.externalWorkers);
       }
       if (toolSurfaceRes.ok) {
@@ -1193,6 +1224,62 @@ export default function SubagentsPage() {
       setIsSavingResearch(false);
     }
   }, [researchDefaultShards, researchEnabled, researchMaxRounds, researchMaxShards, supervisorDomainData, t, toast]);
+  const handleSaveRecursiveDelegationConfig = useCallback(async () => {
+    setIsSavingRecursiveDelegation(true);
+    const nextDepth = clampInt(recursiveMaxDepth, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100);
+    const nextChildren = clampInt(recursiveMaxChildren, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50);
+    const nextTotal = clampInt(recursiveMaxTotalNodes, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000);
+    const nextConcurrent = clampInt(recursiveMaxConcurrent, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50);
+    try {
+      const nextPayload = {
+        data: {
+          ...(supervisorDomainData?.data || {}),
+          delegation: {
+            ...((supervisorDomainData?.data?.delegation || {}) as Record<string, unknown>),
+            recursive: {
+              ...((supervisorDomainData?.data?.delegation?.recursive || {}) as Record<string, unknown>),
+              enabled: recursiveDelegationEnabled,
+              maxDelegationDepth: nextDepth,
+              maxChildrenPerDelegation: nextChildren,
+              maxTotalDelegationNodes: nextTotal,
+              maxConcurrentDelegations: nextConcurrent
+            }
+          }
+        }
+      };
+      const response = await fetch("/api/config-registry/supervisor", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(nextPayload)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(String(data?.detail || data?.error || response.status));
+      }
+      setSupervisorDomainData(data);
+      const recursive = data?.data?.delegation?.recursive || {};
+      setRecursiveDelegationEnabled(recursive.enabled !== false);
+      setRecursiveMaxDepth(clampInt(recursive.maxDelegationDepth, nextDepth, 1, 100));
+      setRecursiveMaxChildren(clampInt(recursive.maxChildrenPerDelegation, nextChildren, 1, 50));
+      setRecursiveMaxTotalNodes(clampInt(recursive.maxTotalDelegationNodes, nextTotal, 1, 1000));
+      setRecursiveMaxConcurrent(clampInt(recursive.maxConcurrentDelegations, nextConcurrent, 1, 50));
+      toast({
+        title: t("admin.pages.subagents.recursive.savedTitle"),
+        description: t("admin.pages.subagents.recursive.savedDescription")
+      });
+    } catch (error) {
+      console.error("Failed to save recursive delegation config", error);
+      toast({
+        title: t("admin.pages.subagents.recursive.saveFailedTitle"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError"),
+        variant: "destructive"
+      });
+    } finally {
+      setIsSavingRecursiveDelegation(false);
+    }
+  }, [recursiveDelegationEnabled, recursiveMaxChildren, recursiveMaxConcurrent, recursiveMaxDepth, recursiveMaxTotalNodes, supervisorDomainData, t, toast]);
   const handleSaveSubagentTemperature = useCallback(async () => {
     setIsSavingSubagentTemperature(true);
     const parsedTemperature = parseOptionalTemperature(subagentTemperature);
@@ -1457,6 +1544,68 @@ export default function SubagentsPage() {
                     <Button onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch}>
                         {isSavingResearch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                         {tg(t, "cdd9d125")}
+                    </Button>
+                </CardContent>
+            </Card>
+
+            <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                <CardContent className="grid gap-5 p-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,1fr)_auto] lg:items-center">
+                    <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                            <Cable className="h-4 w-4 text-emerald-600" />
+                            {t("admin.pages.subagents.recursive.title")}
+                            <Badge variant={recursiveDelegationEnabled ? "secondary" : "destructive"}>
+                                {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
+                            </Badge>
+                        </div>
+                        <p className="text-xs leading-5 text-slate-500">
+                            {t("admin.pages.subagents.recursive.description")}
+                        </p>
+                        <div className="flex flex-wrap gap-2 text-xs">
+                            <Badge variant="outline">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</Badge>
+                            <Badge variant="outline">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</Badge>
+                            <Badge variant="outline">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</Badge>
+                        </div>
+                    </div>
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between gap-3">
+                            <HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />
+                            <Switch checked={recursiveDelegationEnabled} onCheckedChange={setRecursiveDelegationEnabled} />
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-3">
+                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })} tooltip={t("admin.pages.subagents.recursive.maxDepthTooltip")} />
+                                <span className="text-xs text-slate-500">1-100</span>
+                            </div>
+                            <Slider value={[recursiveMaxDepth]} min={1} max={100} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxDepth(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100))} />
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-3">
+                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip")} />
+                                <span className="text-xs text-slate-500">1-50</span>
+                            </div>
+                            <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                    <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })} tooltip={t("admin.pages.subagents.recursive.maxTotalTooltip")} />
+                                    <span className="text-xs text-slate-500">1-1000</span>
+                                </div>
+                                <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                    <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })} tooltip={t("admin.pages.subagents.recursive.maxConcurrentTooltip")} />
+                                    <span className="text-xs text-slate-500">1-50</span>
+                                </div>
+                                <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
+                            </div>
+                        </div>
+                    </div>
+                    <Button onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation}>
+                        {isSavingRecursiveDelegation ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                        {t("admin.pages.subagents.recursive.save")}
                     </Button>
                 </CardContent>
             </Card>

@@ -77,6 +77,7 @@
   "src.components.chat.chatwindow.waiting_input": "等待输入",
   "src.components.chat.composer.message_supervisor": "给 智能主管 发送消息...",
   "src.components.chat.composer.remove_attachment": "移除附件",
+  "src.components.chat.composer.queue_message": "加入运行队列",
   "src.components.chat.composer.search_command": "搜索命令",
   "src.components.chat.composer.search_skill": "搜索 Skill",
   "src.components.chat.composerpickeroverlay.no_matching_presets": "没有匹配的命令预设",

@@ -61,7 +61,7 @@ class SnapshotService:
 
     @staticmethod
     def _queued_messages(session_id: str) -> list[dict[str, Any]]:
-        items = db.list_chat_user_message_queue(session_id, states=["pending", "promoted"], limit=20)
+        items = db.list_chat_user_message_queue(session_id=session_id, states=["pending", "promoted"], limit=20)
         return [
             {
                 "id": item.get("id"),

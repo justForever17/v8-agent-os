@@ -262,6 +262,7 @@ class EngineeringLaneService:
                 "matched": True,
                 "signals": signals or ["force"],
                 "repoDetected": bool(repo.get("repoDetected")),
+                "workspaceMode": "repo" if repo.get("repoDetected") else "project_creation_workspace",
                 "reason": "request_override_force",
             }
 
@@ -285,16 +286,20 @@ class EngineeringLaneService:
                 "reason": "config_trigger_force",
             }
 
-        active = bool(signals) and bool(repo.get("repoDetected"))
-        reason = "engineering_signals_and_repo" if active else "no_engineering_signal_or_repo"
+        project_creation_workspace = "project_creation_candidate" in signals
+        active = bool(signals) and (bool(repo.get("repoDetected")) or project_creation_workspace)
+        reason = "engineering_signals_and_repo" if active and repo.get("repoDetected") else "no_engineering_signal_or_repo"
+        if active and project_creation_workspace and not repo.get("repoDetected"):
+            reason = "project_creation_workspace"
         if signals and not repo.get("repoDetected"):
-            reason = "engineering_signals_without_repo_supervisor_route_choice"
+            reason = "project_creation_workspace" if project_creation_workspace else "engineering_signals_without_repo_supervisor_route_choice"
         return {
             "mode": normalized_mode,
             "active": active,
             "matched": bool(signals),
             "signals": signals,
             "repoDetected": bool(repo.get("repoDetected")),
+            "workspaceMode": "project_creation_workspace" if project_creation_workspace and not repo.get("repoDetected") else ("repo" if repo.get("repoDetected") else "unknown"),
             "reason": reason,
         }
 

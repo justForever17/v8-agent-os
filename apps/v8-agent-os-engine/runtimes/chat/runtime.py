@@ -147,6 +147,7 @@ class ChatPreparedRequest:
     planner_intent_diagnostics: dict[str, Any] = field(default_factory=dict)
     task_planning_mode: bool = False
     engineering_mode: str = "auto"
+    explicit_engineering_requested: bool = False
     engineering_trigger_decision: dict[str, Any] = field(default_factory=dict)
     engineering_context_pack: dict[str, Any] | None = None
     task_shape_hint: dict[str, Any] = field(default_factory=dict)
@@ -347,6 +348,10 @@ class GraphRecursionContinuationBudgetExceeded(RuntimeError):
             "长任务已达到 graph continuation 预算，当前 run 保留为可恢复状态；"
             "请继续执行、拆分任务，或派发 Engineering/delegation。"
         )
+
+
+def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
+    return f"supervisor_direct_scope_exception:{str(run_id or '').strip()}"
 
 
 class ChatRuntime:
@@ -746,6 +751,25 @@ class ChatRuntime:
         normalized = str(value or "").strip().lower()
         return normalized if normalized in {"auto", "force", "off"} else "auto"
 
+    def _detect_explicit_engineering_runtime_request(self, user_content: str) -> bool:
+        text = str(user_content or "").strip().lower()
+        if not text:
+            return False
+        patterns = (
+            r"\buse\s+engineering\s+runtime\b",
+            r"\bengineering\s+runtime\b",
+            r"\bengineering\s+mode\b",
+            r"使用\s*engineering\s*runtime",
+            r"用\s*engineering\s*runtime",
+            r"使用\s*工程运行时",
+            r"用\s*工程运行时",
+            r"进入\s*工程运行时",
+            r"使用\s*工程模式",
+            r"用\s*工程模式",
+            r"进入\s*工程模式",
+        )
+        return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
     def _detect_planner_intent(self, user_content: str) -> dict[str, Any]:
         text = str(user_content or "").strip().lower()
         if not text:
@@ -753,7 +777,7 @@ class ChatRuntime:
         signal_patterns: list[tuple[str, tuple[str, ...]]] = [
             ("explicit_planning", ("plan", "planner", "todo", "todos", "roadmap", "break down", "decompose", "拆解", "计划", "规划", "分工", "任务清单", "执行计划")),
             ("delegation_or_parallel", ("delegate", "subagent", "parallel", "swarm", "agent", "agents", "并发", "子代理", "子agent", "蜂群", "多代理")),
-            ("large_implementation", ("implement", "refactor", "migration", "architecture", "upgrade", "phase", "rollout", "实施", "实现", "改造", "迁移", "架构", "升级", "阶段")),
+            ("large_implementation", ("implement", "refactor", "migration", "architecture", "upgrade", "phase", "rollout", "scaffold", "frontend", "project", "app", "实施", "实现", "改造", "迁移", "架构", "升级", "阶段", "开发", "搭建", "创建", "项目", "应用", "前端")),
             ("verification_contract", ("acceptance", "test plan", "verify", "validation", "验收", "验证", "测试计划", "回归")),
         ]
         signals: list[str] = []
@@ -917,7 +941,7 @@ class ChatRuntime:
     def _resolve_request_context(
         self,
         request: ChatRequest,
-    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, list[dict[str, str]], list[dict[str, str]], list[str]]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, bool, list[dict[str, str]], list[dict[str, str]], list[str]]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
@@ -925,7 +949,20 @@ class ChatRuntime:
         planner_dispatch_mode = self._normalize_planner_dispatch_mode(getattr(request_data, "planner_dispatch_mode", None) if request_data else None)
         planner_mode = self._normalize_planner_mode(requested_planner_mode, task_planning_mode=task_planning_mode)
         engineering_mode = self._normalize_engineering_mode(getattr(request_data, "engineering_mode", None) if request_data else None)
-        planner_diagnostics = self._detect_planner_intent(self._latest_user_content(request))
+        latest_user = self._latest_user_content(request)
+        explicit_engineering_requested = self._detect_explicit_engineering_runtime_request(latest_user)
+        planner_diagnostics = self._detect_planner_intent(latest_user)
+        if explicit_engineering_requested:
+            planner_diagnostics = {
+                **planner_diagnostics,
+                "matched": True,
+                "signals": list(dict.fromkeys([*list(planner_diagnostics.get("signals") or []), "explicit_engineering_runtime"])),
+                "reason": "explicit_engineering_runtime_requested",
+            }
+            task_planning_mode = True
+            planner_mode = "force"
+            planner_dispatch_mode = "auto"
+            engineering_mode = "force"
         if planner_mode == "auto":
             task_planning_mode = bool(planner_diagnostics.get("matched"))
         elif planner_mode == "force":
@@ -942,7 +979,7 @@ class ChatRuntime:
         skill_references = self._normalize_skill_references(request)
         context_mentions = self._normalize_context_mentions(request, skill_references=skill_references)
         explicit_subagent_families = self._resolve_explicit_subagent_families(request, context_mentions)
-        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, skill_references, context_mentions, explicit_subagent_families
+        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families
 
     def _inject_structured_request_context(
         self,
@@ -1435,7 +1472,18 @@ class ChatRuntime:
 
     @staticmethod
     def _normalize_planner_plan_payload(raw_plan: Any, *, fallback_plan: dict[str, Any]) -> dict[str, Any]:
-        payload = raw_plan.model_dump(mode="json") if isinstance(raw_plan, BaseModel) else dict(raw_plan or {})
+        if isinstance(raw_plan, BaseModel):
+            payload = raw_plan.model_dump(mode="json")
+        elif isinstance(raw_plan, list):
+            payload = {
+                "executionStrategy": "mixed" if len(raw_plan) > 1 else "delegate",
+                "taskBriefs": [item for item in raw_plan if isinstance(item, dict)],
+                "qualityFlags": ["planner_list_payload_wrapped"],
+            }
+        elif isinstance(raw_plan, dict):
+            payload = dict(raw_plan or {})
+        else:
+            payload = dict(fallback_plan or {})
         normalized_briefs = [
             normalize_task_brief(item, index=index)
             for index, item in enumerate(list(payload.get("taskBriefs") or []))
@@ -1746,6 +1794,7 @@ class ChatRuntime:
             planner_dispatch_mode,
             planner_intent_diagnostics,
             engineering_mode,
+            explicit_engineering_requested,
             skill_references,
             context_mentions,
             explicit_subagent_families,
@@ -1786,6 +1835,7 @@ class ChatRuntime:
             planner_intent_diagnostics=planner_intent_diagnostics,
             task_planning_mode=task_planning_mode,
             engineering_mode=engineering_mode,
+            explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
             context_mentions=context_mentions,
             explicit_subagent_families=explicit_subagent_families,
@@ -1919,9 +1969,27 @@ class ChatRuntime:
                     "resolvedScope": scope_result.binding.resolved_scope,
                 },
             )
+            primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
+            secondary_shapes = {
+                str(item or "").strip()
+                for item in list(prepared.task_shape_hint.get("secondaryTaskShapes") or [])
+                if str(item or "").strip()
+            }
+            if prepared.explicit_engineering_requested or primary_shape == "project_coding" or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"}):
+                prepared.task_planning_mode = True
+                prepared.planner_mode = "force"
+                prepared.planner_dispatch_mode = "auto"
+                if prepared.explicit_engineering_requested:
+                    prepared.engineering_mode = "force"
             run_service.update_metadata(
                 run_handle.run_id,
-                {"taskShapeHint": dict(prepared.task_shape_hint or {})},
+                {
+                    "taskShapeHint": dict(prepared.task_shape_hint or {}),
+                    "plannerMode": prepared.planner_mode,
+                    "plannerDispatchMode": prepared.planner_dispatch_mode,
+                    "taskPlanningMode": prepared.task_planning_mode,
+                    "explicitEngineeringRequested": bool(prepared.explicit_engineering_requested),
+                },
             )
         except Exception as exc:
             prepared.task_shape_hint = {
@@ -2389,6 +2457,12 @@ class ChatRuntime:
                 "suppressPassiveRag": compat_diagnostics.get("suppressPassiveRag"),
                 "suppressExtensionsPrefilter": compat_diagnostics.get("suppressExtensionsPrefilter"),
                 "externalToolsPrimary": compat_diagnostics.get("externalToolsPrimary"),
+            }
+        if getattr(chat_run.prepared, "explicit_engineering_requested", False) or chat_run.prepared.engineering_trigger_decision:
+            current_route_context = {
+                **current_route_context,
+                "explicitEngineeringRequested": bool(getattr(chat_run.prepared, "explicit_engineering_requested", False)),
+                "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
             }
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
@@ -3248,18 +3322,18 @@ class ChatRuntime:
         *,
         tool_name: str,
         owner: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         normalized_tool = str(tool_name or "").strip()
         if normalized_tool == "delegation_broker":
             stream_state.supervisor_direct_scope_gate_active = False
-            return
+            return False
         if not stream_state.supervisor_direct_scope_gate_active:
-            return
+            return False
         if not bool(owner.get("displayInMessage")) or str(owner.get("ownerAgentKind") or "") != "supervisor":
-            return
+            return False
         allowed_escape_tools = {"delegation_broker", "runtime_broker", "ask_user", "write_todos", "update_todo"}
         if normalized_tool in allowed_escape_tools:
-            return
+            return False
         gated_tools = {
             "run_system_command",
             "command_session_broker",
@@ -3275,7 +3349,22 @@ class ChatRuntime:
             "computer_use_drag",
         }
         if normalized_tool not in gated_tools and not normalized_tool.startswith(("creative_media_", "computer_use_")):
-            return
+            return False
+        operation_fingerprint = _supervisor_direct_scope_operation_fingerprint(chat_run.active_run_id)
+        if self._is_supervisor_direct_scope_exception_approved(chat_run.active_run_id, operation_fingerprint):
+            stream_state.supervisor_direct_scope_gate_active = False
+            chat_run.emit_runtime_event(
+                "supervisor.direct_scope.exception_approved",
+                {
+                    "riskCode": "supervisor_direct_scope_exception_approved",
+                    "summary": "用户已批准本轮 Supervisor direct exception，允许继续当前 direct 执行路径。",
+                    "approvedOperationFingerprint": operation_fingerprint,
+                    "latestTool": normalized_tool,
+                },
+                agent_id=stream_state.current_agent,
+                node="supervisor_direct_scope_guard",
+            )
+            return False
         payload = {
             "riskCode": "supervisor_direct_scope_blocked",
             "summary": "Supervisor direct 执行已进入硬门禁；复杂任务后续可变更/长耗时工具必须先进入 delegation、Engineering discipline 或用户批准 direct exception。",
@@ -3284,6 +3373,8 @@ class ChatRuntime:
             "projectWriteCount": stream_state.supervisor_project_write_count,
             "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
             "recommendedNextAction": "调用 delegation_broker 派发 engineering family/external worker，或请求用户批准继续 direct exception。",
+            "operationFingerprint": operation_fingerprint,
+            "operationTargetFingerprint": operation_fingerprint,
         }
         chat_run.emit_runtime_event(
             "supervisor.direct_scope.blocked",
@@ -3291,7 +3382,33 @@ class ChatRuntime:
             agent_id=stream_state.current_agent,
             node="supervisor_direct_scope_guard",
         )
-        raise RuntimeError(json.dumps(payload, ensure_ascii=False))
+        # Tool-start callbacks are an observation surface, not the safe place to
+        # prevent side effects. The actual pre-execution stop lives in
+        # graph.tool_routing.async_tool_call_wrapper; this event keeps Phone/Web
+        # diagnostics in the correct timeline without turning the whole run into
+        # a generic failure.
+        return True
+
+    @staticmethod
+    def _is_supervisor_direct_scope_exception_approved(run_id: str, operation_fingerprint: str) -> bool:
+        if not run_id or not operation_fingerprint:
+            return False
+        try:
+            run_record = run_service.get_run(run_id)
+        except Exception:
+            return False
+        metadata = dict((run_record or {}).get("metadata") or {})
+        operations = metadata.get("approvedSafetyOperations")
+        if not isinstance(operations, list):
+            return False
+        for item in operations:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("fingerprint") or "").strip() != operation_fingerprint:
+                continue
+            if str(item.get("approval_kind") or "").strip() == "supervisor_direct_scope_exception":
+                return True
+        return False
 
     def _schedule_text_flush_deadline(self, stream_state: ChatStreamState) -> None:
         if not stream_state.text_aggregator.has_buffered_content():
@@ -5028,8 +5145,6 @@ class ChatRuntime:
                 stream_state.provider_tool_call_id_to_tool_call_id[provider_tool_call_id] = tool_call_id
             if tool_call_id and provider_shadow:
                 stream_state.tool_call_shadow_by_tool_call_id[tool_call_id] = dict(provider_shadow)
-            active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
-            stream_state.active_tool_call_ids.add(active_tool_key)
             owner = self._resolve_event_owner(stream_state, tool_name=str(name or ""))
             self._maybe_emit_supervisor_direct_scope_diagnostic(
                 chat_run,
@@ -5037,12 +5152,15 @@ class ChatRuntime:
                 tool_name=str(name or ""),
                 owner=owner,
             )
-            self._enforce_supervisor_direct_scope_gate(
+            if self._enforce_supervisor_direct_scope_gate(
                 chat_run,
                 stream_state,
                 tool_name=str(name or ""),
                 owner=owner,
-            )
+            ):
+                return emitted_events
+            active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
+            stream_state.active_tool_call_ids.add(active_tool_key)
             tool_start_event = {
                 "type": "tool_start",
                 "tool": {

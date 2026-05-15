@@ -683,6 +683,29 @@ function buildProgressLabel(topic: string, payload: JsonRecord, locale: Normaliz
   if (topic === "artifact.recorded") {
     return String(payload.title || payload.kind || payload.workspacePath || tr(locale, "记录新的产物", "Recorded a new artifact"));
   }
+  if (topic === "engineering_lane.trigger.decided") {
+    const matched = Boolean(payload.matched);
+    const active = Boolean(payload.active);
+    const mode = String(payload.mode || "").trim();
+    const workspaceMode = String(payload.workspaceMode || payload.workspace_mode || "").trim();
+    const reason = pickFirstString(payload.reason, payload.triggerReason);
+    if (active && workspaceMode === "project_creation_workspace") {
+      return tr(locale, "Engineering 已进入项目创建工作区模式", "Engineering entered project-creation workspace mode");
+    }
+    if (active) {
+      return mode === "force"
+        ? tr(locale, "Engineering 已按用户要求强制进入主链", "Engineering was forced into the main lane by user request")
+        : tr(locale, "Engineering 已进入主链", "Engineering entered the main lane");
+    }
+    if (matched) {
+      return reason
+        ? tr(locale, `Engineering 已匹配但暂未进入主链：${reason}`, `Engineering matched but is not active: ${reason}`)
+        : tr(locale, "Engineering 已匹配但暂未进入主链", "Engineering matched but is not active");
+    }
+    return reason
+      ? tr(locale, `Engineering 未命中：${reason}`, `Engineering did not match: ${reason}`)
+      : tr(locale, "Engineering 未命中", "Engineering did not match");
+  }
   if (topic === "run.state.changed") {
     const fromStatus = normalizeDisplayStatus(payload.from_status) || normalizeDisplayStatus(payload.fromStatus);
     const toStatus = normalizeDisplayStatus(payload.to_status) || normalizeDisplayStatus(payload.toStatus) || normalizeDisplayStatus(payload.status);

@@ -54,6 +54,10 @@ export type BridgeStatusPayload = {
         targetFps?: number;
         idleReleaseSeconds?: number;
         captureDisplay?: string;
+        audioEnabled?: boolean;
+        audioSource?: string;
+        audioSampleRate?: number;
+        audioChannels?: number;
     };
     mode?: string;
     fallbackMode?: string;
@@ -65,6 +69,17 @@ export type BridgeStatusPayload = {
     captureProvider?: string;
     webrtcReady?: boolean;
     streamFallbackReady?: boolean;
+    audioAvailable?: boolean;
+    audioEnabled?: boolean;
+    audioProvider?: string;
+    audioReason?: string | null;
+    iceServersConfigured?: boolean;
+    turnConfigured?: boolean;
+    iceServers?: Array<{
+        urls?: string | string[];
+        username?: string;
+        credential?: string;
+    }>;
     warmingStartedAt?: string;
     lastErrorStage?: BridgeErrorStage;
     lastErrorMessage?: string;
@@ -307,6 +322,7 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
     const scriptExists = fs.existsSync(getBridgeScriptPath());
     const enabled = config.enabled !== false;
     const startable = enabled && Boolean(resolveInternalSecret()) && Boolean(bridgeExecutable) && scriptExists;
+    const iceServers = Array.isArray(config.iceServers) ? config.iceServers : [];
 
     let reason: string | null = null;
     if (!enabled) {
@@ -331,6 +347,16 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
         singleViewer: config.singleViewerOnly !== false,
         bridgeActive: false,
         bridgeReachable: false,
+        audioEnabled: config.audioEnabled !== false,
+        audioAvailable: false,
+        audioProvider: "none",
+        iceServersConfigured: iceServers.length > 0,
+        turnConfigured: iceServers.some((server) => {
+            const urls = server?.urls;
+            const values = typeof urls === "string" ? [urls] : Array.isArray(urls) ? urls : [];
+            return values.some((url) => String(url).toLowerCase().startsWith("turn"));
+        }),
+        iceServers,
         mode: "webrtc_bridge",
         fallbackMode: "multipart_jpeg_stream",
         captureSurface: "primary_display",
@@ -349,6 +375,10 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
             targetFps: Number(config.targetFps || 5),
             idleReleaseSeconds: Number(config.idleReleaseSeconds || 15),
             captureDisplay: String(config.captureDisplay || "primary"),
+            audioEnabled: config.audioEnabled !== false,
+            audioSource: String(config.audioSource || "system"),
+            audioSampleRate: Number(config.audioSampleRate || 48000),
+            audioChannels: Number(config.audioChannels || 2),
         },
     };
 }
@@ -463,15 +493,19 @@ function spawnBridgeProcess(pythonExecutable: string) {
     if (!fs.existsSync(scriptPath)) {
         throw new Error(`桌面直播 bridge 脚本不存在：${scriptPath}`);
     }
+    const bridgePythonExecutable = resolveHiddenBridgePythonExecutable(pythonExecutable);
     const logPath = getBridgeLogPath();
     const logFd = fs.openSync(logPath, "a");
     setBridgeRuntimeState({ logPath });
 
     try {
         fs.writeSync(logFd, `\n[${new Date().toISOString()}] spawning desktop live bridge\n`);
-        fs.writeSync(logFd, `python=${pythonExecutable}\nscript=${scriptPath}\nurl=${resolveDesktopLiveBridgeBaseUrl()}\n`);
+        fs.writeSync(
+            logFd,
+            `python=${pythonExecutable}\nlauncher=${bridgePythonExecutable}\nscript=${scriptPath}\nurl=${resolveDesktopLiveBridgeBaseUrl()}\n`,
+        );
         const child = spawn(
-            pythonExecutable,
+            bridgePythonExecutable,
             [scriptPath],
             {
                 cwd: path.dirname(scriptPath),
@@ -494,6 +528,18 @@ function spawnBridgeProcess(pythonExecutable: string) {
             // best-effort
         }
     }
+}
+
+function resolveHiddenBridgePythonExecutable(pythonExecutable: string) {
+    if (process.platform !== "win32") {
+        return pythonExecutable;
+    }
+    const parsed = path.parse(pythonExecutable);
+    if (parsed.name.toLowerCase() !== "python") {
+        return pythonExecutable;
+    }
+    const pythonwExecutable = path.join(parsed.dir, "pythonw.exe");
+    return fs.existsSync(pythonwExecutable) ? pythonwExecutable : pythonExecutable;
 }
 
 export function scheduleDesktopLiveBridgeIdleStop() {

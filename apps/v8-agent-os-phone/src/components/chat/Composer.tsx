@@ -68,7 +68,7 @@ function ComposerActionButton({
     colors,
     t,
 }: {
-    mode: "send" | "stop" | "busy";
+    mode: "send" | "queue" | "stop" | "busy";
     disabled: boolean;
     onPress: () => void;
     colors: ReturnType<typeof useUiPrefs>["colors"];
@@ -116,11 +116,15 @@ function ComposerActionButton({
         ? "stop"
         : mode === "busy"
             ? "progress-clock"
+            : mode === "queue"
+                ? "playlist-plus"
             : "send";
     const buttonColors = mode === "stop"
         ? ["#FFF7ED", "#FFF1F2"]
         : mode === "busy"
             ? ["#CBD5E1", "#CBD5E1"]
+            : mode === "queue"
+                ? ["#A78BFA", "#F59E0B"]
             : [colors.accent, "#F59E0B"];
     const orbitColors = mode === "stop"
         ? ["#FB7185", "#EF4444", "#F97316", "#FB7185"]
@@ -131,6 +135,8 @@ function ComposerActionButton({
             accessibilityRole="button"
             accessibilityLabel={mode === "stop"
                 ? t("src.components.chat.composer.stop_run")
+                : mode === "queue"
+                    ? t("src.components.chat.composer.queue_message")
                 : t("src.components.chat.composer.send_message")}
             disabled={disabled}
             onPress={onPress}
@@ -174,6 +180,7 @@ export const Composer = memo(function Composer({
     isRunning = false,
     canStop = false,
     onStop,
+    allowQueueWhileRunning = false,
     selectedCommand,
     selectedSkills,
     selectedSubagentFamilies,
@@ -200,6 +207,7 @@ export const Composer = memo(function Composer({
     isRunning?: boolean;
     canStop?: boolean;
     onStop?: () => void;
+    allowQueueWhileRunning?: boolean;
     selectedCommand: CommandPresetSummary | null;
     selectedSkills: SkillReferenceSummary[];
     selectedSubagentFamilies: SubagentFamilySummary[];
@@ -220,10 +228,13 @@ export const Composer = memo(function Composer({
     const queryInputRef = useRef<TextInput | null>(null);
     const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
-    const canSend = hasPayload && !busy && !isRunning;
-    const canAct = stopAvailable || canSend;
+    const canQueue = Boolean(hasPayload && !busy && isRunning && allowQueueWhileRunning);
+    const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
+    const canAct = canSend || (stopAvailable && !hasPayload);
     const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || activeQueryMode);
-    const actionMode: "send" | "stop" | "busy" = stopAvailable
+    const actionMode: "send" | "queue" | "stop" | "busy" = canQueue
+        ? "queue"
+        : stopAvailable
         ? "stop"
         : (busy || isRunning)
             ? "busy"
@@ -258,12 +269,12 @@ export const Composer = memo(function Composer({
     }, [activeQueryMode]);
 
     const handlePrimaryAction = () => {
-        if (stopAvailable && onStop) {
-            onStop();
-            return;
-        }
         if (canSend) {
             onSend();
+            return;
+        }
+        if (stopAvailable && onStop) {
+            onStop();
         }
     };
 

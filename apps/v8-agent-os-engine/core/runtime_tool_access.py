@@ -68,6 +68,14 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "research_broker",
         ],
     },
+    "delegation.recursive": {
+        "runtimeKind": "subagent",
+        "label": "Recursive delegation",
+        "summary": "允许 brokered subagent 在预算内继续拆分原子子任务；只能通过 delegation_broker 受控派发。",
+        "toolNames": [
+            "delegation_broker",
+        ],
+    },
     "creative_media.core": {
         "runtimeKind": "creative_media",
         "label": "Creative Media core",
@@ -108,7 +116,6 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
 
 SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     RUNTIME_BROKER_TOOL_NAME,
-    "delegation_broker",
     "ask_user",
     "write_todos",
     "update_todo",
@@ -318,6 +325,10 @@ def filter_visible_tools_for_actor(
             continue
         if name == RUNTIME_BROKER_TOOL_NAME:
             if normalized_actor == "supervisor":
+                visible.append(tool_ref)
+            continue
+        if normalized_actor != "supervisor" and name == "delegation_broker":
+            if name in granted_runtime_tools:
                 visible.append(tool_ref)
             continue
         if normalized_actor != "supervisor" and name in SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES:

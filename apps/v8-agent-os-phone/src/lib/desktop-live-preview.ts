@@ -1,5 +1,9 @@
 export type DesktopLiveBridgeInjection =
-    | { type: "start" }
+    | {
+        type: "start";
+        iceServers?: Array<{ urls?: string | string[]; username?: string; credential?: string }>;
+        audioEnabled?: boolean;
+    }
     | { type: "answer"; sdp: string; sdpType: string }
     | { type: "fallback-stream"; streamUrl: string }
     | { type: "close" };
@@ -36,13 +40,14 @@ export function buildDesktopLivePreviewHtml() {
     </style>
   </head>
   <body>
-    <video id="desktopLiveVideo" autoplay playsinline muted></video>
+    <video id="desktopLiveVideo" autoplay playsinline></video>
     <img id="desktopLiveFallback" alt="Desktop live fallback stream" style="display: none;" />
     <script>
       (function () {
         var pc = null;
         var remoteStream = null;
         var starting = false;
+        var videoReadyTimer = null;
         var video = document.getElementById("desktopLiveVideo");
         var fallbackImage = document.getElementById("desktopLiveFallback");
 
@@ -56,6 +61,10 @@ export function buildDesktopLivePreviewHtml() {
 
         async function teardown() {
           try {
+            if (videoReadyTimer) {
+              clearTimeout(videoReadyTimer);
+              videoReadyTimer = null;
+            }
             if (video) {
               try { video.pause(); } catch (error) {}
               video.srcObject = null;
@@ -82,15 +91,26 @@ export function buildDesktopLivePreviewHtml() {
           }
         }
 
-        async function start() {
+        async function start(payload) {
           if (starting) return;
           starting = true;
           await teardown();
           try {
-            pc = new RTCPeerConnection({ iceServers: [] });
+            var iceServers = payload && Array.isArray(payload.iceServers) ? payload.iceServers : [];
+            var audioEnabled = !!(payload && payload.audioEnabled);
+            pc = new RTCPeerConnection({ iceServers: iceServers });
             remoteStream = new MediaStream();
+            videoReadyTimer = setTimeout(function () {
+              post("error", { message: "desktop-live-webrtc-video-timeout" });
+            }, 8000);
+            if (video) {
+              video.muted = !audioEnabled;
+            }
 
             pc.addTransceiver("video", { direction: "recvonly" });
+            if (audioEnabled) {
+              pc.addTransceiver("audio", { direction: "recvonly" });
+            }
 
             pc.onicecandidate = function (event) {
               post("ice-candidate", {
@@ -103,11 +123,15 @@ export function buildDesktopLivePreviewHtml() {
               if ((!event.streams || event.streams.length === 0) && event.track && remoteStream) {
                 remoteStream.addTrack(event.track);
               }
-              if (video) {
+              if (video && event.track && event.track.kind === "video") {
+                if (videoReadyTimer) {
+                  clearTimeout(videoReadyTimer);
+                  videoReadyTimer = null;
+                }
                 video.srcObject = stream;
                 video.play().catch(function () {});
               }
-              post("video-ready");
+              post(event.track && event.track.kind === "audio" ? "audio-ready" : "video-ready");
             };
 
             pc.onconnectionstatechange = function () {
@@ -152,7 +176,7 @@ export function buildDesktopLivePreviewHtml() {
           try {
             if (!payload || typeof payload !== "object") return;
             if (payload.type === "start") {
-              await start();
+              await start(payload);
               return;
             }
             if (payload.type === "answer") {

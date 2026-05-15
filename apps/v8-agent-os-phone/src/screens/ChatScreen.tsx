@@ -1838,6 +1838,7 @@ export default function ChatScreen() {
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<PhoneRuntimeId>("chat");
     const [workspaceInfoOpen, setWorkspaceInfoOpen] = useState(false);
     const [desktopPreviewOpen, setDesktopPreviewOpen] = useState(false);
+    const [desktopPreviewFullscreen, setDesktopPreviewFullscreen] = useState(false);
     const [desktopPreviewBusy, setDesktopPreviewBusy] = useState(false);
     const [desktopPreviewSessionId, setDesktopPreviewSessionId] = useState("");
     const [desktopPreviewError, setDesktopPreviewError] = useState("");
@@ -2222,6 +2223,7 @@ export default function ChatScreen() {
         desktopPreviewNegotiatedSessionRef.current = "";
         desktopPreviewWebViewRef.current?.injectJavaScript(buildDesktopLiveBridgeInjection({ type: "close" }));
         setDesktopPreviewOpen(false);
+        setDesktopPreviewFullscreen(false);
         setDesktopPreviewBusy(false);
         setDesktopPreviewState("closed");
         setDesktopPreviewError("");
@@ -2300,7 +2302,11 @@ export default function ChatScreen() {
         }
         desktopPreviewNegotiatedSessionRef.current = `webrtc:${normalizedSessionId}`;
         desktopPreviewWebViewRef.current?.injectJavaScript(
-            buildDesktopLiveBridgeInjection({ type: "start" }),
+            buildDesktopLiveBridgeInjection({
+                type: "start",
+                iceServers: desktopLiveStatus?.iceServers || [],
+                audioEnabled: desktopLiveStatus?.audioAvailable === true,
+            }),
         );
     }, [desktopLiveStatus, desktopPreviewOpen, desktopPreviewWebReady, injectDesktopLiveFallbackStream]);
 
@@ -5410,6 +5416,7 @@ export default function ChatScreen() {
                     isRunning={composerRunActive}
                     canStop={composerCanStop}
                     onStop={() => void handleRunCommand("interrupt")}
+                    allowQueueWhileRunning
                     selectedCommand={selectedCommand}
                     selectedSkills={selectedSkills}
                     selectedSubagentFamilies={selectedSubagentFamilies}
@@ -5894,8 +5901,24 @@ export default function ChatScreen() {
                 </Modal>
 
                 <Modal visible={desktopPreviewOpen} transparent animationType="fade" onRequestClose={() => void closeDesktopPreview()}>
-                    <View style={[styles.previewOverlay, { backgroundColor: palette.overlay }]}>
+                    <View
+                        style={[
+                            styles.previewOverlay,
+                            desktopPreviewFullscreen && styles.previewOverlayFullscreen,
+                            { backgroundColor: palette.overlay },
+                        ]}
+                    >
                         <Pressable style={StyleSheet.absoluteFill} onPress={() => void closeDesktopPreview()} />
+                        <Pressable
+                            style={[styles.previewFullscreenButton, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}
+                            onPress={() => setDesktopPreviewFullscreen((current) => !current)}
+                        >
+                            <MaterialCommunityIcons
+                                name={desktopPreviewFullscreen ? "fullscreen-exit" : "fullscreen"}
+                                size={22}
+                                color={palette.text}
+                            />
+                        </Pressable>
                         <Pressable
                             style={[styles.previewCloseButton, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}
                             onPress={() => void closeDesktopPreview()}
@@ -5903,7 +5926,13 @@ export default function ChatScreen() {
                             <MaterialCommunityIcons name="close" size={22} color={palette.text} />
                         </Pressable>
 
-                        <View style={[styles.previewCard, { backgroundColor: themeMode === "dark" ? "#020617" : "#000000" }]}>
+                        <View
+                            style={[
+                                styles.previewCard,
+                                desktopPreviewFullscreen && styles.previewCardFullscreen,
+                                { backgroundColor: themeMode === "dark" ? "#020617" : "#000000" },
+                            ]}
+                        >
                             <WebView
                                 ref={desktopPreviewWebViewRef}
                                 originWhitelist={["*"]}
@@ -5913,7 +5942,7 @@ export default function ChatScreen() {
                                         ...(accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
                                     }
                                     : { html: desktopPreviewHtml }}
-                                style={styles.previewWebview}
+                                style={[styles.previewWebview, desktopPreviewFullscreen && styles.previewWebviewFullscreen]}
                                 allowsInlineMediaPlayback
                                 mediaPlaybackRequiresUserAction={false}
                                 setSupportMultipleWindows={false}
@@ -6693,10 +6722,30 @@ const styles = StyleSheet.create({
         alignItems: "center",
         paddingHorizontal: 18,
     },
+    previewOverlayFullscreen: {
+        paddingHorizontal: 0,
+    },
     previewCloseButton: {
         position: "absolute",
         top: 52,
         right: 18,
+        zIndex: 4,
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+        shadowColor: "#0F172A",
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 6,
+    },
+    previewFullscreenButton: {
+        position: "absolute",
+        top: 52,
+        right: 78,
         zIndex: 4,
         width: 48,
         height: 48,
@@ -6722,6 +6771,16 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 14 },
         elevation: 10,
     },
+    previewCardFullscreen: {
+        height: "100%",
+        minHeight: "100%",
+        maxWidth: undefined,
+        borderRadius: 0,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 0,
+    },
     previewLoadingWrap: {
         minHeight: 210,
         alignItems: "center",
@@ -6745,5 +6804,9 @@ const styles = StyleSheet.create({
         width: "100%",
         minHeight: 210,
         backgroundColor: "#000000",
+    },
+    previewWebviewFullscreen: {
+        height: "100%",
+        minHeight: "100%",
     },
 });

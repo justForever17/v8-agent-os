@@ -47,6 +47,15 @@ type SystemBaseData = {
         singleViewerOnly?: boolean;
         idleReleaseSeconds?: number;
         captureDisplay?: string;
+        audioEnabled?: boolean;
+        audioSource?: string;
+        audioSampleRate?: number;
+        audioChannels?: number;
+        iceServers?: Array<{
+            urls?: string | string[];
+            username?: string;
+            credential?: string;
+        }>;
     };
     remoteLink?: {
         enabled?: boolean;

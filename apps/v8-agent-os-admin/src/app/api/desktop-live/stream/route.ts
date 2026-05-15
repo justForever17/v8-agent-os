@@ -37,6 +37,8 @@ export async function GET(req: NextRequest) {
             headers: {
                 "Content-Type": response.headers.get("Content-Type") || "multipart/x-mixed-replace; boundary=frame",
                 "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
             },
         });
     } catch (error) {

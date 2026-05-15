@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import sys
 import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Any
 
 try:
@@ -22,14 +24,18 @@ except Exception:  # pragma: no cover - optional runtime dependency
     np = None
 
 try:
-    from av import VideoFrame
+    from av import AudioFrame, VideoFrame
 except Exception:  # pragma: no cover - optional runtime dependency
+    AudioFrame = None
     VideoFrame = None
 
 try:
-    from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+    from aiortc import AudioStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
     from aiortc.sdp import candidate_from_sdp
 except Exception as exc:  # pragma: no cover - optional runtime dependency
+    AudioStreamTrack = object  # type: ignore[assignment]
+    RTCConfiguration = None
+    RTCIceServer = None
     RTCPeerConnection = None
     RTCSessionDescription = None
     VideoStreamTrack = object  # type: ignore[assignment]
@@ -37,6 +43,14 @@ except Exception as exc:  # pragma: no cover - optional runtime dependency
     _WEBRTC_IMPORT_ERROR = str(exc)
 else:
     _WEBRTC_IMPORT_ERROR = ""
+
+try:
+    import soundcard as sc
+except Exception as exc:  # pragma: no cover - optional runtime dependency
+    sc = None
+    _SOUNDCARD_IMPORT_ERROR = str(exc)
+else:
+    _SOUNDCARD_IMPORT_ERROR = ""
 
 from PIL import Image
 
@@ -65,6 +79,7 @@ class DesktopLiveSession:
     connection_state: str = "pending"
     pc: Any | None = None
     track: Any | None = None
+    audio_track: Any | None = None
 
 
 class DesktopCaptureVideoTrack(VideoStreamTrack):  # type: ignore[misc]
@@ -105,6 +120,95 @@ class DesktopCaptureVideoTrack(VideoStreamTrack):  # type: ignore[misc]
         return frame
 
 
+class DesktopSystemAudioTrack(AudioStreamTrack):  # type: ignore[misc]
+    kind = "audio"
+
+    def __init__(self, *, sample_rate: int = 48000, channels: int = 2):
+        super().__init__()
+        self._sample_rate = sample_rate
+        self._channels = 1 if channels == 1 else 2
+        self._packet_samples = max(160, int(self._sample_rate * 0.02))
+        self._samples_sent = 0
+        self._recorder_cm: Any | None = None
+        self._recorder: Any | None = None
+
+    def _ensure_recorder(self):
+        if sc is None:
+            raise RuntimeError(f"桌面直播音频缺少 soundcard 依赖：{_SOUNDCARD_IMPORT_ERROR or 'not installed'}")
+        if self._recorder is not None:
+            return self._recorder
+        microphone = _find_system_loopback_microphone()
+        if microphone is None:
+            raise RuntimeError("未检测到可采集的系统声音输出设备。")
+        self._recorder_cm = microphone.recorder(samplerate=self._sample_rate, channels=self._channels)
+        self._recorder = self._recorder_cm.__enter__()
+        return self._recorder
+
+    def _record_packet(self):
+        recorder = self._ensure_recorder()
+        return recorder.record(numframes=self._packet_samples)
+
+    async def recv(self):  # pragma: no cover - exercised via runtime WebRTC session
+        if AudioFrame is None or np is None:
+            raise RuntimeError("桌面直播音频缺少 av/numpy 依赖。")
+
+        samples = await asyncio.to_thread(self._record_packet)
+        pcm = np.asarray(samples, dtype=np.float32)
+        if pcm.ndim == 1:
+            pcm = pcm.reshape((-1, 1))
+        if pcm.shape[1] < self._channels:
+            pcm = np.repeat(pcm, self._channels, axis=1)
+        elif pcm.shape[1] > self._channels:
+            pcm = pcm[:, : self._channels]
+        pcm_i16 = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+        frame = AudioFrame(
+            format="s16",
+            layout="mono" if self._channels == 1 else "stereo",
+            samples=pcm_i16.shape[0],
+        )
+        frame.planes[0].update(pcm_i16.tobytes())
+        frame.sample_rate = self._sample_rate
+        frame.pts = self._samples_sent
+        frame.time_base = Fraction(1, self._sample_rate)
+        self._samples_sent += pcm_i16.shape[0]
+        return frame
+
+    def stop(self):  # pragma: no cover - runtime cleanup
+        try:
+            if self._recorder_cm is not None:
+                self._recorder_cm.__exit__(None, None, None)
+        finally:
+            self._recorder = None
+            self._recorder_cm = None
+        super().stop()
+
+
+def _find_system_loopback_microphone():
+    if sc is None:
+        return None
+    try:
+        speaker = sc.default_speaker()
+        microphones = list(sc.all_microphones(include_loopback=True))
+    except Exception:
+        return None
+    speaker_name = str(getattr(speaker, "name", "") or "").lower()
+    speaker_id = str(getattr(speaker, "id", "") or "").lower()
+    loopbacks = [
+        microphone
+        for microphone in microphones
+        if bool(getattr(microphone, "isloopback", False))
+        or "loopback" in str(getattr(microphone, "name", "") or "").lower()
+        or "loopback" in str(getattr(microphone, "id", "") or "").lower()
+    ]
+    for microphone in loopbacks:
+        name = str(getattr(microphone, "name", "") or "").lower()
+        mic_id = str(getattr(microphone, "id", "") or "").lower()
+        if (speaker_name and speaker_name in name) or (speaker_id and speaker_id in mic_id):
+            return microphone
+    return loopbacks[0] if loopbacks else None
+
+
 class DesktopLiveService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -141,13 +245,63 @@ class DesktopLiveService:
                 self.delete_session_sync(session_id)
 
     def _is_webrtc_supported(self) -> tuple[bool, str | None]:
-        if RTCPeerConnection is None or RTCSessionDescription is None or candidate_from_sdp is None:
+        if RTCPeerConnection is None or RTCSessionDescription is None or RTCConfiguration is None or RTCIceServer is None or candidate_from_sdp is None:
             return False, _WEBRTC_IMPORT_ERROR or "未安装 aiortc"
         if VideoFrame is None:
             return False, "未安装 av"
         if np is None:
             return False, "未安装 numpy"
         return True, None
+
+    def _audio_supported(self) -> tuple[bool, str | None]:
+        config = self._config()
+        if not config.get("audioEnabled", True):
+            return False, "桌面直播音频已在配置中关闭"
+        if AudioStreamTrack is object:
+            return False, _WEBRTC_IMPORT_ERROR or "未安装 aiortc 音频轨道依赖"
+        if AudioFrame is None:
+            return False, "未安装 av 音频帧依赖"
+        if np is None:
+            return False, "未安装 numpy"
+        if sc is None:
+            return False, f"未安装 soundcard：{_SOUNDCARD_IMPORT_ERROR or 'not installed'}"
+        if _find_system_loopback_microphone() is None:
+            return False, "未检测到系统声音 loopback 采集设备"
+        if sys.platform == "darwin":
+            return True, "macOS 系统声音采集可能需要 BlackHole/Loopback 等虚拟音频设备授权"
+        return True, None
+
+    def _client_ice_servers(self) -> list[dict[str, Any]]:
+        servers: list[dict[str, Any]] = []
+        for item in self._config().get("iceServers") or []:
+            if not isinstance(item, dict):
+                continue
+            urls = item.get("urls") or item.get("url")
+            if not urls:
+                continue
+            payload: dict[str, Any] = {"urls": urls}
+            username = item.get("username")
+            credential = item.get("credential")
+            if username:
+                payload["username"] = str(username)
+            if credential:
+                payload["credential"] = str(credential)
+            servers.append(payload)
+        return servers
+
+    def _rtc_configuration(self):
+        if RTCConfiguration is None or RTCIceServer is None:
+            return None
+        ice_servers = []
+        for item in self._client_ice_servers():
+            ice_servers.append(
+                RTCIceServer(
+                    urls=item["urls"],
+                    username=item.get("username"),
+                    credential=item.get("credential"),
+                )
+            )
+        return RTCConfiguration(iceServers=ice_servers)
 
     def _direct_capture_supported(self) -> tuple[bool, str | None]:
         if mss is None:
@@ -189,6 +343,7 @@ class DesktopLiveService:
             return dict(payload)
 
         webrtc_available, webrtc_reason = self._is_webrtc_supported()
+        audio_available, audio_reason = self._audio_supported()
         direct_available, direct_reason = self._direct_capture_supported()
         if direct_available:
             computer_use_available, computer_use_availability, computer_use_reason = False, {}, "未检查：mss 直采已可用"
@@ -214,8 +369,19 @@ class DesktopLiveService:
             "requires": [] if direct_available else (computer_use_availability.get("requires") or []),
             "webrtcAvailable": webrtc_available,
             "webrtcReady": webrtc_available,
+            "audioAvailable": audio_available,
+            "audioEnabled": bool(config.get("audioEnabled", True)),
+            "audioProvider": "soundcard_system_loopback" if audio_available else "none",
+            "audioReason": audio_reason,
             "fallbackAvailable": fallback_available,
             "streamFallbackReady": fallback_available,
+            "iceServersConfigured": bool(self._client_ice_servers()),
+            "turnConfigured": any(
+                str(url).lower().startswith(("turn:", "turns:"))
+                for server in self._client_ice_servers()
+                for url in ([server.get("urls")] if isinstance(server.get("urls"), str) else list(server.get("urls") or []))
+            ),
+            "iceServers": self._client_ice_servers(),
             "captureProvider": capture_provider,
             "captureProviderPriority": ["mss", "computer_use_runtime"],
             "lastErrorStage": None if available else ("capture" if not capture_available else "webrtc"),
@@ -231,6 +397,13 @@ class DesktopLiveService:
                 },
                 "driver": details.get("driver"),
                 "visionFallback": details.get("visionFallback"),
+                "audio": {
+                    "available": audio_available,
+                    "reason": audio_reason,
+                    "source": config.get("audioSource"),
+                    "sampleRate": int(config.get("audioSampleRate") or 48000),
+                    "channels": int(config.get("audioChannels") or 2),
+                },
             },
         }
         self._availability_cache = payload
@@ -261,6 +434,10 @@ class DesktopLiveService:
                     "targetFps": int(config.get("targetFps") or 10),
                     "idleReleaseSeconds": int(config.get("idleReleaseSeconds") or 15),
                     "captureDisplay": str(config.get("captureDisplay") or "primary"),
+                    "audioEnabled": bool(config.get("audioEnabled", True)),
+                    "audioSource": str(config.get("audioSource") or "system"),
+                    "audioSampleRate": int(config.get("audioSampleRate") or 48000),
+                    "audioChannels": int(config.get("audioChannels") or 2),
                 },
             }
 
@@ -405,7 +582,7 @@ class DesktopLiveService:
         if bool(config.get("singleViewerOnly", True)) and session.viewer_id != viewer_id:
             raise RuntimeError("当前桌面直播会话不属于当前用户。")
 
-        pc = RTCPeerConnection()
+        pc = RTCPeerConnection(self._rtc_configuration())
         track = DesktopCaptureVideoTrack(
             self,
             session_id,
@@ -413,10 +590,18 @@ class DesktopLiveService:
             max_height=max_height,
             target_fps=target_fps,
         )
+        audio_track = None
+        audio_available, _audio_reason = self._audio_supported()
+        if audio_available:
+            audio_track = DesktopSystemAudioTrack(
+                sample_rate=int(config.get("audioSampleRate") or 48000),
+                channels=int(config.get("audioChannels") or 2),
+            )
 
         with self._lock:
             session.pc = pc
             session.track = track
+            session.audio_track = audio_track
             session.connection_state = "connecting"
             session.activated_at = time.time()
             session.last_seen_at = time.time()
@@ -434,6 +619,8 @@ class DesktopLiveService:
         try:
             await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
             pc.addTrack(track)
+            if audio_track is not None:
+                pc.addTrack(audio_track)
             answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
             await self._wait_for_ice_gathering_complete(pc)
@@ -504,10 +691,16 @@ class DesktopLiveService:
         if not session:
             return False
         track = session.track
+        audio_track = session.audio_track
         pc = session.pc
         if track is not None:
             try:
                 track.stop()
+            except Exception:
+                pass
+        if audio_track is not None:
+            try:
+                audio_track.stop()
             except Exception:
                 pass
         if pc is not None:
@@ -536,6 +729,12 @@ class DesktopLiveService:
         if track is not None:
             try:
                 track.stop()
+            except Exception:
+                pass
+        audio_track = session.audio_track
+        if audio_track is not None:
+            try:
+                audio_track.stop()
             except Exception:
                 pass
         pc = session.pc

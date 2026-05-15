@@ -331,9 +331,10 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
             "## Multi-Runtime Orchestration\n"
             "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
             "- For complex or freshness-sensitive research, grant `research.core` and first call `research_broker(mode=\"search_experience\")` for reusable experience packs; run new `research_broker(mode=\"run\")` only when packs are missing, stale, low-confidence, or conflicting.\n"
-            "- For coding, project creation, dependency work, or broad multi-file changes, prefer Engineering discipline or a brokered engineering subagent; direct Supervisor execution is only for small 1-10 step work with an explicit write set and verification proof.\n"
+            "- If the user explicitly asks for Engineering Runtime / engineering mode / 工程运行时 / 工程模式, route into Engineering discipline first; if Engineering is disabled, fail fast instead of blind direct execution.\n"
+            "- For coding, project creation, dependency work, or broad multi-file changes, use Engineering discipline or a brokered engineering subagent by default; direct Supervisor execution is only for small 1-10 step work with an explicit write set and verification proof.\n"
             "- If direct execution grows beyond 10 tool steps or more than 3 project file writes, stop and choose delegation_broker / Engineering proof-workset / an explicit user-facing reason to continue direct.\n"
-            "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
+            "- New project creation can use Engineering project-creation workspace mode after workspace inventory; do not treat an empty workspace alone as sufficient, but do not block Engineering only because repoDetected=false.\n"
             "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"
             "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
         )
@@ -897,8 +898,9 @@ class StorageManager:
                 "## Multi-Runtime Orchestration\n"
                 "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
                 "- For complex or freshness-sensitive research, grant `research.core` and first call `research_broker(mode=\"search_experience\")` for reusable experience packs; run new `research_broker(mode=\"run\")` only when packs are missing, stale, low-confidence, or conflicting.\n"
-                "- For coding, project creation, or dependency work, route deliberately into Engineering discipline, a brokered engineering subagent, or direct supervisor execution with an explicit write set and verification proof.\n"
-                "- New project creation is a routing choice for Supervisor, not an automatic Engineering trigger just because the workspace is empty.\n"
+                "- If the user explicitly asks for Engineering Runtime / engineering mode / 工程运行时 / 工程模式, route into Engineering discipline first; if Engineering is disabled, fail fast instead of blind direct execution.\n"
+                "- For coding, project creation, dependency work, or broad multi-file changes, use Engineering discipline or a brokered engineering subagent by default; direct Supervisor execution is only for small 1-10 step work with an explicit write set and verification proof.\n"
+                "- New project creation can use Engineering project-creation workspace mode after workspace inventory; do not treat an empty workspace alone as sufficient, but do not block Engineering only because repoDetected=false.\n"
                 "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"
                 "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
                 "## Tool Discipline\n"
@@ -1092,6 +1094,11 @@ class StorageManager:
                 "singleViewerOnly": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_SINGLE_VIEWER_ONLY") or "true").strip().lower() not in {"0", "false", "no", "off"},
                 "idleReleaseSeconds": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_IDLE_RELEASE_SECONDS") or "15")),
                 "captureDisplay": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_CAPTURE_DISPLAY") or "primary"),
+                "audioEnabled": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_AUDIO_ENABLED") or "true").strip().lower() not in {"0", "false", "no", "off"},
+                "audioSource": str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_AUDIO_SOURCE") or "system"),
+                "audioSampleRate": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_AUDIO_SAMPLE_RATE") or "48000")),
+                "audioChannels": int(str(os.getenv("V8_AGENT_OS_DESKTOP_LIVE_AUDIO_CHANNELS") or "2")),
+                "iceServers": [],
             },
             "remoteLink": {
                 "enabled": True,
@@ -2523,6 +2530,12 @@ class StorageManager:
         desktop_live["targetFps"] = max(1, min(15, int(desktop_live.get("targetFps") or 10)))
         desktop_live["singleViewerOnly"] = bool(desktop_live.get("singleViewerOnly", True))
         desktop_live["idleReleaseSeconds"] = max(5, int(desktop_live.get("idleReleaseSeconds") or 15))
+        desktop_live["audioEnabled"] = bool(desktop_live.get("audioEnabled", True))
+        desktop_live["audioSource"] = str(desktop_live.get("audioSource") or "system").strip().lower()
+        desktop_live["audioSampleRate"] = max(8000, min(96000, int(desktop_live.get("audioSampleRate") or 48000)))
+        desktop_live["audioChannels"] = 1 if int(desktop_live.get("audioChannels") or 2) == 1 else 2
+        if not isinstance(desktop_live.get("iceServers"), list):
+            desktop_live["iceServers"] = []
         capture_display = str(desktop_live.get("captureDisplay") or "primary").strip().lower()
         desktop_live["captureDisplay"] = capture_display if capture_display in {"primary"} else "primary"
         normalized.setdefault("remoteLink", {})

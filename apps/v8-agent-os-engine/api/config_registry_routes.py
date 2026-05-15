@@ -188,6 +188,7 @@ def _build_supervisor_domain() -> dict[str, Any]:
             },
             "delegation": {
                 "externalWorkers": list(delegation.get("externalWorkers") or []),
+                "recursive": dict(delegation.get("recursive") or {}),
             },
             "specialistRegistry": dict(supervisor_config.get("specialistRegistry") or {}),
             "research": dict(supervisor_config.get("research") or {}),
@@ -246,6 +247,10 @@ def _save_supervisor_domain(payload: dict[str, Any]) -> dict[str, Any]:
         incoming = dict(data.get("delegation") or {})
         if "externalWorkers" in incoming:
             delegation["externalWorkers"] = list(incoming.get("externalWorkers") or [])
+        if "recursive" in incoming and isinstance(incoming.get("recursive"), dict):
+            recursive = dict(delegation.get("recursive") or {})
+            recursive.update(dict(incoming.get("recursive") or {}))
+            delegation["recursive"] = recursive
         supervisor_config["delegation"] = delegation
 
     if "specialistRegistry" in data and isinstance(data.get("specialistRegistry"), dict):

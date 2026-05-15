@@ -38,6 +38,15 @@ export type CanonicalConfig = {
             idleReleaseSeconds?: number;
             captureDisplay?: string;
             singleViewerOnly?: boolean;
+            audioEnabled?: boolean;
+            audioSource?: string;
+            audioSampleRate?: number;
+            audioChannels?: number;
+            iceServers?: Array<{
+                urls?: string | string[];
+                username?: string;
+                credential?: string;
+            }>;
         };
         remoteLink?: {
             enabled?: boolean;

@@ -690,6 +690,9 @@ def build_agent_node(
                 "delegatedFullQuery": delegated_query,
                 "extensionsRouteQuery": extensions_route_query,
             }
+            for key in ("parentDelegationId", "delegationId", "delegationDepth", "delegationNodeCount", "delegationBudget"):
+                if key in inherited_route_context:
+                    route_context_record[key] = inherited_route_context.get(key)
 
             from core.automation.hooks import hooks_manager
 

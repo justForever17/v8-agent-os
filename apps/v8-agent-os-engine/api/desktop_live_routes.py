@@ -95,6 +95,7 @@ async def stream_desktop_live(session_id: str = Query(..., alias="sessionId")):
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         },
     )
 

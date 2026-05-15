@@ -14,6 +14,15 @@ type DesktopLiveConfig = {
     idleReleaseSeconds?: number;
     captureDisplay?: string;
     singleViewerOnly?: boolean;
+    audioEnabled?: boolean;
+    audioSource?: string;
+    audioSampleRate?: number;
+    audioChannels?: number;
+    iceServers?: Array<{
+        urls?: string | string[];
+        username?: string;
+        credential?: string;
+    }>;
 };
 
 type SystemBaseConfig = {

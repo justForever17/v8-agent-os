@@ -22,6 +22,11 @@ DEFAULT_DESKTOP_LIVE_CONFIG = {
     "singleViewerOnly": True,
     "idleReleaseSeconds": 15,
     "captureDisplay": "primary",
+    "audioEnabled": True,
+    "audioSource": "system",
+    "audioSampleRate": 48000,
+    "audioChannels": 2,
+    "iceServers": [],
 }
 
 
@@ -125,6 +130,15 @@ def get_desktop_live_config() -> dict[str, Any]:
         5,
         int(merged.get("idleReleaseSeconds") or DEFAULT_DESKTOP_LIVE_CONFIG["idleReleaseSeconds"]),
     )
+    merged["audioEnabled"] = bool(merged.get("audioEnabled", DEFAULT_DESKTOP_LIVE_CONFIG["audioEnabled"]))
+    merged["audioSource"] = str(merged.get("audioSource") or "system").strip().lower()
+    merged["audioSampleRate"] = max(
+        8000,
+        min(96000, int(merged.get("audioSampleRate") or DEFAULT_DESKTOP_LIVE_CONFIG["audioSampleRate"])),
+    )
+    merged["audioChannels"] = 1 if int(merged.get("audioChannels") or DEFAULT_DESKTOP_LIVE_CONFIG["audioChannels"]) == 1 else 2
+    ice_servers = merged.get("iceServers")
+    merged["iceServers"] = ice_servers if isinstance(ice_servers, list) else []
     capture_display = str(merged.get("captureDisplay") or "primary").strip().lower()
     merged["captureDisplay"] = capture_display if capture_display in {"primary"} else "primary"
     return merged

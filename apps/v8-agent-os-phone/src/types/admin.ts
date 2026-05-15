@@ -525,12 +525,27 @@ export type DesktopLiveStatus = {
     captureProvider?: string;
     webrtcReady?: boolean;
     streamFallbackReady?: boolean;
+    audioAvailable?: boolean;
+    audioEnabled?: boolean;
+    audioProvider?: string;
+    audioReason?: string | null;
+    iceServersConfigured?: boolean;
+    turnConfigured?: boolean;
+    iceServers?: Array<{
+        urls?: string | string[];
+        username?: string;
+        credential?: string;
+    }>;
     logPath?: string;
     config?: {
         enabled?: boolean;
         maxWidth?: number;
         maxHeight?: number;
         targetFps?: number;
+        audioEnabled?: boolean;
+        audioSource?: string;
+        audioSampleRate?: number;
+        audioChannels?: number;
     };
 };
 

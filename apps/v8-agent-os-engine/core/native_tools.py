@@ -4149,7 +4149,12 @@ def _launch_background_command(
     interactive_reason = _detect_interactive_command(command)
     session_reason = _detect_session_preferred_command(command)
     resolved_profile, profile_reason = _detect_background_command_profile(command, requested_profile=profile)
-    interactive_mode = interactive_reason is not None or session_reason is not None
+    # "Needs a session" is not the same as "is an interactive REPL".
+    # Installs/build checks should be observable and recoverable, but they still need
+    # an exit sentinel so observe can return the final result instead of leaving a
+    # persistent shell marked as running forever.
+    interactive_mode = interactive_reason is not None
+    observable_session = session_reason is not None
     if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
         raise RuntimeError(
             "当前 Windows 环境缺少 `winpty/PTY` 适配层，无法稳定自动化交互式 CLI。"
@@ -4213,7 +4218,7 @@ def _launch_background_command(
         run_id=runtime_context.get("run_id"),
         interactive=interactive_mode,
         profile=resolved_profile,
-        profile_reason=profile_reason or session_reason,
+        profile_reason=profile_reason or interactive_reason or session_reason,
         cwd=resolved_cwd,
     )
     bg_proc.command_id = cmd_id
@@ -4243,6 +4248,7 @@ def _launch_background_command(
             "command": command,
             "command_id": cmd_id,
             "interactive": interactive_mode,
+            "observableSession": observable_session,
             "tty": tty_label,
             "run_id": runtime_context.get("run_id"),
             "cwd": resolved_cwd,
@@ -4263,8 +4269,11 @@ def _launch_background_command(
         "workspaceBinding": workspace_preflight.get("binding"),
         "status": status,
         "interactive": interactive_mode,
+        "observableSession": observable_session,
+        "sessionReason": session_reason,
+        "interactiveReason": interactive_reason,
         "profile": resolved_profile,
-        "profileReason": profile_reason,
+        "profileReason": profile_reason or interactive_reason or session_reason,
         "chatCliVariant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
         "initialOutput": initial_out,
     }
@@ -5831,6 +5840,7 @@ _BUSY_HINT_PATTERN = re.compile(
     r"(thinking|generating|loading|connecting|initializing|authorizing|处理中|思考中|生成中|连接中|esc to cancel|pressing 'a' to continue|i'm feeling lucky|channeling the force|magic smoke|\.\.\.|⋯|█)",
     re.IGNORECASE,
 )
+_COMMAND_EXIT_SENTINEL_PATTERN = re.compile(r"__V8_COMMAND_EXIT_[0-9a-fA-F]{12}__:-?\d+")
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _RAW_FRAME_HISTORY_LIMIT = 12
 _RAW_FRAME_PREVIEW_LIMIT = 240
@@ -5860,6 +5870,25 @@ _TERMINAL_KEY_ALIASES = {
     "escape": "\x1b",
     "esc": "\x1b",
 }
+
+
+def _strip_command_internal_markers(text: str) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    value = _COMMAND_EXIT_SENTINEL_PATTERN.sub("", value)
+    lines = []
+    for line in value.splitlines():
+        if _COMMAND_EXIT_SENTINEL_PATTERN.search(line):
+            continue
+        cleaned = line.rstrip()
+        if cleaned:
+            lines.append(cleaned)
+        elif lines and lines[-1] != "":
+            lines.append("")
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines).strip()
 _CHAT_CLI_VARIANT_ALIASES = {
     "qwen": "qwen",
     "claude": "claude",
@@ -7504,8 +7533,12 @@ class BackgroundProcess:
         if self.uses_tty:
             if not self.screen_snapshot_cache:
                 self.screen_snapshot_cache = self._compute_screen_snapshot()
-            return _strip_terminal_bootstrap_noise(self.screen_snapshot_cache, self.terminal_env_overrides)
-        return _strip_terminal_bootstrap_noise(self._compute_screen_snapshot(), self.terminal_env_overrides)
+            return _strip_command_internal_markers(
+                _strip_terminal_bootstrap_noise(self.screen_snapshot_cache, self.terminal_env_overrides)
+            )
+        return _strip_command_internal_markers(
+            _strip_terminal_bootstrap_noise(self._compute_screen_snapshot(), self.terminal_env_overrides)
+        )
 
     def _derive_observation_state(self) -> str:
         if not self.is_running:
@@ -7555,6 +7588,7 @@ class BackgroundProcess:
             "is_running": self.is_running,
             "uses_tty": self.uses_tty,
             "interactive": self.interactive,
+            "command_completed_by_sentinel": bool(self.command_completed_by_sentinel),
             "profile": self.profile,
             "profile_reason": self.profile_reason,
             "chat_cli_variant": self.chat_cli_variant if self.profile == "chat_cli" else None,
@@ -7822,6 +7856,7 @@ def run_system_command(
                 "commandId": launched["commandId"],
                 "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
+                "observableSession": bool(launched.get("observableSession")),
                 "profile": launched["profile"],
                 "cwd": launched.get("cwd"),
                 "runId": launched["runId"],
@@ -7836,7 +7871,7 @@ def run_system_command(
                     mode="start",
                     state=state,
                     awaiting_input=bool(status.get("awaiting_input")),
-                    has_more=bool(launched["interactive"] and state not in {"completed", "failed"}),
+                    has_more=bool(state not in {"completed", "failed"}),
                 ),
                 "state": state,
                 "awaitingInput": bool(status.get("awaiting_input")),
@@ -7931,7 +7966,9 @@ def _command_session_recommended_next_action(
 
 def _command_session_preview_text(value: str, *, limit: int = 1200) -> tuple[str, bool]:
     normalized = _agent_preview_text(
-        _strip_terminal_bootstrap_noise(str(value or ""), _build_terminal_env_overrides()),
+        _strip_command_internal_markers(
+            _strip_terminal_bootstrap_noise(str(value or ""), _build_terminal_env_overrides())
+        ),
         limit=limit,
     ) or ""
     if len(normalized) <= limit:
@@ -8051,6 +8088,75 @@ def _delegation_external_worker_descriptors() -> list[dict[str, Any]]:
     delegation = dict(supervisor_config.get("delegation") or {})
     descriptors = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
     return descriptors or default_external_worker_descriptors()
+
+
+def _safe_int_range(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _delegation_recursive_policy() -> dict[str, Any]:
+    supervisor_config = storage.get_supervisor_config() or {}
+    delegation = dict(supervisor_config.get("delegation") or {})
+    recursive = dict(delegation.get("recursive") or {})
+    return {
+        "enabled": bool(recursive.get("enabled", True)),
+        "maxDelegationDepth": _safe_int_range(recursive.get("maxDelegationDepth"), 10, 1, 100),
+        "maxChildrenPerDelegation": _safe_int_range(recursive.get("maxChildrenPerDelegation"), 10, 1, 50),
+        "maxTotalDelegationNodes": _safe_int_range(recursive.get("maxTotalDelegationNodes"), 100, 1, 1000),
+        "maxConcurrentDelegations": _safe_int_range(recursive.get("maxConcurrentDelegations"), 10, 1, 50),
+    }
+
+
+def _delegation_budget_block_payload(
+    *,
+    reason: str,
+    policy: dict[str, Any],
+    depth: int,
+    requested_count: int,
+    used_nodes: int,
+    tool_call_id: str,
+) -> Command:
+    return Command(
+        goto="supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode="dispatch",
+                        ok=False,
+                        summary="delegation_broker 阻止了递归派发：已超过 Subagent 递归预算或策略限制。",
+                        recommended_next_action="reduce_task_count_or_raise_budget",
+                        error="delegation_budget_exceeded",
+                        reason=reason,
+                        budget={
+                            "depth": depth,
+                            "requestedTaskCount": requested_count,
+                            "usedNodeCount": used_nodes,
+                            **policy,
+                        },
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        },
+    )
+
+
+def _with_recursive_delegation_access(task_brief: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(task_brief or {})
+    runtime_access = [
+        str(item).strip()
+        for item in list(normalized.get("runtimeAccess") or normalized.get("runtime_access") or [])
+        if str(item).strip()
+    ]
+    if "delegation.recursive" not in runtime_access:
+        runtime_access.append("delegation.recursive")
+    normalized["runtimeAccess"] = runtime_access
+    return normalized
 
 
 def _delegation_acceptance_hint(value: Any = None) -> str:
@@ -8347,11 +8453,12 @@ def command_session_broker(
                     mode=normalized_mode,
                     state=state,
                     awaiting_input=bool(status.get("awaiting_input")),
-                    has_more=bool(launched.get("interactive")),
+                    has_more=bool(state not in {"completed", "failed"}),
                 ),
                 interactive=bool(launched.get("interactive")),
+                observableSession=bool(launched.get("observableSession")),
                 profile=launched.get("profile"),
-                reason=launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
+                reason=launched.get("interactiveReason") or launched.get("sessionReason") or launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
                 cwd=launched.get("cwd"),
                 awaitingInput=bool(status.get("awaiting_input")),
                 terminalMenu=terminal_menu or None,
@@ -8780,6 +8887,58 @@ def delegation_broker(
                 },
             )
 
+        recursive_policy = _delegation_recursive_policy()
+        parent_delegation_id = str(inherited_context.get("delegationId") or inherited_context.get("parentDelegationId") or "").strip()
+        current_depth = _safe_int_range(inherited_context.get("delegationDepth"), 0, 0, 100)
+        used_node_count = _safe_int_range(inherited_context.get("delegationNodeCount"), 0, 0, 1000)
+        is_recursive_dispatch = bool(parent_delegation_id or current_depth > 0)
+        requested_count = len(normalized_tasks)
+        if is_recursive_dispatch and not recursive_policy["enabled"]:
+            return _delegation_budget_block_payload(
+                reason="recursive_delegation_disabled",
+                policy=recursive_policy,
+                depth=current_depth,
+                requested_count=requested_count,
+                used_nodes=used_node_count,
+                tool_call_id=tool_call_id,
+            )
+        if is_recursive_dispatch and current_depth >= int(recursive_policy["maxDelegationDepth"]):
+            return _delegation_budget_block_payload(
+                reason="max_delegation_depth_reached",
+                policy=recursive_policy,
+                depth=current_depth,
+                requested_count=requested_count,
+                used_nodes=used_node_count,
+                tool_call_id=tool_call_id,
+            )
+        if is_recursive_dispatch and requested_count > int(recursive_policy["maxChildrenPerDelegation"]):
+            return _delegation_budget_block_payload(
+                reason="max_children_per_delegation_exceeded",
+                policy=recursive_policy,
+                depth=current_depth,
+                requested_count=requested_count,
+                used_nodes=used_node_count,
+                tool_call_id=tool_call_id,
+            )
+        if requested_count > int(recursive_policy["maxConcurrentDelegations"]):
+            return _delegation_budget_block_payload(
+                reason="max_concurrent_delegations_exceeded",
+                policy=recursive_policy,
+                depth=current_depth,
+                requested_count=requested_count,
+                used_nodes=used_node_count,
+                tool_call_id=tool_call_id,
+            )
+        if is_recursive_dispatch and used_node_count + requested_count > int(recursive_policy["maxTotalDelegationNodes"]):
+            return _delegation_budget_block_payload(
+                reason="max_total_delegation_nodes_exceeded",
+                policy=recursive_policy,
+                depth=current_depth,
+                requested_count=requested_count,
+                used_nodes=used_node_count,
+                tool_call_id=tool_call_id,
+            )
+
         invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
         loaded_agents = storage.get_all_agents()
         external_descriptors = _delegation_external_worker_descriptors()
@@ -8862,10 +9021,11 @@ def delegation_broker(
             if local_agent and lane_hint != "external_worker":
                 agent_id = str(local_agent.get("id") or "").strip()
                 agent_name = str(local_agent.get("name") or agent_id).strip() or agent_id
+                branch_task_brief = _with_recursive_delegation_access(task_brief)
                 delegation_id_value = make_local_delegation_id(
                     invocation_id=invocation_id,
                     branch_index=index,
-                    task_brief_id=str(task_brief.get("taskBriefId") or ""),
+                    task_brief_id=str(branch_task_brief.get("taskBriefId") or ""),
                     agent_id=agent_id,
                 )
                 branch_context = build_delegation_context(
@@ -8883,8 +9043,17 @@ def delegation_broker(
                     selected_baseline_tools=inherited_context.get("selectedBaselineTools"),
                     prompt_addition=inherited_context.get("promptAddition"),
                     invocation_id=invocation_id,
-                    task_brief=task_brief,
-                    planner_context=_delegation_planner_context(planner_plan, task_brief),
+                    task_brief=branch_task_brief,
+                    planner_context=_delegation_planner_context(planner_plan, branch_task_brief),
+                )
+                branch_context.update(
+                    {
+                        "parentDelegationId": parent_delegation_id or None,
+                        "delegationId": delegation_id_value,
+                        "delegationDepth": current_depth + 1,
+                        "delegationNodeCount": used_node_count + requested_count,
+                        "delegationBudget": dict(recursive_policy),
+                    }
                 )
                 branch_state = dict(base_state)
                 branch_state["messages"] = base_messages + [
@@ -8899,11 +9068,13 @@ def delegation_broker(
                     "agentId": agent_id,
                     "agentName": agent_name,
                     "reason": task_goal,
-                    "taskBriefId": str(task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
-                    "taskBrief": task_brief,
+                    "taskBriefId": str(branch_task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
+                    "taskBrief": branch_task_brief,
                     "delegationId": delegation_id_value,
+                    "parentDelegationId": parent_delegation_id or None,
+                    "delegationDepth": current_depth + 1,
                     "lane": "subagent",
-                    "acceptanceHint": _delegation_acceptance_hint(task_brief.get("acceptanceContract")),
+                    "acceptanceHint": _delegation_acceptance_hint(branch_task_brief.get("acceptanceContract")),
                     "initialMessageCount": len(base_messages) + 1,
                     "initialTodoCount": len(base_todos),
                 }

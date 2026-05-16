@@ -992,7 +992,7 @@ def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]) -
         if not key:
             key = "preference"
         try:
-            memory_runtime.upsert_preference(key=key, value=pref.value, scope=pref.scope)
+            memory_runtime.upsert_preference(key=key, value=pref.value, scope=pref.scope, source="memory_agent")
             stored += 1
             stored_items.append(pref)
             logger.info(f"[MemoryAgent] Preference → MEMORY.md [{pref.scope}] {key} = {pref.value}")

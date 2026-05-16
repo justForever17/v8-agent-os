@@ -16,7 +16,7 @@ import uuid
 import logging
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 from core.memory_canonicalization import canonicalize_preference_key
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -39,11 +39,10 @@ last_updated: "{date}"
 ---
 
 [global]
-# 全局偏好 — 适用于所有场景
-language: zh-CN
-system_name: V8 Agent OS
-system_slug: v8-agent-os
-system_author: justForever17
+# 全局画像 — 长期身份、表达与背景
+preferred_language: zh-CN
+assistant_name: Please help me come up with a name.
+system_identity_reference: V8 Agent OS
 """
 
 # === 正则 ===
@@ -51,6 +50,48 @@ SCOPE_PATTERN = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 KV_PATTERN = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$', re.MULTILINE)
 _SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:", "workspace:", "external_api_thread:")
 _DAY_FILENAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+
+GLOBAL_PROFILE_DEFAULTS: Dict[str, str] = {
+    "preferred_language": "zh-CN",
+    "user_call_name": "",
+    "assistant_name": "Please help me come up with a name.",
+    "system_identity_reference": "V8 Agent OS",
+    "assistant_persona": "",
+    "relationship_tone": "",
+    "emotional_boundary": "",
+    "response_language_style": "",
+    "format_preference": "",
+    "primary_system_context": "",
+    "technical_stack_bias": "",
+    "long_term_goals": "",
+}
+GLOBAL_PROFILE_KEYS = tuple(GLOBAL_PROFILE_DEFAULTS.keys())
+GLOBAL_PROFILE_ALIASES: Dict[str, str] = {
+    "language": "preferred_language",
+    "language_preference": "preferred_language",
+    "preferred_response_language": "preferred_language",
+    "response_language": "preferred_language",
+    "reply_language": "preferred_language",
+    "system_name": "system_identity_reference",
+    "expression_style": "response_language_style",
+    "tone_preference": "relationship_tone",
+    "response_tone_preference": "relationship_tone",
+}
+REMOVED_GLOBAL_KEYS = {
+    "voice_interaction_protocol",
+    "planning_preference",
+    "implementation_preference",
+    "verification_preference",
+    "autonomy_level",
+    "approval_preference",
+    "safety_sensitivity",
+}
+IGNORED_MEMORY_SECTIONS = {"execution hints", "execution_hints"}
+VOICE_INTERACTION_EXECUTION_HINT = (
+    "Voice interaction protocol: when an upbeat voice reply is appropriate and the active channel "
+    "supports V8OS voice delivery, wrap pure spoken text in <voice>...</voice>; keep commands, code, "
+    "paths, tool output, and diagnostics outside voice tags."
+)
 
 
 class MemoryStore:
@@ -112,6 +153,32 @@ class MemoryStore:
             raise ValueError(f"Unsupported memory scope: {scope}")
         return normalized
 
+    def _normalize_memory_key(self, key: str) -> str:
+        return re.sub(r"[^a-z0-9_]+", "_", str(key or "").strip().lower()).strip("_")
+
+    def _canonicalize_global_profile_key(self, key: str) -> Tuple[str, str]:
+        normalized = self._normalize_memory_key(key)
+        if not normalized:
+            return "preference", "unknown"
+        if normalized in GLOBAL_PROFILE_KEYS:
+            return normalized, "fixed"
+        if normalized in GLOBAL_PROFILE_ALIASES:
+            return GLOBAL_PROFILE_ALIASES[normalized], "alias"
+        if normalized in REMOVED_GLOBAL_KEYS:
+            return normalized, "removed"
+        return normalized, "custom"
+
+    def get_global_profile_schema(self) -> Dict[str, Any]:
+        return {
+            "fixedKeys": list(GLOBAL_PROFILE_KEYS),
+            "defaults": dict(GLOBAL_PROFILE_DEFAULTS),
+            "aliases": dict(GLOBAL_PROFILE_ALIASES),
+            "removedKeys": sorted(REMOVED_GLOBAL_KEYS),
+            "executionHints": {
+                "voice_interaction_protocol": VOICE_INTERACTION_EXECUTION_HINT,
+            },
+        }
+
     def _trim_text_to_budget(self, text: str, remaining_tokens: int) -> str:
         if not text or remaining_tokens <= 0:
             return ""
@@ -121,6 +188,21 @@ class MemoryStore:
         if max_chars <= 3:
             return text[:max_chars]
         return text[: max_chars - 3].rstrip() + "..."
+
+    def _backup_memory_file(self, reason: str) -> Optional[Path]:
+        if not self.memory_path.exists():
+            return None
+        try:
+            backup_dir = MEMORY_ROOT / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            safe_reason = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(reason or "backup")).strip("_") or "backup"
+            backup_path = backup_dir / f"MEMORY.{stamp}.{safe_reason}.md"
+            backup_path.write_text(self.memory_path.read_text(encoding="utf-8"), encoding="utf-8")
+            return backup_path
+        except Exception as exc:
+            logger.warning(f"[MemoryStore] Failed to create MEMORY.md backup before repair: {exc}")
+            return None
     
     # ==========================================
     # Layer 1: 偏好管理 (MEMORY.md)
@@ -148,7 +230,8 @@ class MemoryStore:
         
         # 按 scope 分区解析
         data: Dict[str, Dict[str, str]] = {"global": {}}
-        current_scope = "global"
+        current_scope: Optional[str] = "global"
+        invalid_global_lines: List[str] = []
         
         for line in content.split('\n'):
             line = line.strip()
@@ -159,9 +242,12 @@ class MemoryStore:
             scope_match = SCOPE_PATTERN.match(line)
             if scope_match:
                 current_scope = scope_match.group(1)
+                if current_scope.strip().lower() in IGNORED_MEMORY_SECTIONS:
+                    current_scope = None
+                    continue
                 if not self._is_valid_scope(current_scope):
                     logger.warning(f"[MemoryStore] Ignoring invalid scope section in MEMORY.md: {current_scope}")
-                    current_scope = "global"
+                    current_scope = None
                     continue
                 if current_scope not in data:
                     data[current_scope] = {}
@@ -169,10 +255,33 @@ class MemoryStore:
             
             # 解析 key: value
             kv_match = KV_PATTERN.match(line)
-            if kv_match:
+            if kv_match and current_scope:
                 key = kv_match.group(1)
                 value = kv_match.group(2).strip()
                 data[current_scope][key] = value
+            elif current_scope == "global":
+                invalid_global_lines.append(line)
+
+        data, changed = self._normalize_global_profile_data(data)
+        if invalid_global_lines:
+            self._append_global_preference_quarantine_records(
+                [
+                    {
+                        "key": "invalid_global_line",
+                        "value": "\n".join(invalid_global_lines[:20]),
+                        "reason": "global_profile_parse_repair",
+                        "metadata": {
+                            "source": "memory_global_repair",
+                            "lineCount": len(invalid_global_lines),
+                        },
+                    }
+                ]
+            )
+            changed = True
+        if changed:
+            self._backup_memory_file("global_profile_repair")
+            self._save_preferences(data)
+            return data
         
         # 更新缓存
         self._preferences_cache = data
@@ -182,6 +291,73 @@ class MemoryStore:
             self._cache_mtime = 0.0
         
         return data
+
+    def _normalize_global_profile_data(self, data: Dict[str, Dict[str, str]]) -> Tuple[Dict[str, Dict[str, str]], bool]:
+        global_values = dict(data.get("global") or {})
+        normalized_global: Dict[str, str] = {}
+        changed = False
+        migrated_records: List[Dict[str, Any]] = []
+
+        legacy_identity_parts: Dict[str, str] = {}
+
+        for raw_key, raw_value in global_values.items():
+            key = self._normalize_memory_key(raw_key)
+            value = str(raw_value or "").strip()
+            canonical_key, key_kind = self._canonicalize_global_profile_key(key)
+            if raw_key != canonical_key:
+                changed = True
+            if key in {"system_name", "system_slug", "system_author"}:
+                legacy_identity_parts[key] = value
+                if key != "system_name":
+                    changed = True
+                    continue
+            if key_kind in {"fixed", "alias"}:
+                if value:
+                    normalized_global[canonical_key] = value
+                continue
+            if key_kind == "removed":
+                changed = True
+                if value:
+                    migrated_records.append(
+                        {
+                            "key": key,
+                            "value": value,
+                            "reason": "global_profile_field_removed",
+                            "metadata": {
+                                "source": "memory_global_migration",
+                                "target": "execution_hints" if key == "voice_interaction_protocol" else "quarantine",
+                            },
+                        }
+                    )
+                continue
+            if key:
+                normalized_global[key] = value
+
+        if "system_identity_reference" not in normalized_global:
+            identity_name = legacy_identity_parts.get("system_name")
+            if identity_name:
+                detail_parts = []
+                if legacy_identity_parts.get("system_slug"):
+                    detail_parts.append(f"slug: {legacy_identity_parts['system_slug']}")
+                if legacy_identity_parts.get("system_author"):
+                    detail_parts.append(f"author: {legacy_identity_parts['system_author']}")
+                normalized_global["system_identity_reference"] = (
+                    f"{identity_name} ({'; '.join(detail_parts)})" if detail_parts else identity_name
+                )
+                changed = True
+
+        for key, value in GLOBAL_PROFILE_DEFAULTS.items():
+            if value and not str(normalized_global.get(key) or "").strip():
+                normalized_global[key] = value
+                changed = True
+
+        if normalized_global != global_values:
+            changed = True
+        data = dict(data)
+        data["global"] = normalized_global
+        if migrated_records:
+            self._append_global_preference_quarantine_records(migrated_records)
+        return data, changed
     
     def load_preferences(self, scope: str = "global", scope_chain: Optional[List[str]] = None) -> Dict[str, str]:
         """
@@ -198,7 +374,11 @@ class MemoryStore:
         for s in scopes_order:
             if s in all_data:
                 for key, value in all_data[s].items():
-                    merged[canonicalize_preference_key(key)] = value
+                    if s == "global":
+                        canonical_key, _ = self._canonicalize_global_profile_key(key)
+                        merged[canonical_key] = value
+                    else:
+                        merged[canonicalize_preference_key(key)] = value
         
         return merged
     
@@ -210,13 +390,43 @@ class MemoryStore:
         normalized_scope = self._validate_scope(scope)
         return dict(self._load_raw_preferences().get(normalized_scope) or {})
     
-    def update_preference(self, key: str, value: str, scope: str = "global"):
+    def update_preference(self, key: str, value: str, scope: str = "global", source: str = "human_admin"):
         """
         写入偏好到 MEMORY.md（覆盖同 scope 同 key）。
         """
         normalized_scope = self._validate_scope(scope)
         data = self._load_raw_preferences()
-        canonical_key = canonicalize_preference_key(key)
+        normalized_source = str(source or "human_admin").strip() or "human_admin"
+        if normalized_scope == "global":
+            canonical_key, key_kind = self._canonicalize_global_profile_key(key)
+            if key_kind == "removed":
+                self._append_global_preference_quarantine_records(
+                    [
+                        {
+                            "key": canonical_key,
+                            "value": value,
+                            "reason": "global_profile_field_removed",
+                            "metadata": {"source": normalized_source},
+                        }
+                    ]
+                )
+                logger.info(f"[MemoryStore] Quarantined removed global preference key={canonical_key}")
+                return
+            if normalized_source == "memory_agent" and key_kind == "custom":
+                self._append_global_preference_quarantine_records(
+                    [
+                        {
+                            "key": canonical_key,
+                            "value": value,
+                            "reason": "unmapped_global_preference",
+                            "metadata": {"source": normalized_source, "rawKey": key},
+                        }
+                    ]
+                )
+                logger.info(f"[MemoryStore] Quarantined unmapped memory-agent global preference key={canonical_key}")
+                return
+        else:
+            canonical_key = canonicalize_preference_key(key)
         
         if normalized_scope not in data:
             data[normalized_scope] = {}
@@ -231,7 +441,10 @@ class MemoryStore:
         """
         normalized_scope = self._validate_scope(scope)
         data = self._load_raw_preferences()
-        canonical_key = canonicalize_preference_key(key)
+        if normalized_scope == "global":
+            canonical_key, _ = self._canonicalize_global_profile_key(key)
+        else:
+            canonical_key = canonicalize_preference_key(key)
         if normalized_scope not in data or canonical_key not in data[normalized_scope]:
             return False
 
@@ -271,6 +484,33 @@ class MemoryStore:
     def _save_global_preference_quarantine_items(self, items: List[Dict[str, Any]]) -> None:
         path = self._global_preference_quarantine_path()
         path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _append_global_preference_quarantine_records(self, records: List[Dict[str, Any]]) -> None:
+        if not records:
+            return
+        items = self.load_global_preference_quarantine()
+        existing = {
+            (str(item.get("key") or ""), str(item.get("value") or ""), str(item.get("reason") or ""))
+            for item in items
+            if isinstance(item, dict)
+        }
+        for record in records:
+            key = canonicalize_preference_key(str(record.get("key") or "preference"))
+            value = str(record.get("value") or "").strip()
+            reason = str(record.get("reason") or "global_profile_migration").strip()
+            if (key, value, reason) in existing:
+                continue
+            items.append(
+                {
+                    "id": f"prefq:{key}:{uuid.uuid4().hex[:10]}",
+                    "key": key,
+                    "value": value,
+                    "reason": reason,
+                    "metadata": dict(record.get("metadata") or {}),
+                    "quarantinedAt": _utc_now_iso(),
+                }
+            )
+        self._save_global_preference_quarantine_items(items)
 
     def quarantine_global_preference(
         self,
@@ -342,7 +582,7 @@ class MemoryStore:
         
         # Scope 注释
         scope_comments = {
-            "global": "# 全局偏好 — 适用于所有场景",
+            "global": "# 全局画像 — 长期身份、表达与背景",
             "workspace:main": "# 默认工作区专属偏好",
         }
         
@@ -370,7 +610,16 @@ class MemoryStore:
                 thread_name = scope.split(":", 1)[1]
                 lines.append(f"# 外部 API 线程 {thread_name} 专属偏好")
             
-            for key, value in data[scope].items():
+            entries = list(data[scope].items())
+            if scope == "global":
+                fixed = [(key, data[scope][key]) for key in GLOBAL_PROFILE_KEYS if key in data[scope]]
+                custom = sorted(
+                    [(key, value) for key, value in data[scope].items() if key not in GLOBAL_PROFILE_KEYS],
+                    key=lambda item: item[0],
+                )
+                entries = fixed + custom
+
+            for key, value in entries:
                 if not key.startswith("_"):
                     lines.append(f"{key}: {value}")
             lines.append("")

@@ -123,6 +123,11 @@ export const ThinkingCard = memo(function ThinkingCard({
     const isUnverified = Boolean(reasoningSurface?.unverified)
         || String(reasoningSurface?.trust || "").trim().toLowerCase() === "unverified";
     const shouldFadeContent = content.length > 420;
+    const titleColor = isExpanded
+        ? colors.text
+        : isUnverified
+            ? (themeMode === "dark" ? "rgba(248,113,113,0.72)" : "rgba(185,28,28,0.68)")
+            : colors.textMuted;
 
     const wrapperBackground = isExpanded
         ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
@@ -166,14 +171,9 @@ export const ThinkingCard = memo(function ThinkingCard({
                             {isStreaming ? <View style={[styles.pingRing, { borderColor: "rgba(139,92,246,0.20)" }]} /> : null}
                         </View>
 
-                        <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
+                        <Text style={[styles.title, { color: titleColor }]}>
                             {title}
                         </Text>
-                        {isUnverified ? (
-                            <Text style={[styles.unverified, { color: colors.textSoft }]}>
-                                {t("src.components.chat.thinkingcard.unverified")}
-                            </Text>
-                        ) : null}
 
                         {isStreaming ? (
                             <Text style={[styles.time, { color: colors.primary }]}>
@@ -290,11 +290,6 @@ const styles = StyleSheet.create({
     time: {
         fontSize: 10,
         fontWeight: "600",
-    },
-    unverified: {
-        fontSize: 9,
-        fontWeight: "600",
-        letterSpacing: 0,
     },
     contentOuter: {
         paddingHorizontal: 8,

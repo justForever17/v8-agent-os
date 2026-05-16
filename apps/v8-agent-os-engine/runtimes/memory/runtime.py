@@ -399,6 +399,7 @@ class MemoryRuntime:
             "scopes": profile_service.list_scopes(),
             "total": profile_service.get_preference_count(),
             "globalQuarantine": profile_service.list_global_preference_quarantine(),
+            "globalProfile": profile_service.get_global_profile_schema(),
         }
 
     def load_preferences(
@@ -409,8 +410,8 @@ class MemoryRuntime:
     ) -> Dict[str, str]:
         return profile_service.load_preferences(scope=scope, scope_chain=scope_chain)
 
-    def upsert_preference(self, *, key: str, value: str, scope: str = "global") -> None:
-        profile_service.update_preference(key=key, value=value, scope=scope)
+    def upsert_preference(self, *, key: str, value: str, scope: str = "global", source: str = "human_admin") -> None:
+        profile_service.update_preference(key=key, value=value, scope=scope, source=source)
 
     def delete_preference(self, *, key: str, scope: str = "global") -> bool:
         return profile_service.delete_preference(key=key, scope=scope)

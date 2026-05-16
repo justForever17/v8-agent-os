@@ -23,6 +23,11 @@ interface QuarantinedPreferenceRecord {
   metadata?: Record<string, unknown>;
   quarantinedAt?: string;
 }
+interface GlobalProfileSchema {
+  fixedKeys: string[];
+  defaults?: Record<string, string>;
+  executionHints?: Record<string, string>;
+}
 type PreferencesByScope = Record<string, PreferenceRow[]>;
 function isAllowedPreferenceScope(scope: string) {
   return scope === "global" || scope.startsWith("project:") || scope.startsWith("channel:");
@@ -66,9 +71,11 @@ export function PreferencesManager() {
   const t = useT();
   const [preferencesByScope, setPreferencesByScope] = useState<PreferencesByScope>({});
   const [quarantinedGlobalPreferences, setQuarantinedGlobalPreferences] = useState<QuarantinedPreferenceRecord[]>([]);
+  const [globalProfile, setGlobalProfile] = useState<GlobalProfileSchema>({ fixedKeys: [] });
   const [loading, setLoading] = useState(true);
   const [newScopeName, setNewScopeName] = useState("");
   const scopes = useMemo(() => sortScopes(Object.keys(preferencesByScope)), [preferencesByScope]);
+  const fixedGlobalKeys = useMemo(() => new Set(globalProfile.fixedKeys || []), [globalProfile.fixedKeys]);
   const loadPreferences = useCallback(async () => {
     setLoading(true);
     try {
@@ -79,6 +86,11 @@ export function PreferencesManager() {
       const data = await res.json();
       setPreferencesByScope(normalizePreferences(data?.preferences || {}));
       setQuarantinedGlobalPreferences(Array.isArray(data?.globalQuarantine) ? data.globalQuarantine : []);
+      setGlobalProfile({
+        fixedKeys: Array.isArray(data?.globalProfile?.fixedKeys) ? data.globalProfile.fixedKeys : [],
+        defaults: data?.globalProfile?.defaults || {},
+        executionHints: data?.globalProfile?.executionHints || {}
+      });
     }
     catch (error) {
       console.error("Failed to load preferences:", error);
@@ -118,7 +130,7 @@ export function PreferencesManager() {
         variant: "destructive"
       });
     }
-  }, [loadPreferences, toast]);
+  }, [loadPreferences, t, toast]);
   const handleDeleteQuarantined = useCallback(async (record: QuarantinedPreferenceRecord) => {
     if (!window.confirm(tg(t, "0011ed75", { value1: record.key }))) {
       return;
@@ -145,7 +157,7 @@ export function PreferencesManager() {
         variant: "destructive"
       });
     }
-  }, [loadPreferences, toast]);
+  }, [loadPreferences, t, toast]);
   const mutateRow = useCallback((scope: string, rowId: string, patch: Partial<PreferenceRow>) => {
     setPreferencesByScope((prev) => ({
       ...prev,
@@ -338,7 +350,17 @@ export function PreferencesManager() {
                     {t("components.memory.PreferencesManager.k1f44c77b")}
                 </div> : scopes.length === 0 ? <div className="rounded-2xl border border-dashed p-6 text-sm text-muted-foreground">
                     {t("components.memory.PreferencesManager.k96833d51")}
-                </div> : scopes.map((scope) => <Card key={scope} className="border-border/60">
+                </div> : scopes.map((scope) => {
+      const rows = preferencesByScope[scope] || [];
+      const fixedRows = scope === "global" ? (globalProfile.fixedKeys || []).map((key) => rows.find((row) => row.key === key) || {
+        id: `global:${key}`,
+        key,
+        value: globalProfile.defaults?.[key] || "",
+        originalKey: key
+      }) : [];
+      const customRows = scope === "global" ? rows.filter((row) => !fixedGlobalKeys.has(row.key)) : rows;
+      const visibleRows = scope === "global" ? customRows : rows;
+      return <Card key={scope} className="border-border/60">
                         <CardHeader className="space-y-3">
                             <div className="flex items-center justify-between gap-3">
                                 <div>
@@ -351,14 +373,32 @@ export function PreferencesManager() {
                                 </div>
                                 <Button variant="outline" size="sm" onClick={() => addPreferenceRow(scope)}>
                                     <Plus className="mr-2 h-4 w-4" />
-                                    {t("components.memory.PreferencesManager.ke7a412a5")}
+                                    {scope === "global" ? t("components.memory.PreferencesManager.global.addCustom") : t("components.memory.PreferencesManager.ke7a412a5")}
                                 </Button>
                             </div>
                         </CardHeader>
                         <CardContent className="space-y-3">
-                            {(preferencesByScope[scope] || []).length === 0 ? <div className="rounded-xl border border-dashed px-4 py-5 text-sm text-muted-foreground">
+                            {scope === "global" && fixedRows.length > 0 ? <div className="space-y-3">
+                                    <div className="text-sm font-medium text-muted-foreground">{t("components.memory.PreferencesManager.global.fixedTitle")}</div>
+                                    {fixedRows.map((row) => <div key={row.id} className="grid gap-3 rounded-2xl border border-border/50 bg-muted/15 px-4 py-4 xl:grid-cols-[220px_minmax(0,1fr)_auto]">
+                                            <Input value={row.key} disabled className="font-mono" />
+                                            <Input value={row.value} onChange={(event) => mutateRow(scope, row.id, { value: event.target.value })} placeholder={t("components.memory.PreferencesManager.k226ef005")} />
+                                            <div className="flex items-center justify-end gap-2">
+                                                <Button variant="outline" size="sm" onClick={() => void saveRow(scope, row)} disabled={row.saving}>
+                                                    <Save className="mr-2 h-4 w-4" />
+                                                    {t("components.memory.PreferencesManager.k6010e1ed")}
+                                                </Button>
+                                            </div>
+                                        </div>)}
+                                    {globalProfile.executionHints && Object.keys(globalProfile.executionHints).length > 0 ? <div className="rounded-2xl border border-sky-500/20 bg-sky-50/50 px-4 py-3 text-sm dark:bg-sky-950/10">
+                                            <div className="font-medium text-sky-900 dark:text-sky-100">{t("components.memory.PreferencesManager.executionHints.title")}</div>
+                                            <div className="mt-1 text-muted-foreground">{t("components.memory.PreferencesManager.executionHints.description")}</div>
+                                        </div> : null}
+                                    <div className="pt-2 text-sm font-medium text-muted-foreground">{t("components.memory.PreferencesManager.global.customTitle")}</div>
+                                </div> : null}
+                            {visibleRows.length === 0 ? <div className="rounded-xl border border-dashed px-4 py-5 text-sm text-muted-foreground">
                                     {t("components.memory.PreferencesManager.kfbe7f14a")}
-                                </div> : (preferencesByScope[scope] || []).map((row) => <div key={row.id} className="grid gap-3 rounded-2xl border border-border/50 bg-muted/15 px-4 py-4 xl:grid-cols-[220px_minmax(0,1fr)_auto]">
+                                </div> : visibleRows.map((row) => <div key={row.id} className="grid gap-3 rounded-2xl border border-border/50 bg-muted/15 px-4 py-4 xl:grid-cols-[220px_minmax(0,1fr)_auto]">
                                         <Input value={row.key} onChange={(event) => mutateRow(scope, row.id, { key: event.target.value })} placeholder="preference_key" className="font-mono" />
                                         <Input value={row.value} onChange={(event) => mutateRow(scope, row.id, { value: event.target.value })} placeholder={t("components.memory.PreferencesManager.k226ef005")} />
                                         <div className="flex items-center justify-end gap-2">
@@ -372,6 +412,7 @@ export function PreferencesManager() {
                                         </div>
                                     </div>)}
                         </CardContent>
-                    </Card>)}
+                    </Card>;
+    })}
         </div>;
 }

@@ -60,8 +60,8 @@ class _Recorder:
         self.daily_logs: list[dict[str, Any]] = []
         self.saved_state: dict[str, Any] | None = None
 
-    def upsert_preference(self, *, key: str, value: str, scope: str = "global") -> None:
-        self.preferences.append({"key": key, "value": value, "scope": scope})
+    def upsert_preference(self, *, key: str, value: str, scope: str = "global", source: str = "memory_agent") -> None:
+        self.preferences.append({"key": key, "value": value, "scope": scope, "source": source})
 
     def add_knowledge(self, *, fact: str, category: str = "general", scope: str = "global", source_session: str | None = None) -> None:
         self.knowledge.append(

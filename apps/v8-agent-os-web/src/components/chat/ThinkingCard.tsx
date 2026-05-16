@@ -86,6 +86,7 @@ export const ThinkingCard = memo(({
     const title = normalizedReasoningKind.includes("summary") ? "推理摘要" : "reasoning";
     const isUnverified = Boolean(reasoningSurface?.unverified)
         || String(reasoningSurface?.trust || "").trim().toLowerCase() === "unverified";
+    const shouldFadeContent = content.length > 900;
 
     return (
         <div className="group relative my-1 w-full">
@@ -122,15 +123,14 @@ export const ThinkingCard = memo(({
                         {/* Title and Time */}
                         <span className={cn(
                             "text-[11px] font-semibold tracking-wide transition-colors",
-                            isExpanded ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"
+                            isExpanded
+                                ? "text-foreground"
+                                : isUnverified
+                                    ? "text-rose-600/70 dark:text-rose-300/70"
+                                    : "text-muted-foreground group-hover:text-foreground"
                         )}>
                             {title}
                         </span>
-                        {isUnverified && (
-                            <span className="text-[10px] font-medium text-muted-foreground/70">
-                                未验证
-                            </span>
-                        )}
 
                         {isStreaming ? (
                             <span className="text-violet-500 dark:text-violet-400 font-mono text-[10px] tabular-nums opacity-90">
@@ -164,13 +164,19 @@ export const ThinkingCard = memo(({
                             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
                         >
                             <div className="px-3.5 pb-3.5 pt-0.5">
-                                <div className="rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20">
+                                <div className={cn(
+                                    "relative rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20",
+                                    shouldFadeContent && "max-h-40 overflow-hidden"
+                                )}>
                                     <div className="whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-600 selection:bg-violet-500/30 dark:text-zinc-400 font-mono">
                                         {content}
                                         {isStreaming && (
                                             <span className="ml-1 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-violet-500 align-middle shadow-[0_0_8px_rgba(139,92,246,0.6)] dark:bg-violet-400" />
                                         )}
                                     </div>
+                                    {shouldFadeContent && (
+                                        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-white/95 to-transparent dark:from-zinc-950/95" />
+                                    )}
                                 </div>
                             </div>
                         </motion.div>

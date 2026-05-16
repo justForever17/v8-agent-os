@@ -17,6 +17,9 @@ class ProfileService:
     def get_preference_count(self) -> int:
         return sum(len(values) for values in self.list_preferences().values())
 
+    def get_global_profile_schema(self) -> Dict[str, object]:
+        return memory_store.get_global_profile_schema()
+
     def load_preferences(
         self,
         *,
@@ -33,8 +36,8 @@ class ProfileService:
     ) -> str:
         return memory_store.format_preferences_for_injection(scope=scope, scope_chain=scope_chain)
 
-    def update_preference(self, *, key: str, value: str, scope: str = "global") -> None:
-        memory_store.update_preference(key=key, value=value, scope=scope)
+    def update_preference(self, *, key: str, value: str, scope: str = "global", source: str = "human_admin") -> None:
+        memory_store.update_preference(key=key, value=value, scope=scope, source=source)
 
     def delete_preference(self, *, key: str, scope: str = "global") -> bool:
         return memory_store.delete_preference(key=key, scope=scope)

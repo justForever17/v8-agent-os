@@ -593,8 +593,110 @@ class MemoryStoreGovernanceTests(unittest.TestCase):
 
         self.assertEqual(project_a["preferred_framework"], "React")
         self.assertEqual(project_b["preferred_framework"], "Vue")
-        self.assertEqual(project_a["language"], "zh-CN")
-        self.assertEqual(project_b["language"], "zh-CN")
+        self.assertEqual(project_a["preferred_language"], "zh-CN")
+        self.assertEqual(project_b["preferred_language"], "zh-CN")
+
+    def test_global_profile_migrates_legacy_keys_and_removes_voice_protocol(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.memory_path.write_text(
+                    """---
+type: user_preferences
+version: "2.0"
+last_updated: "2026-05-17"
+---
+
+[global]
+language: zh-CN
+system_name: V8 Agent OS
+system_slug: v8-agent-os
+voice_interaction_protocol: 开心时使用<voice>语音内容</voice>
+expression_style: prefer_yanwenzi_over_emoji
+custom_human_note: 保持这个人工条目
+
+[project:test]
+preferred_framework: React
+""",
+                    encoding="utf-8",
+                )
+                raw = store._load_raw_preferences()
+                memory_text = store.memory_path.read_text(encoding="utf-8")
+                quarantine = store.load_global_preference_quarantine()
+
+        self.assertEqual(raw["global"]["preferred_language"], "zh-CN")
+        self.assertEqual(raw["global"]["assistant_name"], "Please help me come up with a name.")
+        self.assertEqual(raw["global"]["response_language_style"], "prefer_yanwenzi_over_emoji")
+        self.assertEqual(raw["global"]["custom_human_note"], "保持这个人工条目")
+        self.assertEqual(raw["project:test"]["preferred_framework"], "React")
+        self.assertNotIn("voice_interaction_protocol:", memory_text)
+        self.assertTrue(any(item.get("key") == "voice_interaction_protocol" for item in quarantine))
+
+    def test_memory_agent_cannot_write_unmapped_global_preference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.update_preference("random_global_field", "不要让 agent 自由造 key", scope="global", source="memory_agent")
+                raw = store._load_raw_preferences()
+                quarantine = store.load_global_preference_quarantine()
+
+        self.assertNotIn("random_global_field", raw["global"])
+        self.assertTrue(any(item.get("key") == "random_global_field" for item in quarantine))
+
+    def test_human_can_add_custom_global_preference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.update_preference("custom_global_field", "人工维护内容", scope="global", source="human_admin")
+                raw = store._load_raw_preferences()
+
+        self.assertEqual(raw["global"]["custom_global_field"], "人工维护内容")
+
+    def test_malformed_global_lines_are_quarantined_without_touching_project_scope(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.memory_path.write_text(
+                    """---
+type: user_preferences
+version: "2.0"
+last_updated: "2026-05-17"
+---
+
+[global]
+preferred_language: zh-CN
+broken global line without kv
+
+[project:test]
+preferred_framework: React
+""",
+                    encoding="utf-8",
+                )
+                raw = store._load_raw_preferences()
+                quarantine = store.load_global_preference_quarantine()
+
+        self.assertEqual(raw["project:test"]["preferred_framework"], "React")
+        self.assertTrue(any(item.get("key") == "invalid_global_line" for item in quarantine))
 
 
 if __name__ == "__main__":

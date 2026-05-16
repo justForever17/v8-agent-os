@@ -45,6 +45,10 @@ type ModelConnectionStatus = {
   status: "idle" | "testing" | "success" | "error";
   message?: string;
 };
+type ModelReasoningRepairStatus = {
+  status: "idle" | "repairing" | "success" | "warning" | "error";
+  message?: string;
+};
 const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
 function extractErrorText(value: unknown, fallback: string): string {
   if (typeof value === "string" && value.trim())
@@ -101,6 +105,7 @@ export default function ProviderConfigPage({ params
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
   const [providerOauthPath, setProviderOauthPath] = useState("");
   const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
+  const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
   // Model Dialog State
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<AIModel | null>(null);
@@ -324,6 +329,56 @@ export default function ProviderConfigPage({ params
       }));
     }
   };
+  const handleRepairReasoning = async (modelRef: string) => {
+    setReasoningRepairStatusMap((current) => ({
+      ...current,
+      [modelRef]: { status: "repairing", message: t("app.admin.dashboard.models.providers.id.reasoningRepair.running") }
+    }));
+    try {
+      const target = provider?.models.find((item) => (item.modelRef || item.id) === modelRef);
+      const response = await fetch("/api/models/repair-reasoning", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelRef, modelId: target?.modelId, providerId: target?.providerId || provider?.id })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        const error = extractErrorText(data?.detail, "") ||
+        extractErrorText(data?.error, "") ||
+        t("app.admin.dashboard.models.providers.id.reasoningRepair.failed");
+        setReasoningRepairStatusMap((current) => ({
+          ...current,
+          [modelRef]: { status: "error", message: String(error) }
+        }));
+        toast({ variant: "destructive", title: t("app.admin.dashboard.models.providers.id.reasoningRepair.failed"), description: String(error) });
+        return;
+      }
+      const status: ModelReasoningRepairStatus["status"] = data.saveStatus === "saved" ? "success" : data.status === "no_visible_reasoning_field" || data.status === "no_reasoning_signal" ? "warning" : "success";
+      const message = [
+      data.matchedField ? `${t("app.admin.dashboard.models.providers.id.reasoningRepair.field")}: ${data.matchedField}` : "",
+      data.saveStatus ? `${t("app.admin.dashboard.models.providers.id.reasoningRepair.saveStatus")}: ${data.saveStatus}` : "",
+      data.status || ""].
+      filter(Boolean).join(" · ") || t("app.admin.dashboard.models.providers.id.reasoningRepair.done");
+      setReasoningRepairStatusMap((current) => ({
+        ...current,
+        [modelRef]: { status, message }
+      }));
+      toast({
+        title: status === "warning" ? t("app.admin.dashboard.models.providers.id.reasoningRepair.noField") : t("app.admin.dashboard.models.providers.id.reasoningRepair.success"),
+        description: message
+      });
+      if (data.saveStatus === "saved") {
+        await fetchProvider();
+      }
+    }
+    catch (error) {
+      const errorMessage = error instanceof Error ? error.message : t("app.admin.dashboard.models.providers.id.reasoningRepair.failed");
+      setReasoningRepairStatusMap((current) => ({
+        ...current,
+        [modelRef]: { status: "error", message: errorMessage }
+      }));
+    }
+  };
   if (isLoading)
   return <div className="p-8">Loading...</div>;
   if (!provider)
@@ -516,7 +571,7 @@ export default function ProviderConfigPage({ params
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                        {provider.models?.map((model: any) => <ModelCardV2 key={model.id} model={{ ...model, provider: { name: provider.name, icon: provider.icon } }} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelId} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} onTestConnection={handleTestConnection} onSetDefault={handleSetDefaultModel}
+                        {provider.models?.map((model: any) => <ModelCardV2 key={model.id} model={{ ...model, provider: { name: provider.name, icon: provider.icon } }} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelId} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} reasoningRepairStatus={reasoningRepairStatusMap[model.modelRef || model.id] || null} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onSetDefault={handleSetDefaultModel}
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           onEdit={(m: any) => {setEditingModel(m);setModelType(m.type || "TEXT");setIsModelDialogOpen(true);}} onDelete={handleDeleteModel} />)}
                         {(!provider.models || provider.models.length === 0) && <div className="col-span-full text-center py-12 text-muted-foreground bg-muted/30 rounded-lg border border-dashed">

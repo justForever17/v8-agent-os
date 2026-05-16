@@ -7,12 +7,13 @@ import uuid
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from .models import ModelConnectionTestPayload
+from .models import ModelConnectionTestPayload, ModelReasoningRepairPayload
 from core.database import db
 from core.extensions_runtime import extensions_runtime_service
 from core.agents import build_specialist_family_registry
 from core.json_safe import to_jsonable
 from core.model_connection_tester import model_connection_tester
+from core.model_reasoning_repair import model_reasoning_repair_service
 from core.model_control_plane import model_control_plane
 from core.model_provider_catalog import model_provider_catalog
 from core.model_role_doctor import diagnose_models
@@ -881,6 +882,25 @@ async def test_model_connection(payload: ModelConnectionTestPayload):
     try:
         result = model_connection_tester.test_model_connection(
             model_id=payload.model_id,
+            model_ref=payload.model_ref or "",
+            provider_id=payload.provider_id or "",
+        )
+        if result.get("ok"):
+            return result
+        raise HTTPException(status_code=422, detail=result)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/repair-reasoning")
+async def repair_model_reasoning(payload: ModelReasoningRepairPayload):
+    try:
+        result = model_reasoning_repair_service.repair_reasoning_surface(
+            model_id=payload.model_id or "",
             model_ref=payload.model_ref or "",
             provider_id=payload.provider_id or "",
         )

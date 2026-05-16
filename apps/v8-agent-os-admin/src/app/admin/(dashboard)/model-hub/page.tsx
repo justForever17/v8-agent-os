@@ -84,6 +84,10 @@ type ModelConnectionStatus = {
     status: "idle" | "testing" | "success" | "error";
     message?: string;
 };
+type ModelReasoningRepairStatus = {
+    status: "idle" | "repairing" | "success" | "warning" | "error";
+    message?: string;
+};
 type CatalogModel = {
     id: string;
     modelId?: string;
@@ -260,6 +264,7 @@ export default function ModelHubPage() {
     const [modelProviderId, setModelProviderId] = useState("");
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
+    const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
     const [defaultModelRef, setDefaultModelRef] = useState<string | null>(null);
     const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>([]);
     const [catalogPurpose, setCatalogPurpose] = useState<CatalogPurpose>("chat");
@@ -731,6 +736,56 @@ export default function ModelHubPage() {
             }));
         }
     };
+    const handleRepairReasoning = async (modelRef: string) => {
+        setReasoningRepairStatusMap((current) => ({
+            ...current,
+            [modelRef]: { status: "repairing", message: t("app.admin.dashboard.model.hub.reasoningRepair.running") },
+        }));
+        try {
+            const target = models.find((item) => (item.modelRef || item.id) === modelRef);
+            const response = await fetch("/api/models/repair-reasoning", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ modelRef, modelId: target?.modelId, providerId: target?.providerId }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.ok === false) {
+                const errorMessage = extractErrorText(data?.detail, "")
+                    || extractErrorText(data?.error, "")
+                    || t("app.admin.dashboard.model.hub.reasoningRepair.failed");
+                setReasoningRepairStatusMap((current) => ({
+                    ...current,
+                    [modelRef]: { status: "error", message: errorMessage },
+                }));
+                toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.reasoningRepair.failed"), description: errorMessage });
+                return;
+            }
+            const status: ModelReasoningRepairStatus["status"] = data.saveStatus === "saved" ? "success" : data.status === "no_visible_reasoning_field" || data.status === "no_reasoning_signal" ? "warning" : "success";
+            const message = [
+                data.matchedField ? `${t("app.admin.dashboard.model.hub.reasoningRepair.field")}: ${data.matchedField}` : "",
+                data.saveStatus ? `${t("app.admin.dashboard.model.hub.reasoningRepair.saveStatus")}: ${data.saveStatus}` : "",
+                data.status || "",
+            ].filter(Boolean).join(" · ") || t("app.admin.dashboard.model.hub.reasoningRepair.done");
+            setReasoningRepairStatusMap((current) => ({
+                ...current,
+                [modelRef]: { status, message },
+            }));
+            toast({
+                title: status === "warning" ? t("app.admin.dashboard.model.hub.reasoningRepair.noField") : t("app.admin.dashboard.model.hub.reasoningRepair.success"),
+                description: message,
+            });
+            if (data.saveStatus === "saved") {
+                await fetchData();
+            }
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : t("app.admin.dashboard.model.hub.reasoningRepair.failed");
+            setReasoningRepairStatusMap((current) => ({
+                ...current,
+                [modelRef]: { status: "error", message: errorMessage },
+            }));
+        }
+    };
     return (<AdminPageShell>
             <AdminPageHeader title={t("app.admin.dashboard.model.hub.page.kf88eff69")} description={t("app.admin.dashboard.model.hub.page.k45bea0e7")} actions={<>
                         <Button variant="outline" onClick={() => void fetchData()} disabled={isLoading}>
@@ -1082,13 +1137,13 @@ export default function ModelHubPage() {
                 </div>
 
                 {filteredModels.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k14457a61")} description={t("app.admin.dashboard.model.hub.page.k8d6baa0f")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">
-                        {filteredModels.map((model) => (<ModelCardV2 key={model.modelRef || model.id} model={model} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelRef} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} onEdit={() => {
+                        {filteredModels.map((model) => (<ModelCardV2 key={model.modelRef || model.id} model={model} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelRef} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} reasoningRepairStatus={reasoningRepairStatusMap[model.modelRef || model.id] || null} onEdit={() => {
                     setEditingModel(model);
                     setModelType(model.type || "TEXT");
                     setModelProviderId(model.providerId);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setIsModelDialogOpen(true);
-                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onSetDefault={handleSetDefaultModel}/>))}
+                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onSetDefault={handleSetDefaultModel}/>))}
                     </div>)}
             </ConfigCard>
 

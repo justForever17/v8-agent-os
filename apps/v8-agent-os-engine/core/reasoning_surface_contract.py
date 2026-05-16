@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,8 +21,37 @@ DEFAULT_HIDDEN_REASONING_SURFACE: ReasoningSurface = {
 
 _VALID_MODES = {"typed_thinking", "reasoning_summary", "provider_reasoning", "hidden"}
 _VALID_DISPLAY_KINDS = {"raw_thinking", "summary", "provider_reasoning", "hidden"}
-_VALID_TRUST = {"official", "adapter_verified", "catalog_only", "unknown"}
+_VALID_TRUST = {"official", "adapter_verified", "catalog_only", "unverified", "unknown"}
 _PROVIDER_CATALOG_PATH = Path(__file__).resolve().parent / "model_catalog" / "provider_catalog.json"
+_MODEL_CAPABILITY_REGISTRY_PATH = Path(__file__).resolve().parent / "model_catalog" / "model_capability_registry.json"
+
+_COMMON_REASONING_FIELDS = (
+    "content[type=thinking]",
+    "content[type=reasoning]",
+    "additional_kwargs.reasoning_content",
+    "additional_kwargs.reasoning",
+    "additional_kwargs.thinking",
+    "additional_kwargs.thinking_delta",
+    "response_metadata.reasoning_content",
+    "response_metadata.reasoning",
+    "response_metadata.thinking",
+    "generation_info.reasoning_content",
+    "generation_info.reasoning",
+    "reasoning.summary",
+    "reasoning",
+    "reasoning_content",
+    "thinking",
+    "thinking_delta",
+    "thought",
+    "analysis",
+)
+
+_KNOWN_MODEL_ALIASES = {
+    "doubao-seed-2.0-pro": "doubao-seed-2-0-pro-260215",
+    "doubao-seed-2-0-pro": "doubao-seed-2-0-pro-260215",
+    "doubao-seed-2.0-code-preview": "doubao-seed-2-0-code-preview-260215",
+    "doubao-seed-2-0-code-preview": "doubao-seed-2-0-code-preview-260215",
+}
 
 
 def _safe_text(value: Any) -> str:
@@ -40,6 +70,15 @@ def _as_list(value: Any) -> list[Any]:
     if value in (None, ""):
         return []
     return [value]
+
+
+def normalize_model_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("_", "-")
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"[^a-z0-9.+()-]+", "-", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    return text
 
 
 def normalize_reasoning_surface(value: Any) -> ReasoningSurface:
@@ -76,53 +115,178 @@ def normalize_reasoning_surface(value: Any) -> ReasoningSurface:
     }
 
 
+def is_reasoning_surface_hidden(surface: Any) -> bool:
+    normalized = normalize_reasoning_surface(surface)
+    return (
+        normalized.get("mode") == "hidden"
+        and normalized.get("displayKind") == "hidden"
+    )
+
+
+def is_explicit_reasoning_disabled(surface: Any) -> bool:
+    raw = _as_dict(surface)
+    if not raw:
+        return False
+    if raw.get("disabled") is True or raw.get("userDisabled") is True or raw.get("disableReasoningSurface") is True:
+        return True
+    source = _safe_text(raw.get("source") or raw.get("reasoningSurfaceSource")).lower()
+    if source in {"user_disabled", "user", "manual_disable", "manual_disabled"}:
+        return True
+    notes = _safe_text(raw.get("notes")).lower()
+    return "user disabled" in notes or "disabled by user" in notes
+
+
+def is_stale_auto_hidden_reasoning_surface(surface: Any) -> bool:
+    raw = _as_dict(surface)
+    if not raw or is_explicit_reasoning_disabled(raw):
+        return False
+    normalized = normalize_reasoning_surface(raw)
+    return (
+        normalized.get("mode") == "hidden"
+        and normalized.get("trust") == "unknown"
+        and normalized.get("requestStyle") == "none"
+        and not normalized.get("responseFields")
+        and normalized.get("displayKind") == "hidden"
+    )
+
+
+def is_trusted_reasoning_surface(surface: Any) -> bool:
+    normalized = normalize_reasoning_surface(surface)
+    return (
+        normalized.get("mode") != "hidden"
+        and normalized.get("trust") in {"official", "adapter_verified"}
+        and bool(normalized.get("responseFields"))
+    )
+
+
 def merge_reasoning_surface(provider_surface: Any, model_surface: Any) -> ReasoningSurface:
     provider = normalize_reasoning_surface(provider_surface)
     model = _as_dict(model_surface)
     if not model:
+        return provider
+    if is_explicit_reasoning_disabled(model):
+        return normalize_reasoning_surface(model)
+    if is_stale_auto_hidden_reasoning_surface(model) and is_trusted_reasoning_surface(provider):
         return provider
     return normalize_reasoning_surface({**provider, **model})
 
 
 @lru_cache(maxsize=1)
 def _builtin_reasoning_surfaces() -> dict[str, Any]:
+    providers: dict[str, Any] = {}
+    global_models: dict[str, Any] = {}
     try:
         payload = json.loads(_PROVIDER_CATALOG_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return {}
-    providers: dict[str, Any] = {}
-    for provider in payload.get("providers") or []:
-        if not isinstance(provider, Mapping):
-            continue
-        provider_id = _safe_text(provider.get("id"))
-        if not provider_id:
-            continue
-        models = {}
-        for model in provider.get("models") or []:
-            if isinstance(model, Mapping) and _safe_text(model.get("id")):
-                models[_safe_text(model.get("id"))] = model.get("reasoningSurface")
-        providers[provider_id] = {
-            "provider": provider.get("reasoningSurface"),
-            "models": models,
-        }
-    return providers
+        payload = {}
+    if isinstance(payload, Mapping):
+        for provider in payload.get("providers") or []:
+            if not isinstance(provider, Mapping):
+                continue
+            provider_id = _safe_text(provider.get("id"))
+            if not provider_id:
+                continue
+            models = {}
+            for model in provider.get("models") or []:
+                if not isinstance(model, Mapping) or not _safe_text(model.get("id")):
+                    continue
+                model_id = _safe_text(model.get("id"))
+                surface = model.get("reasoningSurface")
+                models[model_id] = surface
+                models[normalize_model_key(model_id)] = surface
+            providers[provider_id] = {
+                "provider": provider.get("reasoningSurface"),
+                "models": models,
+            }
+
+    try:
+        registry_payload = json.loads(_MODEL_CAPABILITY_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        registry_payload = {}
+    if isinstance(registry_payload, Mapping):
+        for item in registry_payload.get("models") or []:
+            if not isinstance(item, Mapping):
+                continue
+            surface = item.get("reasoningSurface")
+            if not surface:
+                continue
+            keys = [
+                item.get("canonicalModelId"),
+                item.get("displayName"),
+                *(_as_list(item.get("aliases"))),
+            ]
+            for key in keys:
+                normalized = normalize_model_key(key)
+                if normalized and normalized not in global_models:
+                    global_models[normalized] = surface
+
+    return {"providers": providers, "models": global_models}
+
+
+def _model_alias_keys(model_id: str) -> list[str]:
+    base = _safe_text(model_id)
+    keys = [base, normalize_model_key(base)]
+    mapped = _KNOWN_MODEL_ALIASES.get(base.lower()) or _KNOWN_MODEL_ALIASES.get(normalize_model_key(base))
+    if mapped:
+        keys.extend([mapped, normalize_model_key(mapped)])
+    if "." in base:
+        keys.append(base.replace(".", "-"))
+        keys.append(normalize_model_key(base.replace(".", "-")))
+    deduped: list[str] = []
+    for key in keys:
+        normalized = str(key or "").strip()
+        if normalized and normalized not in deduped:
+            deduped.append(normalized)
+    return deduped
+
+
+def _lookup_builtin_surfaces(provider_id: str, model_id: str) -> tuple[Any, Any]:
+    builtin = _builtin_reasoning_surfaces()
+    providers = builtin.get("providers") if isinstance(builtin, Mapping) else {}
+    models = builtin.get("models") if isinstance(builtin, Mapping) else {}
+    provider_entry = _as_dict((providers or {}).get(provider_id)) if isinstance(providers, Mapping) else {}
+    provider_surface = provider_entry.get("provider")
+    provider_models = provider_entry.get("models") if isinstance(provider_entry.get("models"), Mapping) else {}
+    model_surface = None
+    for key in _model_alias_keys(model_id):
+        model_surface = provider_models.get(key) or (models or {}).get(normalize_model_key(key))
+        if model_surface:
+            break
+    return provider_surface, model_surface
+
+
+def detect_unverified_reasoning_field(payload: Any) -> str:
+    return next((field for field in _COMMON_REASONING_FIELDS if _path_exists(payload, field)), "")
 
 
 def resolve_reasoning_surface_for_metadata(metadata: Mapping[str, Any] | None) -> ReasoningSurface:
     meta = dict(metadata or {})
     provider_record = _as_dict(meta.get("provider_record") or meta.get("provider"))
     model_record = _as_dict(meta.get("model_record") or meta.get("model"))
-    explicit = _as_dict(meta.get("reasoning_surface") or meta.get("reasoningSurface"))
-    if explicit:
-        return merge_reasoning_surface(provider_record.get("reasoningSurface"), explicit)
     provider_id = _safe_text(meta.get("provider_id") or meta.get("providerId"))
     model_id = _safe_text(meta.get("model_id") or meta.get("modelId") or meta.get("model_name") or meta.get("modelName"))
-    builtin = _builtin_reasoning_surfaces().get(provider_id) if provider_id else None
-    builtin_provider = _as_dict(builtin).get("provider") if isinstance(builtin, Mapping) else None
-    builtin_model = (_as_dict(builtin).get("models") or {}).get(model_id) if isinstance(_as_dict(builtin).get("models"), Mapping) else None
+    explicit = _as_dict(meta.get("reasoning_surface") or meta.get("reasoningSurface"))
+    builtin_provider, builtin_model = _lookup_builtin_surfaces(provider_id, model_id)
+    provider_surface = provider_record.get("reasoningSurface") or builtin_provider
+
+    if explicit:
+        if is_explicit_reasoning_disabled(explicit):
+            return normalize_reasoning_surface(explicit)
+        if is_stale_auto_hidden_reasoning_surface(explicit) and is_trusted_reasoning_surface(builtin_model):
+            return merge_reasoning_surface(provider_surface, builtin_model)
+        return merge_reasoning_surface(provider_surface, explicit)
+
+    model_surface = model_record.get("reasoningSurface")
+    if is_explicit_reasoning_disabled(model_surface):
+        return normalize_reasoning_surface(model_surface)
+    if is_stale_auto_hidden_reasoning_surface(model_surface) and is_trusted_reasoning_surface(builtin_model):
+        model_surface = builtin_model
+    elif not model_surface and builtin_model:
+        model_surface = builtin_model
+
     return merge_reasoning_surface(
-        provider_record.get("reasoningSurface") or builtin_provider,
-        model_record.get("reasoningSurface") or builtin_model,
+        provider_surface,
+        model_surface,
     )
 
 
@@ -181,6 +345,28 @@ def evaluate_reasoning_payload(surface_value: Any, payload: Any) -> dict[str, An
     fields = [str(item).strip() for item in surface.get("responseFields") or [] if str(item).strip()]
     matched_field = next((field for field in fields if _path_exists(payload, field)), "")
     accepted = mode != "hidden" and bool(matched_field)
+    if not accepted:
+        unverified_field = "" if is_explicit_reasoning_disabled(surface) else detect_unverified_reasoning_field(payload)
+        if unverified_field:
+            return {
+                "accepted": True,
+                "matchedField": unverified_field,
+                "reasoningKind": "provider_reasoning",
+                "reasoningSurfaceMode": "unverified",
+                "reasoningSurfaceTrust": "unverified",
+                "reasoningDisplayKind": "provider_reasoning",
+                "reasoningRequestStyle": surface.get("requestStyle") or "none",
+                "reasoningUnverified": True,
+                "reasoningSurface": {
+                    **surface,
+                    "mode": "provider_reasoning",
+                    "trust": "unverified",
+                    "displayKind": "provider_reasoning",
+                    "responseFields": [unverified_field],
+                    "notes": "V8 detected a separated reasoning field that is not yet registered in the provider/model contract.",
+                    "unverified": True,
+                },
+            }
     reasoning_kind = reasoning_kind_for_surface(surface) if accepted else "hidden"
     return {
         "accepted": accepted,

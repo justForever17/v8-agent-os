@@ -176,7 +176,7 @@ class CommandService:
         if approval:
             self._remember_approved_operation(approval, response)
             self._remember_safety_allowlist(approval, response)
-        if approval and approval.get("run_id"):
+        if approval and approval.get("run_id") and str(approval.get("approval_kind") or "").strip() != "mcp_app_tool_call":
             self.clear_control_signal(approval["run_id"])
         return approval
 
@@ -186,6 +186,8 @@ class CommandService:
         response = self._sanitize_approval_response(response)
         db.update_pending_approval(approval_id, status="rejected", response=response)
         approval = db.get_pending_approval(approval_id)
+        if approval and str(approval.get("approval_kind") or "").strip() == "mcp_app_tool_call":
+            return approval
         if approval and approval.get("run_id"):
             self.issue_control_signal(
                 approval["run_id"],

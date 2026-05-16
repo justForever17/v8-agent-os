@@ -2830,6 +2830,10 @@ class ExtensionsRuntimeService:
                     "transport": str(config.get("type") or ("stdio" if config.get("command") else "sse")),
                     "target": target,
                     "disabled": bool(config.get("disabled", False)),
+                    "appsSupported": bool(payload.get("appsSupported")),
+                    "appToolCount": int(payload.get("appToolCount") or 0),
+                    "uiResourceCount": int(payload.get("uiResourceCount") or 0),
+                    "lastAppsError": payload.get("lastAppsError"),
                 }
             )
 

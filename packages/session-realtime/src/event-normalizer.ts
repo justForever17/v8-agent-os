@@ -781,13 +781,47 @@ function normalizeDisplayStatus(value: unknown) {
   return normalized.toLowerCase() === "unknown" ? undefined : normalized;
 }
 
+function extractMcpAppRef(...values: unknown[]) {
+  for (const value of values) {
+    const record = asRecord(value);
+    const appInstanceId = pickFirstString(record.appInstanceId, record.app_instance_id);
+    const resourceUri = pickFirstString(record.resourceUri, record.resource_uri);
+    if (!appInstanceId || !resourceUri) {
+      continue;
+    }
+    return {
+      appInstanceId,
+      serverName: pickFirstString(record.serverName, record.server_name),
+      resourceUri,
+      toolInvocationId: pickFirstString(record.toolInvocationId, record.tool_invocation_id),
+      initialToolResultRef: pickFirstString(record.initialToolResultRef, record.initial_tool_result_ref) || null,
+      csp: asRecord(record.csp),
+      permissions: asRecord(record.permissions),
+      status: pickFirstString(record.status),
+    };
+  }
+  return undefined;
+}
+
 function extractToolPayload(payload: JsonRecord) {
   const nestedTool = asRecord(payload.tool);
+  const payloadMcpApp = extractMcpAppRef(payload.mcpApp, payload.mcp_app, nestedTool.mcpApp, nestedTool.mcp_app);
   const toolCallId = pickFirstString(
     payload.toolCallId,
     payload.tool_call_id,
     nestedTool.toolCallId,
     nestedTool.tool_call_id,
+  );
+  const toolInvocationId = pickFirstString(
+    payload.toolInvocationId,
+    payload.tool_invocation_id,
+    payload.canonicalToolCallId,
+    payload.canonical_tool_call_id,
+    nestedTool.toolInvocationId,
+    nestedTool.tool_invocation_id,
+    nestedTool.canonicalToolCallId,
+    nestedTool.canonical_tool_call_id,
+    toolCallId,
   );
   const toolName = pickFirstString(
     payload.toolName,
@@ -798,16 +832,37 @@ function extractToolPayload(payload: JsonRecord) {
   );
   const args = payload.args ?? payload.request ?? nestedTool.args ?? nestedTool.request;
   const result = payload.result ?? payload.response ?? payload.result_preview ?? nestedTool.result ?? nestedTool.response ?? nestedTool.result_preview;
+  const agentVisibleResult = payload.agentVisibleResult
+    ?? payload.agent_visible_result
+    ?? payload.agentVisibleOutput
+    ?? payload.agent_visible_output
+    ?? nestedTool.agentVisibleResult
+    ?? nestedTool.agent_visible_result
+    ?? nestedTool.agentVisibleOutput
+    ?? nestedTool.agent_visible_output;
+  const agentVisibleChars = typeof payload.agentVisibleChars === "number"
+    ? payload.agentVisibleChars
+    : typeof payload.agent_visible_chars === "number"
+      ? payload.agent_visible_chars
+      : typeof nestedTool.agentVisibleChars === "number"
+        ? nestedTool.agentVisibleChars
+        : typeof nestedTool.agent_visible_chars === "number"
+          ? nestedTool.agent_visible_chars
+          : undefined;
 
-  if (!toolCallId && !toolName && args === undefined && result === undefined) {
+  if (!toolCallId && !toolName && args === undefined && result === undefined && agentVisibleResult === undefined) {
     return undefined;
   }
 
   return {
-    toolCallId: toolCallId || undefined,
+    toolCallId: toolCallId || toolInvocationId || undefined,
+    toolInvocationId: toolInvocationId || toolCallId || undefined,
     toolName: toolName || undefined,
     args,
     result,
+    agentVisibleResult,
+    agentVisibleChars,
+    mcpApp: payloadMcpApp,
   };
 }
 

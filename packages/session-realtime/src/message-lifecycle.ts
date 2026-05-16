@@ -1,4 +1,4 @@
-import type { AdminResourceRef, NormalizedSessionRuntimeEvent } from "./contract.js";
+import type { AdminResourceRef, McpAppViewRef, NormalizedSessionRuntimeEvent } from "./contract.js";
 import { deriveAdminResourceRefFromArtifactLike } from "./resources.js";
 import { isTodoToolRuntimePayload, shouldForwardRuntimeEventToRealtimeSurface } from "./event-normalizer.js";
 
@@ -21,9 +21,13 @@ export type SessionAgentProfile = {
 
 export type SessionStreamToolPayload = {
   toolCallId?: string;
+  toolInvocationId?: string;
   toolName?: string;
   args?: unknown;
   result?: unknown;
+  agentVisibleResult?: unknown;
+  agentVisibleChars?: number;
+  mcpApp?: McpAppViewRef;
 };
 
 export type SessionStreamArtifact = {
@@ -90,9 +94,13 @@ export type SessionStreamExecutionNode = {
   time?: number;
   startTime?: number;
   toolCallId?: string;
+  toolInvocationId?: string;
   toolName?: string;
   args?: unknown;
   result?: unknown;
+  agentVisibleResult?: unknown;
+  agentVisibleChars?: number;
+  mcpApp?: McpAppViewRef;
   topic?: string;
   label?: string;
   data?: Record<string, unknown>;
@@ -118,6 +126,7 @@ export type SessionStreamGovernanceNode = {
   interactionKind?: string;
   question?: string;
   toolCallId?: string;
+  toolInvocationId?: string;
   requestInfo?: unknown;
   topic?: string;
   status?: string;
@@ -1028,7 +1037,16 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       id: event.node_id || nextId("node", options?.createId),
       kind: "execution",
       executionType: "tool_call",
-      toolCallId: event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
+      toolCallId:
+        event.tool?.toolInvocationId
+        || event.tool?.toolCallId
+        || (typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId : undefined)
+        || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
+      toolInvocationId:
+        event.tool?.toolInvocationId
+        || event.tool?.toolCallId
+        || (typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId : undefined)
+        || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
       toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
       args: event.tool?.args ?? eventData.args ?? asRecord(eventData.tool).args,
       timestamp: Date.now(),
@@ -1048,7 +1066,38 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     }
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
-    const toolCallId = event.tool?.toolCallId || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined);
+    const eventToolData = asRecord(eventData.tool);
+    const toolCallId =
+      event.tool?.toolInvocationId
+      || event.tool?.toolCallId
+      || (typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId : undefined)
+      || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined)
+      || (typeof eventToolData.toolInvocationId === "string" ? eventToolData.toolInvocationId : undefined)
+      || (typeof eventToolData.toolCallId === "string" ? eventToolData.toolCallId : undefined);
+    const agentVisibleResult = event.tool?.agentVisibleResult
+      ?? eventData.agentVisibleResult
+      ?? eventData.agent_visible_result
+      ?? eventData.agentVisibleOutput
+      ?? eventData.agent_visible_output
+      ?? eventToolData.agentVisibleResult
+      ?? eventToolData.agent_visible_result
+      ?? eventToolData.agentVisibleOutput
+      ?? eventToolData.agent_visible_output;
+    const agentVisibleChars = typeof event.tool?.agentVisibleChars === "number"
+      ? event.tool.agentVisibleChars
+      : typeof eventData.agentVisibleChars === "number"
+        ? eventData.agentVisibleChars
+        : typeof eventData.agent_visible_chars === "number"
+          ? eventData.agent_visible_chars
+          : typeof eventToolData.agentVisibleChars === "number"
+            ? eventToolData.agentVisibleChars
+            : typeof eventToolData.agent_visible_chars === "number"
+              ? eventToolData.agent_visible_chars
+              : undefined;
+    const displayResult = agentVisibleResult ?? event.tool?.result ?? eventData.result;
+    const mcpApp = event.tool?.mcpApp
+      || (eventData.mcpApp && typeof eventData.mcpApp === "object" ? eventData.mcpApp as McpAppViewRef : undefined)
+      || (eventToolData.mcpApp && typeof eventToolData.mcpApp === "object" ? eventToolData.mcpApp as McpAppViewRef : undefined);
     const narrativeContent = typeof event.content === "string" && event.content.trim()
       ? event.content.trim()
       : typeof eventData.content === "string" && eventData.content.trim()
@@ -1062,8 +1111,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         kind: "execution",
         executionType: "tool_result",
         toolCallId,
+        toolInvocationId: toolCallId,
         toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
-        result: event.tool?.result ?? eventData.result,
+        result: displayResult,
+        agentVisibleResult,
+        agentVisibleChars,
+        mcpApp,
+        data: eventData,
         timestamp: Date.now(),
         ...nextActiveAgentProfile,
         ...ownerFields,
@@ -1072,11 +1126,15 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       const existingToolCall = (current.nodes || []).find((node) =>
         node.kind === "execution"
         && node.executionType === "tool_call"
-        && node.toolCallId === toolCallId,
+        && (node.toolInvocationId === toolCallId || node.toolCallId === toolCallId),
       ) as SessionStreamExecutionNode | undefined;
 
       if (existingToolCall) {
-        existingToolCall.result = event.tool?.result ?? eventData.result;
+        existingToolCall.result = displayResult;
+        existingToolCall.agentVisibleResult = agentVisibleResult;
+        existingToolCall.agentVisibleChars = agentVisibleChars;
+        existingToolCall.mcpApp = mcpApp || existingToolCall.mcpApp;
+        existingToolCall.data = eventData;
         Object.assign(existingToolCall, ownerFields);
         existingToolCall.toolName = existingToolCall.toolName
           || event.tool?.toolName
@@ -1088,8 +1146,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
           kind: "execution",
           executionType: "tool_result",
           toolCallId,
+          toolInvocationId: toolCallId,
           toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
-          result: event.tool?.result ?? eventData.result,
+          result: displayResult,
+          agentVisibleResult,
+          agentVisibleChars,
+          mcpApp,
+          data: eventData,
           timestamp: Date.now(),
           ...nextActiveAgentProfile,
           ...ownerFields,

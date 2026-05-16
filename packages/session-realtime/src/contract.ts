@@ -247,14 +247,30 @@ export type NormalizedSessionRuntimeEvent = {
   error?: string;
   tool?: {
     toolCallId?: string;
+    toolInvocationId?: string;
     toolName?: string;
     args?: unknown;
     result?: unknown;
+    agentVisibleResult?: unknown;
+    agentVisibleChars?: number;
+    mcpApp?: McpAppViewRef;
   };
+  mcpApp?: McpAppViewRef;
   data?: Record<string, unknown>;
   artifact?: Record<string, unknown>;
   source?: SessionRuntimeEventSource;
   raw?: Record<string, unknown>;
+};
+
+export type McpAppViewRef = {
+  appInstanceId: string;
+  serverName?: string;
+  resourceUri: string;
+  toolInvocationId?: string;
+  initialToolResultRef?: string | null;
+  csp?: Record<string, unknown>;
+  permissions?: Record<string, unknown>;
+  status?: string;
 };
 
 export type SessionRealtimeStore = {

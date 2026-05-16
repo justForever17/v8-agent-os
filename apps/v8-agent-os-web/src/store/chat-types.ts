@@ -42,6 +42,19 @@ export interface UiExecutionNode extends UiTimelineNodeBase {
     args?: any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     result?: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    agentVisibleResult?: any;
+    agentVisibleChars?: number;
+    mcpApp?: {
+        appInstanceId: string;
+        serverName?: string;
+        resourceUri: string;
+        toolInvocationId?: string;
+        initialToolResultRef?: string | null;
+        csp?: Record<string, unknown>;
+        permissions?: Record<string, unknown>;
+        status?: string;
+    };
     
     // For runtime progress
     topic?: string;

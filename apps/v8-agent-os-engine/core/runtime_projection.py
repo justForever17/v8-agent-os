@@ -818,12 +818,21 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                 continue
             assistant = ensure_assistant(event)
             tool = payload.get("tool") or payload
+            agent_visible_result = (
+                tool.get("agentVisibleResult")
+                or tool.get("agent_visible_result")
+                or tool.get("agentVisibleOutput")
+                or tool.get("agent_visible_output")
+            )
             assistant["parts"].append(
                 {
                     "type": "tool_result",
                     "toolCallId": tool.get("toolCallId") or tool.get("tool_call_id"),
                     "toolName": tool.get("toolName") or tool.get("tool_name"),
-                    "result": tool.get("result") or tool.get("result_preview"),
+                    "result": agent_visible_result if agent_visible_result is not None else (tool.get("result") or tool.get("result_preview")),
+                    "agentVisibleResult": agent_visible_result,
+                    "agentVisibleChars": tool.get("agentVisibleChars") or tool.get("agent_visible_chars"),
+                    **({"mcpApp": tool.get("mcpApp") or tool.get("mcp_app")} if (tool.get("mcpApp") or tool.get("mcp_app")) else {}),
                     **active_agent_profile,
                 }
             )

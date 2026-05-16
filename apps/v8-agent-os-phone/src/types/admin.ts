@@ -231,6 +231,18 @@ export type PhoneUiExecutionNode = PhoneUiTimelineNodeBase & {
     toolName?: string;
     args?: unknown;
     result?: unknown;
+    agentVisibleResult?: unknown;
+    agentVisibleChars?: number;
+    mcpApp?: {
+        appInstanceId: string;
+        serverName?: string;
+        resourceUri: string;
+        toolInvocationId?: string;
+        initialToolResultRef?: string | null;
+        csp?: Record<string, unknown>;
+        permissions?: Record<string, unknown>;
+        status?: string;
+    };
     topic?: string;
     label?: string;
     data?: Record<string, unknown>;

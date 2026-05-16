@@ -51,6 +51,7 @@ from core.storage import storage
 from core.context_window_guard import context_window_guard
 from core.agents import build_specialist_family_registry, normalize_specialist_family_id
 from core.task_shape_classifier import classify_task_shape
+from core.tool_invocation_ids import make_tool_invocation_id
 from core.workspace_capability import build_workspace_binding
 from core.context.workspace import workspace_resolution_service
 from erc.chat_canonical_transcript import (
@@ -73,6 +74,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 from runtimes.engineering.service import engineering_lane_service
+from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
@@ -3565,12 +3567,17 @@ class ChatRuntime:
         stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:reasoning:{run_key}"
         topic = "run.reasoning.delta" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.reasoning.delta"
         node_content = snapshot or stream_state.reasoning_snapshots_by_run.get(run_key) or reasoning_delta
+        reasoning_surface_payload = reasoning_surface or {}
+        reasoning_unverified = bool(reasoning_surface_payload.get("unverified")) or str(
+            reasoning_surface_payload.get("trust") or ""
+        ).strip().lower() == "unverified"
         reasoning_event = {
             "type": "reasoning_chunk",
             "content": reasoning_delta,
             "snapshot": node_content,
             "reasoningKind": reasoning_kind,
-            "reasoningSurface": reasoning_surface or {},
+            "reasoningSurface": reasoning_surface_payload,
+            "reasoningUnverified": reasoning_unverified,
             "timestamp": 0,
             "_diagnostics": self._stream_trace_diagnostics(
                 chat_run,
@@ -3591,13 +3598,15 @@ class ChatRuntime:
             "executionType": "reasoning",
             "content": node_content,
             "reasoningKind": reasoning_kind,
+            "reasoningUnverified": reasoning_unverified,
             "timestamp": self._now_timestamp_ms(),
             "agentName": profile["name"],
             "agentAvatar": profile["avatar"],
             "agentRoleLabel": profile["roleLabel"],
             "data": {
                 "reasoningKind": reasoning_kind,
-                "reasoningSurface": reasoning_surface or {},
+                "reasoningSurface": reasoning_surface_payload,
+                "reasoningUnverified": reasoning_unverified,
             },
         }
         runtime_event = self._emit_owner_scoped_runtime_event(
@@ -4786,6 +4795,105 @@ class ChatRuntime:
         return jsonable
 
     @classmethod
+    def _extract_agent_visible_tool_result(cls, value: Any) -> str:
+        direct_content = getattr(value, "content", None)
+        if direct_content is not None:
+            return str(direct_content)
+
+        candidate = cls._coerce_json_like_value(to_jsonable(value))
+        containers: list[Any] = []
+        if isinstance(candidate, dict):
+            containers.append(candidate)
+            update = candidate.get("update")
+            if isinstance(update, dict):
+                containers.append(update)
+        for container in containers:
+            if not isinstance(container, dict):
+                continue
+            messages = container.get("messages")
+            if not isinstance(messages, list):
+                continue
+            for message in reversed(messages):
+                content = getattr(message, "content", None)
+                if content is not None:
+                    return str(content)
+                if isinstance(message, dict) and message.get("content") is not None:
+                    return str(message.get("content"))
+        return str(value)
+
+    @classmethod
+    def _extract_mcp_app_resource_uri_from_result(cls, value: Any) -> str:
+        candidate = cls._coerce_json_like_value(to_jsonable(value))
+        containers: list[Any] = []
+        if isinstance(candidate, dict):
+            containers.append(candidate)
+            for key in ("meta", "_meta", "metadata"):
+                nested = candidate.get(key)
+                if isinstance(nested, dict):
+                    containers.append(nested)
+            content = candidate.get("content")
+            if isinstance(content, list):
+                containers.extend([item for item in content if isinstance(item, dict)])
+        for container in containers:
+            if not isinstance(container, dict):
+                continue
+            meta = container.get("_meta") or container.get("meta") or container.get("metadata") or container
+            if not isinstance(meta, dict):
+                continue
+            ui_meta = meta.get("ui") if isinstance(meta.get("ui"), dict) else {}
+            for raw in (
+                ui_meta.get("resourceUri"),
+                ui_meta.get("resource_uri"),
+                meta.get("ui.resourceUri"),
+                meta.get("ui_resource_uri"),
+                meta.get("resourceUri"),
+                meta.get("resource_uri"),
+            ):
+                uri = str(raw or "").strip()
+                if uri.startswith("ui://"):
+                    return uri
+        return ""
+
+    def _build_mcp_app_payload(
+        self,
+        *,
+        chat_run: ChatRunContext,
+        tool_name: str,
+        tool_invocation_id: str,
+        output: Any,
+    ) -> dict[str, Any] | None:
+        resource_uri = self._extract_mcp_app_resource_uri_from_result(output)
+        registry_entry = mcp_manager.find_app_for_tool(tool_name=tool_name)
+        if registry_entry and not resource_uri:
+            resource_uri = str(registry_entry.get("resourceUri") or "").strip()
+        if not resource_uri:
+            return None
+        server_name = str((registry_entry or {}).get("serverName") or "").strip()
+        if not server_name:
+            return None
+        instance = mcp_manager.create_app_instance(
+            server_name=server_name,
+            tool_name=str(tool_name or ""),
+            resource_uri=resource_uri,
+            tool_invocation_id=tool_invocation_id,
+            initial_tool_result=self._compact_tool_result_value(tool_name, output),
+            session_id=chat_run.session_id,
+            run_id=chat_run.active_run_id,
+        )
+        return {
+            "appInstanceId": instance.get("appInstanceId"),
+            "serverName": server_name,
+            "resourceUri": resource_uri,
+            "toolInvocationId": tool_invocation_id,
+            "sessionId": chat_run.session_id,
+            "runId": chat_run.active_run_id,
+            "initialToolResultRef": instance.get("initialToolResultRef"),
+            "csp": instance.get("csp") or {},
+            "permissions": instance.get("permissions") or {},
+            "status": instance.get("status") or "open",
+        }
+
+    @classmethod
     def _resolve_tool_call_id_for_start(
         cls,
         *,
@@ -4793,6 +4901,8 @@ class ChatRuntime:
         raw_inputs: Any,
         metadata: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        tool_name: str = "",
+        run_id: str = "",
     ) -> str:
         for candidate in (
             cls._extract_tool_call_id_from_value(raw_inputs),
@@ -4802,8 +4912,18 @@ class ChatRuntime:
         ):
             normalized = str(candidate or "").strip()
             if normalized:
-                return normalized
-        return ""
+                return make_tool_invocation_id(
+                    normalized,
+                    tool_name=tool_name,
+                    run_id=run_id,
+                    callback_run_id=callback_run_id,
+                )
+        return make_tool_invocation_id(
+            "",
+            tool_name=tool_name,
+            run_id=run_id,
+            callback_run_id=callback_run_id,
+        )
 
     @classmethod
     def _resolve_provider_shadow_for_start(
@@ -5013,6 +5133,7 @@ class ChatRuntime:
                         "type": "tool_start",
                         "tool": {
                             "toolCallId": tool_call_id,
+                            "toolInvocationId": tool_call_id,
                             "toolName": "ask_user",
                             "args": display_args,
                         },
@@ -5023,6 +5144,7 @@ class ChatRuntime:
                         "kind": "execution",
                         "executionType": "tool_call",
                         "toolCallId": tool_call_id,
+                        "toolInvocationId": tool_call_id,
                         "toolName": "ask_user",
                         "args": display_args,
                         "state": "waiting_input",
@@ -5202,7 +5324,7 @@ class ChatRuntime:
                         model_run_id=model_run_id,
                         snapshot=model_event.snapshot,
                         reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
-                        reasoning_surface=dict(stream_state.reasoning_surface_contract or {}),
+                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or stream_state.reasoning_surface_contract or {}),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
                     )
@@ -5313,7 +5435,7 @@ class ChatRuntime:
                         model_run_id=model_event.model_run_id,
                         snapshot=model_event.snapshot,
                         reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
-                        reasoning_surface=dict(stream_state.reasoning_surface_contract or {}),
+                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or stream_state.reasoning_surface_contract or {}),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
                     )
@@ -5339,6 +5461,8 @@ class ChatRuntime:
                 raw_inputs=raw_inputs,
                 metadata=metadata,
                 data=data,
+                tool_name=str(name or ""),
+                run_id=str(chat_run.active_run_id or ""),
             )
             provider_shadow = self._resolve_provider_shadow_for_start(
                 raw_inputs=raw_inputs,
@@ -5377,6 +5501,7 @@ class ChatRuntime:
                 "type": "tool_start",
                 "tool": {
                     "toolCallId": tool_call_id,
+                    "toolInvocationId": tool_call_id,
                     "toolName": name,
                     "args": inputs,
                     **provider_shadow,
@@ -5396,6 +5521,7 @@ class ChatRuntime:
                 "kind": "execution",
                 "executionType": "tool_call",
                 "toolCallId": tool_call_id,
+                "toolInvocationId": tool_call_id,
                 "toolName": name,
                 "args": inputs,
                 "timestamp": self._now_timestamp_ms(),
@@ -5445,7 +5571,7 @@ class ChatRuntime:
 
         if kind == "on_tool_end":
             output = data.get("output", "")
-            output_str = str(output.content) if hasattr(output, "content") else str(output)
+            output_str = self._extract_agent_visible_tool_result(output)
             callback_run_id = str(event.get("run_id") or "").strip()
             candidate_tool_call_id = self._resolve_tool_call_id_for_end(
                 callback_run_id=callback_run_id,
@@ -5500,16 +5626,28 @@ class ChatRuntime:
                     )
                     return emitted_events
             compact_result = self._compact_tool_result_value(str(name or ""), output)
+            agent_visible_result = output_str
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             provider_shadow = dict(stream_state.tool_call_shadow_by_tool_call_id.get(tool_call_id) or {})
+            mcp_app_payload = self._build_mcp_app_payload(
+                chat_run=chat_run,
+                tool_name=str(name or ""),
+                tool_invocation_id=str(tool_call_id or ""),
+                output=output,
+            )
             tool_result_event = {
                 "type": "tool_result",
                 "tool": {
                     "toolCallId": tool_call_id,
+                    "toolInvocationId": tool_call_id,
                     "toolName": name,
                     "result": compact_result,
+                    "agentVisibleResult": agent_visible_result,
+                    "agentVisibleChars": len(agent_visible_result),
+                    **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
                     **provider_shadow,
                 },
+                **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
                 "timestamp": 0,
             }
             stream_state.watchdog.note_tool_end(tool_call_id)
@@ -5527,8 +5665,12 @@ class ChatRuntime:
                 "kind": "execution",
                 "executionType": "tool_result",
                 "toolCallId": tool_call_id,
+                "toolInvocationId": tool_call_id,
                 "toolName": name,
                 "result": compact_result,
+                "agentVisibleResult": agent_visible_result,
+                "agentVisibleChars": len(agent_visible_result),
+                **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
                 "timestamp": self._now_timestamp_ms(),
                 "agentName": profile["name"],
                 "agentAvatar": profile["avatar"],

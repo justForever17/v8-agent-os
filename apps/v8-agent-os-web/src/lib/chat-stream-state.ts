@@ -28,6 +28,8 @@ type ProjectedMessagePart = {
     toolName?: unknown;
     args?: unknown;
     result?: unknown;
+    agentVisibleResult?: unknown;
+    agentVisibleChars?: unknown;
 };
 
 type ProjectedMessageRecord = {
@@ -346,17 +348,19 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
             }
 
             if (part.type === 'tool_result') {
-                return [{
-                    id: nodeId,
-                    kind: 'execution',
-                    executionType: 'tool_result',
-                    toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : undefined,
-                    toolName: typeof part.toolName === 'string' ? part.toolName : undefined,
-                    result: part.result,
-                    timestamp,
-                    ...nodeAgentProfile,
-                } as UiExecutionNode];
-            }
+            return [{
+                id: nodeId,
+                kind: 'execution',
+                executionType: 'tool_result',
+                toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : undefined,
+                toolName: typeof part.toolName === 'string' ? part.toolName : undefined,
+                result: part.agentVisibleResult ?? part.result,
+                agentVisibleResult: part.agentVisibleResult,
+                agentVisibleChars: typeof part.agentVisibleChars === 'number' ? part.agentVisibleChars : undefined,
+                timestamp,
+                ...nodeAgentProfile,
+            } as UiExecutionNode];
+        }
 
             if (part.type === 'agent_start') {
                 return [{

@@ -16,6 +16,7 @@ from core.database import db
 from core.json_safe import to_jsonable
 from core.scoped_workspace_resource import build_workspace_resource_ref
 from core.workspace_capability import build_workspace_binding
+from core.workspace_state_digest import mark_workspace_state_stale
 from core.realtime_protocol import (
     build_runtime_event,
     format_ndjson,
@@ -331,6 +332,17 @@ async def chat_upload(request: Request):
     if not isinstance(content, (bytes, bytearray)):
         raise HTTPException(status_code=400, detail="上传文件内容不可读取。")
     target.write_bytes(bytes(content))
+    mark_workspace_state_stale(
+        {
+            "runtime_kind": "chat",
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "workspace_path": workspace_path,
+            "project_id": project_id,
+        },
+        reason="workspace_upload",
+        subject=str(target),
+    )
 
     workspace_relative_path = target.relative_to(workspace_root).as_posix()
     content_type = str(getattr(upload, "content_type", "") or "").strip() or mimetypes.guess_type(filename)[0] or "application/octet-stream"

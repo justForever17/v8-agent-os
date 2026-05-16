@@ -24,6 +24,7 @@ from core.time_truth import utc_now_iso
 from core.v8_agent_os_identity import render_system_identity_line
 from core.workspace_capability import WorkspaceBinding, build_workspace_binding
 from core.workspace_resolution import workspace_resolution_service
+from core.workspace_state_digest import build_workspace_state_digest_context
 from erc.capability_registry import capability_registry
 
 
@@ -1161,7 +1162,14 @@ def build_supervisor_system_content(
         memory_context = memory_budget.text
         memory_budget_diagnostics.append(memory_budget.diagnostic())
     workspace_rules_context, workspace_rules_diagnostics = _build_workspace_rules_context(state=state, session_id=session_id)
-    prompt_budget_diagnostics = [base_prompt_budget.diagnostic(), *workspace_rules_diagnostics, *memory_budget_diagnostics, *engineering_budget_diagnostics]
+    workspace_state_context, workspace_state_diagnostics = build_workspace_state_digest_context(state=state, session_id=session_id)
+    prompt_budget_diagnostics = [
+        base_prompt_budget.diagnostic(),
+        *workspace_state_diagnostics,
+        *workspace_rules_diagnostics,
+        *memory_budget_diagnostics,
+        *engineering_budget_diagnostics,
+    ]
 
     runtime_registry_context = capability_registry.build_supervisor_summary(
         user_query=user_query,
@@ -1272,6 +1280,7 @@ def build_supervisor_system_content(
         *_split_runtime_registry_prompt_parts(runtime_registry_context),
         _prompt_part("capability_registry.separator", "scoped_static", "\n\n", scope="capability_registry"),
         _prompt_part("task_shape.hint", "dynamic", task_shape_context, scope="task_shape"),
+        _prompt_part("workspace.state_digest", "dynamic", workspace_state_context, scope="workspace_state"),
         _prompt_part("language.context", "dynamic", language_context, scope="language"),
         _prompt_part("specialist_registry.visible_family", "dynamic", specialist_agents_context, scope="specialist_registry"),
         _prompt_part("direct_tool_registry", "scoped_static", f"{available_tools_context}\n", scope="tool_registry"),
@@ -1307,6 +1316,8 @@ def build_supervisor_system_content(
         "artifact_awareness_context": artifact_awareness_context,
         "artifact_awareness_diagnostics": artifact_awareness_diagnostics,
         "todos_context": todos_context,
+        "workspace_state_context": workspace_state_context,
+        "workspace_state_diagnostics": workspace_state_diagnostics,
         "workspace_rules_context": workspace_rules_context,
         "env_context": env_context,
         "group_moderation_directive": group_moderation_directive,

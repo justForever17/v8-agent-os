@@ -16,7 +16,9 @@ interface RuntimeDockProps {
 const runtimeIcons: Record<RuntimeId, ElementType<{ className?: string }>> = {
     chat: Bot,
     planner_lane: Route,
+    engineering: Code2,
     engineering_lane: Code2,
+    research: Globe,
     extensions: Blocks,
     creative_media: Sparkles,
     automation: Workflow,

@@ -15,6 +15,8 @@ type ProjectedMessagePart = {
     toolName?: unknown;
     args?: unknown;
     result?: unknown;
+    agentVisibleResult?: unknown;
+    agentVisibleChars?: unknown;
     agentName?: unknown;
     agentAvatar?: unknown;
     agentRoleLabel?: unknown;
@@ -217,7 +219,9 @@ function normalizeProjectedPartsToNodes(message: ChatMessage) {
                 executionType: "tool_result",
                 toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
                 toolName: typeof part.toolName === "string" ? part.toolName : undefined,
-                result: part.result,
+                result: part.agentVisibleResult ?? part.result,
+                agentVisibleResult: part.agentVisibleResult,
+                agentVisibleChars: typeof part.agentVisibleChars === "number" ? part.agentVisibleChars : undefined,
                 ...shared,
             } as PhoneUiTimelineNode];
         }

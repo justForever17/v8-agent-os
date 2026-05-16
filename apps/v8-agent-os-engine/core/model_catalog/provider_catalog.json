@@ -562,13 +562,20 @@
       "providerKind": "chat",
       "credentialRealm": "deepseek",
       "reasoningSurface": {
-        "mode": "hidden",
-        "trust": "unknown",
-        "requestStyle": "none",
-        "responseFields": [],
-        "displayKind": "hidden",
-        "sourceRefs": [],
-        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+        "mode": "provider_reasoning",
+        "trust": "adapter_verified",
+        "requestStyle": "openai_compatible",
+        "responseFields": [
+          "additional_kwargs.reasoning_content",
+          "reasoning_content",
+          "additional_kwargs.reasoning",
+          "reasoning"
+        ],
+        "displayKind": "provider_reasoning",
+        "sourceRefs": [
+          "https://api-docs.deepseek.com/guides/reasoning_model"
+        ],
+        "notes": "DeepSeek reasoning models expose separated reasoning_content through OpenAI-compatible adapters. V8 displays it as reasoning and keeps it out of message text."
       }
     },
     {
@@ -614,13 +621,20 @@
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/qwen-color.svg",
       "reasoningSurface": {
-        "mode": "hidden",
-        "trust": "unknown",
-        "requestStyle": "none",
-        "responseFields": [],
-        "displayKind": "hidden",
-        "sourceRefs": [],
-        "notes": "Qwen/DashScope reasoning capability does not imply a display-safe response field."
+        "mode": "provider_reasoning",
+        "trust": "adapter_verified",
+        "requestStyle": "openai_compatible",
+        "responseFields": [
+          "additional_kwargs.reasoning_content",
+          "reasoning_content",
+          "additional_kwargs.reasoning",
+          "reasoning"
+        ],
+        "displayKind": "provider_reasoning",
+        "sourceRefs": [
+          "https://help.aliyun.com/zh/model-studio/deep-thinking"
+        ],
+        "notes": "DashScope/Qwen deep-thinking output is parsed only when adapters expose a separated reasoning_content/reasoning field."
       }
     },
     {
@@ -1137,13 +1151,20 @@
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/kimi-color.svg",
       "reasoningSurface": {
-        "mode": "hidden",
-        "trust": "unknown",
-        "requestStyle": "none",
-        "responseFields": [],
-        "displayKind": "hidden",
-        "sourceRefs": [],
-        "notes": "Kimi reasoning capability does not imply a display-safe response field."
+        "mode": "provider_reasoning",
+        "trust": "adapter_verified",
+        "requestStyle": "openai_compatible",
+        "responseFields": [
+          "additional_kwargs.reasoning_content",
+          "reasoning_content",
+          "additional_kwargs.reasoning",
+          "reasoning"
+        ],
+        "displayKind": "provider_reasoning",
+        "sourceRefs": [
+          "https://platform.moonshot.ai/docs"
+        ],
+        "notes": "Kimi thinking output is displayed only when returned as a separated reasoning_content/reasoning field by the adapter."
       }
     },
     {
@@ -1602,7 +1623,23 @@
       "confidence": "official",
       "models": [],
       "logoAsset": "/model-assets/providers/mistral.ico",
-      "providerKind": "chat"
+      "providerKind": "chat",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "catalog_only",
+        "requestStyle": "openai_compatible",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning",
+          "additional_kwargs.reasoning",
+          "additional_kwargs.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://docs.mistral.ai"
+        ],
+        "notes": "Mistral reasoning-capable models may expose provider-mediated reasoning fields. V8 treats these as reasoning summaries unless a model-level typed contract overrides it."
+      }
     },
     {
       "id": "xai",
@@ -1626,13 +1663,20 @@
       "logoAsset": "/model-assets/providers/xai.ico",
       "providerKind": "chat",
       "reasoningSurface": {
-        "mode": "hidden",
-        "trust": "unknown",
-        "requestStyle": "none",
-        "responseFields": [],
-        "displayKind": "hidden",
-        "sourceRefs": [],
-        "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+        "mode": "reasoning_summary",
+        "trust": "catalog_only",
+        "requestStyle": "openai_compatible",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning",
+          "additional_kwargs.reasoning",
+          "additional_kwargs.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://docs.x.ai"
+        ],
+        "notes": "xAI reasoning-capable models may expose provider-mediated reasoning fields. V8 treats these as reasoning summaries, not raw thinking."
       }
     },
     {
@@ -1912,6 +1956,22 @@
       "confidence": "official",
       "logoAsset": "/model-assets/lobe/cohere-color.svg",
       "providerKind": "chat",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "catalog_only",
+        "requestStyle": "openai_compatible",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning",
+          "additional_kwargs.reasoning",
+          "additional_kwargs.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://docs.cohere.com/reference/chat"
+        ],
+        "notes": "Cohere reasoning-capable responses are displayed only when returned as separated summary/reasoning fields."
+      },
       "models": [
         {
           "id": "command-a-03-2025",

@@ -429,10 +429,22 @@ class ExecutionRuntimeCore:
         approval = command_service.approve(approval_id, response=response)
         if not approval:
             return None
+        approval_kind = str(approval.get("approval_kind") or "").strip()
         run_record = run_service.get_run(approval["run_id"])
         if not run_record:
             return None
         emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
+        if approval_kind == "mcp_app_tool_call":
+            event = emitter.emit(
+                "approval.approved",
+                {
+                    "approval_id": approval_id,
+                    "run_id": approval["run_id"],
+                    "approval_kind": approval_kind,
+                    "response": response or {},
+                },
+            )
+            return {"command_event": event, "approval": approval}
         transition_event = emitter.emit(
             "run.state.changed",
             {"from_status": run_record.get("status"), "to_status": "running", "reason": "approval_approved"},
@@ -503,10 +515,22 @@ class ExecutionRuntimeCore:
         approval = command_service.reject(approval_id, response=response)
         if not approval:
             return None
+        approval_kind = str(approval.get("approval_kind") or "").strip()
         run_record = run_service.get_run(approval["run_id"])
         if not run_record:
             return None
         emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
+        if approval_kind == "mcp_app_tool_call":
+            event = emitter.emit(
+                "approval.rejected",
+                {
+                    "approval_id": approval_id,
+                    "run_id": approval["run_id"],
+                    "approval_kind": approval_kind,
+                    "response": response or {},
+                },
+            )
+            return {"command_event": event, "approval": approval}
         transition_event = emitter.emit(
             "run.state.changed",
             {"from_status": run_record.get("status"), "to_status": "waiting_input", "reason": "approval_rejected"},

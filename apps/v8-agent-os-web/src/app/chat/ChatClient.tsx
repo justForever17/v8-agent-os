@@ -47,6 +47,8 @@ import {
     deriveMemoryRuntimeInsightFromGovernance,
     deriveAuthoritativeSessionView,
     flushQueuedSessionRealtimeRuntimeEvents,
+    normalizeContextGovernanceDigest,
+    normalizeContextGovernanceHistory,
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
@@ -613,10 +615,18 @@ export default function ChatClient() {
         [projectionProcesses, sessionProcessSurface],
     );
     const projectionContextReferences = sessionProjection?.contextReferences || [];
-    const projectionContextGovernance = sessionProjection?.contextGovernance || null;
-    const projectionContextGovernanceHistory = useMemo(
+    const projectionContextGovernanceRaw = sessionProjection?.contextGovernance || null;
+    const projectionContextGovernanceHistoryRaw = useMemo(
         () => sessionProjection?.contextGovernanceHistory || [],
         [sessionProjection?.contextGovernanceHistory],
+    );
+    const projectionContextGovernance = useMemo(
+        () => normalizeContextGovernanceDigest(projectionContextGovernanceRaw),
+        [projectionContextGovernanceRaw],
+    );
+    const projectionContextGovernanceHistory = useMemo(
+        () => normalizeContextGovernanceHistory(projectionContextGovernanceHistoryRaw),
+        [projectionContextGovernanceHistoryRaw],
     );
     const projectionRuntimeTimeline = useMemo(
         () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
@@ -624,10 +634,10 @@ export default function ChatClient() {
     );
     const projectionMemoryInsight = useMemo(
         () => deriveMemoryRuntimeInsightFromGovernance(
-            projectionContextGovernance,
-            projectionContextGovernanceHistory,
+            projectionContextGovernanceRaw,
+            projectionContextGovernanceHistoryRaw,
         ),
-        [projectionContextGovernance, projectionContextGovernanceHistory],
+        [projectionContextGovernanceRaw, projectionContextGovernanceHistoryRaw],
     );
     const projectionTodosAllCompleted = projectionTodos.length > 0
         && projectionTodos.every((item) => {
@@ -1960,8 +1970,8 @@ export default function ChatClient() {
                 overallStatus={effectiveStatus}
                 currentStepTitle={sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null}
                 pendingApproval={effectivePendingApproval}
-                contextGovernance={projectionContextGovernance}
-                contextGovernanceHistory={projectionContextGovernanceHistory}
+                contextGovernance={projectionContextGovernanceRaw}
+                contextGovernanceHistory={projectionContextGovernanceHistoryRaw}
                 onSelectRuntime={setSelectedRuntimeId}
             />
         </div>

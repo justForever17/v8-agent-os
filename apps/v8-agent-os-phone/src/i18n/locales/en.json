@@ -208,10 +208,11 @@
   "src.components.chat.thinkingcard.provider_reasoning": "reasoning",
   "src.components.chat.thinkingcard.reasoning": "reasoning",
   "src.components.chat.thinkingcard.reasoning_summary": "Reasoning summary",
+  "src.components.chat.thinkingcard.unverified": "unverified",
   "src.components.chat.todoshud.task_progress": "Task Progress",
   "src.components.chat.toolcard.complete": "Complete",
   "src.components.chat.toolcard.input": "Input",
-  "src.components.chat.toolcard.output": "Output",
+  "src.components.chat.toolcard.output": "Agent-visible output",
   "src.components.chat.toolcard.running": "Running",
   "src.components.chat.voicecard.playing": "Playing…",
   "src.components.chat.voicecard.playing_voice": "Playing voice",
@@ -660,5 +661,7 @@
   "src.lib.phone_media_source.temporarily_unreachable": "This resource is temporarily unreachable",
   "src.lib.phone_media_source.temporarily_unreachable_with_title": "{title} is temporarily unreachable",
   "src.lib.admin_client.realtime_stream_failed_with_status": "Failed to connect to the realtime stream ({status})",
-  "src.providers.app_session.unable_to_reach_admin": "Unable to reach Admin: {baseUrl}"
+  "src.providers.app_session.unable_to_reach_admin": "Unable to reach Admin: {baseUrl}",
+  "src.components.chat.mcp_app.title": "MCP App",
+  "src.components.chat.mcp_app.loading": "Loading interactive UI"
 }

@@ -208,10 +208,11 @@
   "src.components.chat.thinkingcard.provider_reasoning": "reasoning",
   "src.components.chat.thinkingcard.reasoning": "reasoning",
   "src.components.chat.thinkingcard.reasoning_summary": "推理摘要",
+  "src.components.chat.thinkingcard.unverified": "未验证",
   "src.components.chat.todoshud.task_progress": "任务进度",
   "src.components.chat.toolcard.complete": "已完成",
   "src.components.chat.toolcard.input": "输入",
-  "src.components.chat.toolcard.output": "输出",
+  "src.components.chat.toolcard.output": "Agent 可见输出",
   "src.components.chat.toolcard.running": "执行中",
   "src.components.chat.voicecard.playing": "播放中…",
   "src.components.chat.voicecard.playing_voice": "正在播放语音",
@@ -660,5 +661,7 @@
   "src.lib.phone_media_source.temporarily_unreachable": "当前资源暂不可达",
   "src.lib.phone_media_source.temporarily_unreachable_with_title": "{title} 暂不可达",
   "src.lib.admin_client.realtime_stream_failed_with_status": "连接实时流失败（{status}）",
-  "src.providers.app_session.unable_to_reach_admin": "无法连接 Admin：{baseUrl}"
+  "src.providers.app_session.unable_to_reach_admin": "无法连接 Admin：{baseUrl}",
+  "src.components.chat.mcp_app.title": "MCP App",
+  "src.components.chat.mcp_app.loading": "正在加载交互界面"
 }

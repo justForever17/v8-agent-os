@@ -371,6 +371,8 @@ class LangChainCanonicalModelEventAdapter:
                             "reasoningDisplayKind": reasoning_decision.get("reasoningDisplayKind"),
                             "reasoningRequestStyle": reasoning_decision.get("reasoningRequestStyle"),
                             "matchedField": reasoning_decision.get("matchedField"),
+                            "reasoningUnverified": bool(reasoning_decision.get("reasoningUnverified")),
+                            "reasoningSurface": reasoning_decision.get("reasoningSurface") or {},
                         },
                     )
                 )

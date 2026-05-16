@@ -17,6 +17,7 @@ type ThinkingCardProps = {
     isStreaming?: boolean;
     elapsedTime?: number;
     reasoningKind?: string;
+    reasoningSurface?: Record<string, unknown>;
     data?: {
         startTime?: number;
         endTime?: number;
@@ -28,6 +29,7 @@ export const ThinkingCard = memo(function ThinkingCard({
     isStreaming = false,
     elapsedTime,
     reasoningKind,
+    reasoningSurface,
     data,
 }: ThinkingCardProps) {
     const { colors, themeMode, t } = useUiPrefs();
@@ -118,6 +120,8 @@ export const ThinkingCard = memo(function ThinkingCard({
     const title = normalizedReasoningKind.includes("summary")
         ? t("src.components.chat.thinkingcard.reasoning_summary")
         : t("src.components.chat.thinkingcard.reasoning");
+    const isUnverified = Boolean(reasoningSurface?.unverified)
+        || String(reasoningSurface?.trust || "").trim().toLowerCase() === "unverified";
     const shouldFadeContent = content.length > 420;
 
     const wrapperBackground = isExpanded
@@ -165,6 +169,11 @@ export const ThinkingCard = memo(function ThinkingCard({
                         <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
                             {title}
                         </Text>
+                        {isUnverified ? (
+                            <Text style={[styles.unverified, { color: colors.textSoft }]}>
+                                {t("src.components.chat.thinkingcard.unverified")}
+                            </Text>
+                        ) : null}
 
                         {isStreaming ? (
                             <Text style={[styles.time, { color: colors.primary }]}>
@@ -281,6 +290,11 @@ const styles = StyleSheet.create({
     time: {
         fontSize: 10,
         fontWeight: "600",
+    },
+    unverified: {
+        fontSize: 9,
+        fontWeight: "600",
+        letterSpacing: 0,
     },
     contentOuter: {
         paddingHorizontal: 8,

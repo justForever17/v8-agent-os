@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from core.model_capability_matrix import normalize_capability_metadata
@@ -10,7 +11,11 @@ from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
-from core.reasoning_surface_contract import merge_reasoning_surface
+from core.reasoning_surface_contract import (
+    is_stale_auto_hidden_reasoning_surface,
+    is_trusted_reasoning_surface,
+    resolve_reasoning_surface_for_metadata,
+)
 from core.storage import storage
 
 
@@ -606,7 +611,14 @@ class ModelControlPlane:
                     "isEnabled": bool(model_meta.get("isEnabled", True)),
                     "runtimeReady": provider_runtime_ready,
                     "capabilities": capabilities,
-                    "reasoningSurface": merge_reasoning_surface(meta.get("reasoningSurface"), model_meta.get("reasoningSurface")),
+                    "reasoningSurface": resolve_reasoning_surface_for_metadata(
+                        {
+                            "provider_id": provider_id,
+                            "model_id": model_id,
+                            "provider_record": meta,
+                            "model_record": model_meta,
+                        }
+                    ),
                     "capabilityClass": capability_class,
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
@@ -713,12 +725,71 @@ class ModelControlPlane:
         return config
 
     def get_config(self) -> Dict[str, Any]:
-        return self.normalize_config(storage.get_models_config())
+        raw = storage.get_models_config()
+        migrated, records = self._migrate_reasoning_surfaces(raw)
+        if records:
+            storage.save_models_config(migrated)
+            raw = migrated
+        return self.normalize_config(raw)
 
     def save_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self.normalize_config(data)
         storage.save_models_config(normalized)
         return normalized
+
+    def _migrate_reasoning_surfaces(self, data: Dict[str, Any] | None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        payload = deepcopy(dict(data or {}))
+        providers = payload.get("providers")
+        if not isinstance(providers, dict):
+            return payload, []
+        records: List[Dict[str, Any]] = []
+        migrated_at = datetime.now(timezone.utc).isoformat()
+        for provider_id, provider_data in providers.items():
+            if not isinstance(provider_data, dict):
+                continue
+            provider_meta = dict(provider_data.get("provider") or {})
+            models = provider_data.get("models")
+            if not isinstance(models, dict):
+                continue
+            for model_id, model_meta in models.items():
+                if not isinstance(model_meta, dict):
+                    continue
+                current_surface = model_meta.get("reasoningSurface")
+                resolved_surface = resolve_reasoning_surface_for_metadata(
+                    {
+                        "provider_id": provider_id,
+                        "model_id": model_id,
+                        "provider_record": provider_meta,
+                        "model_record": model_meta,
+                    }
+                )
+                should_backfill = current_surface in (None, {}, "")
+                should_replace_stale = is_stale_auto_hidden_reasoning_surface(current_surface)
+                if not (should_backfill or should_replace_stale):
+                    continue
+                if not is_trusted_reasoning_surface(resolved_surface):
+                    continue
+                model_meta["reasoningSurface"] = {
+                    **resolved_surface,
+                    "migrationSource": "reasoning_surface_auto_migration",
+                    "migratedAt": migrated_at,
+                }
+                records.append(
+                    {
+                        "providerId": str(provider_id),
+                        "modelId": str(model_id),
+                        "oldMode": (current_surface or {}).get("mode") if isinstance(current_surface, dict) else "missing",
+                        "newMode": resolved_surface.get("mode"),
+                        "newTrust": resolved_surface.get("trust"),
+                        "source": "reasoning_surface_auto_migration",
+                        "migratedAt": migrated_at,
+                    }
+                )
+        if records:
+            payload.setdefault("reasoningSurfaceMigrations", [])
+            if isinstance(payload["reasoningSurfaceMigrations"], list):
+                payload["reasoningSurfaceMigrations"].extend(records)
+        return payload, records
 
     def get_role_definitions(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
         normalized = config or self.get_config()

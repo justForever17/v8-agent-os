@@ -36,6 +36,10 @@ function stringifyPayload(value: unknown) {
     }
 }
 
+function payloadLanguage(value: unknown) {
+    return typeof value === "string" ? "text" : "json";
+}
+
 function resolveToolIconName(toolName: string) {
     const normalized = String(toolName || "").toLowerCase();
     if (/(command|shell|bash|terminal|process|session)/.test(normalized)) {
@@ -171,7 +175,10 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                                 <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
                                     {t("src.components.chat.toolcard.output")}
                                 </Text>
-                                <CodeBlock language="json" value={stringifyPayload(toolInvocation.result ?? "")} />
+                                <CodeBlock
+                                    language={payloadLanguage(toolInvocation.result)}
+                                    value={stringifyPayload(toolInvocation.result ?? "")}
+                                />
                             </View>
                         ) : null}
                     </Animated.View>

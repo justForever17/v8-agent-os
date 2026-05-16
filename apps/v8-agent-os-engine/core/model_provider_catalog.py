@@ -13,7 +13,7 @@ from core.model_capability_registry import model_capability_registry
 from core.media_model_capability_registry import media_model_capability_registry
 from core.model_ref import make_model_ref
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
-from core.reasoning_surface_contract import merge_reasoning_surface
+from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
 
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "model_catalog" / "provider_catalog.json"
@@ -948,6 +948,7 @@ class ModelProviderCatalog:
     def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         online_metadata = dict(online_metadata or {})
         model = self._model_from_catalog(provider, model_id)
+        provider_id = str(provider.get("id") or "").strip()
         provider_kind = str(provider.get("providerKind") or "chat")
         registry_entry = model_capability_registry.find(model_id)
         explicit_provider_override = bool(
@@ -1008,9 +1009,16 @@ class ModelProviderCatalog:
             if media_registry
             else {}
         )
-        reasoning_surface = merge_reasoning_surface(
-            provider.get("reasoningSurface"),
-            model.get("reasoningSurface") or (registry_entry or {}).get("reasoningSurface"),
+        reasoning_surface = resolve_reasoning_surface_for_metadata(
+            {
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "provider_record": provider,
+                "model_record": {
+                    **model,
+                    **({"reasoningSurface": (registry_entry or {}).get("reasoningSurface")} if not model.get("reasoningSurface") else {}),
+                },
+            }
         )
         return {
             "id": model_id,

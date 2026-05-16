@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import hashlib
+import uuid
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,7 +13,9 @@ from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 import httpx
+from pydantic import AnyUrl
 
+from core.json_safe import to_jsonable
 from core.storage import storage
 from runtimes.extensions.mcp.stdio import stdio_client
 
@@ -47,6 +50,9 @@ class MCPManager:
         self._server_config_fingerprints: dict[str, str] = {}
         self._inventory_revision = "cold"
         self._last_reload_result: dict[str, Any] = {}
+        self._app_registry_by_tool: dict[tuple[str, str], dict[str, Any]] = {}
+        self._app_resources_by_uri: dict[tuple[str, str], dict[str, Any]] = {}
+        self._app_instances: dict[str, dict[str, Any]] = {}
 
     def _log_server_task_result(self, name: str, task: asyncio.Task) -> None:
         try:
@@ -91,6 +97,103 @@ class MCPManager:
         current["updatedAt"] = self._now_iso()
         self._server_state[name] = current
         return current
+
+    def _extract_ui_resource_uri(self, meta: Any) -> str:
+        if not isinstance(meta, dict):
+            return ""
+        ui_meta = meta.get("ui") if isinstance(meta.get("ui"), dict) else {}
+        for value in (
+            ui_meta.get("resourceUri"),
+            ui_meta.get("resource_uri"),
+            meta.get("ui/resourceUri"),
+            meta.get("ui.resourceUri"),
+            meta.get("ui_resource_uri"),
+            meta.get("io.modelcontextprotocol/ui.resourceUri"),
+            meta.get("openai/outputTemplate"),
+            meta.get("resourceUri"),
+            meta.get("resource_uri"),
+        ):
+            candidate = str(value or "").strip()
+            if candidate.startswith("ui://"):
+                return candidate
+        return ""
+
+    def _extract_ui_meta(self, meta: Any) -> dict[str, Any]:
+        if not isinstance(meta, dict):
+            return {}
+        ui_meta = meta.get("ui") if isinstance(meta.get("ui"), dict) else {}
+        return dict(ui_meta or {})
+
+    async def _discover_apps_for_server(self, name: str, session: ClientSession) -> dict[str, Any]:
+        app_tools: list[dict[str, Any]] = []
+        resources: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        try:
+            listed_tools = await session.list_tools()
+            for tool in list(getattr(listed_tools, "tools", []) or []):
+                tool_payload = to_jsonable(tool)
+                if not isinstance(tool_payload, dict):
+                    continue
+                tool_name = str(tool_payload.get("name") or "").strip()
+                if not tool_name:
+                    continue
+                meta = tool_payload.get("_meta") or tool_payload.get("meta") or {}
+                resource_uri = self._extract_ui_resource_uri(meta)
+                if not resource_uri:
+                    continue
+                ui_meta = self._extract_ui_meta(meta)
+                entry = {
+                    "serverName": name,
+                    "toolName": tool_name,
+                    "resourceUri": resource_uri,
+                    "uiMeta": ui_meta,
+                    "schemaHash": hashlib.sha256(
+                        json.dumps(
+                            tool_payload.get("inputSchema") or {},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        ).encode("utf-8")
+                    ).hexdigest()[:16],
+                }
+                self._app_registry_by_tool[(name, tool_name)] = entry
+                app_tools.append(entry)
+        except Exception as exc:
+            errors.append(f"tools/list apps metadata failed: {type(exc).__name__}: {exc}")
+
+        try:
+            listed_resources = await session.list_resources()
+            for resource in list(getattr(listed_resources, "resources", []) or []):
+                resource_payload = to_jsonable(resource)
+                if not isinstance(resource_payload, dict):
+                    continue
+                uri = str(resource_payload.get("uri") or "").strip()
+                if not uri.startswith("ui://"):
+                    continue
+                meta = resource_payload.get("_meta") or resource_payload.get("meta") or {}
+                entry = {
+                    "serverName": name,
+                    "uri": uri,
+                    "name": resource_payload.get("name"),
+                    "title": resource_payload.get("title"),
+                    "mimeType": resource_payload.get("mimeType") or resource_payload.get("mime_type"),
+                    "description": resource_payload.get("description"),
+                    "uiMeta": self._extract_ui_meta(meta),
+                }
+                self._app_resources_by_uri[(name, uri)] = entry
+                resources.append(entry)
+        except Exception as exc:
+            errors.append(f"resources/list failed: {type(exc).__name__}: {exc}")
+
+        return {
+            "appsSupported": bool(app_tools or resources),
+            "appToolCount": len(app_tools),
+            "uiResourceCount": len(resources),
+            "appTools": app_tools,
+            "uiResources": resources,
+            "lastAppsError": "; ".join(errors) if errors else None,
+        }
 
     async def initialize(self):
         if self._initialized:
@@ -190,6 +293,15 @@ class MCPManager:
             return
         remove_ids = {id(tool) for tool in server_tools}
         self.tools = [tool for tool in self.tools if id(tool) not in remove_ids]
+
+    def _remove_server_apps(self, name: str) -> None:
+        for key in [key for key in self._app_registry_by_tool if key[0] == name]:
+            self._app_registry_by_tool.pop(key, None)
+        for key in [key for key in self._app_resources_by_uri if key[0] == name]:
+            self._app_resources_by_uri.pop(key, None)
+        for instance_id, instance in list(self._app_instances.items()):
+            if instance.get("serverName") == name:
+                self._app_instances.pop(instance_id, None)
 
     async def _stop_server_task(self, name: str, *, cancel: bool = False) -> None:
         managed = self._server_tasks.pop(name, None)
@@ -351,9 +463,16 @@ class MCPManager:
             await session.initialize()
 
             server_tools = await load_mcp_tools(session)
+            apps_discovery = await self._discover_apps_for_server(name, session)
             for t in server_tools:
                 t.metadata = getattr(t, "metadata", {}) or {}
                 t.metadata["server_name"] = name
+                app_entry = self._app_registry_by_tool.get((name, str(getattr(t, "name", "") or "")))
+                if app_entry:
+                    t.metadata["mcp_app"] = {
+                        "resourceUri": app_entry.get("resourceUri"),
+                        "uiMeta": app_entry.get("uiMeta") or {},
+                    }
 
             self.tools.extend(server_tools)
             self.sessions[name] = session
@@ -364,6 +483,10 @@ class MCPManager:
                 status="connected",
                 impact="healthy",
                 toolCount=len(server_tools),
+                appsSupported=bool(apps_discovery.get("appsSupported")),
+                appToolCount=int(apps_discovery.get("appToolCount") or 0),
+                uiResourceCount=int(apps_discovery.get("uiResourceCount") or 0),
+                lastAppsError=apps_discovery.get("lastAppsError"),
                 lastError=None,
                 lastErrorKind=None,
                 executionImpacted=False,
@@ -408,6 +531,7 @@ class MCPManager:
             self.sessions.pop(name, None)
             self.subprocesses.pop(name, None)
             self._remove_server_tools(name)
+            self._remove_server_apps(name)
             if self._closing or stop_event.is_set():
                 self._set_server_state(
                     name,
@@ -465,6 +589,9 @@ class MCPManager:
         self._server_tools = {}
         self._server_tasks = {}
         self._server_config_fingerprints = {}
+        self._app_registry_by_tool = {}
+        self._app_resources_by_uri = {}
+        self._app_instances = {}
         self._initialized = False
         self._closing = False
         self._startup_state = "cold"
@@ -482,6 +609,7 @@ class MCPManager:
             self.subprocesses.pop(normalized_name, None)
             self._server_tools.pop(normalized_name, None)
             self._server_config_fingerprints.pop(normalized_name, None)
+            self._remove_server_apps(normalized_name)
             self._set_server_state(
                 normalized_name,
                 status="removed",
@@ -519,6 +647,7 @@ class MCPManager:
             if srv_config.get("disabled", False):
                 await self._stop_server_task(normalized_name, cancel=True)
                 self._remove_server_tools(normalized_name)
+                self._remove_server_apps(normalized_name)
                 self._set_server_state(
                     normalized_name,
                     transport=transport_type,
@@ -532,6 +661,7 @@ class MCPManager:
             elif not srv_config.get("command") and not srv_config.get("url"):
                 await self._stop_server_task(normalized_name, cancel=True)
                 self._remove_server_tools(normalized_name)
+                self._remove_server_apps(normalized_name)
                 self._set_server_state(
                     normalized_name,
                     transport=transport_type,
@@ -586,6 +716,7 @@ class MCPManager:
             for removed_name in sorted(current_names - configured_names):
                 await self._stop_server_task(removed_name, cancel=True)
                 self._remove_server_tools(removed_name)
+                self._remove_server_apps(removed_name)
                 self.sessions.pop(removed_name, None)
                 self.subprocesses.pop(removed_name, None)
                 self._server_tools.pop(removed_name, None)
@@ -621,6 +752,7 @@ class MCPManager:
                 if srv_config.get("disabled", False):
                     await self._stop_server_task(server_name, cancel=True)
                     self._remove_server_tools(server_name)
+                    self._remove_server_apps(server_name)
                     self._set_server_state(
                         server_name,
                         transport=transport_type,
@@ -634,6 +766,7 @@ class MCPManager:
                 elif not srv_config.get("command") and not srv_config.get("url"):
                     await self._stop_server_task(server_name, cancel=True)
                     self._remove_server_tools(server_name)
+                    self._remove_server_apps(server_name)
                     self._set_server_state(
                         server_name,
                         transport=transport_type,
@@ -699,6 +832,10 @@ class MCPManager:
                 "startedAt": server_state.get("startedAt"),
                 "readyAt": server_state.get("readyAt"),
                 "timedOutDuringStartup": bool(server_state.get("timedOutDuringStartup", False)),
+                "appsSupported": bool(server_state.get("appsSupported", False)),
+                "appToolCount": int(server_state.get("appToolCount") or 0),
+                "uiResourceCount": int(server_state.get("uiResourceCount") or 0),
+                "lastAppsError": server_state.get("lastAppsError"),
             }
             if server_state.get("status"):
                 status[name]["status"] = server_state.get("status")
@@ -713,6 +850,178 @@ class MCPManager:
                 status[srv_name]["toolCount"] = len(status[srv_name]["tools"])
         
         return status
+
+    def get_app_registry(self) -> dict[str, Any]:
+        servers: dict[str, dict[str, Any]] = {}
+        for (server_name, tool_name), entry in sorted(self._app_registry_by_tool.items()):
+            server = servers.setdefault(
+                server_name,
+                {
+                    "serverName": server_name,
+                    "appsSupported": True,
+                    "appTools": [],
+                    "uiResources": [],
+                },
+            )
+            server["appTools"].append(dict(entry))
+        for (server_name, uri), entry in sorted(self._app_resources_by_uri.items()):
+            server = servers.setdefault(
+                server_name,
+                {
+                    "serverName": server_name,
+                    "appsSupported": True,
+                    "appTools": [],
+                    "uiResources": [],
+                },
+            )
+            server["uiResources"].append(dict(entry))
+        for server_name, state in self._server_state.items():
+            server = servers.setdefault(
+                server_name,
+                {
+                    "serverName": server_name,
+                    "appsSupported": bool(state.get("appsSupported")),
+                    "appTools": [],
+                    "uiResources": [],
+                },
+            )
+            server["appsSupported"] = bool(server.get("appsSupported") or state.get("appsSupported"))
+            server["appToolCount"] = int(state.get("appToolCount") or len(server.get("appTools") or []))
+            server["uiResourceCount"] = int(state.get("uiResourceCount") or len(server.get("uiResources") or []))
+            server["lastAppsError"] = state.get("lastAppsError")
+            server["status"] = state.get("status")
+        return {
+            "enabled": True,
+            "extension": "io.modelcontextprotocol/ui",
+            "serverCount": len(servers),
+            "servers": list(servers.values()),
+        }
+
+    def find_app_for_tool(self, *, tool_name: str, server_name: str | None = None) -> dict[str, Any] | None:
+        normalized_tool = str(tool_name or "").strip()
+        normalized_server = str(server_name or "").strip()
+        if normalized_server:
+            entry = self._app_registry_by_tool.get((normalized_server, normalized_tool))
+            return dict(entry) if entry else None
+        matches = [dict(entry) for (srv, tool), entry in self._app_registry_by_tool.items() if tool == normalized_tool]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def create_app_instance(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        resource_uri: str,
+        tool_invocation_id: str,
+        initial_tool_result: Any = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        seed = f"{server_name}:{tool_name}:{resource_uri}:{tool_invocation_id or uuid.uuid4().hex}"
+        app_instance_id = f"mcpapp_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:24]}"
+        resource_meta = dict(self._app_resources_by_uri.get((server_name, resource_uri)) or {})
+        tool_meta = dict(self._app_registry_by_tool.get((server_name, tool_name)) or {})
+        instance = {
+            "appInstanceId": app_instance_id,
+            "serverName": server_name,
+            "toolName": tool_name,
+            "resourceUri": resource_uri,
+            "toolInvocationId": tool_invocation_id,
+            "sessionId": str(session_id or "").strip(),
+            "runId": str(run_id or "").strip(),
+            "initialToolResult": to_jsonable(initial_tool_result),
+            "initialToolResultRef": None,
+            "uiMeta": tool_meta.get("uiMeta") or resource_meta.get("uiMeta") or {},
+            "mimeType": resource_meta.get("mimeType"),
+            "csp": (tool_meta.get("uiMeta") or resource_meta.get("uiMeta") or {}).get("csp") or {},
+            "permissions": (tool_meta.get("uiMeta") or resource_meta.get("uiMeta") or {}).get("permissions") or {},
+            "status": "open",
+            "createdAt": self._now_iso(),
+            "updatedAt": self._now_iso(),
+        }
+        self._app_instances[app_instance_id] = instance
+        return dict(instance)
+
+    def get_app_instance(self, app_instance_id: str) -> dict[str, Any] | None:
+        instance = self._app_instances.get(str(app_instance_id or "").strip())
+        return dict(instance) if instance else None
+
+    async def read_app_resource(self, *, server_name: str, uri: str) -> dict[str, Any]:
+        normalized_server = str(server_name or "").strip()
+        normalized_uri = str(uri or "").strip()
+        if not normalized_server or normalized_server not in self.sessions:
+            raise ValueError("MCP server is not connected")
+        if not normalized_uri.startswith("ui://"):
+            raise ValueError("Only ui:// MCP app resources can be read through this endpoint")
+        session = self.sessions[normalized_server]
+        result = await session.read_resource(AnyUrl(normalized_uri))
+        contents = list(getattr(result, "contents", []) or [])
+        if not contents:
+            raise ValueError("MCP app resource returned no contents")
+        content = contents[0]
+        payload = to_jsonable(content)
+        if not isinstance(payload, dict):
+            payload = {}
+        text = str(payload.get("text") or payload.get("blob") or "")
+        mime_type = str(payload.get("mimeType") or payload.get("mime_type") or "").strip()
+        resource_meta = dict(self._app_resources_by_uri.get((normalized_server, normalized_uri)) or {})
+        meta = payload.get("_meta") or payload.get("meta") or resource_meta.get("uiMeta") or {}
+        effective_mime_type = mime_type or resource_meta.get("mimeType") or "text/html;profile=mcp-app"
+        if effective_mime_type and not (
+            str(effective_mime_type).startswith("text/html") or "mcp-app" in str(effective_mime_type)
+        ):
+            raise ValueError(f"Unsupported MCP app resource mime type: {effective_mime_type}")
+        sha256 = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+        return {
+            "serverName": normalized_server,
+            "uri": normalized_uri,
+            "mimeType": effective_mime_type,
+            "html": text,
+            "sha256": sha256,
+            "uiMeta": self._extract_ui_meta(meta) or resource_meta.get("uiMeta") or {},
+            "csp": (self._extract_ui_meta(meta) or resource_meta.get("uiMeta") or {}).get("csp") or {},
+            "permissions": (self._extract_ui_meta(meta) or resource_meta.get("uiMeta") or {}).get("permissions") or {},
+        }
+
+    async def call_app_tool(
+        self,
+        *,
+        app_instance_id: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        instance = self._app_instances.get(str(app_instance_id or "").strip())
+        if not instance:
+            raise ValueError("Unknown MCP app instance")
+        server_name = str(instance.get("serverName") or "").strip()
+        if not server_name or server_name not in self.sessions:
+            raise ValueError("MCP server is not connected")
+        normalized_tool = str(tool_name or "").strip()
+        server_tool_names = {
+            str(getattr(tool, "name", "") or "").strip()
+            for tool in list(self._server_tools.get(server_name) or [])
+        }
+        if normalized_tool not in server_tool_names:
+            raise ValueError("MCP app can only call tools registered by the same MCP server")
+        result = await self.sessions[server_name].call_tool(normalized_tool, dict(arguments or {}))
+        return {
+            "serverName": server_name,
+            "toolName": normalized_tool,
+            "result": to_jsonable(result),
+        }
+
+    def close_app_instance(self, app_instance_id: str) -> dict[str, Any]:
+        normalized_id = str(app_instance_id or "").strip()
+        instance = self._app_instances.get(normalized_id)
+        if not instance:
+            return {"ok": False, "error": "unknown_app_instance"}
+        instance = dict(instance)
+        instance["status"] = "closed"
+        instance["updatedAt"] = self._now_iso()
+        self._app_instances[normalized_id] = instance
+        return {"ok": True, "appInstanceId": normalized_id, "status": "closed"}
 
     def get_health_summary(self) -> dict[str, Any]:
         status = self.get_status()

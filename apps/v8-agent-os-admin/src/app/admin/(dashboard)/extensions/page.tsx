@@ -111,6 +111,10 @@ type ExtensionCatalogResponse = {
       }>;
       transport: string;
       target: string;
+      appsSupported?: boolean;
+      appToolCount?: number;
+      uiResourceCount?: number;
+      lastAppsError?: string | null;
     }>;
   };
 };
@@ -1424,6 +1428,18 @@ export default function ExtensionsPage() {
                                             </div>
                                             <div className="break-all text-xs text-slate-500">{server.target || t("app.admin.dashboard.extensions.page.k2af0f4dc")}</div>
                                             <div className="text-xs text-slate-600">{t("app.admin.dashboard.extensions.page.k43da15a1")}{server.toolCount}</div>
+                                            {server.appsSupported ? (
+                                                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                                                    <Badge variant="secondary">{t("app.admin.dashboard.extensions.page.mcpAppsSupported")}</Badge>
+                                                    <span>{t("app.admin.dashboard.extensions.page.mcpAppTools")}{server.appToolCount ?? 0}</span>
+                                                    <span>{t("app.admin.dashboard.extensions.page.mcpUiResources")}{server.uiResourceCount ?? 0}</span>
+                                                </div>
+                                            ) : null}
+                                            {server.lastAppsError ? (
+                                                <div className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                                                    {t("app.admin.dashboard.extensions.page.mcpAppsError")}{server.lastAppsError}
+                                                </div>
+                                            ) : null}
                                             <div className="flex flex-wrap gap-2">
                                                 {server.tools.slice(0, 6).map((tool) => <Badge key={tool.name} variant="secondary">{tool.name}</Badge>)}
                                                 {server.tools.length > 6 ? <Badge variant="secondary">+{server.tools.length - 6}</Badge> : null}

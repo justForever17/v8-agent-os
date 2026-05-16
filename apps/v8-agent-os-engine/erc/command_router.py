@@ -301,6 +301,8 @@ class RuntimeCommandRouter:
         result["resume_scheduled"] = bool(resume_mode)
 
     def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> None:
+        if str(approval.get("approval_kind") or "").strip() == "mcp_app_tool_call":
+            return
         run_record = db.get_run_record(approval.get("run_id", ""))
         if not run_record:
             return

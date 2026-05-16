@@ -7,6 +7,7 @@ import { motion } from 'framer-motion';
 import type { AdminProcessRef } from '@v8/session-realtime';
 import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
+import { McpAppFrame } from './McpAppFrame';
 import { ToolCard, ToolInvocation } from './ToolCard';
 import { GenericToolTraceCard } from './GenericToolTraceCard';
 import { ApprovalCard } from './ApprovalCard';
@@ -69,6 +70,28 @@ function compactToolResult(toolName: string, value: unknown) {
         workspaceRelativePath: record.workspaceRelativePath,
         message: record.message ?? record.statusMessage ?? record.error,
     };
+}
+
+function extractMcpAppRef(...values: unknown[]) {
+    for (const value of values) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            continue;
+        }
+        const record = value as Record<string, unknown>;
+        const appInstanceId = String(record.appInstanceId || record.app_instance_id || "").trim();
+        const resourceUri = String(record.resourceUri || record.resource_uri || "").trim();
+        if (!appInstanceId || !resourceUri) {
+            continue;
+        }
+        return {
+            appInstanceId,
+            serverName: String(record.serverName || record.server_name || "").trim() || undefined,
+            resourceUri,
+            toolInvocationId: String(record.toolInvocationId || record.tool_invocation_id || "").trim() || undefined,
+            status: String(record.status || "").trim() || undefined,
+        };
+    }
+    return null;
 }
 
 function isProcessStillRunning(process: AdminProcessRef | undefined) {
@@ -199,6 +222,8 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                         content={node.content || ''}
                         elapsedTime={node.time}
                         isStreaming={isStreaming}
+                        reasoningKind={node.reasoningKind || node.data?.reasoningKind}
+                        reasoningSurface={node.data?.reasoningSurface}
                     />
                 );
             }
@@ -210,7 +235,14 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                 const resultExecNode = resultNode as UiExecutionNode | undefined;
                 const toolName = node.toolName || resultExecNode?.toolName || '工具调用';
                 const isFinished = node.executionType === 'tool_result' || !!resultNode || !!node.result || !isExecuting;
-                const result = resultExecNode?.result || node.result;
+                const result = resultExecNode?.agentVisibleResult
+                    ?? resultExecNode?.data?.agentVisibleResult
+                    ?? resultExecNode?.data?.agent_visible_result
+                    ?? node.agentVisibleResult
+                    ?? node.data?.agentVisibleResult
+                    ?? node.data?.agent_visible_result
+                    ?? resultExecNode?.result
+                    ?? node.result;
                 
                 const toolInvocation: ToolInvocation = {
                     toolCallId: node.toolCallId || '',
@@ -234,7 +266,20 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                 }
 
                 // Fallback standard ToolCard for unrecognized/normal tools
-                return <ToolCard toolInvocation={toolInvocation} />;
+                const mcpApp = extractMcpAppRef(
+                    node.mcpApp,
+                    node.data?.mcpApp,
+                    node.data?.mcp_app,
+                    resultExecNode?.mcpApp,
+                    resultExecNode?.data?.mcpApp,
+                    resultExecNode?.data?.mcp_app,
+                );
+                return (
+                    <div className="flex flex-col gap-1">
+                        <ToolCard toolInvocation={toolInvocation} />
+                        {mcpApp ? <McpAppFrame mcpApp={mcpApp} /> : null}
+                    </div>
+                );
             }
 
             if (node.executionType === 'runtime_progress') {

@@ -18,6 +18,7 @@ export type TimelineLikeNode = {
   agentRoleLabel?: string | null;
   content?: string | null;
   toolCallId?: string | null;
+  toolInvocationId?: string | null;
   toolName?: string | null;
   topic?: string | null;
   label?: string | null;
@@ -101,7 +102,7 @@ export function buildSemanticTimelineNodeKey(node: TimelineLikeNode | null | und
 
   if (kind === "execution") {
     const executionType = normalizeText(node.executionType);
-    const toolCallId = normalizeText(node.toolCallId);
+    const toolCallId = normalizeText(node.toolInvocationId || node.toolCallId);
     if (toolCallId && (executionType === "tool_call" || executionType === "tool_result")) {
       return `execution:${executionType}:${toolCallId}`;
     }

@@ -299,6 +299,9 @@ def _mcp_index_entry(server: dict[str, Any]) -> dict[str, Any]:
             ]
         ),
         "toolCount": len(tools),
+        "appsSupported": bool(server.get("appsSupported")),
+        "appToolCount": int(server.get("appToolCount") or 0),
+        "uiResourceCount": int(server.get("uiResourceCount") or 0),
         "prefilterFields": {
             "serverName": server_name,
             "toolNames": [str(tool.get("name") or "").strip() for tool in tools if str(tool.get("name") or "").strip()],

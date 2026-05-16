@@ -74,12 +74,22 @@ function buildToolPayload(event: NormalizedSessionRuntimeEvent): SessionStreamTo
   const eventData = asRecord(event.data);
   const nestedTool = asRecord(eventData.tool);
   const payloadTool = asRecord(payload.tool);
+  const mcpApp = event.tool?.mcpApp
+    || (eventData.mcpApp && typeof eventData.mcpApp === "object" ? eventData.mcpApp as SessionStreamToolPayload["mcpApp"] : undefined)
+    || (nestedTool.mcpApp && typeof nestedTool.mcpApp === "object" ? nestedTool.mcpApp as SessionStreamToolPayload["mcpApp"] : undefined)
+    || (payloadTool.mcpApp && typeof payloadTool.mcpApp === "object" ? payloadTool.mcpApp as SessionStreamToolPayload["mcpApp"] : undefined);
   const toolCallId =
     typeof eventData.toolCallId === "string" ? eventData.toolCallId
       : typeof eventData.tool_call_id === "string" ? eventData.tool_call_id
         : typeof nestedTool.toolCallId === "string" ? nestedTool.toolCallId
           : typeof payloadTool.toolCallId === "string" ? payloadTool.toolCallId
             : undefined;
+  const toolInvocationId =
+    typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId
+      : typeof eventData.tool_invocation_id === "string" ? eventData.tool_invocation_id
+        : typeof nestedTool.toolInvocationId === "string" ? nestedTool.toolInvocationId
+          : typeof payloadTool.toolInvocationId === "string" ? payloadTool.toolInvocationId
+            : toolCallId;
   const toolName =
     typeof eventData.toolName === "string" ? eventData.toolName
       : typeof eventData.tool_name === "string" ? eventData.tool_name
@@ -88,16 +98,33 @@ function buildToolPayload(event: NormalizedSessionRuntimeEvent): SessionStreamTo
             : undefined;
   const args = eventData.args ?? eventData.request ?? nestedTool.args ?? payloadTool.args;
   const result = eventData.result ?? eventData.response ?? eventData.result_preview ?? nestedTool.result ?? payloadTool.result;
+  const agentVisibleResult = eventData.agentVisibleResult
+    ?? eventData.agent_visible_result
+    ?? nestedTool.agentVisibleResult
+    ?? nestedTool.agent_visible_result
+    ?? payloadTool.agentVisibleResult
+    ?? payloadTool.agent_visible_result;
+  const agentVisibleChars = typeof eventData.agentVisibleChars === "number"
+    ? eventData.agentVisibleChars
+    : typeof nestedTool.agentVisibleChars === "number"
+      ? nestedTool.agentVisibleChars
+      : typeof payloadTool.agentVisibleChars === "number"
+        ? payloadTool.agentVisibleChars
+        : undefined;
 
-  if (!toolCallId && !toolName && args === undefined && result === undefined) {
+  if (!toolCallId && !toolInvocationId && !toolName && args === undefined && result === undefined && agentVisibleResult === undefined) {
     return undefined;
   }
 
   return {
-    toolCallId,
+    toolCallId: toolCallId || toolInvocationId,
+    toolInvocationId,
     toolName,
     args,
     result,
+    agentVisibleResult,
+    agentVisibleChars,
+    mcpApp,
   };
 }
 

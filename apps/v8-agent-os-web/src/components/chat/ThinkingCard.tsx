@@ -7,6 +7,8 @@ interface ThinkingCardProps {
     content: string;
     isStreaming?: boolean;
     elapsedTime?: number;
+    reasoningKind?: string;
+    reasoningSurface?: Record<string, unknown>;
     data?: {
         startTime?: number;
         endTime?: number;
@@ -17,6 +19,8 @@ export const ThinkingCard = memo(({
     content,
     isStreaming = false,
     elapsedTime,
+    reasoningKind,
+    reasoningSurface,
     data
 }: ThinkingCardProps) => {
     const [isExpanded, setIsExpanded] = useState(false);
@@ -78,6 +82,10 @@ export const ThinkingCard = memo(({
         if (ms < 1000) return `${ms}ms`;
         return `${(ms / 1000).toFixed(1)}s`;
     };
+    const normalizedReasoningKind = String(reasoningKind || "").trim().toLowerCase();
+    const title = normalizedReasoningKind.includes("summary") ? "推理摘要" : "reasoning";
+    const isUnverified = Boolean(reasoningSurface?.unverified)
+        || String(reasoningSurface?.trust || "").trim().toLowerCase() === "unverified";
 
     return (
         <div className="group relative my-1 w-full">
@@ -116,8 +124,13 @@ export const ThinkingCard = memo(({
                             "text-[11px] font-semibold tracking-wide transition-colors",
                             isExpanded ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"
                         )}>
-                            推理过程
+                            {title}
                         </span>
+                        {isUnverified && (
+                            <span className="text-[10px] font-medium text-muted-foreground/70">
+                                未验证
+                            </span>
+                        )}
 
                         {isStreaming ? (
                             <span className="text-violet-500 dark:text-violet-400 font-mono text-[10px] tabular-nums opacity-90">

@@ -4,6 +4,7 @@ import type { AdminProcessRef } from "@v8/session-realtime";
 
 import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
+import { McpAppWebView, type McpAppViewRef } from "@/src/components/chat/McpAppWebView";
 import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
 import {
     isBackgroundCommandTraceTool,
@@ -59,6 +60,28 @@ function compactToolResult(toolName: string, value: unknown) {
         workspaceRelativePath: record.workspaceRelativePath,
         message: record.message ?? record.statusMessage ?? record.error,
     };
+}
+
+function extractMcpAppRef(...values: unknown[]): McpAppViewRef | null {
+    for (const value of values) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            continue;
+        }
+        const record = value as Record<string, unknown>;
+        const appInstanceId = String(record.appInstanceId || record.app_instance_id || "").trim();
+        const resourceUri = String(record.resourceUri || record.resource_uri || "").trim();
+        if (!appInstanceId || !resourceUri) {
+            continue;
+        }
+        return {
+            appInstanceId,
+            serverName: String(record.serverName || record.server_name || "").trim() || undefined,
+            resourceUri,
+            toolInvocationId: String(record.toolInvocationId || record.tool_invocation_id || "").trim() || undefined,
+            status: String(record.status || "").trim() || undefined,
+        };
+    }
+    return null;
 }
 
 function buildCompletedProcessFallback(process?: AdminProcessRef) {
@@ -137,7 +160,13 @@ function buildToolInvocation(
         || fallbackLabel,
     ).trim() || fallbackLabel;
 
-    const result = resultNode?.result
+    const result = resultNode?.agentVisibleResult
+        ?? resultNode?.data?.agentVisibleResult
+        ?? resultNode?.data?.agent_visible_result
+        ?? executionNode.agentVisibleResult
+        ?? executionNode.data?.agentVisibleResult
+        ?? executionNode.data?.agent_visible_result
+        ?? resultNode?.result
         ?? resultNode?.data?.result
         ?? resultNode?.data?.response
         ?? resultNode?.data?.result_preview
@@ -277,7 +306,21 @@ export const ContentDispatcher = memo(function ContentDispatcher({
             return <GenericToolTraceCard toolInvocation={toolInvocation} />;
         }
 
-        return <ToolCard toolInvocation={toolInvocation} />;
+        const mcpApp = extractMcpAppRef(
+            executionNode.mcpApp,
+            executionNode.data?.mcpApp,
+            executionNode.data?.mcp_app,
+            resultNode?.mcpApp,
+            resultNode?.data?.mcpApp,
+            resultNode?.data?.mcp_app,
+        );
+
+        return (
+            <View style={styles.stack}>
+                <ToolCard toolInvocation={toolInvocation} />
+                {mcpApp ? <McpAppWebView mcpApp={mcpApp} /> : null}
+            </View>
+        );
     };
 
     if (node.kind === "narrative") {
@@ -309,6 +352,9 @@ export const ContentDispatcher = memo(function ContentDispatcher({
 
         if (executionNode.executionType === "reasoning") {
             const reasoningKind = String(executionNode.reasoningKind || executionNode.data?.reasoningKind || "").trim();
+            const reasoningSurface = executionNode.data?.reasoningSurface && typeof executionNode.data.reasoningSurface === "object"
+                ? executionNode.data.reasoningSurface
+                : undefined;
             const block: PhoneContentBlock = {
                 id: `${executionNode.id}-thinking`,
                 type: "thinking",
@@ -316,6 +362,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
                 data: {
                     ...(executionNode.time ? { elapsedTime: executionNode.time } : {}),
                     ...(reasoningKind ? { reasoningKind } : {}),
+                    ...(reasoningSurface ? { reasoningSurface } : {}),
                 },
             };
             return <MessageBlockItem block={block} />;

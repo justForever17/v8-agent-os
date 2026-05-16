@@ -145,6 +145,11 @@ from erc.safety_guardian import SafetyDecision, safety_guardian
 from core.workspace_capability import build_workspace_binding, preflight_command_workspace, resolve_workspace_tool_path
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
+from core.workspace_state_digest import (
+    command_may_change_workspace,
+    mark_workspace_state_stale,
+    record_workspace_inventory_token,
+)
 from core.tools.media_downloader import download_media_for_vision
 from core.tools.research_broker import research_broker
 from core.tools.s3_tools import s3_broker, s3_download_file, s3_list_objects, s3_upload_file
@@ -3660,6 +3665,12 @@ def execute_system_command(
             },
             runtime_context=runtime_context,
         )
+        if command_may_change_workspace(command):
+            mark_workspace_state_stale(
+                runtime_context,
+                reason="command_sync",
+                subject=command,
+            )
         if result.returncode == 0:
             _notify_skills_inventory_command_completed(command)
         stdout_preview = _agent_preview_text(stdout, limit=5000)
@@ -3926,6 +3937,11 @@ def workspace_broker(
         "nonEmpty": bool(items),
     }
     _workspace_inventory_tokens[_current_run_inventory_key(runtime_context, str(workspace_root))] = token
+    record_workspace_inventory_token(
+        runtime_context,
+        token=str(token.get("token") or ""),
+        inspected_path=str(root),
+    )
     potential_conflicts = [
         item
         for item in items
@@ -4042,6 +4058,11 @@ def write_native_file(
                 "content_length": len(content),
             },
             runtime_context=runtime_context,
+        )
+        mark_workspace_state_stale(
+            runtime_context,
+            reason="file_append" if append else "file_write",
+            subject=str(target_path),
         )
         action = "Appended" if append else "Created/Overwritten"
         return f"Successfully {action} file: {target_path} ({len(content)} chars written)"
@@ -7756,6 +7777,12 @@ def start_background_command(
     """
     try:
         launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=profile, cwd=cwd)
+        if command_may_change_workspace(command):
+            mark_workspace_state_stale(
+                get_runtime_context(),
+                reason="background_command_started",
+                subject=command,
+            )
         guidance = (
             "\nNext step: 使用 `read_background_output` 观察输出；若 CLI 等待输入，使用 "
             "`send_background_input` 发送文本或回车；结束时使用 `terminate_background_command`。"
@@ -7850,6 +7877,12 @@ def run_system_command(
     if effective_mode == "session":
         try:
             launched = _launch_background_command(command, tool_call_id=tool_call_id, profile=normalized_profile, cwd=cwd)
+            if command_may_change_workspace(command):
+                mark_workspace_state_stale(
+                    get_runtime_context(),
+                    reason="command_session_started",
+                    subject=command,
+                )
             status = dict(launched.get("status") or {})
             state = _command_session_state_from_status(status)
             payload = {
@@ -8513,6 +8546,12 @@ def command_session_broker(
                 profile=normalized_profile,
                 cwd=cwd,
             )
+            if command_may_change_workspace(normalized_command):
+                mark_workspace_state_stale(
+                    get_runtime_context(),
+                    reason="command_session_started",
+                    subject=normalized_command,
+                )
             status = dict(launched.get("status") or {})
             terminal_menu = status.get("terminal_menu") if isinstance(status.get("terminal_menu"), dict) and status.get("terminal_menu", {}).get("detected") else {}
             state = _command_session_state_from_status(status)

@@ -1,11 +1,17 @@
 from typing import Any
+import hashlib
+import json
+from urllib.parse import urlparse
+import uuid
 
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from .models import ModelConnectionTestPayload
+from core.database import db
 from core.extensions_runtime import extensions_runtime_service
 from core.agents import build_specialist_family_registry
+from core.json_safe import to_jsonable
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
 from core.model_provider_catalog import model_provider_catalog
@@ -14,6 +20,10 @@ from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
+from core.realtime_protocol import build_runtime_event
+from erc.command_service import command_service
+from erc.models import ApprovalRequest
+from erc.safety_guardian import safety_guardian
 from core.tools.research_ledger import (
     archive_experience_pack,
     delete_experience_pack,
@@ -27,6 +37,8 @@ from runtimes.extensions.mcp.client import mcp_manager
 
 
 router = APIRouter()
+
+_ACTIVE_MCP_APP_GUIDANCE_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 
 
 class McpConfigValidationError(ValueError):
@@ -147,6 +159,428 @@ async def get_mcp_status():
         return {"servers": extensions_runtime_service.get_mcp_status()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/mcp/apps/registry")
+async def get_mcp_apps_registry():
+    try:
+        return mcp_manager.get_app_registry()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/mcp/apps/resources/read")
+async def read_mcp_app_resource(serverName: str, uri: str):
+    try:
+        return await mcp_manager.read_app_resource(server_name=serverName, uri=uri)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _json_rpc_result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _json_rpc_error(request_id: Any, code: int, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": code, "message": message, **({"data": data} if data else {})},
+    }
+
+
+def _mcp_app_emit_event(topic: str, *, session_id: str, run_id: str | None, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    event = build_runtime_event(
+        kind="event",
+        topic=topic,
+        session_id=session_id,
+        run_id=run_id,
+        seq=db.get_next_runtime_seq(session_id),
+        payload=payload,
+        source={
+            "plane": "engine",
+            "component": "mcp_apps",
+            "node": "mcp_app_host",
+            "agent_id": None,
+        },
+    )
+    db.add_runtime_event(event)
+    return event
+
+
+def _mcp_app_context_to_text(params: dict[str, Any]) -> str:
+    content = params.get("content")
+    parts: list[str] = []
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("content") or "").strip()
+                if text:
+                    parts.append(text)
+            elif item is not None:
+                text = str(item).strip()
+                if text:
+                    parts.append(text)
+    elif isinstance(content, str):
+        parts.append(content.strip())
+    elif content is not None:
+        parts.append(json.dumps(to_jsonable(content), ensure_ascii=False, separators=(",", ":")))
+    if not parts:
+        for key in ("text", "message", "summary"):
+            value = str(params.get(key) or "").strip()
+            if value:
+                parts.append(value)
+                break
+    text = "\n".join(part for part in parts if part).strip()
+    if not text:
+        text = json.dumps(to_jsonable(params), ensure_ascii=False, separators=(",", ":"))
+    if len(text) > 4000:
+        return f"{text[:4000]}\n[omitted {len(text) - 4000} chars from MCP App context update]"
+    return text
+
+
+def _mcp_app_queue_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item.get("id"),
+        "sessionId": item.get("session_id"),
+        "runId": item.get("run_id"),
+        "clientMessageId": item.get("client_message_id"),
+        "content": item.get("content") or "",
+        "state": item.get("state") or "pending",
+        "ordinal": item.get("ordinal"),
+        "createdAt": item.get("created_at"),
+        "updatedAt": item.get("updated_at"),
+        "promotedAt": item.get("promoted_at"),
+        "injectedAt": item.get("injected_at"),
+        "consumedAt": item.get("consumed_at"),
+        "cancelledAt": item.get("cancelled_at"),
+    }
+
+
+def _mcp_app_operation_fingerprint(
+    *,
+    app_instance_id: str,
+    server_name: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str:
+    payload = {
+        "kind": "mcp_app_tool_call",
+        "appInstanceId": app_instance_id,
+        "serverName": server_name,
+        "toolName": tool_name,
+        "arguments": to_jsonable(arguments),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _mcp_app_approval_matches(
+    approval: dict[str, Any] | None,
+    *,
+    app_instance_id: str,
+    tool_name: str,
+    fingerprint: str,
+) -> bool:
+    if not approval:
+        return False
+    request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+    if str(approval.get("approval_kind") or "") != "mcp_app_tool_call":
+        return False
+    return (
+        str(request.get("operationFingerprint") or "") == fingerprint
+        and str(request.get("appInstanceId") or "") == app_instance_id
+        and str(request.get("toolName") or "") == tool_name
+    )
+
+
+def _mcp_app_has_approved_operation(run_id: str, fingerprint: str) -> bool:
+    if not run_id or not fingerprint:
+        return False
+    run_record = db.get_run_record(run_id) or {}
+    metadata = dict(run_record.get("metadata") or {})
+    for item in list(metadata.get("approvedSafetyOperations") or []):
+        if isinstance(item, dict) and str(item.get("fingerprint") or "") == fingerprint:
+            return True
+    return False
+
+
+def _mcp_app_request_tool_approval(
+    *,
+    instance: dict[str, Any],
+    app_instance_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    safety_payload: dict[str, Any],
+    fingerprint: str,
+) -> dict[str, Any]:
+    session_id = str(instance.get("sessionId") or "").strip()
+    run_id = str(instance.get("runId") or "").strip()
+    if not session_id or not run_id:
+        raise ValueError("MCP app approval requires an attached chat session and run.")
+    server_name = str(instance.get("serverName") or "").strip()
+    approval = command_service.request_approval(
+        ApprovalRequest(
+            approval_id=f"approval_mcpapp_{uuid.uuid4().hex}",
+            session_id=session_id,
+            run_id=run_id,
+            approval_kind="mcp_app_tool_call",
+            request={
+                "approvalKind": "mcp_app_tool_call",
+                "question": f"MCP App 请求调用工具 `{tool_name}`，需要安全复核。是否允许继续？",
+                "prompt": f"MCP App 请求调用工具 `{tool_name}`，需要安全复核。是否允许继续？",
+                "summary": f"MCP App `{server_name}` 请求调用 `{tool_name}`。",
+                "runtimeKind": "mcp_app",
+                "targetSurface": "governance_hud",
+                "operationFingerprint": fingerprint,
+                "operationTargetFingerprint": f"mcp_app:{app_instance_id}:{tool_name}",
+                "appInstanceId": app_instance_id,
+                "serverName": server_name,
+                "resourceUri": instance.get("resourceUri"),
+                "toolName": tool_name,
+                "argumentsPreview": to_jsonable(arguments),
+                "safety": safety_payload,
+                "riskCode": safety_payload.get("riskCode") or safety_payload.get("risk_code"),
+                "eventSummary": safety_payload.get("eventSummary") or {},
+            },
+        )
+    )
+    _mcp_app_emit_event(
+        "approval.requested",
+        session_id=session_id,
+        run_id=run_id,
+        payload=approval,
+    )
+    return approval
+
+
+@router.post("/mcp/apps/instances/{app_instance_id}/rpc")
+async def mcp_app_instance_rpc(app_instance_id: str, payload: dict = Body(...)):
+    request_id = payload.get("id")
+    method = str(payload.get("method") or "").strip()
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    instance = mcp_manager.get_app_instance(app_instance_id)
+    if not instance:
+        return _json_rpc_error(request_id, -32004, "Unknown MCP app instance")
+
+    try:
+        if method == "ui/initialize":
+            return _json_rpc_result(
+                request_id,
+                {
+                    "appInstanceId": app_instance_id,
+                    "serverName": instance.get("serverName"),
+                    "toolName": instance.get("toolName"),
+                    "resourceUri": instance.get("resourceUri"),
+                    "initialToolResult": instance.get("initialToolResult"),
+                    "permissions": instance.get("permissions") or {},
+                },
+            )
+
+        if method == "tools/call":
+            tool_name = str(params.get("name") or params.get("toolName") or "").strip()
+            arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            if not tool_name:
+                return _json_rpc_error(request_id, -32602, "Missing tool name")
+            fingerprint = _mcp_app_operation_fingerprint(
+                app_instance_id=app_instance_id,
+                server_name=str(instance.get("serverName") or ""),
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+            approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip()
+            if approval_id:
+                approval = db.get_pending_approval(approval_id)
+                if not _mcp_app_approval_matches(
+                    approval,
+                    app_instance_id=app_instance_id,
+                    tool_name=tool_name,
+                    fingerprint=fingerprint,
+                ):
+                    return _json_rpc_error(request_id, -32012, "Approval does not match this MCP app tool call")
+                approval_status = str((approval or {}).get("status") or "").strip().lower()
+                if approval_status == "pending":
+                    return _json_rpc_result(
+                        request_id,
+                        {
+                            "ok": False,
+                            "status": "waiting_approval",
+                            "approvalId": approval_id,
+                            "message": "MCP app tool call is still waiting for V8 Safety approval.",
+                        },
+                    )
+                if approval_status == "rejected":
+                    return _json_rpc_error(request_id, -32013, "MCP app tool call approval was rejected")
+                if approval_status != "approved":
+                    return _json_rpc_error(request_id, -32014, f"Unsupported MCP app approval status: {approval_status}")
+            decision = safety_guardian.assess_external_tool_call(
+                tool_name=tool_name,
+                params=arguments,
+                tool_kind="mcp_app_tool",
+                side_effect=str(params.get("sideEffect") or ""),
+                runtime_context={
+                    "runtime_kind": "mcp_app",
+                    "serverName": instance.get("serverName"),
+                    "appInstanceId": app_instance_id,
+                },
+            )
+            if decision.is_block():
+                return _json_rpc_error(
+                    request_id,
+                    -32010,
+                    "MCP app tool call was blocked by V8 Safety",
+                    {"safety": decision.to_payload()},
+                )
+            if decision.is_review() and not approval_id and not _mcp_app_has_approved_operation(
+                str(instance.get("runId") or ""),
+                fingerprint,
+            ):
+                approval = _mcp_app_request_tool_approval(
+                    instance=instance,
+                    app_instance_id=app_instance_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    safety_payload=decision.to_payload(),
+                    fingerprint=fingerprint,
+                )
+                return _json_rpc_result(
+                    request_id,
+                    {
+                        "ok": False,
+                        "status": "waiting_approval",
+                        "approvalId": approval.get("approval_id"),
+                        "safety": decision.to_payload(),
+                        "message": "MCP app tool call is waiting for V8 Safety approval. Retry this tools/call with approvalId after approval.",
+                    },
+                )
+            result = await mcp_manager.call_app_tool(
+                app_instance_id=app_instance_id,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+            return _json_rpc_result(
+                request_id,
+                {
+                    **result,
+                    "toolInvocationId": f"mcpapp_{uuid.uuid4().hex[:24]}",
+                },
+            )
+
+        if method in {"ui/notifications/tool-result", "ui/notifications/tool-input", "ui/notifications/log"}:
+            return _json_rpc_result(request_id, {"ok": True, "acknowledged": method})
+
+        if method == "ui/updateModelContext":
+            session_id = str(instance.get("sessionId") or "").strip()
+            run_id = str(instance.get("runId") or "").strip()
+            if not session_id:
+                return _json_rpc_error(request_id, -32015, "MCP app instance is not attached to a chat session")
+            content = _mcp_app_context_to_text(params)
+            queue_id = f"queued_mcpapp_{uuid.uuid4().hex}"
+            queue_item = db.add_chat_user_message_queue_item(
+                queue_id=queue_id,
+                session_id=session_id,
+                run_id=run_id or None,
+                client_message_id=f"mcpapp_context_{app_instance_id}_{uuid.uuid4().hex[:8]}",
+                content=f"MCP App 上下文更新：\n{content}",
+                attachments=[],
+                file_urls=[],
+                request_payload={
+                    "source": "mcp_app.updateModelContext",
+                    "appInstanceId": app_instance_id,
+                    "serverName": instance.get("serverName"),
+                    "resourceUri": instance.get("resourceUri"),
+                    "params": to_jsonable(params),
+                },
+                metadata={
+                    "source": "mcp_app.context_update",
+                    "appInstanceId": app_instance_id,
+                    "serverName": instance.get("serverName"),
+                    "resourceUri": instance.get("resourceUri"),
+                    "toolInvocationId": instance.get("toolInvocationId"),
+                },
+            )
+            run_record = db.get_run_record(run_id) if run_id else None
+            run_status = str((run_record or {}).get("status") or "").strip().lower()
+            if run_record and run_status in _ACTIVE_MCP_APP_GUIDANCE_STATUSES:
+                promoted = db.update_chat_user_message_queue_item(
+                    queue_id,
+                    state="promoted",
+                    timestamp_field="promoted_at",
+                    metadata_updates={"promotedBy": "mcp_app.updateModelContext"},
+                ) or queue_item
+                queue_payload = _mcp_app_queue_payload(promoted)
+                command_service.issue_control_signal(
+                    run_id,
+                    command="guidance",
+                    reason="mcp_app_context_update",
+                    payload={"queueMessageId": queue_id, "source": "mcp_app.updateModelContext"},
+                )
+                _mcp_app_emit_event(
+                    "human_guidance.promoted",
+                    session_id=session_id,
+                    run_id=run_id,
+                    payload={
+                        "queueMessage": queue_payload,
+                        "state": "promoted",
+                        "summary": "MCP App 上下文更新已提升为运行中引导，将在安全检查点注入。",
+                        "source": "mcp_app.updateModelContext",
+                    },
+                )
+                return _json_rpc_result(
+                    request_id,
+                    {
+                        "ok": True,
+                        "queued": True,
+                        "promoted": True,
+                        "event": "human_guidance.promoted",
+                        "queueMessageId": queue_id,
+                        "appInstanceId": app_instance_id,
+                    },
+                )
+            _mcp_app_emit_event(
+                "human_guidance.queued",
+                session_id=session_id,
+                run_id=run_id or None,
+                payload={
+                    "queueMessage": _mcp_app_queue_payload(queue_item),
+                    "state": "pending",
+                    "summary": "MCP App 上下文更新已排队，将在后续可用时作为引导处理。",
+                    "source": "mcp_app.updateModelContext",
+                },
+            )
+            return _json_rpc_result(
+                request_id,
+                {
+                    "ok": True,
+                    "queued": True,
+                    "promoted": False,
+                    "event": "human_guidance.queued",
+                    "queueMessageId": queue_id,
+                    "appInstanceId": app_instance_id,
+                },
+            )
+
+        if method == "ui/openLink":
+            url = str(params.get("url") or "").strip()
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"}:
+                return _json_rpc_error(request_id, -32011, "Only http/https links can be opened")
+            return _json_rpc_result(request_id, {"ok": True, "action": "openLink", "url": url})
+
+        return _json_rpc_error(request_id, -32601, f"Unsupported MCP app RPC method: {method}")
+    except ValueError as e:
+        return _json_rpc_error(request_id, -32000, str(e))
+    except Exception as e:
+        return _json_rpc_error(request_id, -32603, str(e))
+
+
+@router.post("/mcp/apps/instances/{app_instance_id}/close")
+async def close_mcp_app_instance(app_instance_id: str):
+    return mcp_manager.close_app_instance(app_instance_id)
 
 
 @router.post("/mcp/config")
@@ -380,6 +814,16 @@ async def get_mcp_tools():
             for tool in NATIVE_TOOLS
         ]
         return {"mcpTools": native_list + mcp_list}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tools/registry-index")
+async def get_tool_registry_index():
+    try:
+        from core.tool_registry_index import build_tool_registry_index
+
+        return build_tool_registry_index()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

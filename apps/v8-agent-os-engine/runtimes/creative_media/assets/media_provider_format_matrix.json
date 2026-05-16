@@ -427,7 +427,7 @@
       {
         "id": "ideogram_image",
         "displayName": "Ideogram Image",
-        "logoAsset": "/model-assets/providers/ideogram.svg",
+        "logoAsset": "/model-assets/providers/ideogram.png",
         "modelIds": [
           "ideogram-v3",
           "ideogram-v2a"
@@ -475,7 +475,7 @@
       {
         "id": "leonardo_image",
         "displayName": "Leonardo AI Image",
-        "logoAsset": "/model-assets/providers/leonardo.svg",
+        "logoAsset": "/model-assets/providers/leonardo.png",
         "modelIds": [
           "leonardo-phoenix-1.0",
           "leonardo-vision-xl"
@@ -1087,7 +1087,7 @@
       {
         "id": "pika_video",
         "displayName": "Pika Video",
-        "logoAsset": "/model-assets/providers/pika.svg",
+        "logoAsset": "/model-assets/providers/pika.ico",
         "modelIds": [
           "pika-2.2",
           "pika-2.1"
@@ -1184,7 +1184,7 @@
       {
         "id": "heygen_video",
         "displayName": "HeyGen Avatar Video",
-        "logoAsset": "/model-assets/providers/heygen.svg",
+        "logoAsset": "/model-assets/providers/heygen.ico",
         "modelIds": [
           "heygen-avatar-video"
         ],
@@ -1232,7 +1232,7 @@
       {
         "id": "synthesia_video",
         "displayName": "Synthesia Avatar Video",
-        "logoAsset": "/model-assets/providers/synthesia.svg",
+        "logoAsset": "/model-assets/providers/synthesia.png",
         "modelIds": [
           "synthesia-avatar-video"
         ],
@@ -1280,7 +1280,7 @@
       {
         "id": "d_id_video",
         "displayName": "D-ID Video",
-        "logoAsset": "/model-assets/providers/d-id.svg",
+        "logoAsset": "/model-assets/providers/d-id.png",
         "modelIds": [
           "d-id-talks",
           "d-id-agents"
@@ -1329,7 +1329,7 @@
       {
         "id": "tavus_video",
         "displayName": "Tavus Video",
-        "logoAsset": "/model-assets/providers/tavus.svg",
+        "logoAsset": "/model-assets/providers/tavus.ico",
         "modelIds": [
           "tavus-cvi",
           "tavus-replica"
@@ -1426,7 +1426,7 @@
       {
         "id": "shotstack_video",
         "displayName": "Shotstack Video Render",
-        "logoAsset": "/model-assets/providers/shotstack.svg",
+        "logoAsset": "/model-assets/providers/shotstack.ico",
         "modelIds": [
           "shotstack-edit"
         ],
@@ -1474,7 +1474,7 @@
       {
         "id": "creatomate_video",
         "displayName": "Creatomate Video Render",
-        "logoAsset": "/model-assets/providers/creatomate.svg",
+        "logoAsset": "/model-assets/providers/creatomate.ico",
         "modelIds": [
           "creatomate-render"
         ],
@@ -1943,7 +1943,7 @@
       {
         "id": "cartesia_tts",
         "displayName": "Cartesia TTS",
-        "logoAsset": "/model-assets/providers/cartesia.svg",
+        "logoAsset": "/model-assets/providers/cartesia.png",
         "modelIds": [
           "sonic-2",
           "sonic"
@@ -1991,7 +1991,7 @@
       {
         "id": "playht_tts",
         "displayName": "PlayHT TTS",
-        "logoAsset": "/model-assets/providers/playht.svg",
+        "logoAsset": "/model-assets/providers/playht.png",
         "modelIds": [
           "playht-2.0-turbo"
         ],
@@ -2038,7 +2038,7 @@
       {
         "id": "azure_speech_tts",
         "displayName": "Azure AI Speech",
-        "logoAsset": "/model-assets/providers/azure-speech.svg",
+        "logoAsset": "/model-assets/providers/azure-speech.ico",
         "modelIds": [
           "azure-neural-tts"
         ],
@@ -2132,7 +2132,7 @@
       {
         "id": "amazon_polly_tts",
         "displayName": "Amazon Polly",
-        "logoAsset": "/model-assets/providers/amazon-polly.svg",
+        "logoAsset": "/model-assets/providers/amazon-polly.ico",
         "modelIds": [
           "amazon-polly-neural"
         ],
@@ -2307,7 +2307,7 @@
       {
         "id": "udio_music",
         "displayName": "Udio Music",
-        "logoAsset": "/model-assets/providers/udio.svg",
+        "logoAsset": "/model-assets/providers/udio.ico",
         "modelIds": [
           "udio-music"
         ],
@@ -2754,7 +2754,7 @@
       {
         "id": "3d_ai_studio",
         "displayName": "3D AI Studio",
-        "logoAsset": "/model-assets/providers/3d-ai-studio.svg",
+        "logoAsset": "/model-assets/providers/3d-ai-studio.ico",
         "modelIds": [
           "trellis",
           "3d-ai-studio-model"

@@ -1677,7 +1677,7 @@
       "confidence": "official",
       "models": [],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/providers/together.svg"
+      "logoAsset": "/model-assets/providers/together.png"
     },
     {
       "id": "ollama",
@@ -1746,7 +1746,7 @@
       "confidence": "provider_docs",
       "models": [],
       "providerKind": "local_runtime",
-      "logoAsset": "/model-assets/providers/nexa.svg"
+      "logoAsset": "/model-assets/providers/nexa.png"
     },
     {
       "id": "comfyui",
@@ -1866,7 +1866,7 @@
         "url": "https://cloud.cerebras.ai/platform"
       },
       "confidence": "official",
-      "logoAsset": "/model-assets/providers/cerebras.svg",
+      "logoAsset": "/model-assets/providers/cerebras.png",
       "providerKind": "chat",
       "models": []
     },
@@ -1953,7 +1953,7 @@
         "url": "https://studio.ai21.com/account/api-key"
       },
       "confidence": "official",
-      "logoAsset": "/model-assets/providers/ai21.svg",
+      "logoAsset": "/model-assets/providers/ai21.png",
       "providerKind": "chat",
       "models": [
         {
@@ -2007,7 +2007,7 @@
         "url": "https://platform.stepfun.com/account-info"
       },
       "confidence": "official",
-      "logoAsset": "/model-assets/providers/stepfun.svg",
+      "logoAsset": "/model-assets/providers/stepfun.png",
       "providerKind": "chat",
       "models": []
     },
@@ -2029,7 +2029,7 @@
         "url": "https://platform.baichuan-ai.com/console/apikey"
       },
       "confidence": "official",
-      "logoAsset": "/model-assets/providers/baichuan.svg",
+      "logoAsset": "/model-assets/providers/baichuan.png",
       "providerKind": "chat",
       "models": []
     }

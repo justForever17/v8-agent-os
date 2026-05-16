@@ -22,6 +22,7 @@ from core.delegation_broker import (
     choose_best_external_worker_with_diagnostics,
     choose_best_local_agent_with_diagnostics,
     compact_external_worker_registry_entry,
+    expand_delegation_task_briefs,
     normalize_task_brief,
     normalize_task_briefs,
     summarize_capability_snapshot,
@@ -244,6 +245,9 @@ class PlannerTaskBriefPayload(BaseModel):
     familyHint: str = ""
     preferredAgentId: str = ""
     preferredWorkerType: str = ""
+    targetCount: int = 1
+    workerBriefs: list[dict[str, Any]] = Field(default_factory=list)
+    fanoutReason: str = ""
 
 
 class PlannerTaskNodePayload(BaseModel):
@@ -1132,6 +1136,8 @@ class ChatRuntime:
             "- preferredAgentId and preferredWorkerType are optional hints, not guesses.\n"
             "- familyHint may name a specialist family such as engineering or creative_media; it guides delegation_broker selection but does not reveal members or grant runtime tools.\n"
             "- executionLaneHint must be one of: subagent, external_worker, auto.\n"
+            "- If one logical task needs multiple parallel workers, keep it as one macro task and set targetCount to the exact requested fanout; optionally provide workerBriefs with one atomic brief per worker.\n"
+            "- targetCount is explicit upper-agent intent, not an automatic default. Do not set it above 1 unless parallel workers materially help and their work can be isolated.\n"
             "- Keep riskFlags short and concrete.\n"
             "Research plus implementation discipline:\n"
             "- If the request combines research/search with building, code, frontend, or app creation, use executionStrategy=mixed.\n"
@@ -1415,9 +1421,17 @@ class ChatRuntime:
             return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "direct_strategy"}
         if not task_briefs:
             return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "no_task_briefs"}
-        if len(task_briefs) > 10:
-            return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "task_count_exceeds_default_governance_limit", "taskCount": len(task_briefs)}
-        if ChatRuntime._has_parallel_write_conflict(task_briefs):
+        expanded_task_briefs = expand_delegation_task_briefs(task_briefs)
+        if len(expanded_task_briefs) > 10:
+            return {
+                "mode": "auto",
+                "eligible": False,
+                "willDispatch": False,
+                "reason": "task_count_exceeds_default_governance_limit",
+                "macroTaskCount": len(task_briefs),
+                "taskCount": len(expanded_task_briefs),
+            }
+        if ChatRuntime._has_parallel_write_conflict(expanded_task_briefs):
             return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "write_set_conflict"}
         quality_flags = {str(item).strip() for item in list(plan.get("qualityFlags") or []) if str(item).strip()}
         hard_quality_flags = {"invalid_dependency_removed", "delegation_without_tasks_repaired"}
@@ -1433,7 +1447,7 @@ class ChatRuntime:
         subagents = list(registry.get("subagents") or [])
         external_workers = list(registry.get("externalWorkers") or [])
         selections: list[dict[str, Any]] = []
-        for brief in task_briefs:
+        for brief in expanded_task_briefs:
             lane = str(brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
             selected = None
             diagnostics: dict[str, Any] = {}
@@ -1466,7 +1480,8 @@ class ChatRuntime:
             "willDispatch": True,
             "reason": "eligible",
             "plannerMode": planner_mode,
-            "taskCount": len(task_briefs),
+            "macroTaskCount": len(task_briefs),
+            "taskCount": len(expanded_task_briefs),
             "selectedTargets": selections,
         }
 
@@ -1672,11 +1687,13 @@ class ChatRuntime:
             },
             status="completed",
         )
+        expanded_task_briefs = expand_delegation_task_briefs(plan.get("taskBriefs") or [])
         payload = {
             "planId": plan.get("planId"),
             "executionStrategy": plan.get("executionStrategy"),
             "planSummary": plan.get("planSummary"),
-            "taskCount": len(list(plan.get("taskBriefs") or [])),
+            "macroTaskCount": len(list(plan.get("taskBriefs") or [])),
+            "taskCount": len(expanded_task_briefs),
             "taskBriefs": list(plan.get("taskBriefs") or []),
             "dependencies": [
                 {
@@ -4240,27 +4257,207 @@ class ChatRuntime:
         candidate = cls._coerce_json_like_value(value)
         if not isinstance(candidate, dict):
             return value
+        return cls._render_command_session_terminal_surface(candidate)
+
+    @staticmethod
+    def _command_surface_raw_ref(candidate: dict[str, Any]) -> str:
+        surface = candidate.get("_v8ToolSurface")
+        if isinstance(surface, dict):
+            return str(surface.get("rawRef") or "").strip()
+        return ""
+
+    @classmethod
+    def _append_command_control_line(
+        cls,
+        lines: list[str],
+        label: str,
+        value: Any,
+    ) -> None:
+        text = str(value or "").strip()
+        if text:
+            lines.append(f"[{label}: {text}]")
+
+    @classmethod
+    def _append_command_stream(
+        cls,
+        lines: list[str],
+        tag: str,
+        value: Any,
+        *,
+        truncated: bool = False,
+        raw_ref: str = "",
+        limit: int = 2400,
+    ) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        trimmed, was_truncated = cls._trim_preview_text(text, limit=limit)
+        lines.append(f"<{tag}>")
+        lines.append(trimmed)
+        lines.append(f"</{tag}>")
+        if truncated or was_truncated:
+            suffix = f"; rawRef={raw_ref}" if raw_ref else ""
+            lines.append(f"[{tag} truncated{suffix}]")
+
+    @staticmethod
+    def _strip_command_echo_from_stream(command: str, value: Any) -> str:
+        text = str(value or "").strip()
+        rendered_command = str(command or "").strip()
+        if not text or not rendered_command:
+            return text
+        lines = text.splitlines()
+        while lines:
+            first = lines[0].strip()
+            if first == rendered_command or first.endswith(f">{rendered_command}") or first.endswith(f"$ {rendered_command}"):
+                lines.pop(0)
+                continue
+            break
+        return "\n".join(lines).strip()
+
+    @classmethod
+    def _render_command_terminal_surface(
+        cls,
+        *,
+        command: str = "",
+        stdout: Any = "",
+        stderr: Any = "",
+        exit_code: Any = None,
+        session_id: str = "",
+        state: str = "",
+        waiting_input: bool = False,
+        still_running: bool = False,
+        no_output_text: str = "[completed with no output]",
+        raw_ref: str = "",
+        stdout_truncated: bool = False,
+        stderr_truncated: bool = False,
+        control_lines: list[str] | None = None,
+    ) -> str:
+        lines: list[str] = []
+        rendered_command = str(command or "").strip()
+        if rendered_command:
+            lines.append(f"$ {rendered_command}")
+        elif session_id:
+            lines.append(f"$ <command session {session_id}>")
+        else:
+            lines.append("$ <command>")
+
+        cleaned_stdout = cls._strip_command_echo_from_stream(rendered_command, stdout)
+        cleaned_stderr = cls._strip_command_echo_from_stream(rendered_command, stderr)
+        cls._append_command_stream(
+            lines,
+            "stdout",
+            cleaned_stdout,
+            truncated=stdout_truncated,
+            raw_ref=raw_ref,
+        )
+        cls._append_command_stream(
+            lines,
+            "stderr",
+            cleaned_stderr,
+            truncated=stderr_truncated,
+            raw_ref=raw_ref,
+        )
+
+        has_visible_stream = any(line in {"<stdout>", "<stderr>"} for line in lines)
+        for line in control_lines or []:
+            normalized = str(line or "").strip()
+            if normalized:
+                lines.append(normalized)
+        if waiting_input:
+            lines.append("[waiting for input]")
+        if still_running:
+            lines.append("[still running]")
+        if exit_code not in (None, "", [], 0, "0"):
+            lines.append(f"[exit code: {exit_code}]")
+        if not has_visible_stream and not waiting_input and not still_running and exit_code in (None, 0, "0"):
+            lines.append(no_output_text)
+        return "\n".join(lines).strip()
+
+    @classmethod
+    def _render_command_session_terminal_surface(cls, candidate: dict[str, Any]) -> str:
+        session_id = str(candidate.get("sessionId") or candidate.get("commandId") or "").strip()
+        state = str(candidate.get("state") or "").strip().lower()
+        command = str(candidate.get("command") or "").strip()
+        raw_ref = cls._command_surface_raw_ref(candidate)
+        waiting_input = bool(candidate.get("awaitingInput")) or state == "awaiting_input"
+        still_running = state in {"running", "render_stalled", "recoverable_stalled"} and not waiting_input
+        exit_code = candidate.get("returnCode")
+
+        stdout_candidates = (
+            (
+                candidate.get("finalPreview"),
+                candidate.get("keyOutput"),
+                candidate.get("deltaText"),
+                candidate.get("outputPreview"),
+            )
+            if state in {"completed", "failed"}
+            else (
+                candidate.get("deltaText"),
+                candidate.get("keyOutput"),
+                candidate.get("outputPreview"),
+                candidate.get("finalPreview"),
+            )
+        )
+        stdout = next((item for item in stdout_candidates if item not in (None, "")), "")
+        control_lines: list[str] = []
+        if session_id and state not in {"completed", "failed"}:
+            control_lines.append(f"[session: {session_id}]")
+        if state == "recoverable_stalled":
+            control_lines.append("[command appears stalled; observe later or terminate]")
+        elif state == "render_stalled":
+            control_lines.append("[terminal screen is still settling]")
+        if candidate.get("terminated"):
+            control_lines.append("[terminated]")
+        error = str(candidate.get("error") or "").strip()
+        stderr = error if error else ""
+        return cls._render_command_terminal_surface(
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            session_id=session_id,
+            state=state,
+            waiting_input=waiting_input,
+            still_running=still_running,
+            no_output_text="[no new output]" if state not in {"completed", "failed"} else "[completed with no output]",
+            raw_ref=raw_ref,
+            stdout_truncated=bool(
+                candidate.get("deltaTruncated")
+                or candidate.get("keyOutputTruncated")
+                or candidate.get("outputPreviewTruncated")
+                or candidate.get("finalPreviewTruncated")
+            ),
+            stderr_truncated=False,
+            control_lines=control_lines,
+        )
+
+    @classmethod
+    def _legacy_compact_command_session_broker_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        session_id = candidate.get("sessionId")
+        command_id = candidate.get("commandId")
         compact: dict[str, Any] = {
-            "ok": candidate.get("ok"),
             "mode": candidate.get("mode"),
-            "kind": candidate.get("kind"),
-            "sessionId": candidate.get("sessionId"),
-            "commandId": candidate.get("commandId"),
+            "sessionId": session_id,
             "summary": candidate.get("summary"),
             "recommendedNextAction": candidate.get("recommendedNextAction"),
             "state": candidate.get("state"),
-            "interactive": candidate.get("interactive"),
-            "profile": candidate.get("profile"),
-            "reason": candidate.get("reason"),
-            "awaitingInput": candidate.get("awaitingInput"),
-            "hasMore": candidate.get("hasMore"),
-            "terminated": candidate.get("terminated"),
-            "returnCode": candidate.get("returnCode"),
-            "runId": candidate.get("runId"),
-            "linkedProcess": candidate.get("linkedProcess"),
-            "error": candidate.get("error"),
         }
-        for key in ("initialPreview", "deltaText", "acceptedInputPreview", "screenAfterInput", "outputPreview", "finalPreview"):
+        if command_id and command_id != session_id:
+            compact["commandId"] = command_id
+        for key in ("ok", "interactive", "awaitingInput", "hasMore", "terminated"):
+            if key == "ok":
+                if candidate.get(key) is False:
+                    compact[key] = False
+                continue
+            if candidate.get(key) is True:
+                compact[key] = candidate.get(key)
+        for key in ("profile", "reason", "returnCode", "runId", "linkedProcess", "error"):
+            if candidate.get(key) not in (None, "", [], {}):
+                compact[key] = candidate.get(key)
+        for key in ("initialPreview", "deltaText", "acceptedInputPreview", "keyOutput", "screenAfterInput", "outputPreview", "finalPreview"):
             preview = str(candidate.get(key) or "").strip()
             if not preview:
                 continue
@@ -4451,76 +4648,91 @@ class ChatRuntime:
     @classmethod
     def _compact_run_system_command_result(cls, value: Any) -> Any:
         candidate = cls._coerce_json_like_value(value)
+        if isinstance(candidate, str):
+            stripped_candidate = candidate.strip()
+            if stripped_candidate.startswith("$ ") or "\n<stdout>" in stripped_candidate or "\n<stderr>" in stripped_candidate:
+                return stripped_candidate
         if isinstance(candidate, dict):
+            if candidate.get("ok") is False or str(candidate.get("summary") or "").strip():
+                kind = str(candidate.get("kind") or "").strip()
+                if kind and kind not in {"command_result", "command_session", "command_session_redirect"}:
+                    command = str(candidate.get("command") or "").strip()
+                    redirect = candidate.get("redirect")
+                    if isinstance(redirect, dict):
+                        redirect_args = redirect.get("args")
+                        if not command and isinstance(redirect_args, dict):
+                            command = str(redirect_args.get("command") or "").strip()
+                    control_lines = [f"[{kind}]"]
+                    for key in ("reason", "summary", "error"):
+                        text = str(candidate.get(key) or "").strip()
+                        if text and text not in control_lines:
+                            control_lines.append(f"[{text}]")
+                    suggested = str(candidate.get("suggestedCommand") or "").strip()
+                    if suggested:
+                        control_lines.append(f"[suggested command: {suggested}]")
+                    if isinstance(redirect, dict) and redirect:
+                        tool = str(redirect.get("tool") or "").strip()
+                        args = redirect.get("args")
+                        if tool:
+                            control_lines.append(f"[use {tool} to continue]")
+                        if isinstance(args, dict):
+                            session_cmd = str(args.get("command") or "").strip()
+                            if session_cmd and session_cmd != command:
+                                control_lines.append(f"[session command: {session_cmd}]")
+                    return cls._render_command_terminal_surface(
+                        command=command,
+                        stderr=str(candidate.get("error") or candidate.get("summary") or "").strip(),
+                        exit_code=None,
+                        raw_ref=cls._command_surface_raw_ref(candidate),
+                        control_lines=control_lines,
+                    )
             if str(candidate.get("kind") or "").strip() == "command_result":
-                compact: dict[str, Any] = {
-                    "ok": candidate.get("ok"),
-                    "kind": "command_result",
-                    "summary": candidate.get("summary"),
-                    "cwd": candidate.get("cwd"),
-                    "returnCode": candidate.get("returnCode"),
-                    "recommendedNextAction": candidate.get("recommendedNextAction"),
-                    "encodingDiagnostics": candidate.get("encodingDiagnostics"),
-                }
-                for key in ("stdoutPreview", "stderrPreview"):
-                    preview = str(candidate.get(key) or "").strip()
-                    if not preview:
-                        continue
-                    trimmed, truncated = cls._trim_preview_text(preview, limit=1400)
-                    compact[key] = trimmed
-                    if truncated or bool(candidate.get(f"{key[:-7]}Truncated")):
-                        compact[f"{key[:-7]}Truncated"] = True
-                return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+                stdout = candidate.get("keyOutput") or candidate.get("stdoutPreview") or ""
+                stderr = candidate.get("keyErrors") or candidate.get("stderrPreview") or ""
+                return cls._render_command_terminal_surface(
+                    command=str(candidate.get("command") or "").strip(),
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=candidate.get("returnCode"),
+                    raw_ref=cls._command_surface_raw_ref(candidate),
+                    stdout_truncated=bool(candidate.get("keyOutputTruncated") or candidate.get("stdoutTruncated")),
+                    stderr_truncated=bool(candidate.get("keyErrorsTruncated") or candidate.get("stderrTruncated")),
+                )
             if str(candidate.get("kind") or "").strip() == "command_session_redirect":
-                compact: dict[str, Any] = {
-                    "kind": "command_session_redirect",
-                    "mode": candidate.get("mode"),
-                    "summary": candidate.get("summary"),
-                    "reason": candidate.get("reason"),
-                }
                 redirect = candidate.get("redirect")
-                if isinstance(redirect, dict) and redirect:
-                    compact["redirect"] = redirect
-                return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+                command = str(candidate.get("command") or "").strip()
+                if isinstance(redirect, dict):
+                    args = redirect.get("args")
+                    if isinstance(args, dict) and not command:
+                        command = str(args.get("command") or "").strip()
+                control_lines = ["[command requires an observable session]"]
+                reason = str(candidate.get("reason") or candidate.get("summary") or "").strip()
+                if reason:
+                    control_lines.append(f"[{reason}]")
+                if isinstance(redirect, dict) and str(redirect.get("tool") or "").strip():
+                    control_lines.append(f"[use {redirect.get('tool')} to continue]")
+                return cls._render_command_terminal_surface(
+                    command=command,
+                    raw_ref=cls._command_surface_raw_ref(candidate),
+                    control_lines=control_lines,
+                )
             if str(candidate.get("kind") or "").strip() == "command_session":
-                compact: dict[str, Any] = {
-                    "kind": "command_session",
-                    "mode": candidate.get("mode"),
-                    "commandId": candidate.get("commandId"),
-                    "sessionId": candidate.get("sessionId"),
-                    "interactive": candidate.get("interactive"),
-                    "profile": candidate.get("profile"),
-                    "runId": candidate.get("runId"),
-                    "reason": candidate.get("reason"),
-                    "state": candidate.get("state"),
-                    "returnCode": candidate.get("returnCode"),
-                    "recommendedNextAction": candidate.get("recommendedNextAction"),
-                }
-                for key in ("initialPreview", "finalPreview"):
-                    preview_text = str(candidate.get(key) or candidate.get("initialOutput") or "").strip()
-                    if not preview_text:
-                        continue
-                    preview, truncated = cls._trim_preview_text(preview_text, limit=1000)
-                    compact[key] = preview
-                    compact["lineCount"] = cls._line_count(preview_text)
-                    if truncated:
-                        compact[f"{key}Truncated"] = True
-                    break
-                return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
+                return cls._render_command_session_terminal_surface(candidate)
             preview = json.dumps(candidate, ensure_ascii=False)
             trimmed, truncated = cls._trim_preview_text(preview, limit=1200)
-            return {"status": "ok", "stdoutPreview": trimmed, "lineCount": cls._line_count(trimmed), "truncated": truncated}
+            raw_ref = cls._command_surface_raw_ref(candidate)
+            return cls._render_command_terminal_surface(
+                stdout=trimmed,
+                raw_ref=raw_ref,
+                stdout_truncated=truncated,
+            )
 
         text = str(candidate or "")
         trimmed, truncated = cls._trim_preview_text(text, limit=1200)
         status = "error" if trimmed.lower().startswith("error") else "ok"
-        key = "stderrPreview" if status == "error" else "stdoutPreview"
-        return {
-            "status": status,
-            key: trimmed,
-            "lineCount": cls._line_count(text),
-            "truncated": truncated,
-        }
+        if status == "error":
+            return cls._render_command_terminal_surface(stderr=trimmed, stderr_truncated=truncated)
+        return cls._render_command_terminal_surface(stdout=trimmed, stdout_truncated=truncated)
 
     @classmethod
     def _compact_share_workspace_file_result(cls, value: Any) -> Any:

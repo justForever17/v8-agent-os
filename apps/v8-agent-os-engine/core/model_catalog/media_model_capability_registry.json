@@ -13,7 +13,7 @@
       "modalities": [
         "model3d"
       ],
-      "logoAsset": "/model-assets/providers/3d-ai-studio.svg",
+      "logoAsset": "/model-assets/providers/3d-ai-studio.ico",
       "sourceRefs": [
         {
           "source": "multimedia_doc",
@@ -1670,7 +1670,7 @@
       "resolution": {},
       "duration": {},
       "formats": {},
-      "logoAsset": "/model-assets/providers/3d-ai-studio.svg",
+      "logoAsset": "/model-assets/providers/3d-ai-studio.ico",
       "operationCapabilityProfiles": {},
       "sourceRefs": [
         {

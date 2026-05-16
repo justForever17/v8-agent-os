@@ -3,19 +3,22 @@
   "notes": "Whitelisted provider/model assets for ModelHub. Cherry Studio app.asar was inspected, but no trusted provider/model icon asset paths were found; user data folders are intentionally excluded.",
   "providers": {
     "3d-ai-studio": {
-      "asset": "/model-assets/providers/3d-ai-studio.svg",
-      "source": "local-textmark",
-      "sha256": "4C61F23290507CAEB38E0EF1AFD98A52C5006843EC45263FDD1DAA1A66D75146"
+      "asset": "/model-assets/providers/3d-ai-studio.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://www.3daistudio.com/favicon.ico",
+      "sha256": "7C6A51349C8982F185E57AAD104CF9F635FE66DB1621B94E55D5CFC8A494AAFA"
     },
     "ai21": {
-      "asset": "/model-assets/providers/ai21.svg",
-      "source": "local-textmark",
-      "sha256": "8632512A77FA0EF15922AF55707249B818F65C7A025E7004D68FBF54F17D513D"
+      "asset": "/model-assets/providers/ai21.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://www.ai21.com/wp-content/uploads/2026/01/favicon.png",
+      "sha256": "09DE5A8F7755FAA91C1E23919143EC06C546EA6AE6EE50560B41AA488898387B"
     },
     "amazon-polly": {
-      "asset": "/model-assets/providers/amazon-polly.svg",
-      "source": "local-textmark",
-      "sha256": "FFE4D188BC843660467823257026C1B78A0FD5895CD91461C44638DECE19FDD7"
+      "asset": "/model-assets/providers/amazon-polly.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://a0.awsstatic.com/libra-css/images/site/fav/favicon.ico",
+      "sha256": "1DC902BF12F36533773B6E0399CA6DCFE2E19B88C7D1C3D9F211A4082D28D219"
     },
     "anthropic": {
       "asset": "/model-assets/providers/anthropic.ico",
@@ -23,19 +26,22 @@
       "sha256": "45FA55283B0671B71451D4E067932E3D4AE57EEB7B59582C4C3C1AB21558B0A4"
     },
     "azure-speech": {
-      "asset": "/model-assets/providers/azure-speech.svg",
-      "source": "local-textmark",
-      "sha256": "FFA790BA4ACEA918F0203BE22CB5A8CD7CF936FE24A6D9697283DA25D40F8FF1"
+      "asset": "/model-assets/providers/azure-speech.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://azure.microsoft.com/favicon.ico?v2",
+      "sha256": "90CDAF487716184E4034000935C605D1633926D348116D198F355A98B8C6CD21"
     },
     "baichuan": {
-      "asset": "/model-assets/providers/baichuan.svg",
-      "source": "local-textmark",
-      "sha256": "C9CD5D77DC972BF5CC3A77B9C4439211786B494E1892E993B5AA372F2646060D"
+      "asset": "/model-assets/providers/baichuan.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://cdn.baichuan-ai.com/build/_next/static/media/favicon-96x96.15rlx4p_j1mxx.png",
+      "sha256": "E57F5A18A49FC8441F4F397B18CB99CE568E72CCAF5F65BE94E7760215C91B21"
     },
     "baidu-qianfan": {
       "asset": "/model-assets/providers/baidu-qianfan.svg",
-      "source": "local-textmark",
-      "sha256": "AEF1AE5C60F24F0AB36D36C7B9BD49D36CDD4362FDB057CC7E668E51E8D611F3"
+      "source": "simple-icons-official-brand",
+      "sourceUrl": "https://cdn.simpleicons.org/baidu",
+      "sha256": "C06B13DE3AC002D1913B2CA7C74508E9333BDDBB0F487672F50D3F204795DD55"
     },
     "black-forest-labs": {
       "asset": "/model-assets/providers/black-forest-labs.svg",
@@ -43,19 +49,22 @@
       "sha256": "7AE44010E77611F2261E593F07079E3768D6370D581B43502605CBE0640853E0"
     },
     "cartesia": {
-      "asset": "/model-assets/providers/cartesia.svg",
-      "source": "local-textmark",
-      "sha256": "255D54EDF7CC8983EADD8642E825CA911B281C9F6C446F3B1E7B85FDEF6F63CC"
+      "asset": "/model-assets/providers/cartesia.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://framerusercontent.com/images/5jGhWBgOI7ZZpIovFZnuwgRvVU.png",
+      "sha256": "B1C1DB2B7DD505EDC9E5B049837F77D220D2AD09C536579EF644CD905BA78B21"
     },
     "cerebras": {
-      "asset": "/model-assets/providers/cerebras.svg",
-      "source": "local-textmark",
-      "sha256": "A20814123BB734DE0C09C68EE7CCA3C52497A703A755D8CC04A6F35036007BB8"
+      "asset": "/model-assets/providers/cerebras.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://cdn.sanity.io/images/e4qjo92p/production/e7a55ae5ab7e2c4fdfd4e66a51f628d1f2f44207-967x967.png?w=512&h=512&fit=max&auto=format",
+      "sha256": "820EE5E5ACFBB89FC3CA5044C59ACC417FEA89CF19DD74AE9A289C11E2F05E4C"
     },
     "creatomate": {
-      "asset": "/model-assets/providers/creatomate.svg",
-      "source": "local-textmark",
-      "sha256": "7B05A97105F4A91456504130029F2A9BFF8ED1A1300149C7BC8A5E58FF2F1FD3"
+      "asset": "/model-assets/providers/creatomate.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://creatomate.com/favicon.ico",
+      "sha256": "4B64273714F42CBB34914B06DBF2AEBB87E5FD4008EE53B656FC0C77474F85B8"
     },
     "csm": {
       "asset": "/model-assets/providers/csm.svg",
@@ -63,9 +72,10 @@
       "sha256": "EF19BC06C66954E84D4D71698D3CD295CEC2C9021AD2211D497B4876A41EA0E2"
     },
     "d-id": {
-      "asset": "/model-assets/providers/d-id.svg",
-      "source": "local-textmark",
-      "sha256": "A860C52732B721B4EF3FE8E7DF85F31DD3AFF55391DC539F6F247CFFCC964817"
+      "asset": "/model-assets/providers/d-id.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://www.d-id.com/wp-content/uploads/2024/10/D-ID-logo-350x350-1-150x150.png",
+      "sha256": "4B8869D8F553E4AEF9DA4B8D03C6CD4C3E6CB6DB17DE8BDA4A8D1A96163A29DE"
     },
     "deepseek": {
       "asset": "/model-assets/providers/deepseek.ico",
@@ -74,8 +84,9 @@
     },
     "fireworks": {
       "asset": "/model-assets/providers/fireworks.svg",
-      "source": "local-textmark",
-      "sha256": "3EE85801C62BB22C73E8B404B6D7CB468386C601C25D2B39577E811F521A8699"
+      "source": "official-favicon",
+      "sourceUrl": "https://fireworks.ai/icon0.svg?e3d99deadffb6216",
+      "sha256": "86B7F4B33CA48C5617F10E2CEF5AAA7096C5E798090CEB2D0C21B01273660C76"
     },
     "fish-audio": {
       "asset": "/model-assets/providers/fish-audio.svg",
@@ -89,18 +100,21 @@
     },
     "haiper": {
       "asset": "/model-assets/providers/haiper.svg",
-      "source": "local-textmark",
-      "sha256": "B3C21AF3002C5A8D58AEACEF88D221074E00006B6DD133BB935112CAC1D2724A"
+      "source": "official-homepage-inline-logo",
+      "sourceUrl": "https://haiper.ai/",
+      "sha256": "DDD4F4A4E330F58C94E0B360E8F8477BAEF2A5C3DC3A4C4D4D1B377138B3DA97"
     },
     "hedra": {
       "asset": "/model-assets/providers/hedra.svg",
-      "source": "local-textmark",
-      "sha256": "A1CFFC50C5737B1405ADCCA519F74B20880F2A98AB52FB2BF24567182C4C4CE7"
+      "source": "official-favicon",
+      "sourceUrl": "https://assets.basehub.com/ff47d2c9/4ba07ef2876fac971f065d0bf3606496/hedra-svg.svg",
+      "sha256": "4BA07EF2876FAC971F065D0BF3606496CCAB9ECEF4229FF4A44692ED54BD8F06"
     },
     "heygen": {
-      "asset": "/model-assets/providers/heygen.svg",
-      "source": "local-textmark",
-      "sha256": "35FC085C916BE18D15BFB27316F3FFEB0FD9B2445B176B073E07A76118420206"
+      "asset": "/model-assets/providers/heygen.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://www.heygen.com/favicon.ico",
+      "sha256": "88129FF619E6CAFFC7E6082F0AA7495C04220F8A45A86FA0DC235B44920B729C"
     },
     "hitem3d": {
       "asset": "/model-assets/providers/hitem3d.svg",
@@ -118,14 +132,16 @@
       "sha256": "896653BEB660496A17AA2158CB09F2273A4819C5D70F8E3750E247BEA3D46D05"
     },
     "ideogram": {
-      "asset": "/model-assets/providers/ideogram.svg",
-      "source": "local-textmark",
-      "sha256": "B67511441B88E07986A23CE8C1CD8B6B25A4670B058A235207EC544F2D5CF3A4"
+      "asset": "/model-assets/providers/ideogram.png",
+      "source": "domain-favicon-cache",
+      "sourceUrl": "https://www.google.com/s2/favicons?domain=ideogram.ai&sz=128",
+      "sha256": "A192FC1EA58CB69574DED50CE8E1783F7A3E4AC29FFD1E54A417ADC4B515140F"
     },
     "leonardo": {
-      "asset": "/model-assets/providers/leonardo.svg",
-      "source": "local-textmark",
-      "sha256": "8608431428AF32AA128DE7582B97EE294B1829D9122E2CA6E02972D80455C744"
+      "asset": "/model-assets/providers/leonardo.png",
+      "source": "domain-favicon-cache",
+      "sourceUrl": "https://www.google.com/s2/favicons?domain=leonardo.ai&sz=128",
+      "sha256": "2C2893AA82EBE8095AB22DFCC8DC08AE37139FD11320E4557A1C2BA4F10B754C"
     },
     "lmstudio": {
       "asset": "/model-assets/providers/lmstudio.ico",
@@ -148,14 +164,16 @@
       "sha256": "079AE88E6DB833D7004F0F5C10DC4028F7B5C16FCD5EEDBE42542F215FFC75CD"
     },
     "nexa": {
-      "asset": "/model-assets/providers/nexa.svg",
-      "source": "local-textmark",
-      "sha256": "F1AFEB50938BA27333AAD90BF7DC39892C853D98448FF8498FB8ADFC920DEAB3"
+      "asset": "/model-assets/providers/nexa.png",
+      "source": "github-org-avatar",
+      "sourceUrl": "https://avatars.githubusercontent.com/u/143769971?s=200&v=4",
+      "sha256": "2ADC2F6D9D2A6D6E2E2C0AA2675C000B5EFA9076D36D0B42D637AF2EA790F4A4"
     },
     "nvidia-nim": {
       "asset": "/model-assets/providers/nvidia-nim.svg",
-      "source": "local-textmark",
-      "sha256": "DA5BF1AFE2607F59CB50C30D370BED30F991790896230AEB420BBA04E1FA7248"
+      "source": "simple-icons-official-brand",
+      "sourceUrl": "https://cdn.simpleicons.org/nvidia",
+      "sha256": "DB04AA87719392F22AA280FA0C9086D70D9E805024749747676FEA820F7B00B4"
     },
     "openrouter": {
       "asset": "/model-assets/providers/openrouter.ico",
@@ -164,23 +182,27 @@
     },
     "perplexity": {
       "asset": "/model-assets/providers/perplexity.svg",
-      "source": "local-textmark",
-      "sha256": "15EBC457184B3F0E8D1F51C4A780ED90536F450704C686342FD092EF6B7B55C4"
+      "source": "official-favicon",
+      "sourceUrl": "https://www.perplexity.ai/favicon.svg",
+      "sha256": "00180A688C194D684A69B247769CDF24A7720712256DBE0F334F97E8A15821E4"
     },
     "pika": {
-      "asset": "/model-assets/providers/pika.svg",
-      "source": "local-textmark",
-      "sha256": "BBB05E8DC6752E9E97F2CFEB8343A983B3E763DD2F55D7E166FBD1262E026A2B"
+      "asset": "/model-assets/providers/pika.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://pika.art/favicon.ico?favicon.3e7abfbd.ico",
+      "sha256": "0F90DEAD7E63993A1FFB79D6D180D291243E77E1A2335F4D4AAEE338D4A8EAE2"
     },
     "playht": {
-      "asset": "/model-assets/providers/playht.svg",
-      "source": "local-textmark",
-      "sha256": "72F55C6451E2ED324AC0BA882580288F350768BB4F55A6CE93E3ED3A7F76A2C8"
+      "asset": "/model-assets/providers/playht.png",
+      "source": "domain-favicon-cache",
+      "sourceUrl": "https://www.google.com/s2/favicons?domain=play.ht&sz=128",
+      "sha256": "CD78755515471F511FF2758C64C859A6ABB89FB9412119E508359E851E06CD58"
     },
     "shotstack": {
-      "asset": "/model-assets/providers/shotstack.svg",
-      "source": "local-textmark",
-      "sha256": "FDEC95C628E85B9F65A44A39569B63E9807C55CA692930935C4D60017D8331B4"
+      "asset": "/model-assets/providers/shotstack.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://shotstack.io/favicon.ico",
+      "sha256": "B28246489C1DB8B8C109FB2BD113F2F8241E55CFAF01675EC7C338A2FA0A093A"
     },
     "siliconflow": {
       "asset": "/model-assets/providers/siliconflow.png",
@@ -188,29 +210,34 @@
       "sha256": "34B69206516F4F999C5FD6B4E41171DD2D356248EC13F6136E098C416319AE68"
     },
     "stepfun": {
-      "asset": "/model-assets/providers/stepfun.svg",
-      "source": "local-textmark",
-      "sha256": "8B3336E8CBF37D74642B41E3345520C6E122D207A355065463B8E19BD5595E7D"
+      "asset": "/model-assets/providers/stepfun.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://platform.stepfun.com/images/title-logo.png",
+      "sha256": "568F1B681D8500C74DF5FB43BF1316F4826308CBD97BC656B2C068852B7C78B9"
     },
     "synthesia": {
-      "asset": "/model-assets/providers/synthesia.svg",
-      "source": "local-textmark",
-      "sha256": "577708B5C8260DB9473DE32CC757DBC984BF654BB966CAA875C58DAD167C2F7C"
+      "asset": "/model-assets/providers/synthesia.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://cdn.prod.website-files.com/65e89895c5a4b8d764c0d710/664f0f482fa5a4d527d892bc_Favicon-Web-Security%201.png",
+      "sha256": "636656B81F03714F408C1ED85E2BC385ECBB622E24A980ED8CFACE59B442285B"
     },
     "tavus": {
-      "asset": "/model-assets/providers/tavus.svg",
-      "source": "local-textmark",
-      "sha256": "1520BD94E18CAD82721193693F45448EC99ADFC2B99AEBA1553F232AEEB8C720"
+      "asset": "/model-assets/providers/tavus.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://cdn.prod.website-files.com/68c8e57d6e512b9573db146f/68c8e57e6e512b9573db1acd_Favicon%20Dark.ico",
+      "sha256": "70DE51F9F2A9956747E5813371A8880933FA984F42DD31798FB70515E51D69BD"
     },
     "together": {
-      "asset": "/model-assets/providers/together.svg",
-      "source": "local-textmark",
-      "sha256": "7DA614FD81EC32ED2E5CD3C259752DD8537F81F8807CCE8C3B6F62AEB8F29CA1"
+      "asset": "/model-assets/providers/together.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://cdn.prod.website-files.com/69654e88dce9154b5f1206dd/699e382b218f39bfa0a115d9_favicon.png",
+      "sha256": "2C02A5D635EAE4F63153E9EACB24E001E21F84A4B667A5925F120C1492C58F30"
     },
     "udio": {
-      "asset": "/model-assets/providers/udio.svg",
-      "source": "local-textmark",
-      "sha256": "75241BB4DD0A2DF0D50EECE9F83FF8916390157C026BAEEB4E108335A7801B1E"
+      "asset": "/model-assets/providers/udio.ico",
+      "source": "official-favicon",
+      "sourceUrl": "https://www.udio.com/favicon.ico?favicon.0wbc3vz33genq.ico",
+      "sha256": "3764B3281D799D8ED4F1C07AFBA5BFD77C93FAE014CDAB46A795036333058DC5"
     },
     "v8-audio": {
       "asset": "/model-assets/providers/v8-audio.svg",
@@ -219,8 +246,9 @@
     },
     "vidu": {
       "asset": "/model-assets/providers/vidu.svg",
-      "source": "local-textmark",
-      "sha256": "47C1EB5C25CF7CDB6A0A67A0BAD0E36FDD24F1EF6169B656E0F4DCA020F7CA99"
+      "source": "official-logo",
+      "sourceUrl": "https://www.vidu.com/logo.svg",
+      "sha256": "52DEF4BE8D299CCA673B28025B43AFC75D362E64F0E6056A857F6AB46B7ACE92"
     },
     "xai": {
       "asset": "/model-assets/providers/xai.ico",

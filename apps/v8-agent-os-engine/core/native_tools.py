@@ -108,6 +108,7 @@ from core.delegation_broker import (
     compact_external_worker_registry_entry,
     default_external_worker_descriptors,
     external_worker_command_profile,
+    expand_delegation_task_briefs,
     make_external_delegation_id,
     make_local_delegation_id,
     normalize_external_worker_descriptors,
@@ -3668,6 +3669,7 @@ def execute_system_command(
         payload: dict[str, Any] = {
             "ok": result.returncode == 0,
             "kind": "command_result",
+            "command": command,
             "summary": "命令执行成功。" if result.returncode == 0 else f"命令执行失败，退出码 {result.returncode}。",
             "cwd": resolved_cwd,
             "returnCode": result.returncode,
@@ -7827,6 +7829,7 @@ def run_system_command(
                     "ok": False,
                     "mode": "sync",
                     "kind": "command_session_required",
+                    "command": command,
                     "summary": "该命令不能通过阻塞式 sync 执行。",
                     "reason": interactive_reason or session_reason or "命令需要可观察、可恢复的后台会话",
                     "recommendedNextAction": "改用 command_session_broker(mode=start)，然后 observe/input/terminate。",
@@ -7853,6 +7856,7 @@ def run_system_command(
                 "ok": True,
                 "kind": "command_session",
                 "mode": "session",
+                "command": command,
                 "commandId": launched["commandId"],
                 "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
@@ -7959,8 +7963,10 @@ def _command_session_recommended_next_action(
         return "input"
     if state == "recoverable_stalled":
         return "observe_or_terminate"
-    if has_more or state in {"running", "render_stalled"}:
+    if has_more or state == "render_stalled":
         return "observe"
+    if state == "running":
+        return "wait_then_observe"
     return "wait_then_observe"
 
 
@@ -7974,6 +7980,46 @@ def _command_session_preview_text(value: str, *, limit: int = 1200) -> tuple[str
     if len(normalized) <= limit:
         return normalized, False
     return normalized[:limit].rstrip(), True
+
+
+def _strip_command_echo_noise(value: str, *, command: str = "") -> str:
+    text = str(value or "").strip()
+    rendered_command = str(command or "").strip()
+    if not text or not rendered_command:
+        return text
+    command_compact = re.sub(r"\s+", "", rendered_command)
+    lines = text.splitlines()
+    index = 0
+    consumed = ""
+    while index < len(lines):
+        candidate = lines[index].strip()
+        candidate_compact = re.sub(r"\s+", "", candidate)
+        if not candidate_compact:
+            index += 1
+            continue
+        next_consumed = consumed + candidate_compact
+        if command_compact.startswith(next_consumed):
+            consumed = next_consumed
+            index += 1
+            continue
+        if candidate_compact == command_compact or candidate.endswith(rendered_command):
+            consumed = command_compact
+            index += 1
+            continue
+        break
+    return "\n".join(lines[index:]).strip()
+
+
+_TERMINAL_SPINNER_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏|/-\\")
+
+
+def _looks_like_terminal_spinner_noise(value: str) -> bool:
+    compact = re.sub(r"[\s\r\n\t\b]+", "", str(value or ""))
+    if not compact:
+        return False
+    if len(compact) > 240:
+        return False
+    return all(char in _TERMINAL_SPINNER_CHARS for char in compact)
 
 
 def _command_session_debug_payload(
@@ -7999,6 +8045,7 @@ def _command_session_result_preview_fields(
     *,
     state: str,
     interactive: bool,
+    command: str = "",
     delta_text: str = "",
     screen_preview: str = "",
     raw_frame_preview: str = "",
@@ -8010,17 +8057,28 @@ def _command_session_result_preview_fields(
         return {}
     if interactive and state not in {"completed", "failed"}:
         return {}
-    source = "\n".join(
-        part
-        for part in [
+    source_candidates = (
+        (
+            str(raw_buffer or "").strip(),
             str(delta_text or "").strip(),
             str(screen_preview or "").strip(),
-            str(raw_buffer or "").strip(),
             str(raw_frame_preview or "").strip(),
-        ]
-        if str(part or "").strip()
+        )
+        if state in {"completed", "failed"}
+        else (
+            str(delta_text or "").strip(),
+            str(raw_buffer or "").strip(),
+            str(screen_preview or "").strip(),
+            str(raw_frame_preview or "").strip(),
+        )
     )
+    source = ""
+    for part in source_candidates:
+        if part:
+            source = part
+            break
     preview, truncated = _command_session_preview_text(source, limit=limit)
+    preview = _strip_command_echo_noise(preview, command=command)
     if not preview:
         return {}
     field_name = "finalPreview" if state in {"completed", "failed"} else "outputPreview"
@@ -8120,6 +8178,34 @@ def _delegation_budget_block_payload(
     used_nodes: int,
     tool_call_id: str,
 ) -> Command:
+    max_children = int(policy.get("maxChildrenPerDelegation") or 0)
+    max_concurrent = int(policy.get("maxConcurrentDelegations") or 0)
+    max_total = int(policy.get("maxTotalDelegationNodes") or 0)
+    max_depth = int(policy.get("maxDelegationDepth") or 0)
+    if reason == "max_children_per_delegation_exceeded":
+        summary = (
+            f"delegation_broker 已拦截：上层请求派发 {requested_count} 个子任务，"
+            f"当前单次递归派发上限为 {max_children} 个。这个值是预算上限，不会自动拉满。"
+        )
+    elif reason == "max_concurrent_delegations_exceeded":
+        summary = (
+            f"delegation_broker 已拦截：上层请求并发派发 {requested_count} 个任务，"
+            f"当前并发委派上限为 {max_concurrent} 个。"
+        )
+    elif reason == "max_total_delegation_nodes_exceeded":
+        summary = (
+            f"delegation_broker 已拦截：任务树已使用 {used_nodes} 个节点，"
+            f"本次再派发 {requested_count} 个会超过总节点上限 {max_total} 个。"
+        )
+    elif reason == "max_delegation_depth_exceeded":
+        summary = (
+            f"delegation_broker 已拦截：当前递归深度 {depth} 已达到最大深度 {max_depth}。"
+        )
+    elif reason == "recursive_delegation_disabled":
+        summary = "delegation_broker 已拦截：Subagent 递归委派当前已关闭。"
+    else:
+        summary = "delegation_broker 已拦截：已超过 Subagent 递归预算或策略限制。"
+
     return Command(
         goto="supervisor",
         update={
@@ -8128,8 +8214,10 @@ def _delegation_budget_block_payload(
                     content=_delegation_broker_payload(
                         mode="dispatch",
                         ok=False,
-                        summary="delegation_broker 阻止了递归派发：已超过 Subagent 递归预算或策略限制。",
-                        recommended_next_action="reduce_task_count_or_raise_budget",
+                        summary=summary,
+                        recommended_next_action=(
+                            "减少本次 tasks 数量，或到 Admin/Subagents 调高递归委派预算后重试。"
+                        ),
                         error="delegation_budget_exceeded",
                         reason=reason,
                         budget={
@@ -8375,8 +8463,8 @@ def command_session_broker(
     Usage guidance:
     - Prefer run_system_command(mode=auto) as the agent-facing shell entry; it starts this broker internally when needed.
     - Use this broker directly only after you already have a sessionId/commandId, or when you need explicit observe/input/terminate control.
-    - Use observe until the session completes, reports the next required input, or returns a compact outputPreview/finalPreview.
-    - Treat summary, recommendedNextAction, awaitingInput, hasMore, state/status, and returnCode as the compact truth for the next step.
+    - Use observe until the session completes, reports the next required input, or returns stdout/stderr/final output.
+    - Treat stdout/stderr/exit code as the command truth. Broker status fields only describe waiting, timeout, backgrounding, or recovery.
     - profile=auto may enable chat_cli semantics for known AI CLIs so observe reports the latest semantic delta instead of replaying the whole screen.
     - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
     - For TUI menus, prefer keys=["down","down","enter"]. Common shorthand like input_text="↓↓" maps to arrow keys and appends Enter by default.
@@ -8459,6 +8547,7 @@ def command_session_broker(
                 observableSession=bool(launched.get("observableSession")),
                 profile=launched.get("profile"),
                 reason=launched.get("interactiveReason") or launched.get("sessionReason") or launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
+                command=normalized_command,
                 cwd=launched.get("cwd"),
                 awaitingInput=bool(status.get("awaiting_input")),
                 terminalMenu=terminal_menu or None,
@@ -8481,6 +8570,7 @@ def command_session_broker(
                 ok=False,
                 summary="未找到对应的命令会话。",
                 recommended_next_action="start",
+                command="",
                 error="session_not_found",
             )
 
@@ -8491,6 +8581,8 @@ def command_session_broker(
             screen_changed = bool(bg_proc.has_unreported_screen_change())
             raw_changed = bool(bg_proc.has_unreported_raw_frame_change())
             delta_text = str(new_output or "").strip()
+            if _looks_like_terminal_spinner_noise(delta_text):
+                delta_text = ""
             has_more = False
             semantic_state: dict[str, Any] = {}
             if bg_proc.profile == "chat_cli":
@@ -8503,7 +8595,7 @@ def command_session_broker(
                 delta_text = str(semantic_state.get("delta_text") or "").strip()
                 has_more = bool(semantic_state.get("has_more"))
             else:
-                has_more = bool(bg_proc.is_running and (screen_changed or raw_changed or delta_text) and not status.get("awaiting_input"))
+                has_more = bool(bg_proc.is_running and delta_text and not status.get("awaiting_input"))
             if screen_changed:
                 bg_proc.mark_screen_reported()
             if raw_changed:
@@ -8534,6 +8626,7 @@ def command_session_broker(
             result_fields = _command_session_result_preview_fields(
                 state=state,
                 interactive=bool(status.get("interactive")),
+                command=str(status.get("command") or ""),
                 delta_text=delta_preview,
                 screen_preview=screen_preview,
                 raw_frame_preview=raw_frame_preview,
@@ -8564,6 +8657,7 @@ def command_session_broker(
                     has_more=has_more,
                 ),
                 state=state,
+                command=status.get("command"),
                 cwd=status.get("cwd"),
                 deltaText=delta_preview or None,
                 deltaTruncated=delta_truncated if delta_preview else None,
@@ -8591,6 +8685,7 @@ def command_session_broker(
                     summary="命令会话已经结束，无法继续输入。",
                     recommended_next_action="none",
                     state=_command_session_state_from_status(status),
+                    command=status.get("command"),
                     returnCode=status.get("return_code"),
                     error="session_not_running",
                 )
@@ -8627,6 +8722,8 @@ def command_session_broker(
             screen_changed = int(status.get("screen_version") or 0) > previous_screen_version
             raw_changed = int(status.get("raw_frame_version") or 0) > previous_raw_frame_version
             delta_text = str(new_output or "").strip()
+            if _looks_like_terminal_spinner_noise(delta_text):
+                delta_text = ""
             has_more = False
             semantic_state: dict[str, Any] = {}
             if bg_proc.profile == "chat_cli":
@@ -8639,7 +8736,7 @@ def command_session_broker(
                 delta_text = str(semantic_state.get("delta_text") or "").strip()
                 has_more = bool(semantic_state.get("has_more"))
             else:
-                has_more = bool(bg_proc.is_running and (screen_changed or raw_changed or delta_text) and not status.get("awaiting_input"))
+                has_more = bool(bg_proc.is_running and delta_text and not status.get("awaiting_input"))
             if screen_changed:
                 bg_proc.mark_screen_reported()
             if raw_changed:
@@ -8675,6 +8772,7 @@ def command_session_broker(
             result_fields = _command_session_result_preview_fields(
                 state=state,
                 interactive=bool(status.get("interactive")),
+                command=str(status.get("command") or ""),
                 delta_text=delta_preview,
                 screen_preview=str(status.get("stable_screen_snapshot") or status.get("screen_snapshot") or "").strip(),
                 raw_frame_preview=str(status.get("last_raw_frame_preview") or "").strip(),
@@ -8708,6 +8806,7 @@ def command_session_broker(
                     has_more=has_more,
                 ),
                 state=state,
+                command=status.get("command"),
                 cwd=status.get("cwd"),
                 acceptedInputPreview=input_preview,
                 acceptedInputTruncated=input_truncated if input_preview else None,
@@ -8757,6 +8856,7 @@ def command_session_broker(
             recommended_next_action="none",
             terminated=True,
             state=_command_session_state_from_status(status),
+            command=status.get("command"),
             cwd=status.get("cwd"),
             returnCode=status.get("return_code"),
             keyOutput=final_preview or None if debug else None,
@@ -8867,7 +8967,8 @@ def delegation_broker(
         )
 
     if normalized_mode == "dispatch":
-        normalized_tasks = normalize_task_briefs(tasks or [])
+        macro_tasks = normalize_task_briefs(tasks or [])
+        normalized_tasks = expand_delegation_task_briefs(tasks or [])
         if not normalized_tasks:
             return Command(
                 goto="supervisor",
@@ -8892,6 +8993,7 @@ def delegation_broker(
         current_depth = _safe_int_range(inherited_context.get("delegationDepth"), 0, 0, 100)
         used_node_count = _safe_int_range(inherited_context.get("delegationNodeCount"), 0, 0, 1000)
         is_recursive_dispatch = bool(parent_delegation_id or current_depth > 0)
+        macro_task_count = len(macro_tasks)
         requested_count = len(normalized_tasks)
         if is_recursive_dispatch and not recursive_policy["enabled"]:
             return _delegation_budget_block_payload(
@@ -9238,6 +9340,11 @@ def delegation_broker(
             task_brief_summary(task_brief) or f"task-{index + 1}"
             for index, task_brief in enumerate(normalized_tasks)
         )
+        if requested_count != macro_task_count:
+            summary = f"Delegation broker expanded {macro_task_count} macro task(s) into {requested_count} worker task(s): " + ", ".join(
+                task_brief_summary(task_brief) or f"task-{index + 1}"
+                for index, task_brief in enumerate(normalized_tasks)
+            )
         update: dict[str, Any] = {
             "messages": [
                 ToolMessage(
@@ -9245,6 +9352,8 @@ def delegation_broker(
                         mode=normalized_mode,
                         summary=summary,
                         items=items,
+                        macroTaskCount=macro_task_count,
+                        requestedTaskCount=requested_count,
                         recommended_next_action="observe" if any(item.get("lane") == "external_worker" for item in items) else "review",
                     ),
                     tool_call_id=tool_call_id,

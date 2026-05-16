@@ -48,6 +48,37 @@ def _normalize_scope_values(value: Any) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _first_present(payload: dict[str, Any], keys: Iterable[str]) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
+def _safe_target_count(value: Any, *, default: int = 1, maximum: int = 1000) -> int:
+    try:
+        count = int(value)
+    except Exception:
+        count = default
+    return max(1, min(count, maximum))
+
+
+def _normalize_worker_briefs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            copied = dict(item)
+            if copied:
+                items.append(copied)
+            continue
+        text = str(item or "").strip()
+        if text:
+            items.append({"goal": text})
+    return items
+
+
 def _default_task_brief(index: int = 0) -> dict[str, Any]:
     return {
         "taskBriefId": f"task-{index + 1}",
@@ -66,12 +97,39 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "preferredAgentId": "",
         "preferredWorkerType": "",
         "researchRefs": [],
+        "targetCount": 1,
+        "workerBriefs": [],
+        "fanoutReason": "",
     }
 
 
 def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     payload = dict(value or {}) if isinstance(value, dict) else {}
     defaults = _default_task_brief(index)
+    worker_briefs = _normalize_worker_briefs(
+        _first_present(payload, ("workerBriefs", "worker_briefs", "workers", "branches", "parallelBranches", "parallel_branches"))
+    )
+    target_count = _safe_target_count(
+        _first_present(
+            payload,
+            (
+                "targetCount",
+                "target_count",
+                "parallelism",
+                "parallelismCount",
+                "parallelism_count",
+                "workerCount",
+                "worker_count",
+                "agentCount",
+                "agent_count",
+                "fanout",
+                "fanoutCount",
+                "fanout_count",
+            ),
+        )
+    )
+    if worker_briefs:
+        target_count = max(target_count, len(worker_briefs))
     normalized = {
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
         "goal": str(payload.get("goal") or "").strip(),
@@ -89,6 +147,9 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "preferredAgentId": str(payload.get("preferredAgentId") or payload.get("preferred_agent_id") or "").strip(),
         "preferredWorkerType": str(payload.get("preferredWorkerType") or payload.get("preferred_worker_type") or "").strip(),
         "researchRefs": _normalize_scope_values(payload.get("researchRefs") or payload.get("research_refs")),
+        "targetCount": target_count,
+        "workerBriefs": worker_briefs,
+        "fanoutReason": str(payload.get("fanoutReason") or payload.get("fanout_reason") or payload.get("parallelismReason") or payload.get("parallelism_reason") or "").strip(),
     }
     for key in ("criticalFiles", "readSet", "verificationMatrix", "proofExpectations"):
         normalized[key] = _normalize_scope_values(payload.get(key) or payload.get(key[0].lower() + key[1:]))
@@ -105,6 +166,123 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
 
 def normalize_task_briefs(values: Iterable[Any] | None) -> list[dict[str, Any]]:
     return [normalize_task_brief(value, index=index) for index, value in enumerate(list(values or []))]
+
+
+def _merge_worker_context(parent_context: Any, worker_context: Any, *, parent_goal: str, index: int, count: int) -> Any:
+    if not worker_context:
+        return {
+            "parentContext": parent_context,
+            "parentGoal": parent_goal,
+            "parallelWorker": {"index": index + 1, "count": count},
+        }
+    if isinstance(parent_context, dict) or isinstance(worker_context, dict):
+        return {
+            "parentContext": parent_context,
+            "workerContext": worker_context,
+            "parentGoal": parent_goal,
+            "parallelWorker": {"index": index + 1, "count": count},
+        }
+    return (
+        f"{str(parent_context or '').strip()}\n\n"
+        f"[Parallel worker {index + 1}/{count}]\n"
+        f"Parent goal: {parent_goal}\n"
+        f"Worker context: {str(worker_context or '').strip()}"
+    ).strip()
+
+
+def expand_delegation_task_briefs(values: Iterable[Any] | None) -> list[dict[str, Any]]:
+    """Expand macro task briefs that explicitly request multiple parallel workers.
+
+    The planner/supervisor owns the requested fanout. A single macro task may
+    request targetCount=3 or provide three workerBriefs; budget enforcement still
+    happens later on the expanded branch count.
+    """
+
+    expanded: list[dict[str, Any]] = []
+    macro_tasks = normalize_task_briefs(values or [])
+    for macro_index, macro in enumerate(macro_tasks):
+        worker_briefs = _normalize_worker_briefs(macro.get("workerBriefs"))
+        count = _safe_target_count(macro.get("targetCount"), default=1)
+        if worker_briefs:
+            count = max(count, len(worker_briefs))
+        if count <= 1:
+            item = dict(macro)
+            item["targetCount"] = 1
+            item["workerBriefs"] = []
+            expanded.append(item)
+            continue
+
+        parent_id = str(macro.get("taskBriefId") or f"task-{macro_index + 1}").strip() or f"task-{macro_index + 1}"
+        parent_goal = str(macro.get("goal") or "").strip()
+        for worker_index in range(count):
+            worker = dict(worker_briefs[worker_index]) if worker_index < len(worker_briefs) else {}
+            branch_payload = deepcopy(macro)
+            branch_payload["taskBriefId"] = str(
+                worker.get("taskBriefId")
+                or worker.get("task_brief_id")
+                or worker.get("id")
+                or f"{parent_id}#worker-{worker_index + 1}"
+            ).strip()
+            if worker.get("goal"):
+                branch_payload["goal"] = str(worker.get("goal") or "").strip()
+            else:
+                branch_payload["goal"] = f"{parent_goal} (parallel branch {worker_index + 1}/{count})".strip()
+            branch_payload["context"] = _merge_worker_context(
+                macro.get("context"),
+                worker.get("context"),
+                parent_goal=parent_goal,
+                index=worker_index,
+                count=count,
+            )
+            for key in (
+                "routeQuery",
+                "route_query",
+                "writeSet",
+                "write_set",
+                "readSet",
+                "read_set",
+                "criticalFiles",
+                "critical_files",
+                "behaviorScope",
+                "behavior_scope",
+                "requiredCapabilities",
+                "required_capabilities",
+                "runtimeAccess",
+                "runtime_access",
+                "acceptanceContract",
+                "acceptance_contract",
+                "dependency",
+                "parallelGroup",
+                "parallel_group",
+                "executionLaneHint",
+                "execution_lane_hint",
+                "familyHint",
+                "family_hint",
+                "preferredAgentId",
+                "preferred_agent_id",
+                "preferredWorkerType",
+                "preferred_worker_type",
+                "researchRefs",
+                "research_refs",
+                "verificationMatrix",
+                "verification_matrix",
+                "proofExpectations",
+                "proof_expectations",
+                "engineeringTaskCapsule",
+                "engineering_task_capsule",
+            ):
+                if key in worker:
+                    branch_payload[key] = worker.get(key)
+            branch_payload["targetCount"] = 1
+            branch_payload["workerBriefs"] = []
+            branch = normalize_task_brief(branch_payload, index=len(expanded))
+            branch["parentTaskBriefId"] = parent_id
+            branch["siblingIndex"] = worker_index + 1
+            branch["siblingCount"] = count
+            branch["fanoutReason"] = str(worker.get("fanoutReason") or macro.get("fanoutReason") or "").strip()
+            branch["workerBrief"] = worker
+            expanded.append(branch)
+    return expanded
 
 
 def build_minimal_task_brief(

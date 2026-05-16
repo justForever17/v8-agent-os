@@ -91,6 +91,7 @@ def _runtime_ack_event(topic: str, payload: dict, *, session_id: str | None = No
 
 
 _ACTIVE_CHAT_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
+_FALLBACK_ACTIVE_CHAT_STATUSES = _ACTIVE_CHAT_STATUSES - {"paused"}
 
 
 def _emit_human_guidance_event(topic: str, *, session_id: str, run_id: str | None, payload: dict) -> dict:
@@ -121,7 +122,7 @@ def _find_active_chat_run(session_id: str) -> dict | None:
         if record and str(record.get("status") or "").strip().lower() in _ACTIVE_CHAT_STATUSES:
             return record
     for record in db.list_run_records(session_id=session_id, run_type="chat", limit=20):
-        if str(record.get("status") or "").strip().lower() in _ACTIVE_CHAT_STATUSES:
+        if str(record.get("status") or "").strip().lower() in _FALLBACK_ACTIVE_CHAT_STATUSES:
             return record
     return None
 

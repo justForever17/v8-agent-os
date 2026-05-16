@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from core.runtime_tool_access import filter_visible_tools_for_actor
+from core.delegation_broker import expand_delegation_task_briefs
 from erc.runtime_stability import runtime_stability_service
 from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
 
@@ -97,7 +98,8 @@ def build_planner_auto_dispatch_node():
             "reason": str(decision.get("reason") or "eligible"),
             **({"blockedReason": "no_matching_target" if no_matching_target else "workset_dispatch_blocked"} if dispatch_blocked else {}),
             "planId": plan.get("planId"),
-            "taskCount": len(list(plan.get("taskBriefs") or [])),
+            "macroTaskCount": len(list(plan.get("taskBriefs") or [])),
+            "taskCount": len(expand_delegation_task_briefs(plan.get("taskBriefs") or [])),
         }
         if dispatch_blocked:
             update.setdefault("messages", []).append(

@@ -94,6 +94,14 @@ JSON_PRIORITY_KEYS = (
     "detailTool",
 )
 
+COMMAND_TOOL_NAMES = {
+    "run_system_command",
+    "execute_system_command",
+    "command_session_broker",
+    "read_background_output",
+    "send_background_input",
+}
+
 WORKER_RESULT_RE = re.compile(
     r"<V8_WORKER_RESULT\b[^>]*>.*?</V8_WORKER_RESULT>",
     re.IGNORECASE | re.DOTALL,
@@ -353,6 +361,198 @@ def _tool_surface_payload(
     return compact
 
 
+def _command_json_payload(text: str) -> dict[str, Any] | None:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        payload = json.loads(stripped)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _append_terminal_stream(
+    lines: list[str],
+    tag: str,
+    value: Any,
+    *,
+    truncated: bool = False,
+    raw_ref: str = "",
+    limit: int = 2400,
+) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    visible = _head_tail_truncate_text(text, limit, f"{tag} truncated; original length {len(text)} chars")
+    lines.append(f"<{tag}>")
+    lines.append(visible)
+    lines.append(f"</{tag}>")
+    if truncated or len(visible) < len(text):
+        suffix = f"; rawRef={raw_ref}" if raw_ref else ""
+        lines.append(f"[{tag} truncated{suffix}]")
+    return True
+
+
+def _strip_command_echo_from_stream(command: str, value: Any) -> str:
+    text = str(value or "").strip()
+    rendered_command = str(command or "").strip()
+    if not text or not rendered_command:
+        return text
+    lines = text.splitlines()
+    while lines:
+        first = lines[0].strip()
+        if first == rendered_command or first.endswith(f">{rendered_command}") or first.endswith(f"$ {rendered_command}"):
+            lines.pop(0)
+            continue
+        break
+    return "\n".join(lines).strip()
+
+
+def _render_terminal_command_surface(
+    *,
+    command: str = "",
+    stdout: Any = "",
+    stderr: Any = "",
+    exit_code: Any = None,
+    session_id: str = "",
+    waiting_input: bool = False,
+    still_running: bool = False,
+    raw_ref: str = "",
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
+    control_lines: list[str] | None = None,
+) -> str:
+    lines: list[str] = []
+    command_text = str(command or "").strip()
+    if command_text:
+        lines.append(f"$ {command_text}")
+    elif session_id:
+        lines.append(f"$ <command session {session_id}>")
+    else:
+        lines.append("$ <command>")
+    cleaned_stdout = _strip_command_echo_from_stream(command_text, stdout)
+    cleaned_stderr = _strip_command_echo_from_stream(command_text, stderr)
+    has_stream = False
+    has_stream = _append_terminal_stream(lines, "stdout", cleaned_stdout, truncated=stdout_truncated, raw_ref=raw_ref) or has_stream
+    has_stream = _append_terminal_stream(lines, "stderr", cleaned_stderr, truncated=stderr_truncated, raw_ref=raw_ref) or has_stream
+    for line in control_lines or []:
+        normalized = str(line or "").strip()
+        if normalized:
+            lines.append(normalized)
+    if waiting_input:
+        lines.append("[waiting for input]")
+    if still_running:
+        lines.append("[still running]")
+    if exit_code not in (None, "", [], 0, "0"):
+        lines.append(f"[exit code: {exit_code}]")
+    if not has_stream and not waiting_input and not still_running and exit_code in (None, 0, "0"):
+        lines.append("[completed with no output]")
+    return "\n".join(lines).strip()
+
+
+def _command_agent_visible_surface(
+    *,
+    tool_name: str,
+    content: str,
+    raw_ref: str,
+    budget: int,
+) -> str | None:
+    text = str(content or "").strip()
+    if text.startswith("$ ") or "\n<stdout>" in text or "\n<stderr>" in text:
+        return _head_tail_truncate_text(text, budget, f"command output truncated; rawRef={raw_ref}") if len(text) > budget else text
+    payload = _command_json_payload(text)
+    if not isinstance(payload, dict):
+        if not text:
+            return None
+        tag = "stderr" if text.lower().startswith("error") else "stdout"
+        return _render_terminal_command_surface(
+            stderr=text if tag == "stderr" else "",
+            stdout=text if tag == "stdout" else "",
+            raw_ref=raw_ref,
+            stderr_truncated=len(text) > budget,
+            stdout_truncated=len(text) > budget,
+        )
+
+    kind = str(payload.get("kind") or "").strip()
+    command = str(payload.get("command") or "").strip()
+    session_id = str(payload.get("sessionId") or payload.get("commandId") or "").strip()
+    if not command:
+        redirect = payload.get("redirect")
+        if isinstance(redirect, dict) and isinstance(redirect.get("args"), dict):
+            command = str(redirect.get("args", {}).get("command") or "").strip()
+    if kind == "command_result":
+        return _render_terminal_command_surface(
+            command=command,
+            stdout=payload.get("keyOutput") or payload.get("stdoutPreview") or "",
+            stderr=payload.get("keyErrors") or payload.get("stderrPreview") or "",
+            exit_code=payload.get("returnCode"),
+            raw_ref=raw_ref,
+            stdout_truncated=bool(payload.get("keyOutputTruncated") or payload.get("stdoutTruncated")),
+            stderr_truncated=bool(payload.get("keyErrorsTruncated") or payload.get("stderrTruncated")),
+        )
+    if kind == "command_session":
+        state = str(payload.get("state") or "").strip().lower()
+        stdout_candidates = (
+            (
+                payload.get("finalPreview"),
+                payload.get("keyOutput"),
+                payload.get("deltaText"),
+                payload.get("outputPreview"),
+            )
+            if state in {"completed", "failed"}
+            else (
+                payload.get("deltaText"),
+                payload.get("keyOutput"),
+                payload.get("outputPreview"),
+                payload.get("finalPreview"),
+            )
+        )
+        stdout = next((item for item in stdout_candidates if item not in (None, "")), "")
+        control: list[str] = []
+        if session_id and state not in {"completed", "failed"}:
+            control.append(f"[session: {session_id}]")
+        if state == "recoverable_stalled":
+            control.append("[command appears stalled; observe later or terminate]")
+        elif state == "render_stalled":
+            control.append("[terminal screen is still settling]")
+        if payload.get("terminated"):
+            control.append("[terminated]")
+        return _render_terminal_command_surface(
+            command=command,
+            stdout=stdout,
+            stderr=payload.get("error") or "",
+            exit_code=payload.get("returnCode"),
+            session_id=session_id,
+            waiting_input=bool(payload.get("awaitingInput")) or state == "awaiting_input",
+            still_running=state in {"running", "render_stalled", "recoverable_stalled"} and not bool(payload.get("awaitingInput")),
+            raw_ref=raw_ref,
+            stdout_truncated=bool(
+                payload.get("deltaTruncated")
+                or payload.get("keyOutputTruncated")
+                or payload.get("outputPreviewTruncated")
+                or payload.get("finalPreviewTruncated")
+            ),
+            control_lines=control,
+        )
+    if kind in {"command_session_required", "command_session_redirect"} or str(tool_name or "") in COMMAND_TOOL_NAMES:
+        control = [f"[{kind or 'command notice'}]"]
+        for key in ("reason", "summary", "error"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                control.append(f"[{value}]")
+        redirect = payload.get("redirect")
+        if isinstance(redirect, dict) and str(redirect.get("tool") or "").strip():
+            control.append(f"[use {redirect.get('tool')} to continue]")
+        return _render_terminal_command_surface(
+            command=command,
+            stderr=payload.get("error") or payload.get("summary") or "",
+            raw_ref=raw_ref,
+            control_lines=control,
+        )
+    return None
+
+
 def _prune_agent_visible_json(value: Any) -> Any:
     if isinstance(value, dict):
         pruned: dict[str, Any] = {}
@@ -533,6 +733,31 @@ def apply_tool_surface_budget(
             "rawRef": raw_ref,
         }
     )
+
+    if tool_name in COMMAND_TOOL_NAMES:
+        command_surface = _command_agent_visible_surface(
+            tool_name=tool_name,
+            content=content_str,
+            raw_ref=raw_ref,
+            budget=budget,
+        )
+        if command_surface is not None:
+            was_truncated = len(command_surface) > budget
+            if was_truncated:
+                command_surface = _head_tail_truncate_text(
+                    command_surface,
+                    budget,
+                    f"command output truncated; rawRef={raw_ref}",
+                )
+            budget_meta.update(
+                {
+                    "wasBudgetTruncated": was_truncated,
+                    "semanticTruncationStrategy": "command_terminal_surface",
+                    "originalChars": len(original_content_str),
+                    "visibleChars": len(command_surface),
+                }
+            )
+            return _copy_tool_message_with_budget(message, command_surface, budget_meta)
 
     strategy = "none"
     if len(content_str) > budget:

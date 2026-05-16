@@ -100,6 +100,7 @@ COMMAND_TOOL_NAMES = {
     "command_session_broker",
     "read_background_output",
     "send_background_input",
+    "terminate_background_command",
 }
 
 WORKER_RESULT_RE = re.compile(
@@ -370,6 +371,639 @@ def _command_json_payload(text: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _tool_json_payload(text: str) -> dict[str, Any] | None:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        payload = json.loads(stripped)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _short_text(value: Any, limit: int = 120) -> str:
+    text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _short_id(value: Any, *, prefix: int = 12) -> str:
+    text = _short_text(value, 80)
+    if len(text) <= prefix + 4:
+        return text
+    return text[:prefix] + "…"
+
+
+def _yes_no(value: Any) -> str:
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    if value in (None, ""):
+        return "unknown"
+    return _short_text(value, 40)
+
+
+def _status_counts_line(counts: Any) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return ""
+    parts = [f"{_short_text(key, 32)}={value}" for key, value in counts.items() if value not in (None, "", [], {})]
+    return ", ".join(parts[:8])
+
+
+def _surface_ref_lines(raw_ref: str, detail_tool: Any = None, *, include_raw: bool = True) -> list[str]:
+    lines: list[str] = []
+    detail = _short_text(detail_tool, 220)
+    if detail:
+        lines.append(f"Detail: {detail}")
+    elif raw_ref and include_raw:
+        lines.append(f"Detail: tool_observation_detail(raw_ref='{raw_ref}')")
+    if raw_ref and include_raw:
+        lines.append(f"Raw: {raw_ref}")
+    return lines
+
+
+def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    mode = _short_text(payload.get("mode") or "status", 40)
+    lines = [f"Runtime broker ({mode})"]
+    active = payload.get("activeGrants") or payload.get("grants") or payload.get("runtimeToolGrants") or []
+    if isinstance(active, list) and active:
+        names = []
+        for item in active[:8]:
+            if isinstance(item, dict):
+                names.append(str(item.get("group") or item.get("tool_group") or item.get("name") or "").strip())
+            else:
+                names.append(str(item).strip())
+        lines.append("Active grants: " + ", ".join(name for name in names if name)[:240])
+    else:
+        lines.append("Active grants: none")
+    groups = payload.get("availableGroups") or payload.get("groups") or []
+    if isinstance(groups, list) and groups:
+        lines.append("Grantable groups:")
+        for group in groups[:10]:
+            if isinstance(group, dict):
+                name = group.get("group") or group.get("name")
+                kind = group.get("kind") or group.get("runtimeKind")
+                label = group.get("label") or group.get("summary")
+                suffix = f" ({kind})" if kind else ""
+                desc = f" - {_short_text(label, 80)}" if label else ""
+                lines.append(f"- {_short_text(name, 80)}{suffix}{desc}")
+            else:
+                lines.append(f"- {_short_text(group, 100)}")
+        if len(groups) > 10:
+            lines.append(f"- … {len(groups) - 10} more; use catalog detail")
+    changed = payload.get("changed") or payload.get("grant") or payload.get("revoked")
+    if changed:
+        lines.append(f"Change: {_short_text(changed, 160)}")
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+    if next_action:
+        lines.append(f"Next: {_short_text(next_action, 180)}")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_workspace_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    lines = ["Workspace inventory"]
+    root = payload.get("workspaceRoot") or payload.get("activeWorkspaceRoot")
+    inspected = payload.get("inspectedPath") or payload.get("path")
+    if root:
+        lines.append(f"Root: {_short_text(root, 180)}")
+    if inspected and inspected != root:
+        lines.append(f"Inspected: {_short_text(inspected, 180)}")
+    token = payload.get("token") or payload.get("inventoryToken")
+    facts = []
+    if "nonEmpty" in payload:
+        facts.append(f"nonEmpty={_yes_no(payload.get('nonEmpty'))}")
+    if payload.get("itemCount") not in (None, ""):
+        facts.append(f"items={payload.get('itemCount')}")
+    if payload.get("projectMarkerCount") not in (None, ""):
+        facts.append(f"projectMarkers={payload.get('projectMarkerCount')}")
+    if token:
+        facts.append(f"token={_short_id(token, prefix=16)}")
+    if facts:
+        lines.append("State: " + " | ".join(facts))
+    top_dirs = payload.get("topDirs")
+    if isinstance(top_dirs, list) and top_dirs:
+        lines.append("Top dirs: " + ", ".join(_short_text(item, 40) for item in top_dirs[:6]))
+    markers = payload.get("projectMarkers")
+    if isinstance(markers, list) and markers:
+        lines.append("Project markers:")
+        for marker in markers[:3]:
+            if isinstance(marker, dict):
+                lines.append(f"- {_short_text(marker.get('path'), 120)} ({_short_text(marker.get('kind'), 40)})")
+            else:
+                lines.append(f"- {_short_text(marker, 140)}")
+        if len(markers) > 3:
+            lines.append(f"- … {len(markers) - 3} more")
+    conflicts = payload.get("conflicts") or payload.get("potentialConflicts")
+    if isinstance(conflicts, list) and conflicts:
+        lines.append("Conflicts:")
+        for item in conflicts[:3]:
+            lines.append(f"- {_short_text(item, 160)}")
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+    if next_action:
+        lines.append(f"Next: {_short_text(next_action, 220)}")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> str | None:
+    mode = str(payload.get("mode") or "").strip()
+    kind = str(payload.get("kind") or "").strip()
+    if mode != "plan" and kind != "research_plan":
+        return None
+    lines = ["Research plan"]
+    if payload.get("question"):
+        lines.append(f"Question: {_short_text(payload.get('question'), 220)}")
+    if payload.get("researchIntent"):
+        lines.append(f"Intent: {_short_text(payload.get('researchIntent'), 160)}")
+    policy = payload.get("experienceFirstPolicy")
+    if isinstance(policy, dict):
+        lines.append(f"Experience first: {_short_text(policy.get('summary') or policy.get('searchTool'), 180)}")
+    limits = payload.get("limits")
+    if isinstance(limits, dict):
+        requested = limits.get("requestedMaxShards")
+        effective = limits.get("effectiveMaxShards")
+        rounds = limits.get("effectiveMaxRounds")
+        lines.append(f"Shards: {effective or requested or '?'} effective; rounds={rounds or '?'}")
+    shards = payload.get("shards")
+    if isinstance(shards, list) and shards:
+        lines.append("Shard briefs:")
+        for shard in shards[:8]:
+            if not isinstance(shard, dict):
+                continue
+            shard_id = shard.get("shardId") or shard.get("id")
+            kind_text = shard.get("kind")
+            query = shard.get("query")
+            reason = shard.get("reason")
+            lines.append(f"- {_short_id(shard_id, prefix=14)} [{_short_text(kind_text, 32)}]: {_short_text(query, 150)} ({_short_text(reason, 50)})")
+        if len(shards) > 8:
+            lines.append(f"- … {len(shards) - 8} more")
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+    if next_action:
+        lines.append(f"Next: {_short_text(next_action, 160)}")
+    lines.append("Omitted: shardDefaults, limits, source catalog, raw search config.")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    if tool_name == "computer_use_resolve_execution_route":
+        lines = ["Computer Use route"]
+        route = payload.get("recommendedMode") or payload.get("executionReadyMode")
+        tool = payload.get("recommendedTool")
+        action = payload.get("recommendedAction")
+        if route or tool:
+            lines.append(f"Recommended: {_short_text(route, 60)} -> {_short_text(tool, 80)}")
+        if action:
+            lines.append(f"Action: {_short_text(action, 100)}")
+        match = payload.get("recommendedMatch")
+        if isinstance(match, dict):
+            lines.append(
+                "Best match: "
+                + " | ".join(
+                    part
+                    for part in (
+                        _short_text(match.get("id"), 90),
+                        _short_text(match.get("name"), 90),
+                        f"score={match.get('score')}" if match.get("score") not in (None, "") else "",
+                        f"confidence={match.get('confidence')}" if match.get("confidence") not in (None, "") else "",
+                    )
+                    if part
+                )
+            )
+        missing = payload.get("missingVariables") or payload.get("missingRequiredVariables")
+        if isinstance(missing, list) and missing:
+            lines.append("Missing variables: " + ", ".join(_short_text(item, 50) for item in missing[:8]))
+        else:
+            lines.append("Missing variables: none")
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            bits = []
+            for key in ("templateCount", "draftCount", "bestScore", "bestConfidence", "requiresLearning"):
+                if summary.get(key) not in (None, ""):
+                    bits.append(f"{key}={summary.get(key)}")
+            if bits:
+                lines.append("Signals: " + " | ".join(bits))
+        next_action = payload.get("recommendedToolSummary") or payload.get("recommendedNextAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 180)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name == "computer_use_list_apps":
+        apps = payload.get("apps")
+        if not isinstance(apps, list):
+            return None
+        lines = [f"Computer Use apps (showing {min(len(apps), 6)} of {payload.get('count') or len(apps)})"]
+        for app in apps[:6]:
+            if not isinstance(app, dict):
+                continue
+            aliases = app.get("aliases") if isinstance(app.get("aliases"), list) else []
+            alias_text = ", ".join(_short_text(alias, 28) for alias in aliases[:2])
+            state = []
+            if app.get("isRunning"):
+                state.append("running")
+            if app.get("launchable"):
+                state.append("launchable")
+            title = app.get("topWindowTitle") or app.get("displayName")
+            suffix = f" | aliases: {alias_text}" if alias_text else ""
+            lines.append(f"- {_short_text(app.get('appId'), 48)}: {_short_text(title, 100)} ({', '.join(state) or 'unknown'}){suffix}")
+        if len(apps) > 6:
+            lines.append(f"- … {len(apps) - 6} more; use detail for full windows/aliases")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name in {"computer_use_list_muscle_memories", "computer_use_lookup_muscle_memory"}:
+        memories = payload.get("memories") or payload.get("matches") or payload.get("items") or []
+        if not isinstance(memories, list):
+            memories = []
+        lines = ["Computer Use muscle memory"]
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            bits = [f"{key}={summary.get(key)}" for key in ("count", "bestScore", "bestConfidence") if summary.get(key) not in (None, "")]
+            if bits:
+                lines.append("Signals: " + " | ".join(bits))
+        if memories:
+            lines.append("Matches:")
+            for item in memories[:5]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "- "
+                    + " | ".join(
+                        part
+                        for part in (
+                            _short_text(item.get("id") or item.get("memoryId"), 80),
+                            _short_text(item.get("name") or item.get("goal"), 100),
+                            _short_text(item.get("routeAction") or item.get("action"), 60),
+                            f"confidence={item.get('confidence')}" if item.get("confidence") not in (None, "") else "",
+                        )
+                        if part
+                    )
+                )
+        else:
+            lines.append("Matches: none")
+        next_action = payload.get("recommendedNextAction") or payload.get("recommendedAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 180)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name == "computer_use_desktop_capabilities":
+        lines = ["Desktop capability snapshot"]
+        host = payload.get("currentHost")
+        if isinstance(host, dict):
+            counts = _status_counts_line(host.get("statusCounts"))
+            lines.append(f"Host: {_short_text(host.get('platform'), 50)}" + (f" | {counts}" if counts else ""))
+        driver = payload.get("driverHealth")
+        if isinstance(driver, dict):
+            available = [key for key, value in driver.items() if isinstance(value, dict) and value.get("available")]
+            missing = [key for key, value in driver.items() if isinstance(value, dict) and value.get("available") is False]
+            if available:
+                lines.append("Available: " + ", ".join(_short_text(item, 28) for item in available[:10]))
+            if missing:
+                lines.append("Blocking gaps: " + ", ".join(_short_text(item, 28) for item in missing[:8]))
+        browser = payload.get("browser")
+        if isinstance(browser, dict):
+            lines.append(f"Browser: enabled={_yes_no(browser.get('enabled'))}; provider={_short_text(browser.get('provider'), 60)}")
+        gaps = payload.get("knownGaps")
+        if isinstance(gaps, list) and gaps:
+            lines.append("Known gaps:")
+            for gap in gaps[:3]:
+                if isinstance(gap, dict):
+                    lines.append(f"- {_short_text(gap.get('code'), 60)}: {_short_text(gap.get('summary'), 130)}")
+        next_action = payload.get("recommendedNextAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 180)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name == "computer_use_list_primitives":
+        lines = ["Computer Use primitives"]
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            bits = []
+            for key in ("primitiveCount", "categoryCount", "promotionEligibleCount"):
+                if summary.get(key) not in (None, ""):
+                    bits.append(f"{key}={summary.get(key)}")
+            if bits:
+                lines.append("Summary: " + " | ".join(bits))
+            categories = summary.get("categories")
+            if isinstance(categories, list) and categories:
+                lines.append("Categories: " + ", ".join(_short_text(item, 24) for item in categories[:8] if not isinstance(item, dict)))
+        primitives = payload.get("primitives") or payload.get("items") or []
+        if isinstance(primitives, list) and primitives:
+            lines.append("Actions:")
+            for item in primitives[:8]:
+                if isinstance(item, dict):
+                    name = item.get("name") or item.get("primitive") or item.get("action")
+                    required = item.get("required") or item.get("requiredArgs") or item.get("parameters")
+                    req = ""
+                    if isinstance(required, list) and required:
+                        req = " required=" + ",".join(_short_text(part, 20) for part in required[:4])
+                    lines.append(f"- {_short_text(name, 80)}{req}")
+        next_action = payload.get("recommendedNextAction") or payload.get("detailTool")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 180)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name in {"computer_use_observe", "computer_use_observe_scene", "computer_use_list_windows", "computer_use_find_element"}:
+        lines = [f"Computer Use observation: {tool_name.replace('computer_use_', '')}"]
+        for key in ("summary", "status", "state", "error"):
+            if payload.get(key):
+                lines.append(f"{key}: {_short_text(payload.get(key), 180)}")
+        candidates = payload.get("candidates") or payload.get("elements") or payload.get("windows") or []
+        if isinstance(candidates, list) and candidates:
+            lines.append("Top candidates:")
+            for item in candidates[:5]:
+                if isinstance(item, dict):
+                    label = item.get("name") or item.get("title") or item.get("text") or item.get("id")
+                    confidence = item.get("confidence") or item.get("score")
+                    suffix = f" confidence={confidence}" if confidence not in (None, "") else ""
+                    lines.append(f"- {_short_text(label, 120)}{suffix}")
+                else:
+                    lines.append(f"- {_short_text(item, 140)}")
+        next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 180)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+    return None
+
+
+def _render_creative_media_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    if tool_name == "creative_media_catalog":
+        lines = ["Creative Media catalog"]
+        if payload.get("summary"):
+            lines.append(f"Summary: {_short_text(payload.get('summary'), 180)}")
+        counts = []
+        for key in ("modalityCount", "executableCandidateCount"):
+            if payload.get(key) not in (None, ""):
+                counts.append(f"{key}={payload.get(key)}")
+        if counts:
+            lines.append("Counts: " + " | ".join(counts))
+        modalities = payload.get("modalities")
+        if isinstance(modalities, list) and modalities:
+            lines.append("Modalities:")
+            for item in modalities[:8]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"- {_short_text(item.get('modality'), 40)}: providers={item.get('providerCount', '?')}, executable={item.get('executableCount', '?')}"
+                )
+        reminder = payload.get("catalogOnlyReminder")
+        if reminder:
+            lines.append(f"Reminder: {_short_text(reminder, 160)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name == "creative_media_resolutions":
+        lines = ["Creative Media resolutions"]
+        ratios = payload.get("ratios")
+        if isinstance(ratios, list) and ratios:
+            lines.append("Ratios: " + ", ".join(_short_text(item, 16) for item in ratios[:12]))
+        image_presets = payload.get("imagePresets")
+        if isinstance(image_presets, dict) and image_presets:
+            lines.append("Image presets: " + ", ".join(_short_text(key, 24) for key in list(image_presets.keys())[:8]))
+        video_presets = payload.get("videoPresets")
+        if isinstance(video_presets, dict) and video_presets:
+            lines.append("Video presets: " + ", ".join(_short_text(key, 24) for key in list(video_presets.keys())[:8]))
+        if payload.get("summary"):
+            lines.append(f"Summary: {_short_text(payload.get('summary'), 160)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    if tool_name.startswith("creative_media_get_") or tool_name == "creative_media_job_artifacts":
+        record_key = next(
+            (
+                key
+                for key in (
+                    "job",
+                    "recipe",
+                    "render",
+                    "editPlan",
+                    "qualityJob",
+                    "characterBible",
+                    "keyframe",
+                )
+                if isinstance(payload.get(key), dict)
+            ),
+            "",
+        )
+        record = payload.get(record_key) if record_key else payload
+        if not isinstance(record, dict):
+            return None
+        title = record_key or tool_name.replace("creative_media_", "")
+        lines = [f"Creative Media {title}"]
+        ident = (
+            record.get("jobId")
+            or record.get("recipeId")
+            or record.get("renderJobId")
+            or record.get("planId")
+            or record.get("qualityJobId")
+            or record.get("assetId")
+            or payload.get("jobId")
+        )
+        if ident:
+            lines.append(f"Id: {_short_text(ident, 120)}")
+        fields = []
+        for key in ("status", "modality", "operationKind", "providerId", "adapter", "model", "workspaceId", "projectId"):
+            if record.get(key) not in (None, "", [], {}):
+                fields.append(f"{key}={_short_text(record.get(key), 70)}")
+        if fields:
+            lines.append("State: " + " | ".join(fields[:8]))
+        error = record.get("error") or payload.get("error")
+        if error:
+            lines.append(f"Error: {_short_text(error, 180)}")
+        artifacts = record.get("artifacts") or payload.get("artifacts") or []
+        artifact_count = record.get("artifactCount") if record.get("artifactCount") not in (None, "") else len(artifacts) if isinstance(artifacts, list) else None
+        if artifact_count not in (None, ""):
+            lines.append(f"Artifacts: {artifact_count}")
+        if isinstance(artifacts, list) and artifacts:
+            for artifact in artifacts[:3]:
+                if isinstance(artifact, dict):
+                    lines.append(
+                        f"- {_short_id(artifact.get('artifactId'), prefix=14)} | {_short_text(artifact.get('kind'), 30)} | {_short_text(artifact.get('title'), 90)}"
+                    )
+        omitted = []
+        for key in ("sourcePath", "contentUrl", "previewUrl", "providerResponse", "stderrTail", "fullRequest", "timeline"):
+            if key in record or key in payload:
+                omitted.append(key)
+        if omitted:
+            lines.append("Omitted: " + ", ".join(omitted[:8]))
+        detail = record.get("detailTool") or payload.get("detailTool")
+        lines.extend(_surface_ref_lines(raw_ref, detail, include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
+    list_keys = (
+        ("creative_media_list_jobs", "jobs", "jobId", "creative_media_get_job(job_id=...)"),
+        ("creative_media_list_assets", "assets", "assetId", "Use related creative_media_get_* tools for full asset details"),
+        ("creative_media_list_renders", "renders", "renderJobId", "creative_media_get_render(render_job_id=...)"),
+        ("creative_media_list_edit_plans", "editPlans", "planId", "creative_media_get_edit_plan(plan_id=...)"),
+        ("creative_media_list_recipes", "recipes", "recipeId", "creative_media_get_recipe(recipe_id=...)"),
+        ("creative_media_list_character_bibles", "characterBibles", "characterBibleId", "creative_media_get_character_bible(character_bible_id=...)"),
+        ("creative_media_list_keyframes", "keyframes", "keyframeId", "creative_media_get_keyframe(keyframe_id=...)"),
+        ("creative_media_list_quality_jobs", "qualityJobs", "qualityJobId", "creative_media_get_quality_job(quality_job_id=...)"),
+        ("creative_media_safety_events", "events", "eventId", "Use rawRef for safety event detail"),
+        ("creative_media_cost_ledger", "entries", "id", "Use rawRef for ledger detail"),
+    )
+    match = next((item for item in list_keys if item[0] == tool_name), None)
+    if not match:
+        return None
+    _, key, id_key, fallback_detail = match
+    items = payload.get(key)
+    if not isinstance(items, list):
+        items = []
+    lines = [f"Creative Media {key} (showing {min(len(items), 3)} of {payload.get('count') or len(items)})"]
+    counts = _status_counts_line(payload.get("statusCounts"))
+    if counts:
+        lines.append(f"Status: {counts}")
+    for item in items[:3]:
+        if not isinstance(item, dict):
+            continue
+        ident = item.get(id_key) or item.get("jobId") or item.get("assetId") or item.get("renderJobId") or item.get("planId")
+        label = item.get("title") or item.get("operationKind") or item.get("role") or item.get("modality") or item.get("status")
+        status = item.get("status") or item.get("qualityStatus")
+        provider = item.get("providerId") or item.get("adapter")
+        model = item.get("model") or item.get("modelId")
+        error = item.get("error")
+        fields = [
+            _short_id(ident, prefix=14),
+            _short_text(label, 70),
+            _short_text(status, 40),
+            _short_text(provider, 60),
+            _short_text(model, 60),
+        ]
+        line = "- " + " | ".join(part for part in fields if part)
+        if error:
+            line += f" | error={_short_text(error, 90)}"
+        lines.append(line)
+    if len(items) > 3:
+        lines.append(f"- … {len(items) - 3} more; use detail for a single item")
+    if payload.get("hasMore"):
+        lines.append("Has more: yes")
+    detail = payload.get("detailTool") or fallback_detail
+    lines.extend(_surface_ref_lines(raw_ref, detail, include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_rpa_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    if tool_name != "rpa_list_robot_scripts":
+        return None
+    scripts = payload.get("scripts")
+    if not isinstance(scripts, list):
+        scripts = []
+    lines = [f"RPA robot scripts (showing {min(len(scripts), 5)} of {payload.get('count') or len(scripts)})"]
+    for script in scripts[:5]:
+        if not isinstance(script, dict):
+            continue
+        bits = [
+            _short_text(script.get("name"), 90),
+            f"size={script.get('size')}" if script.get("size") not in (None, "") else "",
+            f"updated={_short_text(script.get('updatedAt'), 40)}" if script.get("updatedAt") else "",
+        ]
+        lines.append("- " + " | ".join(bit for bit in bits if bit))
+    if not scripts:
+        lines.append("No robot scripts found.")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_native_json_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    if tool_name not in {"read_native_file", "grep_search"}:
+        return None
+    if payload.get("ok") is not False and not payload.get("error"):
+        return None
+    label = "Read native file" if tool_name == "read_native_file" else "Grep search"
+    lines = [label]
+    if payload.get("summary"):
+        lines.append(f"Summary: {_short_text(payload.get('summary'), 220)}")
+    if payload.get("error"):
+        lines.append(f"Error: {_short_text(payload.get('error'), 100)}")
+    for key in ("inputPath", "resolvedPath", "path"):
+        if payload.get(key):
+            lines.append(f"{key}: {_short_text(payload.get(key), 180)}")
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+    if next_action:
+        lines.append(f"Next: {_short_text(next_action, 220)}")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    if tool_name != "memory_map":
+        return None
+    lines = ["Memory map"]
+    if payload.get("anchorDate"):
+        lines.append(f"Anchor: {_short_text(payload.get('anchorDate'), 40)}")
+    refs = payload.get("currentRefs")
+    if isinstance(refs, dict) and refs:
+        lines.append("Current refs: " + ", ".join(f"{key}={_short_text(value, 60)}" for key, value in list(refs.items())[:4]))
+    items = payload.get("items")
+    if isinstance(items, list) and items:
+        lines.append("Items:")
+        for item in items[:5]:
+            if not isinstance(item, dict):
+                continue
+            summary_state = item.get("summaryState")
+            day_count = item.get("dayCount")
+            latest = item.get("latestDay")
+            line = f"- {_short_text(item.get('memoryRef'), 80)} | {_short_text(item.get('kind'), 24)} | {_short_text(item.get('label'), 40)}"
+            extras = []
+            if summary_state:
+                extras.append(f"summary={summary_state}")
+            if day_count not in (None, ""):
+                extras.append(f"days={day_count}")
+            if latest:
+                extras.append(f"latest={latest}")
+            if extras:
+                line += " | " + " ".join(extras)
+            lines.append(line)
+        if len(items) > 5:
+            lines.append(f"- … {len(items) - 5} more")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _decision_agent_visible_surface(
+    *,
+    tool_name: str,
+    content: str,
+    raw_ref: str,
+    budget: int,
+) -> str | None:
+    payload = _tool_json_payload(content)
+    if not isinstance(payload, dict):
+        return None
+    renderer_result: str | None = None
+    if tool_name == "runtime_broker":
+        renderer_result = _render_runtime_broker_surface(payload, raw_ref)
+    elif tool_name == "workspace_broker":
+        renderer_result = _render_workspace_broker_surface(payload, raw_ref)
+    elif tool_name == "research_broker":
+        renderer_result = _render_research_broker_surface(payload, raw_ref)
+    elif tool_name.startswith("computer_use_"):
+        renderer_result = _render_computer_use_surface(tool_name, payload, raw_ref)
+    elif tool_name.startswith("creative_media_"):
+        renderer_result = _render_creative_media_surface(tool_name, payload, raw_ref)
+    elif tool_name.startswith("rpa_"):
+        renderer_result = _render_rpa_surface(tool_name, payload, raw_ref)
+    elif tool_name in {"read_native_file", "grep_search"}:
+        renderer_result = _render_native_json_surface(tool_name, payload, raw_ref)
+    elif tool_name.startswith("memory_"):
+        renderer_result = _render_memory_surface(tool_name, payload, raw_ref)
+    if renderer_result is None:
+        return None
+    if len(renderer_result) > budget:
+        return _head_tail_truncate_text(renderer_result, budget, f"decision surface truncated; rawRef={raw_ref}")
+    return renderer_result
 
 
 def _append_terminal_stream(
@@ -758,6 +1392,30 @@ def apply_tool_surface_budget(
                 }
             )
             return _copy_tool_message_with_budget(message, command_surface, budget_meta)
+
+    decision_surface = _decision_agent_visible_surface(
+        tool_name=tool_name,
+        content=content_str,
+        raw_ref=raw_ref,
+        budget=budget,
+    )
+    if decision_surface is not None:
+        was_truncated = len(decision_surface) > budget
+        if was_truncated:
+            decision_surface = _head_tail_truncate_text(
+                decision_surface,
+                budget,
+                f"decision surface truncated; rawRef={raw_ref}",
+            )
+        budget_meta.update(
+            {
+                "wasBudgetTruncated": was_truncated,
+                "semanticTruncationStrategy": "decision_summary_surface",
+                "originalChars": len(original_content_str),
+                "visibleChars": len(decision_surface),
+            }
+        )
+        return _copy_tool_message_with_budget(message, decision_surface, budget_meta)
 
     strategy = "none"
     if len(content_str) > budget:

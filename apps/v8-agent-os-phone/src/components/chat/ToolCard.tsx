@@ -128,7 +128,11 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                             {!isComplete ? <View style={[styles.pingRing, { borderColor: "rgba(59,130,246,0.20)" }]} /> : null}
                         </View>
 
-                        <Text style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}>
+                        <Text
+                            style={[styles.title, { color: isExpanded ? colors.text : colors.textMuted }]}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                        >
                             {toolInvocation.toolName}
                         </Text>
 
@@ -224,6 +228,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 5,
         flex: 1,
+        minWidth: 0,
     },
     iconWrap: {
         width: 18,
@@ -245,6 +250,8 @@ const styles = StyleSheet.create({
         fontWeight: "700",
         letterSpacing: 0,
         flexShrink: 1,
+        minWidth: 0,
+        includeFontPadding: false,
     },
     statusPill: {
         overflow: "hidden",
@@ -255,6 +262,7 @@ const styles = StyleSheet.create({
         fontSize: 9,
         lineHeight: 12,
         fontWeight: "800",
+        flexShrink: 0,
     },
     content: {
         paddingHorizontal: 8,

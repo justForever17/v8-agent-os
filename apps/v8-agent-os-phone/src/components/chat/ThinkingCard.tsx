@@ -171,7 +171,11 @@ export const ThinkingCard = memo(function ThinkingCard({
                             {isStreaming ? <View style={[styles.pingRing, { borderColor: "rgba(139,92,246,0.20)" }]} /> : null}
                         </View>
 
-                        <Text style={[styles.title, { color: titleColor }]}>
+                        <Text
+                            style={[styles.title, { color: titleColor }]}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                        >
                             {title}
                         </Text>
 
@@ -266,6 +270,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 5,
         flex: 1,
+        minWidth: 0,
     },
     iconWrap: {
         width: 18,
@@ -286,10 +291,14 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: "700",
         letterSpacing: 0,
+        flexShrink: 1,
+        minWidth: 0,
+        includeFontPadding: false,
     },
     time: {
         fontSize: 10,
         fontWeight: "600",
+        flexShrink: 0,
     },
     contentOuter: {
         paddingHorizontal: 8,

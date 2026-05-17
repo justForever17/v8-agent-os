@@ -48,6 +48,7 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "manage_cron",
     "manage_hook",
     "read_audit_log",
+    "memory_broker",
     "memory_recall",
     "mem_update",
     "memory_map_expand",

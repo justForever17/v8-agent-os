@@ -15,6 +15,7 @@ from core.native_tools import (
     creative_media_create_edit_plan,
     creative_media_create_job,
     creative_media_create_quality_job,
+    memory_broker,
     runtime_broker,
 )
 from core.runtime_tool_access import (
@@ -37,6 +38,7 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
         _tool("run_system_command"),
         _tool("http_request"),
         _tool("delegate_network_task"),
+        _tool("memory_broker"),
         _tool("memory_recall"),
         _tool("mem_update"),
         _tool("computer_use_execute_task"),
@@ -51,6 +53,7 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     names = {tool.name for tool in visible}
 
     assert {"runtime_broker", "read_native_file", "run_system_command", "http_request", "delegate_network_task"}.issubset(names)
+    assert "memory_broker" in names
     assert "memory_recall" not in names
     assert "mem_update" not in names
     assert "computer_use_execute_task" not in names
@@ -229,13 +232,32 @@ def test_subagent_default_surface_hides_supervisor_only_and_runtime_tools():
 
 
 def test_subagent_task_brief_runtime_access_grants_only_requested_memory_group():
-    tools = [_tool("memory_recall"), _tool("memory_read_day"), _tool("memory_map_expand"), _tool("mem_update")]
+    tools = [_tool("memory_broker"), _tool("memory_recall"), _tool("memory_read_day"), _tool("memory_map_expand"), _tool("mem_update")]
     brief = normalize_task_brief({"runtimeAccess": ["memory.read"]})
 
     visible = filter_visible_tools_for_actor(tools, actor="subagent", runtime_access=brief["runtimeAccess"])
     names = {tool.name for tool in visible}
 
-    assert names == {"memory_recall", "memory_read_day", "memory_map_expand"}
+    assert names == {"memory_broker", "memory_recall", "memory_read_day", "memory_map_expand"}
+
+
+def test_memory_broker_is_default_supervisor_read_only_entry_but_not_default_subagent_tool():
+    tools = [_tool("memory_broker"), _tool("memory_recall"), _tool("mem_update")]
+
+    supervisor_visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
+    assert {tool.name for tool in supervisor_visible} == {"memory_broker"}
+
+    subagent_visible = filter_visible_tools_for_actor(tools, actor="subagent", runtime_access=[])
+    assert "memory_broker" not in {tool.name for tool in subagent_visible}
+
+
+def test_memory_broker_explain_injection_is_read_only_decision_surface():
+    payload = json.loads(memory_broker.func(mode="explain_injection"))
+
+    assert payload["ok"] is True
+    assert payload["mode"] == "explain_injection"
+    assert "snapshot" in payload["summary"].lower()
+    assert "nextAction" in payload
 
 
 def test_normalize_task_brief_preserves_runtime_access():

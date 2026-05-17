@@ -938,6 +938,69 @@ def _render_native_json_surface(tool_name: str, payload: dict[str, Any], raw_ref
 
 
 def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
+    if tool_name == "memory_broker":
+        mode = str(payload.get("mode") or "").strip() or "recall"
+        lines = [f"Memory broker: {mode}"]
+        if payload.get("summary"):
+            lines.append(f"Summary: {_short_text(payload.get('summary'), 220)}")
+        if payload.get("query"):
+            lines.append(f"Query: {_short_text(payload.get('query'), 160)}")
+        if payload.get("scope"):
+            lines.append(f"Scope: {_short_text(payload.get('scope'), 80)}")
+
+        items = payload.get("items")
+        if isinstance(items, list) and items:
+            lines.append("Items:")
+            for item in items[:5]:
+                if not isinstance(item, dict):
+                    continue
+                label = item.get("text") or item.get("name") or item.get("memoryRef") or item.get("id")
+                prefix = item.get("id") or item.get("memoryRef") or item.get("name")
+                extras = []
+                if item.get("scope"):
+                    extras.append(str(item.get("scope")))
+                if item.get("category") or item.get("type"):
+                    extras.append(str(item.get("category") or item.get("type")))
+                if item.get("confidence") not in (None, ""):
+                    extras.append(f"confidence={item.get('confidence')}")
+                suffix = f" | {'; '.join(extras)}" if extras else ""
+                if prefix and prefix != label:
+                    lines.append(f"- {_short_text(prefix, 80)}: {_short_text(label, 240)}{suffix}")
+                else:
+                    lines.append(f"- {_short_text(label, 240)}{suffix}")
+            if len(items) > 5:
+                lines.append(f"- … {len(items) - 5} more")
+
+        relations = payload.get("relations")
+        if isinstance(relations, list) and relations:
+            lines.append("Relations:")
+            for item in relations[:6]:
+                if not isinstance(item, dict):
+                    continue
+                triple = " ".join(
+                    _short_text(item.get(key), 80)
+                    for key in ("subject", "predicate", "object")
+                    if item.get(key)
+                )
+                if triple:
+                    hop = f"hop={item.get('hop')} | " if item.get("hop") else ""
+                    lines.append(f"- {hop}{triple}")
+            if len(relations) > 6:
+                lines.append(f"- … {len(relations) - 6} more")
+
+        if payload.get("preview"):
+            lines.append("Preview:")
+            lines.append(_short_text(payload.get("preview"), 1200))
+        if payload.get("omittedChars"):
+            lines.append(f"Omitted chars: {payload.get('omittedChars')}")
+        next_action = payload.get("nextAction") or payload.get("recommendedNextAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 220)}")
+        if payload.get("ok") is False and payload.get("failureClass"):
+            lines.append(f"Failure: {_short_text(payload.get('failureClass'), 80)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
     if tool_name != "memory_map":
         return None
     lines = ["Memory map"]

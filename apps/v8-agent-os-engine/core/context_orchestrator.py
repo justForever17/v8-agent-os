@@ -29,6 +29,7 @@ _ALLOWED_BLOCK_TYPES = {
     "automation_memory",
     "recent_messages",
     "memory_recall",
+    "memory_broker",
 }
 
 _GOAL_KEYWORDS = (

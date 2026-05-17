@@ -44,6 +44,7 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
         "label": "Memory read",
         "summary": "读取长期记忆、日期日志和记忆地图节点。",
         "toolNames": [
+            "memory_broker",
             "memory_recall",
             "memory_read_day",
             "memory_map_expand",
@@ -325,6 +326,10 @@ def filter_visible_tools_for_actor(
             continue
         if name == RUNTIME_BROKER_TOOL_NAME:
             if normalized_actor == "supervisor":
+                visible.append(tool_ref)
+            continue
+        if name == "memory_broker":
+            if normalized_actor == "supervisor" or name in granted_runtime_tools:
                 visible.append(tool_ref)
             continue
         if normalized_actor != "supervisor" and name == "delegation_broker":

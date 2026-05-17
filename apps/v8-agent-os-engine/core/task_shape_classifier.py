@@ -208,6 +208,7 @@ def classify_task_shape(
     media_providers = _find_terms(combined, term_sets["media_provider"])
     writing_actions = _find_terms(combined, term_sets["writing_action"])
     research_actions = _find_terms(combined, term_sets["research_action"])
+    research_project_build_signal = _detect_research_project_build_signal(combined)
     explicit_writing_actions = [
         item
         for item in writing_actions
@@ -297,6 +298,17 @@ def classify_task_shape(
             optional_grants.append("research.core")
             family_scores["research"] = 0.48
             signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+    elif research_actions and research_project_build_signal:
+        primary = "project_coding"
+        confidence = 0.86
+        reason = "research_plus_project_build_intent"
+        family_scores["engineering"] = 0.86
+        family_scores["research"] = 0.56
+        suggested_families = ["engineering", "research"]
+        optional_grants = ["research.core"]
+        secondary.append("research")
+        signals.extend(f"research_action:{item}" for item in research_actions[:4])
+        signals.extend(research_project_build_signal[:6])
     elif research_actions:
         primary = "research"
         confidence = 0.91
@@ -405,6 +417,60 @@ def _task_shape_term_sets() -> dict[str, tuple[str, ...]]:
         if key in {"media_output"}:
             terms[key] = set(_expand_with_lexicon(values, lexicon_maps))
     return {key: tuple(sorted(values, key=lambda item: (len(item), item))) for key, values in terms.items()}
+
+
+def _detect_research_project_build_signal(text: str) -> list[str]:
+    normalized = _lower_text(text)
+    if not normalized:
+        return []
+    action_terms = (
+        "build",
+        "create",
+        "develop",
+        "implement",
+        "design",
+        "make",
+        "开发",
+        "实现",
+        "制作",
+        "设计",
+        "做一个",
+        "做个",
+        "做一款",
+        "设计一个",
+        "设计一款",
+        "开发一个",
+        "开发一款",
+    )
+    artifact_terms = (
+        "web app",
+        "web application",
+        "frontend",
+        "front-end",
+        "ui",
+        "game",
+        "application",
+        "project",
+        "web应用",
+        "web 应用",
+        "网页应用",
+        "前端",
+        "前端界面",
+        "前端页面",
+        "动态ui",
+        "动态 ui",
+        "游戏",
+        "应用",
+        "项目",
+    )
+    action_hits = [term for term in action_terms if term in normalized]
+    artifact_hits = [term for term in artifact_terms if term in normalized]
+    if not action_hits or not artifact_hits:
+        return []
+    return [
+        *(f"project_build_action:{item}" for item in action_hits[:3]),
+        *(f"project_build_artifact:{item}" for item in artifact_hits[:3]),
+    ]
 
 
 @lru_cache(maxsize=1)

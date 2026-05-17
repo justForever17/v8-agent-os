@@ -527,6 +527,55 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[stdout truncated", compacted)
         self.assertNotIn('"status"', compacted)
 
+    async def test_command_tool_result_agent_visible_uses_terminal_surface(self):
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_start",
+                "run_id": "command_run_callback",
+                "name": "command_session_broker",
+                "data": {
+                    "input": {
+                        "toolCallId": "call_v8_command_test",
+                        "mode": "observe",
+                        "sessionId": "cmd-test",
+                    }
+                },
+            },
+        )
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_end",
+                "run_id": "command_run_callback",
+                "name": "command_session_broker",
+                "data": {
+                    "output": {
+                        "ok": True,
+                        "mode": "observe",
+                        "kind": "command_session",
+                        "sessionId": "cmd-test",
+                        "command": "npx tsc -b",
+                        "state": "completed",
+                        "finalPreview": "src/index.ts(3,8): error TS2307: Cannot find module './index.css'.",
+                        "returnCode": 2,
+                        "summary": "命令会话已完成。",
+                    }
+                },
+            },
+        )
+
+        visible = emitted[0]["tool"]["agentVisibleResult"]
+        self.assertIn("$ npx tsc -b", visible)
+        self.assertIn("<stdout>", visible)
+        self.assertIn("TS2307", visible)
+        self.assertIn("[exit code: 2]", visible)
+        self.assertNotIn('"summary"', visible)
+        self.assertNotIn('"state"', visible)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,13 +76,17 @@ export function buildMessageTimelineSegments<TNode extends TimelineSegmentNode>(
   let traceBuffer: TNode[] = [];
   let traceStartIndex = -1;
   let traceGroupId = "";
+  const groupIdOccurrences = new Map<string, number>();
 
   const flushTrace = (endIndex: number) => {
     if (traceBuffer.length === 0) {
       return;
     }
     const groupIndex = segments.length;
-    const groupId = traceGroupId || `trace-${nodeKey(traceBuffer[0], traceStartIndex)}-${groupIndex}`;
+    const baseGroupId = traceGroupId || `trace-${nodeKey(traceBuffer[0], traceStartIndex)}-${groupIndex}`;
+    const occurrence = groupIdOccurrences.get(baseGroupId) || 0;
+    groupIdOccurrences.set(baseGroupId, occurrence + 1);
+    const groupId = occurrence > 0 ? `${baseGroupId}:occurrence:${occurrence}` : baseGroupId;
     const followedByNarrative = hasNarrativeAfter(nodes, endIndex);
     const active = Boolean(options?.active) && !followedByNarrative;
     segments.push({

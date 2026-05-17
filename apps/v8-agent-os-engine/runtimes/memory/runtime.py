@@ -66,6 +66,7 @@ class MemoryRuntime:
             ],
             "metadata": {
                 "managedToolNames": [
+                    "memory_broker",
                     "memory_recall",
                     "mem_update",
                     "memory_map_expand",

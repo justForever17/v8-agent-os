@@ -1989,16 +1989,21 @@ class ChatRuntime:
                 },
             )
             primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
+            shape_reason = str(prepared.task_shape_hint.get("reason") or "").strip()
             secondary_shapes = {
                 str(item or "").strip()
                 for item in list(prepared.task_shape_hint.get("secondaryTaskShapes") or [])
                 if str(item or "").strip()
             }
+            engineering_required = (
+                primary_shape == "project_coding"
+                and ("research" in secondary_shapes or shape_reason == "research_plus_project_build_intent")
+            )
             if prepared.explicit_engineering_requested or primary_shape == "project_coding" or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"}):
                 prepared.task_planning_mode = True
                 prepared.planner_mode = "force"
                 prepared.planner_dispatch_mode = "auto"
-                if prepared.explicit_engineering_requested:
+                if prepared.explicit_engineering_requested or engineering_required:
                     prepared.engineering_mode = "force"
             run_service.update_metadata(
                 run_handle.run_id,
@@ -2007,6 +2012,7 @@ class ChatRuntime:
                     "plannerMode": prepared.planner_mode,
                     "plannerDispatchMode": prepared.planner_dispatch_mode,
                     "taskPlanningMode": prepared.task_planning_mode,
+                    "engineeringRequired": bool(engineering_required),
                     "explicitEngineeringRequested": bool(prepared.explicit_engineering_requested),
                 },
             )
@@ -4822,6 +4828,15 @@ class ChatRuntime:
         return str(value)
 
     @classmethod
+    def _agent_visible_tool_result_for_event(cls, tool_name: str, output: Any, compact_result: Any) -> str:
+        normalized_tool_name = str(tool_name or "").strip().lower()
+        if normalized_tool_name in {"run_system_command", "command_session_broker"}:
+            if isinstance(compact_result, str):
+                return compact_result
+            return str(compact_result or "")
+        return cls._extract_agent_visible_tool_result(output)
+
+    @classmethod
     def _extract_mcp_app_resource_uri_from_result(cls, value: Any) -> str:
         candidate = cls._coerce_json_like_value(to_jsonable(value))
         containers: list[Any] = []
@@ -5626,7 +5641,7 @@ class ChatRuntime:
                     )
                     return emitted_events
             compact_result = self._compact_tool_result_value(str(name or ""), output)
-            agent_visible_result = output_str
+            agent_visible_result = self._agent_visible_tool_result_for_event(str(name or ""), output, compact_result)
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             provider_shadow = dict(stream_state.tool_call_shadow_by_tool_call_id.get(tool_call_id) or {})
             mcp_app_payload = self._build_mcp_app_payload(

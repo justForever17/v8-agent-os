@@ -1264,6 +1264,8 @@ def build_supervisor_system_content(
         "\n\n[Execution Hints]\n"
         "If the current workspace hits a protected or legacy residue path, surface the governance/runtime hint and recommended canonical workspace path instead of trying to fix paths with destructive shell commands.\n"
         "Treat Active Workspace Root as the project execution boundary: command cwd and project file writes must stay inside it unless the user explicitly grants another root.\n"
+        "Passive Memory/RAG context is only a compact snapshot. When the user asks about prior work, remembered preferences, project history, exact daily logs, or knowledge graph relations, call `memory_broker` before relying on injected memory.\n"
+        "For high-impact decisions based on memory, verify with `memory_broker(mode=\"recall\")`, `memory_broker(mode=\"read_day\")`, or `memory_broker(mode=\"graph_neighbors\")`; if lookup returns no match or stale context, say so instead of inventing history.\n"
         "When the task combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose an Engineering/direct/subagent route with explicit writeSet and verification proof.\n"
         "For complex, fresh, or multi-source web research, grant `research.core` and use `research_broker`; first call `research_broker(mode=\"search_experience\")` for reusable experience packs, then run new research only when packs are missing, stale, low-confidence, or conflicting. Use `web_broker` for narrow lookup/read only.\n"
         "If the user explicitly asks for Engineering Runtime / engineering mode / 工程运行时 / 工程模式, route into Engineering discipline first; if Engineering is disabled, fail fast instead of blind direct execution.\n"

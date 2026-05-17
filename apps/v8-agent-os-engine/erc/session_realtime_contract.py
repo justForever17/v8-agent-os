@@ -370,8 +370,8 @@ def build_context_references(snapshot: Dict[str, Any]) -> list[Dict[str, Any]]:
                     }
                 continue
 
-            if tool_name == "memory_recall":
-                query = _string(args.get("query")) or "knowledge"
+            if tool_name in {"memory_recall", "memory_broker"}:
+                query = _string(args.get("query") or args.get("entity") or args.get("memory_ref") or args.get("memory_ref_or_date")) or "knowledge"
                 short_query = f"{query[:15]}..." if len(query) > 15 else query
                 references[f"memory:{short_query.lower()}"] = {
                     "id": f"memory:{short_query.lower()}",

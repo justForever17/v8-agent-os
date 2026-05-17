@@ -123,6 +123,19 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertLess(payload["sourceQualitySummary"]["averageRelevance"], 20)
         self.assertIn("research_broker", payload["sourceQualitySummary"]["recommendedNextAction"])
 
+    def test_web_search_explicit_metaso_requires_agent_browser_profile_when_not_allowlisted(self):
+        with patch(
+            "core.tools.web_fetcher.get_web_fetch_config",
+            return_value={"useAgentBrowserProfile": False, "agentBrowserProfileAllowlist": []},
+        ):
+            result = web_broker.func(target="中国象棋规则", mode="search", search_engine="metaso")
+
+        payload = json.loads(result)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failureClass"], "needs_agent_browser_login")
+        self.assertEqual(payload["attemptedProviders"][0]["status"], "skipped")
+        self.assertIn("Agent 专用浏览器", payload["recommendedNextAction"])
+
     def test_web_broker_read_mode_forces_read_intent(self):
         with patch("core.tools.web_fetcher.web_fetch.func", return_value='{"ok": true, "mode": "read"}') as mocked:
             result = web_broker.func(target="https://example.com/doc", mode="read", fetch_mode="dynamic")
@@ -157,12 +170,14 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["code"], "missing_destination_path")
 
-    def test_run_system_command_auto_redirects_session_preferred_commands(self):
+    def test_run_system_command_auto_starts_session_preferred_commands(self):
         payload = json.loads(run_system_command.func(command="npm run dev", mode="auto"))
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["kind"], "command_session_redirect")
-        self.assertEqual(payload["redirect"]["tool"], "command_session_broker")
-        self.assertEqual(payload["redirect"]["args"]["mode"], "start")
+        self.assertEqual(payload["kind"], "command_session")
+        self.assertEqual(payload["mode"], "session")
+        self.assertEqual(payload["command"], "npm run dev")
+        self.assertEqual(payload["recommendedNextAction"], "observe")
+        self.assertEqual(payload["state"], "running")
 
     def test_command_session_broker_start_returns_process_link_contract(self):
         with patch(
@@ -191,8 +206,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "start")
         self.assertEqual(payload["kind"], "command_session")
         self.assertEqual(payload["commandId"], "cmd123")
-        self.assertEqual(payload["linkedProcess"]["processId"], "cmd123")
+        self.assertEqual(payload["sessionId"], "cmd123")
         self.assertEqual(payload["recommendedNextAction"], "observe")
+        self.assertEqual(payload["state"], "running")
 
     def test_delegation_broker_dispatch_starts_external_worker_session(self):
         descriptor = {

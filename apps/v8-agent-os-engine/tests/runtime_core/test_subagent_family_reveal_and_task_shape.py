@@ -77,6 +77,18 @@ def test_research_plus_new_frontend_app_is_project_coding_with_research_secondar
     assert "research.core" in hint["optionalRuntimeGrants"]
 
 
+def test_research_plus_game_ui_design_is_project_coding_with_research_secondary() -> None:
+    hint = classify_task_shape(
+        "联网调研中国象棋无法和细节，思考如何接入一款 AI VS 人类或者纯 AI 互拍的象棋游戏，需要有精美的前端动态 UI"
+    )
+
+    assert hint["primaryTaskShape"] == "project_coding"
+    assert hint["reason"] in {"research_plus_project_build_intent", "engineering_action_terms"}
+    assert hint["suggestedFamilies"][0] == "engineering"
+    assert "research" in hint["secondaryTaskShapes"]
+    assert "research.core" in hint["optionalRuntimeGrants"]
+
+
 def test_multilingual_aliases_feed_task_shape_classifier() -> None:
     remotion_hint = classify_task_shape("Implementa un vídeo con Remotion")
     seedance_hint = classify_task_shape("Seedanceで動画を生成して")

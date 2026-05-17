@@ -40,9 +40,9 @@ last_updated: "{date}"
 
 [global]
 # 全局画像 — 长期身份、表达与背景
-preferred_language: zh-CN
 assistant_name: Please help me come up with a name.
-system_identity_reference: V8 Agent OS
+user_call_name: master
+relationship_tone: Warm and friendly
 """
 
 # === 正则 ===
@@ -52,12 +52,12 @@ _SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:", "workspace:", "external_api_
 _DAY_FILENAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 GLOBAL_PROFILE_DEFAULTS: Dict[str, str] = {
-    "preferred_language": "zh-CN",
-    "user_call_name": "",
+    "preferred_language": "",
+    "user_call_name": "master",
     "assistant_name": "Please help me come up with a name.",
-    "system_identity_reference": "V8 Agent OS",
+    "system_identity_reference": "",
     "assistant_persona": "",
-    "relationship_tone": "",
+    "relationship_tone": "Warm and friendly",
     "emotional_boundary": "",
     "response_language_style": "",
     "format_preference": "",
@@ -2367,7 +2367,7 @@ class MemoryStore:
             parts.append("Available top-level memory nodes:")
             parts.extend(available_years)
         parts.append("")
-        parts.append("Use memory_map_expand(memoryRef) to drill down. Use memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need an exact daily log.")
+        parts.append("Use memory_broker(mode='expand_map', memory_ref='...') or memory_map_expand(memoryRef) to drill down. Use memory_broker(mode='read_day', memory_ref_or_date='...') or memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need an exact daily log.")
         return "\n".join(parts).strip()
 
     def _build_memory_summary_for_injection(
@@ -2825,7 +2825,7 @@ class MemoryStore:
             "consistencyConflicts": [],
         }
         parts = []
-        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, knowledge graph summaries, procedural workflow hints, navigation refs, and compact recent activity hints.")
+        parts.append("[SYSTEM NOTE] The following information is dynamically provided by the internal Memory & RAG agent system. It contains user preferences, memory summaries, knowledge graph summaries, procedural workflow hints, navigation refs, and compact recent activity hints. This is a compact snapshot and may be stale or incomplete; when prior facts affect a decision, call memory_broker for fresh recall, exact day logs, or graph relations.")
 
         # --- Layer 1: 用户画像 ---
         normalized_chain = self._normalize_scope_chain(scope=scope, scope_chain=scope_chain)
@@ -2908,7 +2908,7 @@ class MemoryStore:
             parts.append(
                 f"[RECENT ACTIVITY TEASER]\n"
                 f"{recent_teaser}\n"
-                "Use memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need the exact daily log.\n"
+                "Use memory_broker(mode='read_day', memory_ref_or_date='memory://day/YYYY-MM-DD') or memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need the exact daily log.\n"
                 "[/RECENT ACTIVITY TEASER]"
             )
 

@@ -169,6 +169,7 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
         "deliverable": "evidence_bundle",
     },
     "fetch_skill_instructions": {"skill_name": "__v8_calibration_missing_skill__", "detail_level": "summary"},
+    "memory_broker": {"mode": "explain_injection", "limit": 3},
     "memory_recall": {"query": "native-tool-output-calibration", "limit": 1},
     "mem_summary": {"tier": "day", "date": "2099-01-01"},
     "memory_map": {"anchor_date": "2099-01-01"},

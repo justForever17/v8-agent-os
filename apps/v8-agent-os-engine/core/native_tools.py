@@ -4736,14 +4736,7 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
     """Read a bounded, redacted preview for a previous tool observation rawRef."""
     normalized_ref = str(raw_ref or "").strip()
     if not normalized_ref.startswith("toolobs://"):
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "invalid_raw_ref",
-                "message": "Pass the exact toolobs://... rawRef from a prior tool output envelope.",
-            },
-            ensure_ascii=False,
-        )
+        return "rawRef invalid: pass the exact toolobs://... rawRef from a prior tool output envelope."
 
     try:
         requested_chars = int(max_chars or 6000)
@@ -4756,51 +4749,376 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
 
         record = observability_db.get_tool_observation_record(normalized_ref)
         if not record:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "raw_ref_not_found",
-                    "rawRef": normalized_ref,
-                },
-                ensure_ascii=False,
-            )
+            return f"rawRef not found: {normalized_ref}"
 
         raw_body = str(record.get("raw_body_text") or "")
         raw_preview = raw_body[:requested_chars]
         preview = _redact_tool_observation_preview(raw_preview)
-        return json.dumps(
-            {
-                "ok": True,
-                "rawRef": normalized_ref,
-                "toolName": record.get("tool_name"),
-                "toolCallId": record.get("tool_call_id"),
-                "runtimeKind": record.get("runtime_kind"),
-                "surface": record.get("surface"),
-                "rawChars": record.get("raw_chars"),
-                "visibleChars": record.get("visible_chars"),
-                "rawSha256": record.get("raw_sha256"),
-                "createdAt": record.get("created_at"),
-                "budget": record.get("budget") or {},
-                "previewChars": len(preview),
-                "omittedChars": max(0, len(raw_body) - len(raw_preview)),
-                "redacted": preview != raw_preview,
-                "preview": preview,
-            },
-            ensure_ascii=False,
-        )
+        omitted_chars = max(0, len(raw_body) - len(raw_preview))
+        lines = [
+            "Tool observation detail",
+            f"rawRef: {normalized_ref}",
+            f"tool: {record.get('tool_name') or 'unknown'}",
+            f"runtime: {record.get('runtime_kind') or 'unknown'}",
+            f"chars: raw={record.get('raw_chars') or 0}, visible={record.get('visible_chars') or 0}",
+            f"sha256: {record.get('raw_sha256') or 'unknown'}",
+            "",
+            "<preview>",
+            preview,
+            "</preview>",
+        ]
+        if omitted_chars:
+            lines.append(f"[omitted {omitted_chars} chars]")
+        if preview != raw_preview:
+            lines.append("[secrets redacted]")
+        return "\n".join(lines)
     except Exception as e:
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "tool_observation_detail_failed",
-                "message": str(e),
-            },
-            ensure_ascii=False,
-        )
+        return f"tool observation detail failed: {e}"
 
 # ==========================================
 # Memory Tools (Lightweight for Supervisor)
 # ==========================================
+
+def _memory_broker_clamp_limit(limit: int | None, *, default: int = 5, maximum: int = 12) -> int:
+    try:
+        value = int(limit or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+def _memory_broker_preview(value: Any, limit: int = 360) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) > limit:
+        return text[: limit - 3].rstrip() + "..."
+    return text
+
+
+def _memory_broker_score(item: dict[str, Any]) -> float | None:
+    for key in ("final_relevance_score", "relevance_score", "raw_relevance_score", "effectiveConfidence", "effective_confidence", "confidence"):
+        value = item.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return round(max(0.0, min(float(value), 1.0)), 3)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _memory_broker_compact_recall_item(item: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "id": item.get("id") or item.get("memoryRef") or item.get("memory_ref"),
+        "scope": item.get("scope"),
+        "category": item.get("category") or item.get("source"),
+        "confidence": _memory_broker_score(item),
+        "updatedAt": item.get("updated_at") or item.get("updatedAt"),
+        "whyMatched": item.get("match_reason") or item.get("source"),
+        "text": _memory_broker_preview(item.get("text") or item.get("fact") or item.get("summary") or item.get("content")),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def _memory_broker_response(**payload: Any) -> str:
+    compact = {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+    return json.dumps(compact, ensure_ascii=False)
+
+
+@tool
+def memory_broker(
+    mode: str = "recall",
+    query: Optional[str] = None,
+    item_id: Optional[str] = None,
+    memory_ref: Optional[str] = None,
+    memory_ref_or_date: Optional[str] = None,
+    entity: Optional[str] = None,
+    scope: Optional[str] = None,
+    limit: int = 5,
+    hops: int = 2,
+    anchor_date: Optional[str] = None,
+    detail_level: str = "summary",
+) -> str:
+    """Read-only Memory/RAG broker for supervisor self-service recall.
+
+    Use this before relying on passive memory injection when the user asks about prior work,
+    remembered preferences, project history, daily logs, or knowledge graph relations.
+    This tool does not update or delete memory.
+    """
+    normalized_mode = str(mode or "recall").strip().lower()
+    normalized_detail = str(detail_level or "summary").strip().lower()
+    runtime = _get_memory_runtime()
+    effective_limit = _memory_broker_clamp_limit(limit)
+    try:
+        if normalized_mode == "recall":
+            search_text = str(query or item_id or "").strip()
+            if not search_text:
+                return _memory_broker_response(
+                    ok=False,
+                    kind="memory_broker",
+                    mode=normalized_mode,
+                    failureClass="missing_query",
+                    summary="memory_broker recall needs a query.",
+                    nextAction="Call memory_broker(mode='recall', query='...') with the memory question or keywords.",
+                )
+            results = runtime.unified_recall(query=search_text, limit=effective_limit, scope=scope)
+            items = [_memory_broker_compact_recall_item(item) for item in results[:effective_limit] if isinstance(item, dict)]
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                query=search_text,
+                scope=scope,
+                summary=f"Found {len(items)} relevant memory item(s)." if items else "No relevant memory found.",
+                items=items,
+                nextAction="Use get_item/read_day/graph_neighbors if a result needs deeper verification." if items else "Ask the user or run fresh research when memory is insufficient.",
+            )
+
+        if normalized_mode == "get_item":
+            search_text = str(item_id or query or "").strip()
+            if not search_text:
+                return _memory_broker_response(
+                    ok=False,
+                    kind="memory_broker",
+                    mode=normalized_mode,
+                    failureClass="missing_item_id",
+                    summary="memory_broker get_item needs item_id.",
+                    nextAction="Pass an id returned by memory_broker(mode='recall').",
+                )
+            results = runtime.query_knowledge(query=search_text, scope=scope, limit=effective_limit)
+            exact = [item for item in results if str(item.get("id") or "") == search_text]
+            selected = exact or results[:effective_limit]
+            items = [_memory_broker_compact_recall_item(item) for item in selected if isinstance(item, dict)]
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                query=search_text,
+                summary=f"Loaded {len(items)} memory item(s)." if items else "No memory item matched.",
+                items=items,
+                nextAction="Treat no-match as memory insufficient; do not invent prior facts." if not items else "Use the item scope and confidence before acting on it.",
+            )
+
+        if normalized_mode == "read_day":
+            ref = str(memory_ref_or_date or memory_ref or query or "").strip()
+            if not ref:
+                return _memory_broker_response(
+                    ok=False,
+                    kind="memory_broker",
+                    mode=normalized_mode,
+                    failureClass="missing_memory_ref",
+                    summary="memory_broker read_day needs memory_ref_or_date.",
+                    nextAction="Pass memory://day/YYYY-MM-DD or YYYY-MM-DD.",
+                )
+            text = runtime.read_memory_day(memory_ref_or_date=ref)
+            preview_limit = 1800 if normalized_detail not in {"full", "detail"} else 4200
+            preview = _memory_broker_preview(text, preview_limit)
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                memoryRef=ref,
+                summary="Loaded day memory preview.",
+                preview=preview,
+                omittedChars=max(0, len(str(text or "")) - len(preview)),
+                nextAction="Use this as historical evidence; ask for exact details if omittedChars is large.",
+            )
+
+        if normalized_mode == "map":
+            payload = runtime.build_memory_map(anchor_date=anchor_date)
+            refs = payload.get("currentRefs") if isinstance(payload, dict) else {}
+            raw_items = list(payload.get("items") or []) if isinstance(payload, dict) else []
+            items = []
+            for item in raw_items[:effective_limit]:
+                if not isinstance(item, dict):
+                    continue
+                items.append(
+                    {
+                        key: value
+                        for key, value in {
+                            "memoryRef": item.get("memoryRef"),
+                            "kind": item.get("kind"),
+                            "label": item.get("label"),
+                            "summaryState": item.get("summaryState"),
+                            "latestDay": item.get("latestDay"),
+                        }.items()
+                        if value not in (None, "", [], {})
+                    }
+                )
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                summary="Loaded memory navigation map.",
+                currentRefs=refs,
+                items=items,
+                omittedItems=max(0, len(raw_items) - len(items)),
+                nextAction="Use expand_map on a memoryRef or read_day on a day ref for details.",
+            )
+
+        if normalized_mode == "expand_map":
+            ref = str(memory_ref or query or "").strip()
+            if not ref:
+                return _memory_broker_response(
+                    ok=False,
+                    kind="memory_broker",
+                    mode=normalized_mode,
+                    failureClass="missing_memory_ref",
+                    summary="memory_broker expand_map needs memory_ref.",
+                    nextAction="Call memory_broker(mode='map') first or pass a memoryRef from passive injection.",
+                )
+            payload = runtime.expand_memory_map(memory_ref=ref)
+            children = list(payload.get("children") or payload.get("items") or []) if isinstance(payload, dict) else []
+            items = []
+            for item in children[:effective_limit]:
+                if not isinstance(item, dict):
+                    continue
+                items.append(
+                    {
+                        key: value
+                        for key, value in {
+                            "memoryRef": item.get("memoryRef"),
+                            "kind": item.get("kind"),
+                            "label": item.get("label"),
+                            "summaryState": item.get("summaryState"),
+                            "latestDay": item.get("latestDay"),
+                        }.items()
+                        if value not in (None, "", [], {})
+                    }
+                )
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                memoryRef=ref,
+                summary=f"Expanded memory node with {len(items)} child item(s).",
+                items=items,
+                omittedItems=max(0, len(children) - len(items)),
+                nextAction="Use read_day for exact daily logs or expand_map again for nested nodes.",
+            )
+
+        if normalized_mode == "graph_search":
+            keyword = str(entity or query or "").strip()
+            if not keyword:
+                return _memory_broker_response(
+                    ok=False,
+                    kind="memory_broker",
+                    mode=normalized_mode,
+                    failureClass="missing_query",
+                    summary="memory_broker graph_search needs query or entity.",
+                    nextAction="Pass an entity name or fuzzy keyword.",
+                )
+            results = runtime.search_entities(keyword=keyword, limit=effective_limit)
+            items = [
+                {
+                    key: value
+                    for key, value in {
+                        "name": item.get("name"),
+                        "type": item.get("type"),
+                        "confidence": _memory_broker_score(item),
+                        "maintainerSource": item.get("maintainerSource"),
+                    }.items()
+                    if value not in (None, "", [], {})
+                }
+                for item in results
+                if isinstance(item, dict)
+            ]
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                query=keyword,
+                summary=f"Found {len(items)} graph entity candidate(s)." if items else "No graph entity matched.",
+                items=items,
+                nextAction="Use graph_neighbors with the exact entity name to inspect relations." if items else "Use recall or ask the user when graph has no matching entity.",
+            )
+
+        if normalized_mode == "graph_neighbors":
+            name = str(entity or query or "").strip()
+            if not name:
+                return _memory_broker_response(
+                    ok=False,
+                    kind="memory_broker",
+                    mode=normalized_mode,
+                    failureClass="missing_entity",
+                    summary="memory_broker graph_neighbors needs entity.",
+                    nextAction="Pass an exact entity name, or call graph_search first.",
+                )
+            direct = runtime.query_entity(entity=name)
+            hop_count = max(1, min(int(hops or 2), 3))
+            multi_hop = runtime.query_multi_hop(entity=name, hops=hop_count) if hop_count > 1 else []
+            relations = []
+            for item in [*list(direct or []), *list(multi_hop or [])]:
+                if not isinstance(item, dict):
+                    continue
+                relations.append(
+                    {
+                        key: value
+                        for key, value in {
+                            "hop": item.get("hop"),
+                            "direction": item.get("direction"),
+                            "subject": item.get("subject"),
+                            "predicate": item.get("predicate"),
+                            "object": item.get("object"),
+                            "confidence": _memory_broker_score(item),
+                            "maintainerSource": item.get("maintainerSource"),
+                        }.items()
+                        if value not in (None, "", [], {})
+                    }
+                )
+                if len(relations) >= effective_limit:
+                    break
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                entity=name,
+                summary=f"Found {len(relations)} graph relation(s)." if relations else "No graph relations found for entity.",
+                relations=relations,
+                omittedRelations=max(0, len(list(direct or [])) + len(list(multi_hop or [])) - len(relations)),
+                nextAction="Use these relations as hints; verify with recall or project evidence before high-impact action.",
+            )
+
+        if normalized_mode == "explain_injection":
+            return _memory_broker_response(
+                ok=True,
+                kind="memory_broker",
+                mode=normalized_mode,
+                summary="Passive Memory/RAG injection is a compact snapshot, not the complete memory truth.",
+                items=[
+                    {
+                        "type": "rule",
+                        "text": "Use memory_broker(recall/get_item/read_day/graph_neighbors) when prior facts affect decisions.",
+                    },
+                    {
+                        "type": "rule",
+                        "text": "Workflow behavior hints are injected separately and are not replaced by memory_broker.",
+                    },
+                    {
+                        "type": "rule",
+                        "text": "If memory lookup returns no_match or stale context, say so instead of inventing history.",
+                    },
+                ],
+                nextAction="Call recall for facts, map/read_day for timeline, or graph_search/graph_neighbors for relations.",
+            )
+
+        return _memory_broker_response(
+            ok=False,
+            kind="memory_broker",
+            mode=normalized_mode,
+            failureClass="unsupported_mode",
+            summary=f"Unsupported memory_broker mode: {normalized_mode}",
+            nextAction="Use recall, get_item, read_day, map, expand_map, graph_search, graph_neighbors, or explain_injection.",
+        )
+    except Exception as e:
+        return _memory_broker_response(
+            ok=False,
+            kind="memory_broker",
+            mode=normalized_mode,
+            failureClass="memory_unavailable",
+            summary=f"Memory broker failed: {str(e)}",
+            nextAction="Do not invent memory; ask the user or proceed with fresh evidence.",
+        )
+
 
 @tool
 def memory_recall(query: str, limit: int = 5) -> str:
@@ -12646,6 +12964,7 @@ NATIVE_TOOLS = [
     manage_hook,
     read_audit_log,
     tool_observation_detail,
+    memory_broker,
     memory_recall,
     mem_delete,
     mem_update,

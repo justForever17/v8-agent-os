@@ -107,7 +107,7 @@ SEARCH_PROVIDER_URLS: dict[str, str] = {
 # Prefer MetaSo and scrape-friendly lightweight HTML endpoints first. Bing is
 # frequently unavailable behind some VPN/proxy routes; Google/Baidu may return
 # challenge pages. All providers remain available explicitly or via config override.
-SEARCH_PROVIDER_ORDER = ("metaso", "duckduckgo", "baidu", "bing", "google")
+SEARCH_PROVIDER_ORDER = ("metaso", "duckduckgo", "google", "bing", "baidu")
 WINDOWS_CA_BUNDLE_NAME = "windows-system-ca.pem"
 WINDOWS_CA_BUNDLE_MAX_AGE_SECONDS = 24 * 60 * 60
 PROXY_ENV_KEYS = (
@@ -256,6 +256,29 @@ def _agent_browser_profile_allowed(url: str) -> tuple[bool, str | None]:
     if not bool(config.get("useAgentBrowserProfile")):
         return False, None
     return agent_browser_profile_allowed_for_url(url, config.get("agentBrowserProfileAllowlist") or [])
+
+
+def _provider_prefers_agent_browser_profile(provider: str) -> bool:
+    return str(provider or "").strip().lower() in {"metaso", "baidu"}
+
+
+def _agent_browser_profile_search_skip(provider: str, search_url: str) -> dict[str, Any] | None:
+    if not _provider_prefers_agent_browser_profile(provider):
+        return None
+    allowed, matched_host = _agent_browser_profile_allowed(search_url)
+    if allowed:
+        return None
+    return {
+        "provider": provider,
+        "status": "skipped",
+        "failureClass": "needs_agent_browser_login",
+        "reason": "agent_browser_profile_not_enabled_or_domain_not_allowlisted",
+        "matchedHost": matched_host,
+        "recommendedNextAction": (
+            "在 Admin / Desktop Automation 打开 Agent 专用浏览器登录该站点，"
+            "并启用 systemBase.webFetch.useAgentBrowserProfile 与域名 allowlist；否则使用其他公开搜索源。"
+        ),
+    }
 
 
 @contextmanager
@@ -2141,74 +2164,101 @@ def web_search(
             attempted_providers.append({"provider": provider, "status": "blocked", "reason": error_message or "blocked"})
             last_error = error_message or "Safety Guardian 已阻止网页搜索。"
             continue
+        profile_skip = _agent_browser_profile_search_skip(provider, search_url)
+        if profile_skip:
+            attempted_providers.append(profile_skip)
+            last_error = str(profile_skip.get("reason") or profile_skip.get("failureClass") or "")
+            if requested_provider == "auto":
+                continue
+            return json.dumps(
+                {
+                    "ok": False,
+                    "query": query,
+                    "requestedProvider": requested_provider,
+                    "searchVertical": requested_vertical,
+                    "attemptedProviders": attempted_providers,
+                    "failureClass": "needs_agent_browser_login",
+                    "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                    "retryable": True,
+                    "recommendedNextAction": profile_skip["recommendedNextAction"],
+                    "error": last_error,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
 
         try:
             provider_timeout = max(1.0, min(WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS, remaining))
             if provider == "metaso":
-                metaso_result = _metaso_search_public(
-                    query,
-                    limit=limit,
-                    vertical=requested_vertical,
-                    timeout_seconds=provider_timeout,
-                )
-                if not bool(metaso_result.get("ok")):
+                use_browser_for_provider = bool(useAgentBrowserProfile) or bool(_agent_browser_profile_allowed(search_url)[0])
+                if not use_browser_for_provider:
+                    metaso_result = _metaso_search_public(
+                        query,
+                        limit=limit,
+                        vertical=requested_vertical,
+                        timeout_seconds=provider_timeout,
+                    )
+                    if not bool(metaso_result.get("ok")):
+                        attempted_providers.append(
+                            {
+                                "provider": provider,
+                                "status": "error",
+                                "failureClass": metaso_result.get("failureClass") or "search_failed",
+                                "reason": metaso_result.get("reason") or "metaso_public_search_failed",
+                                "searchVertical": requested_vertical,
+                                "eventsSeen": metaso_result.get("eventsSeen"),
+                            }
+                        )
+                        last_error = _safe_text(metaso_result.get("reason") or metaso_result.get("failureClass"))
+                        if requested_provider == "auto":
+                            continue
+                        return json.dumps(
+                            {
+                                "ok": False,
+                                "query": query,
+                                "requestedProvider": requested_provider,
+                                "searchVertical": requested_vertical,
+                                "attemptedProviders": attempted_providers,
+                                "failureClass": metaso_result.get("failureClass") or "search_failed",
+                                "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                                "retryable": metaso_result.get("failureClass") in {"provider_rate_limited", "network_timeout", "deadline_exceeded", "no_results"},
+                                "recommendedNextAction": "MetaSo 公共搜索当前限流或无结果；请启用 Agent 浏览器登录态、稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。",
+                                "error": last_error,
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    results = metaso_result.get("results") if isinstance(metaso_result.get("results"), list) else []
                     attempted_providers.append(
                         {
                             "provider": provider,
-                            "status": "error",
-                            "failureClass": metaso_result.get("failureClass") or "search_failed",
-                            "reason": metaso_result.get("reason") or "metaso_public_search_failed",
+                            "status": "ok",
+                            "resultCount": len(results),
                             "searchVertical": requested_vertical,
-                            "eventsSeen": metaso_result.get("eventsSeen"),
+                            "resultId": metaso_result.get("resultId"),
                         }
                     )
-                    last_error = _safe_text(metaso_result.get("reason") or metaso_result.get("failureClass"))
-                    if requested_provider == "auto":
-                        continue
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "query": query,
-                            "requestedProvider": requested_provider,
-                            "searchVertical": requested_vertical,
-                            "attemptedProviders": attempted_providers,
-                            "failureClass": metaso_result.get("failureClass") or "search_failed",
-                            "elapsedMs": int((time.monotonic() - started_at) * 1000),
-                            "retryable": metaso_result.get("failureClass") in {"provider_rate_limited", "network_timeout", "deadline_exceeded", "no_results"},
-                            "recommendedNextAction": "MetaSo 公共搜索当前限流或无结果；请稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。",
-                            "error": last_error,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                results = metaso_result.get("results") if isinstance(metaso_result.get("results"), list) else []
-                attempted_providers.append(
-                    {
+                    response = {
+                        "ok": True,
+                        "query": query,
                         "provider": provider,
-                        "status": "ok",
-                        "resultCount": len(results),
+                        "requestedProvider": requested_provider,
                         "searchVertical": requested_vertical,
-                        "resultId": metaso_result.get("resultId"),
+                        "attemptedProviders": attempted_providers,
+                        "searchUrl": search_url,
+                        "resultCount": len(results),
+                        "results": results,
+                        "metaso": {
+                            "engineType": metaso_result.get("engineType"),
+                            "resultId": metaso_result.get("resultId"),
+                            "groupId": metaso_result.get("groupId"),
+                            "eventsSeen": metaso_result.get("eventsSeen"),
+                        },
                     }
-                )
-                response = {
-                    "ok": True,
-                    "query": query,
-                    "provider": provider,
-                    "requestedProvider": requested_provider,
-                    "searchVertical": requested_vertical,
-                    "attemptedProviders": attempted_providers,
-                    "searchUrl": search_url,
-                    "resultCount": len(results),
-                    "results": results,
-                    "metaso": {
-                        "engineType": metaso_result.get("engineType"),
-                        "resultId": metaso_result.get("resultId"),
-                        "groupId": metaso_result.get("groupId"),
-                        "eventsSeen": metaso_result.get("eventsSeen"),
-                    },
-                }
-                return json.dumps(response, ensure_ascii=False, indent=2)
+                    return json.dumps(response, ensure_ascii=False, indent=2)
+            effective_use_agent_browser_profile = bool(useAgentBrowserProfile) or bool(
+                _provider_prefers_agent_browser_profile(provider) and _agent_browser_profile_allowed(search_url)[0]
+            )
             payload = _fetch_with_scrapling_internal(
                 search_url,
                 mode=mode,
@@ -2216,7 +2266,7 @@ def web_search(
                 referer_mode=referer_mode,
                 referer_url=referer_url,
                 timeout_seconds=provider_timeout,
-                use_agent_browser_profile=bool(useAgentBrowserProfile),
+                use_agent_browser_profile=effective_use_agent_browser_profile,
             )
             soup = BeautifulSoup(payload.html, "html.parser")
             results = _extract_search_results(soup, provider=provider, limit=limit)
@@ -2276,6 +2326,15 @@ def web_search(
                 "fallbackUsed": payload.requested_mode == "auto" and payload.fetch_mode != "static",
                 "warnings": payload.warnings,
                 "analysisHints": _build_analysis_hints(payload),
+                "agentBrowserProfile": (
+                    {
+                        "used": True,
+                        "matchedHost": payload.agent_browser_profile_host,
+                        "profile": agent_browser_profile_summary("chrome", include_security_note=False),
+                    }
+                    if payload.agent_browser_profile_used
+                    else {"used": False}
+                ),
                 "resultCount": len(results),
                 "results": results,
             }

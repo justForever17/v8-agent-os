@@ -631,6 +631,8 @@ preferred_framework: React
 
         self.assertEqual(raw["global"]["preferred_language"], "zh-CN")
         self.assertEqual(raw["global"]["assistant_name"], "Please help me come up with a name.")
+        self.assertEqual(raw["global"]["user_call_name"], "master")
+        self.assertEqual(raw["global"]["relationship_tone"], "Warm and friendly")
         self.assertEqual(raw["global"]["response_language_style"], "prefer_yanwenzi_over_emoji")
         self.assertEqual(raw["global"]["custom_human_note"], "保持这个人工条目")
         self.assertEqual(raw["project:test"]["preferred_framework"], "React")
@@ -697,6 +699,25 @@ preferred_framework: React
 
         self.assertEqual(raw["project:test"]["preferred_framework"], "React")
         self.assertTrue(any(item.get("key") == "invalid_global_line" for item in quarantine))
+
+    def test_default_memory_template_only_initializes_seeded_global_slots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                raw = store._load_raw_preferences()
+                memory_text = store.memory_path.read_text(encoding="utf-8")
+
+        self.assertEqual(raw["global"]["assistant_name"], "Please help me come up with a name.")
+        self.assertEqual(raw["global"]["user_call_name"], "master")
+        self.assertEqual(raw["global"]["relationship_tone"], "Warm and friendly")
+        self.assertNotIn("preferred_language:", memory_text)
+        self.assertNotIn("system_identity_reference:", memory_text)
+        self.assertNotIn("assistant_persona:", memory_text)
 
 
 if __name__ == "__main__":

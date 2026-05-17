@@ -221,6 +221,49 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function isCommandToolName(toolName: unknown): boolean {
+  if (typeof toolName !== "string") {
+    return false;
+  }
+  return ["run_system_command", "execute_system_command", "command_session_broker", "read_background_output", "send_background_input"].includes(toolName);
+}
+
+function looksLikeCommandControlJson(value: unknown): boolean {
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const metadataKeys = ["ok", "kind", "summary", "recommendedNextAction", "state", "awaitingInput"];
+    return metadataKeys.filter((key) => key in record).length >= 2;
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  return trimmed.startsWith("{")
+    && trimmed.includes('"')
+    && (trimmed.includes('"summary"') || trimmed.includes('"recommendedNextAction"') || trimmed.includes('"state"'))
+    && (trimmed.includes('"kind"') || trimmed.includes('"ok"') || trimmed.includes('"mode"'));
+}
+
+function looksLikeTerminalResult(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trimStart();
+  return trimmed.startsWith("$ ")
+    || trimmed.includes("\n<stdout>")
+    || trimmed.includes("\n<stderr>")
+    || trimmed.includes("[exit code:")
+    || trimmed.includes("[completed with no output]")
+    || trimmed.includes("[waiting for input]");
+}
+
+function chooseAgentVisibleToolResult(toolName: unknown, agentVisibleResult: unknown, fallbackResult: unknown): unknown {
+  if (isCommandToolName(toolName) && looksLikeCommandControlJson(agentVisibleResult) && looksLikeTerminalResult(fallbackResult)) {
+    return fallbackResult;
+  }
+  return agentVisibleResult ?? fallbackResult;
+}
+
 function eventTargetsMessage(event: Pick<SessionStreamUiEvent, "targets" | "data">) {
   const targets = Array.isArray(event.targets) ? event.targets : [];
   if (targets.includes("message")) {
@@ -1074,6 +1117,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined)
       || (typeof eventToolData.toolInvocationId === "string" ? eventToolData.toolInvocationId : undefined)
       || (typeof eventToolData.toolCallId === "string" ? eventToolData.toolCallId : undefined);
+    const toolName = event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
     const agentVisibleResult = event.tool?.agentVisibleResult
       ?? eventData.agentVisibleResult
       ?? eventData.agent_visible_result
@@ -1094,7 +1138,9 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
             : typeof eventToolData.agent_visible_chars === "number"
               ? eventToolData.agent_visible_chars
               : undefined;
-    const displayResult = agentVisibleResult ?? event.tool?.result ?? eventData.result;
+    const fallbackResult = event.tool?.result ?? eventData.result;
+    const displayResult = chooseAgentVisibleToolResult(toolName, agentVisibleResult, fallbackResult);
+    const displayAgentVisibleResult = displayResult;
     const mcpApp = event.tool?.mcpApp
       || (eventData.mcpApp && typeof eventData.mcpApp === "object" ? eventData.mcpApp as McpAppViewRef : undefined)
       || (eventToolData.mcpApp && typeof eventToolData.mcpApp === "object" ? eventToolData.mcpApp as McpAppViewRef : undefined);
@@ -1112,9 +1158,9 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         executionType: "tool_result",
         toolCallId,
         toolInvocationId: toolCallId,
-        toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
+        toolName,
         result: displayResult,
-        agentVisibleResult,
+        agentVisibleResult: displayAgentVisibleResult,
         agentVisibleChars,
         mcpApp,
         data: eventData,
@@ -1131,14 +1177,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
 
       if (existingToolCall) {
         existingToolCall.result = displayResult;
-        existingToolCall.agentVisibleResult = agentVisibleResult;
+        existingToolCall.agentVisibleResult = displayAgentVisibleResult;
         existingToolCall.agentVisibleChars = agentVisibleChars;
         existingToolCall.mcpApp = mcpApp || existingToolCall.mcpApp;
         existingToolCall.data = eventData;
         Object.assign(existingToolCall, ownerFields);
         existingToolCall.toolName = existingToolCall.toolName
-          || event.tool?.toolName
-          || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
+          || toolName;
         existingToolCall.timestamp = Date.now();
       } else {
         upsertTimelineNode(current, {
@@ -1147,9 +1192,9 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
           executionType: "tool_result",
           toolCallId,
           toolInvocationId: toolCallId,
-          toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
+          toolName,
           result: displayResult,
-          agentVisibleResult,
+          agentVisibleResult: displayAgentVisibleResult,
           agentVisibleChars,
           mcpApp,
           data: eventData,

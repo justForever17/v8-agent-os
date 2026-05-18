@@ -9,7 +9,9 @@ import Animated, {
     cancelAnimation,
     useAnimatedStyle,
     useSharedValue,
+    withDelay,
     withRepeat,
+    withSequence,
     withTiming,
 } from "react-native-reanimated";
 
@@ -132,87 +134,72 @@ function TraceGroup({
     );
 }
 
-function AssistantWorkIndicator({
-    label,
-    subtitle,
+function AssistantActivityDots({
     active,
     primaryColor,
-    textColor,
-    mutedColor,
 }: {
-    label: string;
-    subtitle?: string;
     active: boolean;
     primaryColor: string;
-    textColor: string;
-    mutedColor: string;
 }) {
-    const scan = useSharedValue(0);
-    const pulse = useSharedValue(0);
+    const dotA = useSharedValue(0);
+    const dotB = useSharedValue(0);
+    const dotC = useSharedValue(0);
 
     useEffect(() => {
+        const start = (dot: typeof dotA, delayMs: number) => {
+            dot.value = withDelay(
+                delayMs,
+                withRepeat(
+                    withSequence(
+                        withTiming(1, { duration: 260, easing: Easing.out(Easing.cubic) }),
+                        withTiming(0, { duration: 260, easing: Easing.in(Easing.cubic) }),
+                        withTiming(0, { duration: 360 }),
+                    ),
+                    -1,
+                    false,
+                ),
+            );
+        };
+
         if (!active) {
-            cancelAnimation(scan);
-            cancelAnimation(pulse);
-            scan.value = withTiming(0, { duration: 180 });
-            pulse.value = withTiming(0, { duration: 180 });
+            cancelAnimation(dotA);
+            cancelAnimation(dotB);
+            cancelAnimation(dotC);
+            dotA.value = withTiming(0, { duration: 120 });
+            dotB.value = withTiming(0, { duration: 120 });
+            dotC.value = withTiming(0, { duration: 120 });
             return;
         }
 
-        scan.value = withRepeat(
-            withTiming(1, { duration: 1500, easing: Easing.inOut(Easing.ease) }),
-            -1,
-            false,
-        );
-        pulse.value = withRepeat(
-            withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
-            -1,
-            true,
-        );
+        start(dotA, 0);
+        start(dotB, 140);
+        start(dotC, 280);
 
         return () => {
-            cancelAnimation(scan);
-            cancelAnimation(pulse);
+            cancelAnimation(dotA);
+            cancelAnimation(dotB);
+            cancelAnimation(dotC);
         };
-    }, [active, pulse, scan]);
+    }, [active, dotA, dotB, dotC]);
 
-    const scanStyle = useAnimatedStyle(() => ({
-        opacity: active ? 0.28 : 0.12,
-        transform: [{ translateX: -96 + (scan.value * 192) }],
+    const dotAStyle = useAnimatedStyle(() => ({
+        opacity: 0.38 + (dotA.value * 0.56),
+        transform: [{ translateY: -dotA.value * 4 }, { scale: 0.92 + (dotA.value * 0.14) }],
     }));
-    const pulseStyle = useAnimatedStyle(() => ({
-        opacity: active ? 0.2 + (pulse.value * 0.42) : 0.28,
-        transform: [{ scale: 0.92 + (pulse.value * 0.16) }],
+    const dotBStyle = useAnimatedStyle(() => ({
+        opacity: 0.38 + (dotB.value * 0.56),
+        transform: [{ translateY: -dotB.value * 4 }, { scale: 0.92 + (dotB.value * 0.14) }],
     }));
-    const dotStyle = useAnimatedStyle(() => ({
-        opacity: active ? 0.48 + (pulse.value * 0.42) : 0.6,
-        transform: [{ scale: 0.88 + (pulse.value * 0.2) }],
+    const dotCStyle = useAnimatedStyle(() => ({
+        opacity: 0.38 + (dotC.value * 0.56),
+        transform: [{ translateY: -dotC.value * 4 }, { scale: 0.92 + (dotC.value * 0.14) }],
     }));
 
     return (
-        <View style={[styles.workIndicator, { borderColor: `${primaryColor}24`, backgroundColor: `${primaryColor}0F` }]}>
-            <Animated.View pointerEvents="none" style={[styles.workIndicatorScan, { backgroundColor: primaryColor }, scanStyle]} />
-            <View style={styles.workIndicatorOrbWrap}>
-                <Animated.View pointerEvents="none" style={[styles.workIndicatorPulse, { backgroundColor: primaryColor }, pulseStyle]} />
-                <View style={[styles.workIndicatorOrb, { borderColor: `${primaryColor}3A`, backgroundColor: `${primaryColor}16` }]}>
-                    <Animated.View style={[styles.workIndicatorDot, { backgroundColor: primaryColor }, dotStyle]} />
-                </View>
-            </View>
-            <View style={styles.workIndicatorCopy}>
-                <Text style={[styles.workIndicatorTitle, { color: textColor }]} numberOfLines={1}>
-                    {label}
-                </Text>
-                {subtitle ? (
-                    <Text style={[styles.workIndicatorSubtitle, { color: mutedColor }]} numberOfLines={1}>
-                        {subtitle}
-                    </Text>
-                ) : (
-                    <View style={styles.workIndicatorBars} pointerEvents="none">
-                        <View style={[styles.workIndicatorBar, { backgroundColor: `${primaryColor}42`, width: 70 }]} />
-                        <View style={[styles.workIndicatorBar, { backgroundColor: `${primaryColor}26`, width: 118 }]} />
-                    </View>
-                )}
-            </View>
+        <View style={styles.activityDotsWrap} accessibilityLabel="assistant active">
+            <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotAStyle]} />
+            <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotBStyle]} />
+            <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotCStyle]} />
         </View>
     );
 }
@@ -794,6 +781,14 @@ export const MessageBubble = memo(function MessageBubble({
         );
     }
 
+    if (assistantEmptyActive) {
+        return (
+            <View style={styles.assistantActivityRow}>
+                <AssistantActivityDots active={assistantActive} primaryColor={palette.primary} />
+            </View>
+        );
+    }
+
     return (
         <View style={styles.assistantRow}>
             <View style={[styles.avatarShell, assistantActive && styles.avatarShellActive]}>
@@ -935,16 +930,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         </NodeRenderBoundary>
                                     );
                                 })
-                            ) : (
-                                <AssistantWorkIndicator
-                                    active={assistantActive}
-                                    primaryColor={palette.primary}
-                                    textColor={palette.text}
-                                    mutedColor={palette.textMuted}
-                                    label={assistantPhaseLabel || t("src.components.chat.messagebubble.working")}
-                                    subtitle={taskProgress?.currentStep || taskProgress?.subtitle || ""}
-                                />
-                            )}
+                            ) : null}
 
                         </View>
                     </View>
@@ -1076,6 +1062,12 @@ const styles = StyleSheet.create({
         gap: 8,
         marginBottom: spacing.lg,
         minWidth: 0,
+    },
+    assistantActivityRow: {
+        alignSelf: "flex-start",
+        marginBottom: spacing.lg,
+        paddingLeft: 8,
+        paddingVertical: 6,
     },
     avatarShell: {
         width: 36,
@@ -1240,70 +1232,19 @@ const styles = StyleSheet.create({
         fontSize: 14,
         lineHeight: 21,
     },
-    workIndicator: {
-        minHeight: 48,
-        borderRadius: 16,
-        borderWidth: 1,
-        overflow: "hidden",
+    activityDotsWrap: {
+        minWidth: 44,
+        minHeight: 22,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        paddingHorizontal: 10,
-        paddingVertical: 9,
-        position: "relative",
-    },
-    workIndicatorScan: {
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        width: 44,
-        borderRadius: 999,
-    },
-    workIndicatorOrbWrap: {
-        width: 32,
-        height: 32,
-        alignItems: "center",
         justifyContent: "center",
+        gap: 6,
+        borderRadius: radii.pill,
+        backgroundColor: "transparent",
     },
-    workIndicatorPulse: {
-        position: "absolute",
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-    },
-    workIndicatorOrb: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        borderWidth: 1,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    workIndicatorDot: {
-        width: 7,
-        height: 7,
-        borderRadius: 999,
-    },
-    workIndicatorCopy: {
-        flex: 1,
-        minWidth: 0,
-        gap: 5,
-    },
-    workIndicatorTitle: {
-        fontSize: 12,
-        fontWeight: "900",
-        letterSpacing: -0.1,
-    },
-    workIndicatorSubtitle: {
-        fontSize: 10,
-        lineHeight: 14,
-        fontWeight: "600",
-    },
-    workIndicatorBars: {
-        gap: 5,
-    },
-    workIndicatorBar: {
-        height: 5,
+    activityDot: {
+        width: 6,
+        height: 6,
         borderRadius: 999,
     },
     voiceCardWrap: {

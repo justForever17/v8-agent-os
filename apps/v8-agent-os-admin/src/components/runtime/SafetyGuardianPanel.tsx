@@ -95,6 +95,23 @@ const DEFAULT_CONFIG: SafetyGuardianConfig = {
     auditOnly: false
   }
 };
+type Translator = ReturnType<typeof useT>;
+function postureLabel(t: Translator, value?: string | null) {
+  return value === "developer_mixed_host" ? t("app.admin.dashboard.safety.control.page.label.posture.developer") : t("app.admin.dashboard.safety.control.page.label.posture.dedicated");
+}
+function verdictLabel(t: Translator, value?: string | null) {
+  if (value === "allow") return t("app.admin.dashboard.safety.control.page.label.verdict.allow");
+  if (value === "audit") return t("app.admin.dashboard.safety.control.page.label.verdict.audit");
+  if (value === "block") return t("app.admin.dashboard.safety.control.page.label.verdict.block");
+  if (value === "review") return t("app.admin.dashboard.safety.control.page.label.verdict.review");
+  return t("app.admin.dashboard.safety.control.page.label.unknown");
+}
+function verdictOptions<T extends string>(t: Translator, values: T[]) {
+  return values.map(value => ({
+    value,
+    label: verdictLabel(t, value)
+  }));
+}
 function normalizeConfig(data: unknown): SafetyGuardianConfig {
   const raw = data && typeof data === "object" ? data as SafetyGuardianConfig : DEFAULT_CONFIG;
   const browserProfileAccessVerdict: Record<MachinePosture, "review" | "block"> = {
@@ -198,7 +215,7 @@ export function SafetyGuardianPanel() {
   useEffect(() => {
     void loadConfig();
   }, [loadConfig]);
-  const summaryBadges = useMemo(() => [config.enabled ? ti(t, "k59469aaf39") : ti(t, "k962178f2c8"), `posture=${config.machinePosture}`, `skill=${config.skillRules?.declarationVerdict ?? "audit"} / ${config.skillRules?.localSecretReadVerdict ?? "review"}`], [config]);
+  const summaryBadges = useMemo(() => [config.enabled ? ti(t, "k59469aaf39") : ti(t, "k962178f2c8"), `${t("app.admin.dashboard.safety.control.page.field.machinePosture")}: ${postureLabel(t, config.machinePosture)}`, `${ti(t, "kca5e86463f")}: ${verdictLabel(t, config.skillRules?.declarationVerdict)} / ${verdictLabel(t, config.skillRules?.localSecretReadVerdict)}`], [config, t]);
   const updateAndSync = (updater: (previous: SafetyGuardianConfig) => SafetyGuardianConfig) => {
     setConfig(previous => {
       const next = normalizeConfig(updater(previous));
@@ -269,16 +286,16 @@ export function SafetyGuardianPanel() {
                 </CardHeader>
                 <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
-                        <Label>Machine Posture</Label>
+                        <Label>{t("app.admin.dashboard.safety.control.page.field.machinePosture")}</Label>
                         <VerdictSelect<MachinePosture> value={config.machinePosture} onChange={next => updateAndSync(previous => ({
             ...previous,
             machinePosture: next
           }))} options={[{
             value: "dedicated_runtime_host",
-            label: "components.runtime.SafetyGuardianPanel.k5970446a"
+            label: postureLabel(t, "dedicated_runtime_host")
           }, {
             value: "developer_mixed_host",
-            label: "developer_mixed_host"
+            label: postureLabel(t, "developer_mixed_host")
           }]} />
 
                     </div>
@@ -300,16 +317,7 @@ export function SafetyGuardianPanel() {
               ...previous.skillRules,
               declarationVerdict: next
             }
-          }))} options={[{
-            value: "allow",
-            label: "allow"
-          }, {
-            value: "audit",
-            label: "audit"
-          }, {
-            value: "review",
-            label: "review"
-          }]} />
+          }))} options={verdictOptions(t, ["allow", "audit", "review"])} />
 
                     </div>
                     <div className="space-y-2">
@@ -320,16 +328,7 @@ export function SafetyGuardianPanel() {
               ...previous.skillRules,
               localSecretReadVerdict: next
             }
-          }))} options={[{
-            value: "audit",
-            label: "audit"
-          }, {
-            value: "review",
-            label: "review"
-          }, {
-            value: "block",
-            label: "block"
-          }]} />
+          }))} options={verdictOptions(t, ["audit", "review", "block"])} />
 
                     </div>
                     <div className="space-y-2">
@@ -343,13 +342,7 @@ export function SafetyGuardianPanel() {
                 developer_mixed_host: previous.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host ?? "review"
               }
             }
-          }))} options={[{
-            value: "audit",
-            label: "audit"
-          }, {
-            value: "review",
-            label: "review"
-          }]} />
+          }))} options={verdictOptions(t, ["audit", "review"])} />
 
                     </div>
                     <div className="space-y-2">
@@ -363,13 +356,7 @@ export function SafetyGuardianPanel() {
                 developer_mixed_host: previous.computerUseRules?.defaultMutationVerdict?.developer_mixed_host ?? "review"
               }
             }
-          }))} options={[{
-            value: "audit",
-            label: "audit"
-          }, {
-            value: "review",
-            label: "review"
-          }]} />
+          }))} options={verdictOptions(t, ["audit", "review"])} />
 
                     </div>
                     <div className="space-y-2">
@@ -383,13 +370,7 @@ export function SafetyGuardianPanel() {
                 developer_mixed_host: next
               }
             }
-          }))} options={[{
-            value: "review",
-            label: "review"
-          }, {
-            value: "block",
-            label: "block"
-          }]} />
+          }))} options={verdictOptions(t, ["review", "block"])} />
 
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">

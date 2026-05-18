@@ -14,7 +14,7 @@ export type AdminUserRecord = {
   createdAt: string;
   updatedAt?: string;
 };
-export const MAX_NON_ADMIN_USERS = 2;
+export const MAX_NON_ADMIN_USERS = 1;
 type AdminUsersPayload = {
   users: AdminUserRecord[];
 };

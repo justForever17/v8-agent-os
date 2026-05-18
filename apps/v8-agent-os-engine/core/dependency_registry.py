@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import shutil
+import importlib.util
 from typing import Any
 
 from core.system_base import detect_desktop_tools_readiness
@@ -91,6 +92,17 @@ def _detect_binary(name: str) -> bool:
     return bool(shutil.which(name))
 
 
+def _detect_python_module(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError, AttributeError):
+        return False
+
+
+def _detection_detail(*parts: str) -> str:
+    return "；".join(part for part in parts if part)
+
+
 def _build_detection_snapshot(entry: dict[str, Any], desktop_readiness: dict[str, Any]) -> dict[str, Any]:
     dep_id = entry["id"]
     if dep_id == "python":
@@ -104,11 +116,44 @@ def _build_detection_snapshot(entry: dict[str, Any], desktop_readiness: dict[str
     if dep_id == "tesseract":
         return {"detected": bool(desktop_readiness.get("ocrReady")), "detail": desktop_readiness.get("tesseractPath") or desktop_readiness.get("reason") or ""}
     if dep_id == "robotframework":
-        return {"detected": _detect_binary("robot"), "detail": "检测 Robot Framework CLI 是否可执行"}
+        cli_detected = _detect_binary("robot")
+        module_detected = _detect_python_module("robot")
+        rpa_module_detected = _detect_python_module("RPA")
+        return {
+            "detected": cli_detected or module_detected or rpa_module_detected,
+            "detail": _detection_detail(
+                "Robot Framework CLI 可执行" if cli_detected else "",
+                "Python robot 模块可导入" if module_detected else "",
+                "Python RPA 模块可导入" if rpa_module_detected else "",
+            )
+            or "未检测到 robot CLI 或 Python robot/RPA 模块",
+        }
     if dep_id == "playwright":
-        return {"detected": _detect_binary("playwright") or _detect_binary("patchright"), "detail": "检测 Playwright/Patchright CLI 是否可执行"}
+        playwright_cli = _detect_binary("playwright")
+        patchright_cli = _detect_binary("patchright")
+        playwright_module = _detect_python_module("playwright")
+        patchright_module = _detect_python_module("patchright")
+        return {
+            "detected": playwright_cli or patchright_cli or playwright_module or patchright_module,
+            "detail": _detection_detail(
+                "Playwright CLI 可执行" if playwright_cli else "",
+                "Patchright CLI 可执行" if patchright_cli else "",
+                "Python playwright 模块可导入" if playwright_module else "",
+                "Python patchright 模块可导入" if patchright_module else "",
+            )
+            or "未检测到 Playwright/Patchright CLI 或 Python 模块",
+        }
     if dep_id == "yt-dlp":
-        return {"detected": _detect_binary("yt-dlp"), "detail": "检测 yt-dlp 命令是否可执行"}
+        cli_detected = _detect_binary("yt-dlp")
+        module_detected = _detect_python_module("yt_dlp")
+        return {
+            "detected": cli_detected or module_detected,
+            "detail": _detection_detail(
+                "yt-dlp CLI 可执行" if cli_detected else "",
+                "Python yt_dlp 模块可导入" if module_detected else "",
+            )
+            or "未检测到 yt-dlp CLI 或 Python yt_dlp 模块",
+        }
     return {"detected": False, "detail": ""}
 
 

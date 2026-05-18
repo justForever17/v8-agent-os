@@ -1175,10 +1175,18 @@ class MemoryStore:
         limit: int = 5,
         scope: Optional[str] = None,
         scopes: Optional[List[str]] = None,
+        recall_strategy_override: Optional[str] = None,
+        allow_rerank: Optional[bool] = None,
     ) -> Dict[str, Any]:
         from core.knowledge_db import knowledge_db
 
         config = self._load_recall_runtime_config(limit=limit)
+        if recall_strategy_override:
+            override = str(recall_strategy_override or "").strip().lower()
+            if override in {"balanced", "semantic", "keyword"}:
+                config["recall_strategy"] = override
+                config["use_vector"] = override in {"balanced", "semantic"}
+                config["use_fts"] = bool(config.get("memory_config", {}).get("fts_enabled", True)) and override in {"balanced", "keyword"}
         effective_limit = int(config["effective_limit"])
         retrieval_threshold = float(config["retrieval_threshold"])
         minimum_quality_floor = 0.05
@@ -1208,6 +1216,7 @@ class MemoryStore:
             "graph_reject_reason": "",
             "graph_entities": [],
             "rerank_error": "",
+            "rerank_skipped_reason": "",
         }
 
         if use_vector:
@@ -1375,20 +1384,32 @@ class MemoryStore:
             ids_order.append(fact_id)
             docs_to_rerank.append(str(item.get("fact") or ""))
 
-        reranked_scores: Dict[str, float] = {}
+        memory_config = dict(config.get("memory_config") or {})
+        if allow_rerank is None:
+            rerank_enabled = bool(memory_config.get("rerank_enabled", True))
+        else:
+            rerank_enabled = bool(allow_rerank)
         try:
-            from core.memory_router import MemoryRouter
+            rerank_min_candidates = max(2, min(int(memory_config.get("rerank_min_candidates") or max(effective_limit + 1, 6)), 50))
+        except (TypeError, ValueError):
+            rerank_min_candidates = max(effective_limit + 1, 6)
+        reranked_scores: Dict[str, float] = {}
+        if rerank_enabled and len(docs_to_rerank) >= rerank_min_candidates:
+            try:
+                from core.memory_router import MemoryRouter
 
-            reranker = MemoryRouter().get_reranker_model()
-            ranked = reranker.rerank(query, docs_to_rerank, top_k=len(docs_to_rerank))
-            for row in ranked:
-                idx = int(row.get("index") or 0)
-                if idx < 0 or idx >= len(ids_order):
-                    continue
-                reranked_scores[ids_order[idx]] = self._normalize_recall_score(row.get("relevance_score", 0.0))
-        except Exception as exc:
-            diagnostics["rerank_error"] = str(exc)
-            logger.warning(f"[MemoryStore] Unified recall reranking failed, falling back to raw scores: {exc}")
+                reranker = MemoryRouter().get_reranker_model()
+                ranked = reranker.rerank(query, docs_to_rerank, top_k=len(docs_to_rerank))
+                for row in ranked:
+                    idx = int(row.get("index") or 0)
+                    if idx < 0 or idx >= len(ids_order):
+                        continue
+                    reranked_scores[ids_order[idx]] = self._normalize_recall_score(row.get("relevance_score", 0.0))
+            except Exception as exc:
+                diagnostics["rerank_error"] = str(exc)
+                logger.warning(f"[MemoryStore] Unified recall reranking failed, falling back to raw scores: {exc}")
+        else:
+            diagnostics["rerank_skipped_reason"] = "disabled" if not rerank_enabled else f"candidate_count_below_{rerank_min_candidates}"
 
         all_items: List[Dict[str, Any]] = []
         for fact_id, item in combined_candidates.items():
@@ -2220,6 +2241,8 @@ class MemoryStore:
                 limit=max(max_relations, 3),
                 scope=scope,
                 scopes=scope_chain,
+                recall_strategy_override="keyword",
+                allow_rerank=False,
             )
         except Exception as exc:
             diagnostics["graphSummaryRejectReason"] = f"recall_failed:{exc}"

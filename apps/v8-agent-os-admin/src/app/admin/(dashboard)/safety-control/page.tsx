@@ -475,9 +475,10 @@ export default function SafetyControlPage() {
     const data = envelope?.data;
     const runtimeSummary = data?.runtimeSummary || {};
     const skillScanSummary = data?.skillScanSummary || {};
+    const reviewModel = String(data?.modelBindings?.safetyReviewModel || ti(t, "k3bf179d8d0"));
     return {
       posture: safetyLabel(t, "posture", data?.machinePosture || "dedicated_runtime_host"),
-      reviewModel: data?.modelBindings?.safetyReviewModel || ti(t, "k3bf179d8d0"),
+      reviewModel: reviewModel.length > 28 ? `${reviewModel.slice(0, 26)}…` : reviewModel,
       auditCount: Number(runtimeSummary.auditCount || 0),
       reviewCount: Number(runtimeSummary.reviewCount || 0),
       blockCount: Number(runtimeSummary.blockCount || 0),
@@ -606,7 +607,7 @@ export default function SafetyControlPage() {
         value: `${summary.auditCount} / ${summary.reviewCount} / ${summary.blockCount}`
       }, {
         label: "app.admin.dashboard.safety.control.page.k87b50116",
-        value: `${verdictLabel(t, "audit")} ${Number(summary.skillDistribution.audit || 0)} · ${verdictLabel(t, "review")} ${Number(summary.skillDistribution.review || 0)} · ${verdictLabel(t, "block")} ${Number(summary.skillDistribution.block || 0)}`
+        value: `${Number(summary.skillDistribution.audit || 0)} / ${Number(summary.skillDistribution.review || 0)} / ${Number(summary.skillDistribution.block || 0)}`
       }, {
         label: "app.admin.dashboard.safety.control.page.summary.reviewModel",
         value: summary.reviewModel
@@ -911,8 +912,9 @@ export default function SafetyControlPage() {
                                     <CardTitle className="text-base">{t("app.admin.dashboard.safety.control.page.section.skillLedger")}</CardTitle>
                                     <CardDescription>{ti(t, "k0e783e6a82")}</CardDescription>
                                 </CardHeader>
-                                <CardContent className="space-y-3">
-                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k4fd29dc28e")}</div> : (dashboard?.skillSafetyReviews || []).slice(0, 8).map(review => <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
+                                <CardContent>
+                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k4fd29dc28e")}</div> : <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-2">
+                                        {(dashboard?.skillSafetyReviews || []).map(review => <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <span className="font-medium text-slate-950">{review.skill_name || review.skill_id || ti(t, "k233cfa7db1")}</span>
                                                     <Badge variant={review.disabled ? "destructive" : "outline"}>{review.disabled ? safetyLabel(t, "status", "disabled") : verdictLabel(t, review.effective_verdict)}</Badge>
@@ -927,6 +929,7 @@ export default function SafetyControlPage() {
                                                     <Button size="sm" variant="ghost" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "rescan")}>{ti(t, "kd5847a438e")}</Button>
                                                 </div>
                                             </div>)}
+                                    </div>}
                                 </CardContent>
                             </Card>
 

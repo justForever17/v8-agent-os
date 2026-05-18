@@ -2704,8 +2704,22 @@ class SafetyGuardian:
         review["identity"] = identity
         return review
 
+    def _skill_safety_review_still_exists(self, review: Dict[str, Any]) -> bool:
+        if review.get("active") is False:
+            return False
+        skill_path = str(review.get("skill_path") or "").strip()
+        instruction_path = str(review.get("instruction_path") or "").strip()
+        if instruction_path:
+            return Path(instruction_path).exists()
+        if skill_path:
+            path = Path(skill_path)
+            return path.exists() and ((path / "SKILL.md").exists() or path.is_file())
+        return True
+
     def list_skill_safety_reviews(self, *, status: str | None = None, limit: int = 100) -> list[Dict[str, Any]]:
-        return db.list_skill_safety_reviews(status=status, limit=limit)
+        rows = db.list_skill_safety_reviews(status=status, limit=max(limit * 3, limit))
+        visible = [row for row in rows if self._skill_safety_review_still_exists(row)]
+        return visible[:limit]
 
     def mark_skill_safety_reviews_inactive(
         self,

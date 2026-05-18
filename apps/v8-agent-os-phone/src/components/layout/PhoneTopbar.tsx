@@ -10,7 +10,7 @@ import {
     View,
 } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { Monitor, MoonStar, SunMedium, Volume2, VolumeX, Workflow } from "lucide-react-native";
+import { Monitor, MoonStar, SunMedium, Workflow } from "lucide-react-native";
 import MaskedView from "@react-native-masked-view/masked-view";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -29,7 +29,7 @@ export type PhoneTopbarAction = {
     tone?: "default" | "primary" | "accent";
 };
 
-const ACTION_ORDER = ["desktop-live", "rpa", "voice", "theme"] as const;
+const ACTION_ORDER = ["desktop-live", "rpa", "theme"] as const;
 const WORDMARK_COLORS = ["#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7", "#8B5CF6"] as const;
 const WORDMARK_SHINE_COLORS = [
     "rgba(255,255,255,0)",
@@ -46,7 +46,7 @@ function iconColor(tone: PhoneTopbarAction["tone"] | undefined, palette: ReturnT
 }
 
 function isRoundAction(key: string) {
-    return key === "voice" || key === "theme";
+    return key === "theme";
 }
 
 function WordmarkText({
@@ -194,14 +194,12 @@ export function PhoneWordmark({
     );
 }
 
-function resolveActionIcon(key: string, voiceEnabled: boolean, themeMode: "light" | "dark"): LucideIcon {
+function resolveActionIcon(key: string, themeMode: "light" | "dark"): LucideIcon {
     switch (key) {
         case "desktop-live":
             return Monitor;
         case "rpa":
             return Workflow;
-        case "voice":
-            return voiceEnabled ? Volume2 : VolumeX;
         case "theme":
             return themeMode === "dark" ? MoonStar : SunMedium;
         default:
@@ -212,15 +210,13 @@ function resolveActionIcon(key: string, voiceEnabled: boolean, themeMode: "light
 function TopbarButton({
     action,
     colors,
-    voiceEnabled,
     themeMode,
 }: {
     action: PhoneTopbarAction;
     colors: ReturnType<typeof useUiPrefs>["colors"];
-    voiceEnabled: boolean;
     themeMode: "light" | "dark";
 }) {
-    const Icon = resolveActionIcon(action.key, voiceEnabled, themeMode);
+    const Icon = resolveActionIcon(action.key, themeMode);
     const color = iconColor(action.tone, colors);
     const round = isRoundAction(action.key);
     const surfaceStyle = action.tone === "primary"
@@ -312,7 +308,7 @@ export function PhoneTopbar({
     onProfilePress?: () => void;
     onBrandPress?: () => void;
 }) {
-    const { colors, themeMode, voiceEnabled, t } = useUiPrefs();
+    const { colors, themeMode, t } = useUiPrefs();
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
         .map((key) => actionMap.get(key))
@@ -338,7 +334,6 @@ export function PhoneTopbar({
                             key={action.key}
                             action={action}
                             colors={colors}
-                            voiceEnabled={voiceEnabled}
                             themeMode={themeMode}
                         />
                     ))}
@@ -346,13 +341,12 @@ export function PhoneTopbar({
                 <LocaleMenu variant="compact" />
 
                 {orderedActions
-                    .filter((action) => action.key === "voice" || action.key === "theme")
+                    .filter((action) => action.key === "theme")
                     .map((action) => (
                         <TopbarButton
                             key={action.key}
                             action={action}
                             colors={colors}
-                            voiceEnabled={voiceEnabled}
                             themeMode={themeMode}
                         />
                     ))}

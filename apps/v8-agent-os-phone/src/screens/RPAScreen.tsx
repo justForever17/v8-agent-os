@@ -123,6 +123,25 @@ export default function RPAScreen() {
         }
     }, [authorizedFetch, existingRobotFile, load, parseVariables, t]);
 
+    const handleRunDraft = useCallback(async (draft: RPADraftSummary) => {
+        const robotFile = String(draft.script_id || draft.id || "").trim();
+        if (!robotFile) {
+            Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id"));
+            return;
+        }
+        setExistingRobotFile(robotFile);
+        setBusyAction("run-existing");
+        try {
+            const payload = await runExistingRobotFlow(authorizedFetch, robotFile, {});
+            setLatestResult(payload);
+            await load();
+        } catch (error) {
+            Alert.alert(t("src.screens.rpascreen.execution_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_execute_the_existing_rpa_flow"));
+        } finally {
+            setBusyAction("");
+        }
+    }, [authorizedFetch, load, t]);
+
     useEffect(() => {
         if (status === "authenticated") {
             void load();
@@ -151,51 +170,71 @@ export default function RPAScreen() {
                     contentContainerStyle={styles.content}
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load()} />}
                 >
-                    <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.runtime_availability")}</Text>
-                        <View style={styles.statusRow}>
-                            <View style={[styles.statusDot, availability?.robotFramework ? styles.statusOk : styles.statusMuted]} />
-                            <Text style={styles.statusText}>
-                                Robot Framework {availability?.robotFramework ? t("src.screens.rpascreen.ready") : t("src.screens.rpascreen.not_ready")}
-                            </Text>
+                    <GlassCard style={styles.heroCard}>
+                        <View style={styles.heroHeader}>
+                            <View style={styles.heroIcon}>
+                                <MaterialCommunityIcons name="robot-outline" size={22} color={colors.primaryDeep} />
+                            </View>
+                            <View style={styles.heroBody}>
+                                <Text style={styles.heroTitle}>RPA</Text>
+                                <Text style={styles.heroSubtitle}>{t("src.screens.rpascreen.runtime_availability")}</Text>
+                            </View>
+                            <View style={[styles.readyPill, (availability?.robotFramework || availability?.rpaFramework) ? styles.readyPillOk : styles.readyPillMuted]}>
+                                <Text style={[styles.readyPillText, (availability?.robotFramework || availability?.rpaFramework) ? styles.readyPillTextOk : styles.readyPillTextMuted]}>
+                                    {(availability?.robotFramework || availability?.rpaFramework) ? t("src.screens.rpascreen.ready") : t("src.screens.rpascreen.not_ready")}
+                                </Text>
+                            </View>
                         </View>
-                        <View style={styles.statusRow}>
-                            <View style={[styles.statusDot, availability?.rpaFramework ? styles.statusOk : styles.statusMuted]} />
-                            <Text style={styles.statusText}>
-                                RPA Framework {availability?.rpaFramework ? t("src.screens.rpascreen.ready") : t("src.screens.rpascreen.not_ready")}
-                            </Text>
+                        <View style={styles.capabilityGrid}>
+                            {[
+                                ["Robot Framework", availability?.robotFramework],
+                                ["RPA Framework", availability?.rpaFramework],
+                                [t("src.screens.rpascreen.windows_library"), availability?.libraries?.["RPA.Windows"]],
+                                ["Browser", availability?.libraries?.["RPA.Browser.Selenium"]],
+                            ].map(([label, ok]) => (
+                                <View key={String(label)} style={styles.capabilityChip}>
+                                    <View style={[styles.statusDot, ok ? styles.statusOk : styles.statusMuted]} />
+                                    <Text style={styles.capabilityText} numberOfLines={1}>{String(label)}</Text>
+                                </View>
+                            ))}
                         </View>
-                        <Text style={styles.metaText}>
-                            {t("src.screens.rpascreen.windows_library")}：{availability?.libraries?.["RPA.Windows"] ? t("src.screens.rpascreen.installed") : t("src.screens.rpascreen.missing")}
-                            {" · "}
-                            Browser：{availability?.libraries?.["RPA.Browser.Selenium"] ? t("src.screens.rpascreen.installed") : t("src.screens.rpascreen.missing")}
-                        </Text>
                     </GlassCard>
 
-                    <GlassCard>
-                        <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.recent_drafts")}</Text>
+                    <GlassCard style={styles.compactCard}>
+                        <View style={styles.sectionTitleRow}>
+                            <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.recent_drafts")}</Text>
+                            <Text style={styles.sectionMeta}>{drafts.length}</Text>
+                        </View>
                         {drafts.length === 0 ? (
                             <Text style={styles.emptyBody}>{t("src.screens.rpascreen.there_are_no_rpa_drafts_ready_to_continue_right_now")}</Text>
                         ) : (
                             drafts.map((draft) => (
-                                <Pressable
+                                <View
                                     key={draft.script_id || draft.id || draft.title}
                                     style={styles.draftItem}
-                                    onPress={() => setExistingRobotFile(draft.script_id || draft.id || draft.title || "")}
                                 >
-                                    <View style={styles.draftBody}>
+                                    <Pressable
+                                        style={styles.draftBody}
+                                        onPress={() => setExistingRobotFile(draft.script_id || draft.id || draft.title || "")}
+                                    >
                                         <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || t("src.screens.rpascreen.untitled_draft")}</Text>
                                         <Text style={styles.draftMeta}>
                                             {draft.status || "draft"} · {draft.updated_at || draft.created_at || t("src.screens.rpascreen.unknown_time")}
                                         </Text>
-                                    </View>
-                                    <MaterialCommunityIcons name="chevron-right" size={18} color={colors.textSoft} />
-                                </Pressable>
+                                    </Pressable>
+                                    <Pressable
+                                        style={({ pressed }) => [styles.draftRunButton, pressed && styles.pressed]}
+                                        disabled={busyAction !== ""}
+                                        onPress={() => void handleRunDraft(draft)}
+                                    >
+                                        <MaterialCommunityIcons name="play" size={16} color={colors.primaryDeep} />
+                                    </Pressable>
+                                </View>
                             ))
                         )}
                     </GlassCard>
 
-                    <GlassCard>
+                    <GlassCard style={styles.compactCard}>
                         <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.generate_draft_from_run")}</Text>
                         <TextInput
                             value={compileRunIds}
@@ -211,7 +250,7 @@ export default function RPAScreen() {
                         </Pressable>
                     </GlassCard>
 
-                    <GlassCard>
+                    <GlassCard style={styles.compactCard}>
                         <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.run_existing_flow")}</Text>
                         <TextInput
                             value={existingRobotFile}
@@ -238,7 +277,7 @@ export default function RPAScreen() {
                         </Pressable>
                     </GlassCard>
 
-                    <GlassCard>
+                    <GlassCard style={styles.compactCard}>
                         <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.latest_result")}</Text>
                         {latestResult ? (
                             <Text style={styles.resultText}>{JSON.stringify(latestResult, null, 2)}</Text>
@@ -256,15 +295,113 @@ const styles = StyleSheet.create({
     gradient: { flex: 1 },
     safeArea: { flex: 1 },
     content: {
-        paddingHorizontal: spacing.lg,
+        paddingHorizontal: spacing.md,
         paddingBottom: spacing.xl,
-        gap: spacing.md,
+        gap: 12,
+    },
+    heroCard: {
+        padding: 14,
+        borderRadius: 24,
+        backgroundColor: "rgba(255,255,255,0.82)",
+        borderColor: "rgba(148,163,184,0.22)",
+    },
+    compactCard: {
+        padding: 14,
+        borderRadius: 22,
+        backgroundColor: "rgba(255,255,255,0.74)",
+        borderColor: "rgba(148,163,184,0.20)",
+        shadowOpacity: 0.035,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 5 },
+    },
+    heroHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+    },
+    heroIcon: {
+        width: 42,
+        height: 42,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(124,58,237,0.10)",
+    },
+    heroBody: {
+        flex: 1,
+        gap: 2,
+    },
+    heroTitle: {
+        color: colors.text,
+        fontSize: 22,
+        fontWeight: "900",
+        letterSpacing: -0.3,
+    },
+    heroSubtitle: {
+        color: colors.textMuted,
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    readyPill: {
+        borderRadius: radii.pill,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+    },
+    readyPillOk: {
+        backgroundColor: "rgba(16,185,129,0.12)",
+    },
+    readyPillMuted: {
+        backgroundColor: "rgba(148,163,184,0.14)",
+    },
+    readyPillText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    readyPillTextOk: {
+        color: colors.success,
+    },
+    readyPillTextMuted: {
+        color: colors.textSoft,
+    },
+    capabilityGrid: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 14,
+    },
+    capabilityChip: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+        borderRadius: radii.pill,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+        backgroundColor: "rgba(248,250,252,0.78)",
+        borderWidth: 1,
+        borderColor: "rgba(148,163,184,0.18)",
+        maxWidth: "48%",
+    },
+    capabilityText: {
+        color: colors.text,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    sectionTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: spacing.sm,
+    },
+    sectionMeta: {
+        color: colors.textSoft,
+        fontSize: 12,
+        fontWeight: "800",
     },
     sectionTitle: {
         color: colors.text,
         fontSize: 15,
         fontWeight: "800",
-        marginBottom: spacing.md,
+        marginBottom: spacing.sm,
     },
     statusRow: {
         flexDirection: "row",
@@ -297,14 +434,14 @@ const styles = StyleSheet.create({
     draftItem: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        borderRadius: radii.md,
-        backgroundColor: colors.surface,
+        gap: 10,
+        borderRadius: 18,
+        backgroundColor: "rgba(248,250,252,0.84)",
         borderWidth: 1,
-        borderColor: colors.border,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
-        marginBottom: spacing.sm,
+        borderColor: "rgba(148,163,184,0.18)",
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginBottom: 8,
     },
     draftBody: {
         flex: 1,
@@ -319,25 +456,38 @@ const styles = StyleSheet.create({
         color: colors.textMuted,
         fontSize: 12,
     },
+    draftRunButton: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(124,58,237,0.10)",
+        borderWidth: 1,
+        borderColor: "rgba(124,58,237,0.16)",
+    },
+    pressed: {
+        opacity: 0.72,
+    },
     input: {
         borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radii.md,
-        backgroundColor: colors.surface,
+        borderColor: "rgba(148,163,184,0.24)",
+        borderRadius: 18,
+        backgroundColor: "rgba(255,255,255,0.86)",
         paddingHorizontal: 14,
-        paddingVertical: 14,
+        paddingVertical: 13,
         color: colors.text,
         fontSize: 15,
-        marginTop: spacing.sm,
+        marginTop: 8,
     },
     multilineInput: {
         minHeight: 124,
         marginTop: spacing.sm,
     },
     primaryButton: {
-        marginTop: spacing.md,
+        marginTop: 10,
         minHeight: 46,
-        borderRadius: radii.md,
+        borderRadius: 18,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: colors.primary,

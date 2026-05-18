@@ -39,7 +39,7 @@ function normalizeTheme(value: string | null | undefined): ThemeMode {
 }
 
 function normalizeVoice(value: string | null | undefined): boolean {
-    if (value === "false" || value === "0") return false;
+    void value;
     return true;
 }
 

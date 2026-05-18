@@ -214,58 +214,51 @@ export default function ConnectScreen() {
                 <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView contentContainerStyle={styles.content}>
-                    <GlassCard>
-                        <View style={styles.sectionTitleRow}>
-                            <Text style={styles.sectionTitle}>{t("src.screens.connectscreen.current_connection")}</Text>
-                            {refreshing ? <ActivityIndicator color={colors.primary} size="small" /> : null}
+                    <GlassCard style={styles.heroCard}>
+                        <View style={styles.connectionHeroHeader}>
+                            <View style={styles.connectionIcon}>
+                                <MaterialCommunityIcons name="access-point-network" size={22} color={colors.primaryDeep} />
+                            </View>
+                            <View style={styles.connectionHeroBody}>
+                                <Text style={styles.heroTitle}>{t("src.screens.connectscreen.current_connection")}</Text>
+                                <Text style={styles.heroSubtitle} numberOfLines={1}>
+                                    {summary?.connection?.adminBaseUrl || adminBaseUrl || t("src.screens.connectscreen.not_connected")}
+                                </Text>
+                            </View>
+                            {refreshing ? (
+                                <ActivityIndicator color={colors.primary} size="small" />
+                            ) : (
+                                <View style={[styles.reachabilityPill, summary?.connection?.reachable ? styles.reachabilityOk : styles.reachabilityWarn]}>
+                                    <Text style={[styles.reachabilityPillText, summary?.connection?.reachable ? styles.reachabilityTextOk : styles.reachabilityTextWarn]}>
+                                        {summary?.connection?.reachable ? t("src.screens.connectscreen.reachable") : t("src.screens.connectscreen.unverified")}
+                                    </Text>
+                                </View>
+                            )}
                         </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>Admin</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.adminBaseUrl || adminBaseUrl || t("src.screens.connectscreen.not_connected")}</Text>
-                        </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.bridge_mode")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.bridgeMode || "unknown"}</Text>
-                        </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.v8_link_route")}</Text>
-                            <Text style={styles.summaryValue}>
-                                {formatTransportKind(summary?.connection?.transportKind || summary?.linkManifest?.transportKind)}
-                                {(summary?.connection?.transportProfileId || summary?.linkManifest?.activeProfileId)
-                                    ? ` · ${summary?.connection?.transportProfileId || summary?.linkManifest?.activeProfileId}`
-                                    : ""}
-                            </Text>
-                        </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>Engine</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.engineBaseUrl || t("src.screens.artifactsscreen.unknown")}</Text>
-                        </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.desktop_bridge")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.connection?.desktopLiveBridgeBaseUrl || t("src.screens.connectscreen.disabled")}</Text>
-                        </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.reachability")}</Text>
-                            <Text style={[styles.summaryValue, summary?.connection?.reachable ? styles.okText : styles.warnText]}>
-                                {summary?.connection?.reachable ? t("src.screens.connectscreen.reachable") : t("src.screens.connectscreen.unverified")}
-                            </Text>
+                        <View style={styles.connectionChips}>
+                            <View style={styles.connectionChip}>
+                                <Text style={styles.connectionChipLabel}>{t("src.screens.connectscreen.v8_link_route")}</Text>
+                                <Text style={styles.connectionChipValue} numberOfLines={1}>
+                                    {formatTransportKind(summary?.connection?.transportKind || summary?.linkManifest?.transportKind)}
+                                </Text>
+                            </View>
+                            <View style={styles.connectionChip}>
+                                <Text style={styles.connectionChipLabel}>{t("src.screens.connectscreen.bridge_mode")}</Text>
+                                <Text style={styles.connectionChipValue} numberOfLines={1}>{summary?.connection?.bridgeMode || "unknown"}</Text>
+                            </View>
+                            <View style={styles.connectionChip}>
+                                <Text style={styles.connectionChipLabel}>{t("src.screens.connectscreen.current_user")}</Text>
+                                <Text style={styles.connectionChipValue} numberOfLines={1}>{summary?.user?.name || user?.name || user?.login || t("src.screens.connectscreen.unknown_user")}</Text>
+                            </View>
                         </View>
                         {(summary?.connection?.vpnDiagnostics?.warnings || summary?.linkManifest?.diagnostics?.warnings || []).length > 0 ? (
-                            <View style={styles.summaryRow}>
-                                <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.vpn_diagnostics")}</Text>
-                                <Text style={[styles.summaryValue, styles.warnText]} numberOfLines={2}>
+                            <View style={styles.warningStrip}>
+                                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={colors.warning} />
+                                <Text style={styles.warningStripText} numberOfLines={2}>
                                     {(summary?.connection?.vpnDiagnostics?.warnings || summary?.linkManifest?.diagnostics?.warnings || []).slice(0, 3).join(" · ")}
                                 </Text>
                             </View>
                         ) : null}
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("src.screens.connectscreen.current_user")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.user?.name || user?.name || user?.login || t("src.screens.connectscreen.unknown_user")}</Text>
-                        </View>
-                        <View style={styles.summaryRow}>
-                            <Text style={styles.summaryLabel}>{t("app.login.email")}</Text>
-                            <Text style={styles.summaryValue}>{summary?.user?.email || user?.email || t("src.screens.connectscreen.no_email_provided")}</Text>
-                        </View>
                         {projects.length > 0 ? (
                             <View style={styles.projectInlineList}>
                                 {projects.slice(0, 3).map((project) => (
@@ -356,9 +349,111 @@ const styles = StyleSheet.create({
     gradient: { flex: 1 },
     safeArea: { flex: 1 },
     content: {
-        paddingHorizontal: spacing.lg,
+        paddingHorizontal: spacing.md,
         paddingBottom: spacing.xl,
-        gap: spacing.md,
+        gap: 12,
+    },
+    heroCard: {
+        padding: 14,
+        borderRadius: 24,
+        backgroundColor: "rgba(255,255,255,0.82)",
+        borderColor: "rgba(148,163,184,0.22)",
+    },
+    connectionHeroHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        marginBottom: 14,
+    },
+    connectionIcon: {
+        width: 42,
+        height: 42,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(124,58,237,0.10)",
+    },
+    connectionHeroBody: {
+        flex: 1,
+        gap: 3,
+    },
+    heroTitle: {
+        color: colors.text,
+        fontSize: 18,
+        fontWeight: "900",
+        letterSpacing: -0.2,
+    },
+    heroSubtitle: {
+        color: colors.textMuted,
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    reachabilityPill: {
+        borderRadius: radii.pill,
+        paddingHorizontal: 9,
+        paddingVertical: 6,
+    },
+    reachabilityOk: {
+        backgroundColor: "rgba(16,185,129,0.12)",
+    },
+    reachabilityWarn: {
+        backgroundColor: "rgba(245,158,11,0.13)",
+    },
+    reachabilityPillText: {
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    reachabilityTextOk: {
+        color: colors.success,
+    },
+    reachabilityTextWarn: {
+        color: colors.warning,
+    },
+    connectionChips: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        marginBottom: 12,
+    },
+    connectionChip: {
+        minWidth: "31%",
+        flexGrow: 1,
+        borderRadius: 18,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
+        backgroundColor: "rgba(248,250,252,0.78)",
+        borderWidth: 1,
+        borderColor: "rgba(148,163,184,0.18)",
+    },
+    connectionChipLabel: {
+        color: colors.textSoft,
+        fontSize: 10,
+        fontWeight: "900",
+        marginBottom: 3,
+    },
+    connectionChipValue: {
+        color: colors.text,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    warningStrip: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        borderRadius: 18,
+        paddingHorizontal: 11,
+        paddingVertical: 10,
+        backgroundColor: "rgba(245,158,11,0.09)",
+        borderWidth: 1,
+        borderColor: "rgba(245,158,11,0.18)",
+        marginBottom: 10,
+    },
+    warningStripText: {
+        flex: 1,
+        color: colors.warning,
+        fontSize: 12,
+        lineHeight: 17,
+        fontWeight: "700",
     },
     sectionTitleRow: {
         flexDirection: "row",
@@ -456,18 +551,18 @@ const styles = StyleSheet.create({
     },
     input: {
         borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radii.md,
-        backgroundColor: colors.surface,
+        borderColor: "rgba(148,163,184,0.24)",
+        borderRadius: 18,
+        backgroundColor: "rgba(255,255,255,0.86)",
         paddingHorizontal: 14,
-        paddingVertical: 14,
+        paddingVertical: 13,
         color: colors.text,
-        fontSize: 16,
+        fontSize: 15,
     },
     primaryButton: {
-        marginTop: spacing.md,
+        marginTop: 10,
         minHeight: 48,
-        borderRadius: radii.md,
+        borderRadius: 18,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: colors.primary,
@@ -495,10 +590,10 @@ const styles = StyleSheet.create({
     },
     profileCard: {
         borderWidth: 1,
-        borderColor: "rgba(148,163,184,0.28)",
-        borderRadius: radii.lg,
-        padding: spacing.md,
-        backgroundColor: "rgba(255,255,255,0.66)",
+        borderColor: "rgba(148,163,184,0.20)",
+        borderRadius: 20,
+        padding: 12,
+        backgroundColor: "rgba(255,255,255,0.72)",
         gap: spacing.sm,
     },
     profileCardActive: {

@@ -171,12 +171,14 @@ export default function RpaRuntimePage() {
                         value={envelope.data.modelBindings.discoveryModel || "__empty__"}
                         emptyLabel={t("app.admin.dashboard.rpa.page.k54745147")}
                         placeholder={t("app.admin.dashboard.rpa.page.k54745147")}
+                        enforceTextContextWindow={false}
                         onValueChange={(value) =>
                             setEnvelope({
                                 ...envelope,
                                 data: {
                                     ...envelope.data,
                                     modelBindings: {
+                                        ...envelope.data.modelBindings,
                                         discoveryModel: value,
                                     },
                                 },

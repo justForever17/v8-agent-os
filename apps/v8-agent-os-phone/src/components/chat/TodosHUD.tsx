@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Animated, Easing, Pressable, StyleSheet, Text, View, type GestureResponderEvent } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
 
 import { Card, CardContent } from "@/src/components/ui/card";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -67,6 +68,9 @@ export const TodosHUD = memo(function TodosHUD({
         inputRange: [0, 1],
         outputRange: ["0deg", "-90deg"],
     });
+    const stopOverlayPropagation = (event: GestureResponderEvent) => {
+        event.stopPropagation();
+    };
 
     return (
         <Card
@@ -103,8 +107,12 @@ export const TodosHUD = memo(function TodosHUD({
             </Pressable>
 
             {!isCollapsed ? (
-                <CardContent style={styles.content}>
-                    <ScrollView
+                <CardContent
+                    style={styles.content}
+                    onTouchStart={stopOverlayPropagation}
+                    onTouchMove={stopOverlayPropagation}
+                >
+                    <GestureScrollView
                         nestedScrollEnabled
                         keyboardShouldPersistTaps="handled"
                         directionalLockEnabled
@@ -113,7 +121,8 @@ export const TodosHUD = memo(function TodosHUD({
                         scrollEventThrottle={16}
                         style={styles.scrollArea}
                         contentContainerStyle={styles.scrollContent}
-                        onTouchStart={(event) => event.stopPropagation()}
+                        onTouchStart={stopOverlayPropagation}
+                        onTouchMove={stopOverlayPropagation}
                     >
                         {todos.map((todo) => {
                             const status = String(todo.status || "pending");
@@ -160,7 +169,7 @@ export const TodosHUD = memo(function TodosHUD({
                                 </View>
                             );
                         })}
-                    </ScrollView>
+                    </GestureScrollView>
                 </CardContent>
             ) : null}
         </Card>

@@ -5,6 +5,7 @@ import {
     type ContextGovernanceDigest,
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
+    isEffectiveContextGovernancePayload,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
@@ -401,6 +402,13 @@ export function buildRuntimeStageModel(
             const runtimeId = inferRuntimeIdFromNode(node);
             const summarized = summarizeNode(node);
             if (!runtimeId || !summarized) continue;
+            if (
+                runtimeId === "chat"
+                && node.kind === "execution"
+                && (node.executionType === "tool_call" || node.executionType === "tool_result")
+            ) {
+                continue;
+            }
 
             activities.push({
                 id: node.id,
@@ -424,6 +432,9 @@ export function buildRuntimeStageModel(
         }
         seenTimelineKeys.add(key);
         const remappedRuntimeId = remapTimelineEntryRuntimeId(entry);
+        if (remappedRuntimeId === "chat" && entry.kind === "tool") {
+            continue;
+        }
         activities.push({
             id: entry.id,
             runtimeId: remappedRuntimeId,
@@ -482,7 +493,7 @@ export function buildRuntimeStageModel(
     const governanceDigests = [
         options?.governanceDigest || null,
         ...(options?.governanceHistory || []),
-    ].filter((item): item is ContextGovernanceDigest => Boolean(item));
+    ].filter((item): item is ContextGovernanceDigest => Boolean(item) && isEffectiveContextGovernancePayload(item));
     const seenGovernanceIds = new Set<string>();
     for (const item of governanceDigests) {
         if (!item.id || seenGovernanceIds.has(item.id)) {
@@ -534,7 +545,12 @@ export function buildRuntimeStageModel(
         : firstVisibleRuntimeWithActivity || "chat";
     const isBusy = Boolean(options?.status && !["completed", "failed", "cancelled"].includes(options.status));
 
-    const items = VISIBLE_RUNTIME_ORDER.map((runtimeId) => {
+    const visibleRuntimeOrder = VISIBLE_RUNTIME_ORDER.filter((runtimeId) => (
+        runtimeId !== "context_governance"
+        || activities.some((activity) => activity.runtimeId === "context_governance")
+    ));
+
+    const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getRuntimeDescriptor(runtimeId);
         const runtimeActivities = activities.filter((activity) => activity.runtimeId === runtimeId);
         const lastActivity = runtimeActivities[0];

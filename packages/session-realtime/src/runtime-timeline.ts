@@ -1,6 +1,6 @@
 import type { AuthoritativeRuntimeTimelineEntry } from "./contract.js";
 import { getRuntimeRegistryEntry, isRealtimeSurfaceRuntimeId, normalizeRuntimeId } from "./runtime-registry.js";
-import { normalizeSessionRuntimeEvent, type NormalizeRuntimeEventOptions } from "./event-normalizer.js";
+import { isEffectiveContextGovernancePayload, normalizeSessionRuntimeEvent, type NormalizeRuntimeEventOptions } from "./event-normalizer.js";
 
 function parseTimelineTimestamp(raw: unknown): number {
   if (typeof raw === "number" && Number.isFinite(raw)) {
@@ -80,6 +80,10 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
 
   const topic = String(normalized.topic || normalized.data?.topic || normalized.name || "").trim();
   if (!topic) {
+    return null;
+  }
+  if ((normalized.name === "context_governance_changed" || topic === "context.prepared")
+    && !isEffectiveContextGovernancePayload(normalized.data || normalized)) {
     return null;
   }
 

@@ -616,9 +616,73 @@ export function isRuntimeEventExcludedFromRealtimeSurface(
   return visibility === "excluded";
 }
 
+function toFiniteNumber(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function readContextGovernanceData(value: unknown): JsonRecord {
+  const record = asRecord(value);
+  const nestedPayload = asRecord(record.payload);
+  return Object.keys(nestedPayload).length > 0 ? nestedPayload : record;
+}
+
+function hasContextGovernanceRecallSignal(value: unknown) {
+  const recall = asRecord(value);
+  const topScores = Array.isArray(recall.top_scores)
+    ? recall.top_scores
+    : Array.isArray(recall.topScores)
+      ? recall.topScores
+      : [];
+  const hasRecallCue = Boolean(recall.has_recall_cue || recall.hasRecallCue);
+  const injectionAllowed = Boolean(recall.injection_allowed || recall.injectionAllowed);
+  const rejectReason = normalizeString(recall.reject_reason || recall.rejectReason);
+  return injectionAllowed || (hasRecallCue && Boolean(rejectReason)) || (hasRecallCue && topScores.length > 0);
+}
+
+export function isEffectiveContextGovernancePayload(value: unknown) {
+  const payload = readContextGovernanceData(value);
+  const triggerReason = normalizeString(payload.context_governance_reason || payload.trigger_reason || payload.triggerReason);
+  const compactionMethod = normalizeString(payload.compaction_method || payload.compactionMethod);
+  const compactionMode = normalizeString(payload.compaction_mode || payload.compactionMode);
+  const durableFlush = asRecord(payload.durable_flush || payload.durableFlush);
+  const durableReason = normalizeString(durableFlush.reason || durableFlush.status);
+  const providerError = asRecord(payload.provider_error || payload.providerError);
+
+  if (Boolean(payload.compaction_applied || payload.compactionApplied)) {
+    return true;
+  }
+  if (toFiniteNumber(payload.estimated_saved_tokens || payload.estimatedSavedTokens) > 0) {
+    return true;
+  }
+  if (triggerReason && !["compaction_not_needed", "none", "prepared", "context_prepared"].includes(triggerReason)) {
+    return true;
+  }
+  if (compactionMethod && compactionMethod !== "none") {
+    return true;
+  }
+  if (compactionMode && !["none", "prepared", "no_compaction"].includes(compactionMode)) {
+    return true;
+  }
+  if (durableReason && durableReason !== "compaction_not_needed") {
+    return true;
+  }
+  if (Object.keys(providerError).length > 0) {
+    return true;
+  }
+  return hasContextGovernanceRecallSignal(payload.recall_audit || payload.recallAudit);
+}
+
 export function shouldForwardRuntimeEventToRealtimeSurface(
-  event: Pick<NormalizedSessionRuntimeEvent, "visibility"> | SessionRuntimeVisibility | null | undefined,
+  event: (Pick<NormalizedSessionRuntimeEvent, "visibility" | "name" | "topic" | "data"> & Record<string, unknown>) | SessionRuntimeVisibility | null | undefined,
 ) {
+  if (event && typeof event === "object") {
+    const name = normalizeString(event.name);
+    const topic = normalizeString(event.topic);
+    if (name === "context_governance_changed" || topic === "context.prepared") {
+      return isRuntimeEventVisibleInRealtimeSurface(event) && isEffectiveContextGovernancePayload(event.data || event);
+    }
+  }
   return isRuntimeEventVisibleInRealtimeSurface(event);
 }
 

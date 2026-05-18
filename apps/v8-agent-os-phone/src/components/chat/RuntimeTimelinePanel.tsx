@@ -176,6 +176,211 @@ function getEngineeringLabel(activity: PhoneRuntimeStageActivity): { title: stri
     };
 }
 
+type SwarmNodeStatus = "active" | "completed" | "failed" | "pending";
+
+type SwarmGraphNode = {
+    id: string;
+    parentId: string | null;
+    label: string;
+    subtitle: string;
+    status: SwarmNodeStatus;
+    depth: number;
+    eventCount: number;
+    timestamp: number;
+};
+
+function normalizeSwarmStatus(value: string): SwarmNodeStatus | null {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return null;
+    if (/(fail|error|reject|blocked|cancel)/.test(normalized)) return "failed";
+    if (/(complete|finish|done|success|succeeded)/.test(normalized)) return "completed";
+    if (/(start|dispatch|run|active|progress|pending|queued)/.test(normalized)) return "active";
+    return null;
+}
+
+function inferSwarmStatus(activity: PhoneRuntimeStageActivity, data: Record<string, unknown>): SwarmNodeStatus {
+    const explicit = normalizeSwarmStatus(readString(data.status) || readString(data.state) || readString(data.phase));
+    if (explicit) return explicit;
+    const topicStatus = normalizeSwarmStatus(`${activity.topic || ""} ${activity.summary || ""}`);
+    if (topicStatus) return topicStatus;
+    if (activity.kind === "tool" || activity.kind === "handoff" || activity.kind === "progress") return "active";
+    return "pending";
+}
+
+function getSwarmNodeIdFromData(activity: PhoneRuntimeStageActivity, data: Record<string, unknown>) {
+    return readString(data.delegationId)
+        || readString(data.delegation_id)
+        || readString(data.invocationId)
+        || readString(data.invocation_id)
+        || readString(data.subagentId)
+        || readString(data.subagent_id)
+        || readString(data.agentId)
+        || readString(data.agent_id)
+        || getSwarmTaskBriefId(activity);
+}
+
+function getSwarmParentIdFromData(data: Record<string, unknown>) {
+    return readString(data.parentDelegationId)
+        || readString(data.parent_delegation_id)
+        || readString(data.parentInvocationId)
+        || readString(data.parent_invocation_id)
+        || readString(data.parentTaskBriefId)
+        || readString(data.parent_task_brief_id)
+        || null;
+}
+
+function getSwarmNodeLabel(activity: PhoneRuntimeStageActivity, data: Record<string, unknown>) {
+    const lane = readString(data.lane);
+    return readString(data.subagentName)
+        || readString(data.subagent_name)
+        || readString(data.targetLabel)
+        || readString(data.target_label)
+        || readString(data.workerType)
+        || readString(data.worker_type)
+        || readString(data.agentName)
+        || readString(data.agent_name)
+        || activity.actorLabel
+        || (lane === "external_worker" ? "External worker" : "Subagent");
+}
+
+function buildSwarmGraph(activities: PhoneRuntimeStageActivity[], rootLabel: string): SwarmGraphNode[] {
+    const nodes = new Map<string, SwarmGraphNode>();
+    nodes.set("supervisor", {
+        id: "supervisor",
+        parentId: null,
+        label: rootLabel,
+        subtitle: "orchestrator",
+        status: "active",
+        depth: 0,
+        eventCount: 0,
+        timestamp: 0,
+    });
+
+    for (const activity of [...activities].reverse()) {
+        const data = readExecutionData(activity);
+        const id = getSwarmNodeIdFromData(activity, data);
+        if (!id) continue;
+        const parentId = getSwarmParentIdFromData(data) || "supervisor";
+        const status = inferSwarmStatus(activity, data);
+        const taskGoal = readString(data.taskGoal) || readString(data.task_goal) || readString(data.summary) || activity.summary;
+        const existing = nodes.get(id);
+        nodes.set(id, {
+            id,
+            parentId,
+            label: existing?.label || getSwarmNodeLabel(activity, data),
+            subtitle: taskGoal || existing?.subtitle || "",
+            status: status === "pending" ? (existing?.status || "pending") : status,
+            depth: existing?.depth || 1,
+            eventCount: (existing?.eventCount || 0) + 1,
+            timestamp: Math.max(existing?.timestamp || 0, activity.timestamp),
+        });
+    }
+
+    const visited = new Set<string>();
+    const resolveDepth = (id: string): number => {
+        const node = nodes.get(id);
+        if (!node || !node.parentId || node.parentId === id) return 0;
+        if (visited.has(id)) return node.depth || 1;
+        visited.add(id);
+        const parentDepth = nodes.has(node.parentId) ? resolveDepth(node.parentId) : 0;
+        node.depth = Math.min(8, parentDepth + 1);
+        return node.depth;
+    };
+
+    for (const id of nodes.keys()) {
+        resolveDepth(id);
+    }
+
+    return Array.from(nodes.values()).sort((left, right) => {
+        if (left.depth !== right.depth) return left.depth - right.depth;
+        return left.timestamp - right.timestamp;
+    });
+}
+
+function SwarmNodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
+    const { colors, t, themeMode } = useUiPrefs();
+    const nodes = useMemo(
+        () => buildSwarmGraph(activities, t("src.components.chat.runtimetimelinepanel.swarm_supervisor")),
+        [activities, t],
+    );
+    const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
+    const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
+    const dark = themeMode === "dark";
+    const statusLabels: Record<SwarmNodeStatus, string> = {
+        active: t("src.components.chat.runtimetimelinepanel.swarm_status_active"),
+        completed: t("src.components.chat.runtimetimelinepanel.swarm_status_completed"),
+        failed: t("src.components.chat.runtimetimelinepanel.swarm_status_failed"),
+        pending: t("src.components.chat.runtimetimelinepanel.swarm_status_pending"),
+    };
+
+    if (visibleNodes.length <= 1) {
+        return (
+            <View style={styles.swarmEmpty}>
+                <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
+                    {t("src.components.chat.runtimetimelinepanel.swarm_no_dispatch")}
+                </Text>
+            </View>
+        );
+    }
+
+    return (
+        <View style={styles.swarmBoard}>
+            <Text style={[styles.swarmBoardTitle, { color: colors.text }]}>
+                {t("src.components.chat.runtimetimelinepanel.swarm_topology")}
+            </Text>
+            <View style={styles.swarmTree}>
+                {visibleNodes.map((node) => {
+                    const isRoot = node.id === "supervisor";
+                    const activeLine = Boolean(node.parentId && activeIds.has(node.id));
+                    const lineColor = activeLine ? colors.accent : (dark ? "rgba(255,255,255,0.14)" : "rgba(148,163,184,0.34)");
+                    const dotColor = node.status === "failed"
+                        ? colors.danger
+                        : node.status === "completed"
+                            ? colors.success
+                            : node.status === "active"
+                                ? colors.accent
+                                : colors.textMuted;
+                    return (
+                        <View key={node.id} style={styles.swarmNodeRow}>
+                            <View style={{ width: Math.min(node.depth, 6) * 20 }} />
+                            {!isRoot ? (
+                                <View style={styles.swarmConnectorWrap}>
+                                    <View style={[styles.swarmConnectorHorizontal, { backgroundColor: lineColor }]} />
+                                </View>
+                            ) : null}
+                            <View
+                                style={[
+                                    styles.swarmDot,
+                                    {
+                                        backgroundColor: dotColor,
+                                        shadowColor: dotColor,
+                                        shadowOpacity: node.status === "active" ? 0.42 : 0,
+                                    },
+                                ]}
+                            />
+                            <View style={styles.swarmNodeBody}>
+                                <View style={styles.swarmNodeTitleRow}>
+                                    <Text style={[styles.swarmNodeTitle, { color: colors.text }]} numberOfLines={1}>
+                                        {node.label}
+                                    </Text>
+                                    <Text style={[styles.swarmNodeStatus, { color: dotColor }]} numberOfLines={1}>
+                                        {statusLabels[node.status]}
+                                    </Text>
+                                </View>
+                                {node.subtitle ? (
+                                    <Text style={[styles.swarmNodeSubtitle, { color: colors.textMuted }]} numberOfLines={2}>
+                                        {node.subtitle}
+                                    </Text>
+                                ) : null}
+                            </View>
+                        </View>
+                    );
+                })}
+            </View>
+        </View>
+    );
+}
+
 function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
     const { colors, t, locale } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
@@ -638,32 +843,44 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             )}
                         </View>
 
-                        <FlatList
-                            key={runtimeListKey}
-                            ref={contentScrollRef}
-                            data={visibleActivities}
-                            keyExtractor={(activity) => activity.id}
-                            renderItem={renderActivityItem}
-                            style={styles.contentList}
-                            contentContainerStyle={[
-                                styles.content,
-                                visibleActivities.length === 0 && styles.contentEmpty,
-                            ]}
-                            ItemSeparatorComponent={() => <View style={styles.feedGap} />}
-                            overScrollMode="never"
-                            onLayout={() => {
-                                if (shouldForceScrollTopRef.current) {
-                                    resetScrollTop();
-                                }
-                            }}
-                            onContentSizeChange={() => {
-                                if (shouldForceScrollTopRef.current) {
-                                    resetScrollTop();
-                                }
-                            }}
-                            ListHeaderComponent={visibleActivities.length > 0 ? <BroadcastRail activities={visibleActivities} /> : undefined}
-                            ListEmptyComponent={renderEmptyState}
-                        />
+                        {effectiveSelectedRuntimeId === "subagent_swarm" ? (
+                            <GestureScrollView
+                                key={runtimeListKey}
+                                style={styles.contentList}
+                                contentContainerStyle={[styles.content, visibleActivities.length === 0 && styles.contentEmpty]}
+                                showsVerticalScrollIndicator={false}
+                                overScrollMode="never"
+                            >
+                                <SwarmNodeBoard activities={visibleActivities} />
+                            </GestureScrollView>
+                        ) : (
+                            <FlatList
+                                key={runtimeListKey}
+                                ref={contentScrollRef}
+                                data={visibleActivities}
+                                keyExtractor={(activity) => activity.id}
+                                renderItem={renderActivityItem}
+                                style={styles.contentList}
+                                contentContainerStyle={[
+                                    styles.content,
+                                    visibleActivities.length === 0 && styles.contentEmpty,
+                                ]}
+                                ItemSeparatorComponent={() => <View style={styles.feedGap} />}
+                                overScrollMode="never"
+                                onLayout={() => {
+                                    if (shouldForceScrollTopRef.current) {
+                                        resetScrollTop();
+                                    }
+                                }}
+                                onContentSizeChange={() => {
+                                    if (shouldForceScrollTopRef.current) {
+                                        resetScrollTop();
+                                    }
+                                }}
+                                ListHeaderComponent={visibleActivities.length > 0 ? <BroadcastRail activities={visibleActivities} /> : undefined}
+                                ListEmptyComponent={renderEmptyState}
+                            />
+                        )}
                     </View>
                 </View>
             </View>
@@ -891,11 +1108,79 @@ const styles = StyleSheet.create({
         fontSize: 11,
         lineHeight: 15,
     },
+    swarmBoard: {
+        paddingTop: 6,
+        gap: 12,
+    },
+    swarmBoardTitle: {
+        fontSize: 13,
+        fontWeight: "900",
+        letterSpacing: 0.2,
+    },
+    swarmTree: {
+        gap: 12,
+    },
+    swarmNodeRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        minHeight: 48,
+    },
+    swarmConnectorWrap: {
+        width: 18,
+        height: 2,
+        justifyContent: "center",
+    },
+    swarmConnectorHorizontal: {
+        height: 2,
+        width: 18,
+        borderRadius: 999,
+    },
+    swarmDot: {
+        width: 11,
+        height: 11,
+        borderRadius: 999,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 0 },
+    },
+    swarmNodeBody: {
+        flex: 1,
+        minWidth: 0,
+        paddingLeft: 10,
+        paddingVertical: 4,
+    },
+    swarmNodeTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+    },
+    swarmNodeTitle: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 13,
+        fontWeight: "800",
+        lineHeight: 18,
+    },
+    swarmNodeStatus: {
+        fontSize: 10,
+        fontWeight: "900",
+        textTransform: "uppercase",
+    },
+    swarmNodeSubtitle: {
+        marginTop: 2,
+        fontSize: 11,
+        lineHeight: 15,
+    },
+    swarmEmpty: {
+        paddingVertical: 28,
+        paddingHorizontal: 12,
+    },
     broadcastCard: {
         borderRadius: 22,
         padding: 12,
         marginBottom: 12,
         gap: 10,
+        height: 314,
+        justifyContent: "space-between",
         shadowColor: "#0F172A",
         shadowOpacity: 0.18,
         shadowRadius: 22,
@@ -951,6 +1236,8 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.08)",
         backgroundColor: "rgba(255,255,255,0.04)",
         padding: 12,
+        height: 128,
+        justifyContent: "space-between",
     },
     broadcastBody: {
         flexDirection: "row",
@@ -971,12 +1258,14 @@ const styles = StyleSheet.create({
     },
     broadcastTitle: {
         fontSize: 13,
+        lineHeight: 18,
         fontWeight: "800",
         color: "#FAFAF9",
     },
     broadcastSubtitle: {
         marginTop: 2,
         fontSize: 11,
+        lineHeight: 15,
         color: "#A8A29E",
     },
     broadcastTopic: {
@@ -986,6 +1275,8 @@ const styles = StyleSheet.create({
     },
     broadcastQueue: {
         gap: 8,
+        height: 84,
+        justifyContent: "flex-start",
     },
     broadcastQueueItem: {
         flexDirection: "row",

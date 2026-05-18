@@ -662,8 +662,9 @@ const styles = StyleSheet.create({
         gap: 8,
     },
     streamingText: {
-        fontSize: 15,
-        lineHeight: 22,
+        width: "100%",
+        fontSize: 14,
+        lineHeight: 21,
     },
     unresolvedCard: {
         borderRadius: radii.lg,

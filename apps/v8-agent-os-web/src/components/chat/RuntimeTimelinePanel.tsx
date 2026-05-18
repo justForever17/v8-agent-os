@@ -180,6 +180,197 @@ function getEngineeringLabel(activity: RuntimeStageActivity): { title: string; m
     };
 }
 
+type SwarmNodeStatus = "active" | "completed" | "failed" | "pending";
+
+type SwarmGraphNode = {
+    id: string;
+    parentId: string | null;
+    label: string;
+    subtitle: string;
+    status: SwarmNodeStatus;
+    depth: number;
+    eventCount: number;
+    timestamp: number;
+};
+
+function normalizeSwarmStatus(value: string): SwarmNodeStatus | null {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return null;
+    if (/(fail|error|reject|blocked|cancel)/.test(normalized)) return "failed";
+    if (/(complete|finish|done|success|succeeded)/.test(normalized)) return "completed";
+    if (/(start|dispatch|run|active|progress|pending|queued)/.test(normalized)) return "active";
+    return null;
+}
+
+function inferSwarmStatus(activity: RuntimeStageActivity, data: Record<string, unknown>): SwarmNodeStatus {
+    const explicit = normalizeSwarmStatus(readString(data.status) || readString(data.state) || readString(data.phase));
+    if (explicit) return explicit;
+    const topicStatus = normalizeSwarmStatus(`${activity.topic || ""} ${activity.summary || ""}`);
+    if (topicStatus) return topicStatus;
+    if (activity.kind === "tool" || activity.kind === "handoff" || activity.kind === "progress") return "active";
+    return "pending";
+}
+
+function getSwarmNodeIdFromData(activity: RuntimeStageActivity, data: Record<string, unknown>) {
+    return readString(data.delegationId)
+        || readString(data.delegation_id)
+        || readString(data.invocationId)
+        || readString(data.invocation_id)
+        || readString(data.subagentId)
+        || readString(data.subagent_id)
+        || readString(data.agentId)
+        || readString(data.agent_id)
+        || getSwarmTaskBriefId(activity);
+}
+
+function getSwarmParentIdFromData(data: Record<string, unknown>) {
+    return readString(data.parentDelegationId)
+        || readString(data.parent_delegation_id)
+        || readString(data.parentInvocationId)
+        || readString(data.parent_invocation_id)
+        || readString(data.parentTaskBriefId)
+        || readString(data.parent_task_brief_id)
+        || null;
+}
+
+function getSwarmNodeLabel(activity: RuntimeStageActivity, data: Record<string, unknown>) {
+    const lane = readString(data.lane);
+    return readString(data.subagentName)
+        || readString(data.subagent_name)
+        || readString(data.targetLabel)
+        || readString(data.target_label)
+        || readString(data.workerType)
+        || readString(data.worker_type)
+        || readString(data.agentName)
+        || readString(data.agent_name)
+        || activity.actorLabel
+        || (lane === "external_worker" ? "External worker" : "Subagent");
+}
+
+function buildSwarmGraph(activities: RuntimeStageActivity[]): SwarmGraphNode[] {
+    const nodes = new Map<string, SwarmGraphNode>();
+    nodes.set("supervisor", {
+        id: "supervisor",
+        parentId: null,
+        label: "Supervisor",
+        subtitle: "orchestrator",
+        status: "active",
+        depth: 0,
+        eventCount: 0,
+        timestamp: 0,
+    });
+
+    for (const activity of [...activities].reverse()) {
+        const data = readExecutionData(activity);
+        const id = getSwarmNodeIdFromData(activity, data);
+        if (!id) continue;
+        const parentId = getSwarmParentIdFromData(data) || "supervisor";
+        const status = inferSwarmStatus(activity, data);
+        const taskGoal = readString(data.taskGoal) || readString(data.task_goal) || readString(data.summary) || activity.summary;
+        const existing = nodes.get(id);
+        nodes.set(id, {
+            id,
+            parentId,
+            label: existing?.label || getSwarmNodeLabel(activity, data),
+            subtitle: taskGoal || existing?.subtitle || "",
+            status: status === "pending" ? (existing?.status || "pending") : status,
+            depth: existing?.depth || 1,
+            eventCount: (existing?.eventCount || 0) + 1,
+            timestamp: Math.max(existing?.timestamp || 0, activity.timestamp),
+        });
+    }
+
+    const visited = new Set<string>();
+    const resolveDepth = (id: string): number => {
+        const node = nodes.get(id);
+        if (!node || !node.parentId || node.parentId === id) return 0;
+        if (visited.has(id)) return node.depth || 1;
+        visited.add(id);
+        const parentDepth = nodes.has(node.parentId) ? resolveDepth(node.parentId) : 0;
+        node.depth = Math.min(8, parentDepth + 1);
+        return node.depth;
+    };
+
+    for (const id of nodes.keys()) {
+        resolveDepth(id);
+    }
+
+    return Array.from(nodes.values()).sort((left, right) => {
+        if (left.depth !== right.depth) return left.depth - right.depth;
+        return left.timestamp - right.timestamp;
+    });
+}
+
+function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
+    const nodes = React.useMemo(() => buildSwarmGraph(activities), [activities]);
+    const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
+    const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
+    const statusClass: Record<SwarmNodeStatus, string> = {
+        active: "bg-sky-500 text-sky-700 dark:text-sky-300",
+        completed: "bg-emerald-500 text-emerald-700 dark:text-emerald-300",
+        failed: "bg-rose-500 text-rose-700 dark:text-rose-300",
+        pending: "bg-stone-400 text-stone-500 dark:text-stone-300",
+    };
+    const statusLabel: Record<SwarmNodeStatus, string> = {
+        active: "运行",
+        completed: "完成",
+        failed: "失败",
+        pending: "等待",
+    };
+
+    if (visibleNodes.length <= 1) {
+        return (
+            <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/55 px-4 py-6 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
+                当前还没有真实子代理派发。若 Supervisor 只是口头声称派发，这里不会伪造节点。
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-3">
+            <div className="text-[13px] font-semibold tracking-tight text-foreground">实际派发拓扑</div>
+            <div className="space-y-2.5">
+                {visibleNodes.map((node) => {
+                    const activeLine = Boolean(node.parentId && activeIds.has(node.id));
+                    return (
+                        <div key={node.id} className="flex min-h-[48px] items-center">
+                            <div style={{ width: Math.min(node.depth, 6) * 22 }} />
+                            {node.id !== "supervisor" && (
+                                <div
+                                    className={cn(
+                                        "h-0.5 w-5 rounded-full",
+                                        activeLine ? "bg-sky-400 shadow-[0_0_14px_rgba(56,189,248,0.65)]" : "bg-stone-300/70 dark:bg-white/15",
+                                    )}
+                                />
+                            )}
+                            <span
+                                className={cn(
+                                    "h-2.5 w-2.5 rounded-full shadow-[0_0_0_rgba(0,0,0,0)]",
+                                    statusClass[node.status].split(" ")[0],
+                                    node.status === "active" && "shadow-[0_0_16px_rgba(56,189,248,0.72)]",
+                                )}
+                            />
+                            <div className="ml-2.5 min-w-0 flex-1 py-1">
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <div className="truncate text-[13px] font-semibold text-foreground">{node.label}</div>
+                                    <div className={cn("shrink-0 text-[10px] font-semibold uppercase", statusClass[node.status].split(" ").slice(1).join(" "))}>
+                                        {statusLabel[node.status]}
+                                    </div>
+                                </div>
+                                {node.subtitle && (
+                                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                                        {node.subtitle}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
 function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
     const [index, setIndex] = React.useState(0);
     const rowHeight = 78;
@@ -477,7 +668,9 @@ export function RuntimeTimelinePanel({
     contextGovernanceHistory,
     onSelectRuntime,
 }: RuntimeTimelinePanelProps) {
-    const runtimeId = selectedRuntimeId || model.activeRuntimeId || model.items[0]?.id || null;
+    const runtimeId = selectedRuntimeId && model.items.some((item) => item.id === selectedRuntimeId)
+        ? selectedRuntimeId
+        : model.activeRuntimeId || model.items[0]?.id || null;
     const runtime = runtimeId ? getRuntimeDescriptor(runtimeId) : null;
     const Icon = runtimeId ? runtimeIcons[runtimeId] : Cpu;
     const activities = runtimeId
@@ -559,19 +752,23 @@ export function RuntimeTimelinePanel({
                             </div>
 
                             <div className="custom-scrollbar flex-1 overflow-y-auto px-4 py-2.5 sm:px-[18px]">
-                                <ContextGovernanceSection
-                                    contextGovernance={contextGovernance}
-                                    contextGovernanceHistory={contextGovernanceHistory}
-                                />
+                                {runtimeId === "context_governance" && (
+                                    <ContextGovernanceSection
+                                        contextGovernance={contextGovernance}
+                                        contextGovernanceHistory={contextGovernanceHistory}
+                                    />
+                                )}
 
-                                {activities.length > 0 && (
+                                {runtimeId !== "subagent_swarm" && activities.length > 0 && (
                                     <div className={cn("hidden md:block", (contextGovernance || (contextGovernanceHistory || []).length > 0) ? "mt-4" : "")}>
                                         <BroadcastRail activities={activities.slice(0, 8)} />
                                     </div>
                                 )}
 
                                 <div className={cn("space-y-3", activities.length > 0 ? "md:mt-4" : "")}>
-                                    {activities.length > 0 ? (
+                                    {runtimeId === "subagent_swarm" ? (
+                                        <SwarmNodeBoard activities={activities} />
+                                    ) : activities.length > 0 ? (
                                         activities.map((activity, index) => {
                                             const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane" || runtimeId === "engineering_lane";
                                             const currentGroupId = !shouldGroup

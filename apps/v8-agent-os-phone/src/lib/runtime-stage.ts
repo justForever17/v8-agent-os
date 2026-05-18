@@ -14,6 +14,7 @@ import {
     type ContextGovernanceDigest,
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
+    isEffectiveContextGovernancePayload,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
@@ -463,6 +464,13 @@ export function buildPhoneRuntimeStageModel(
             const runtimeId = inferPhoneRuntimeIdFromNode(node);
             const summarized = summarizeTimelineNode(node, locale);
             if (!runtimeId || !summarized) continue;
+            if (
+                runtimeId === "chat"
+                && node.kind === "execution"
+                && (node.executionType === "tool_call" || node.executionType === "tool_result")
+            ) {
+                continue;
+            }
 
             activities.push({
                 id: node.id,
@@ -489,6 +497,9 @@ export function buildPhoneRuntimeStageModel(
         }
         seenTimelineKeys.add(key);
         const remappedRuntimeId = remapTimelineEntryRuntimeId(entry);
+        if (remappedRuntimeId === "chat" && entry.kind === "tool") {
+            continue;
+        }
         activities.push({
             id: entry.id,
             runtimeId: remappedRuntimeId,
@@ -549,7 +560,7 @@ export function buildPhoneRuntimeStageModel(
     const governanceDigests = [
         options?.governanceDigest || null,
         ...(options?.governanceHistory || []),
-    ].filter((item): item is ContextGovernanceDigest => Boolean(item));
+    ].filter((item): item is ContextGovernanceDigest => Boolean(item) && isEffectiveContextGovernancePayload(item));
     const seenGovernanceIds = new Set<string>();
     for (const item of governanceDigests) {
         if (!item.id || seenGovernanceIds.has(item.id)) {
@@ -600,7 +611,12 @@ export function buildPhoneRuntimeStageModel(
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
     const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
 
-    const items = VISIBLE_PHONE_RUNTIME_ORDER.map((runtimeId) => {
+    const visibleRuntimeOrder = VISIBLE_PHONE_RUNTIME_ORDER.filter((runtimeId) => (
+        runtimeId !== "context_governance"
+        || activities.some((activity) => activity.runtimeId === "context_governance")
+    ));
+
+    const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getPhoneRuntimeDescriptor(runtimeId, options?.locale);
         const runtimeActivities = activities.filter((activity) => activity.runtimeId === runtimeId);
         const lastActivity = runtimeActivities[0];

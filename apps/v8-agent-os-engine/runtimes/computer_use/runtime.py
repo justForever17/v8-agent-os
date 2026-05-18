@@ -1154,6 +1154,27 @@ class ComputerUseRuntime:
                 return str(run_record["session_id"])
         return f"computer_use:{uuid.uuid4().hex[:12]}"
 
+    def _is_internal_probe_invocation(
+        self,
+        *,
+        session_id: str | None,
+        run_id: str | None,
+        goal: str | None,
+        trigger_source: str | None,
+    ) -> bool:
+        if session_id or run_id:
+            return False
+        normalized_trigger = str(trigger_source or "").strip()
+        if normalized_trigger not in {"computer_use_api", "computer_use_compat_http"}:
+            return False
+        normalized_goal = str(goal or "").strip().lower()
+        return normalized_goal in {"observe_desktop", "observe_scene:desktop"}
+
+    def _internal_probe_session_id(self, goal: str | None) -> str:
+        normalized_goal = str(goal or "observe_desktop").strip().lower() or "observe_desktop"
+        digest = hashlib.sha1(normalized_goal.encode("utf-8")).hexdigest()[:10]
+        return f"computer_use:probe:{digest}"
+
     def begin_run(
         self,
         *,
@@ -1167,7 +1188,17 @@ class ComputerUseRuntime:
         trigger_source: str = "computer_use_api",
         metadata: Optional[Dict[str, Any]] = None,
     ):
-        effective_session_id = self.resolve_session_id(session_id=session_id, run_id=run_id)
+        internal_probe = self._is_internal_probe_invocation(
+            session_id=session_id,
+            run_id=run_id,
+            goal=goal,
+            trigger_source=trigger_source,
+        )
+        effective_session_id = (
+            self._internal_probe_session_id(goal)
+            if internal_probe
+            else self.resolve_session_id(session_id=session_id, run_id=run_id)
+        )
         existing_session = db.get_session(effective_session_id) or {}
         existing_metadata = existing_session.get("metadata")
         if isinstance(existing_metadata, str):
@@ -1191,6 +1222,15 @@ class ComputerUseRuntime:
                 "workspace_id": workspace_id,
                 "workspace_path": workspace_path,
                 "trigger_source": trigger_source,
+                **(
+                    {
+                        "hiddenFromHistory": True,
+                        "internalProbe": True,
+                        "ephemeral": True,
+                    }
+                    if internal_probe
+                    else {}
+                ),
             },
         )
 

@@ -44,6 +44,8 @@ STATE_LOG_DELETE_TABLES = (
     "llm_response_cache",
     "system_audit_log",
 )
+DEFAULT_LOG_BUDGET_BYTES = 1 * 1024 * 1024 * 1024
+DEFAULT_CHECKPOINT_BUDGET_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def _file_size(path: Path) -> int:
@@ -123,6 +125,13 @@ class StorageRetentionService:
 
     def _log_files_size(self) -> int:
         return sum(_file_size(item) for item in self._log_files())
+
+    def _structured_log_bytes(self) -> int:
+        return (
+            _sqlite_family_size(OBSERVABILITY_DB_PATH)
+            + self._estimate_state_log_payload_bytes()
+            + self._log_files_size()
+        )
 
     def _artifact_file_bytes(self) -> int:
         paths: set[Path] = set()
@@ -232,9 +241,16 @@ class StorageRetentionService:
         budget_components = {
             "logs": {
                 "label": "Logs",
-                "usedBytes": total,
-                "maxBytes": int((budgets.get("logs") or {}).get("maxBytes") or config.get("maxBytes") or 209715200),
+                "usedBytes": self._structured_log_bytes(),
+                "maxBytes": int((budgets.get("logs") or {}).get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES),
                 "mode": str((budgets.get("logs") or {}).get("mode") or config.get("mode") or "hard_rolling"),
+                "autoPrune": True,
+            },
+            "checkpoints": {
+                "label": "Checkpoints",
+                "usedBytes": _sqlite_family_size(CHECKPOINT_DB_PATH),
+                "maxBytes": int((budgets.get("checkpoints") or {}).get("maxBytes") or DEFAULT_CHECKPOINT_BUDGET_BYTES),
+                "mode": str((budgets.get("checkpoints") or {}).get("mode") or config.get("mode") or "hard_rolling"),
                 "autoPrune": True,
             },
             "rawEvidence": {
@@ -272,9 +288,9 @@ class StorageRetentionService:
         budget_findings = self._budget_findings(budget_components)
         return {
             "config": config,
-            "maxBytes": int(config.get("maxBytes") or 209715200),
+            "maxBytes": int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES),
             "totalGovernedBytes": total,
-            "overCapBytes": max(0, total - int(config.get("maxBytes") or 209715200)),
+            "overCapBytes": max(0, total - int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES)),
             "components": components,
             "budgets": budgets,
             "budgetComponents": budget_components,
@@ -322,6 +338,9 @@ class StorageRetentionService:
             if key == "vectorDb":
                 action = "manual_vector_cleanup"
                 message = "Vector DB is over budget; recommend manual knowledge cleanup or re-index compaction."
+            elif key == "checkpoints":
+                action = "run_checkpoint_retention"
+                message = "Checkpoints are over budget; inactive graph checkpoints can be pruned while active runs stay protected."
             elif key == "artifacts":
                 action = "review_old_artifacts"
                 message = "Artifacts are over budget; review old generated files before deleting."
@@ -428,13 +447,39 @@ class StorageRetentionService:
 
     def enforce(self, *, dry_run: bool = False, reason: str = "manual") -> Dict[str, Any]:
         config = self.get_config()
-        max_bytes = int(config.get("maxBytes") or 209715200)
+        budgets = dict(config.get("budgets") or {})
+        log_budget = int((budgets.get("logs") or {}).get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES)
+        checkpoint_budget = int((budgets.get("checkpoints") or {}).get("maxBytes") or DEFAULT_CHECKPOINT_BUDGET_BYTES)
+        max_bytes = int(config.get("maxBytes") or log_budget + checkpoint_budget)
         before = self._governed_total_bytes()
         actions = self.migrate_legacy_logs(dry_run=dry_run)
-        total = self._governed_total_bytes()
-        if total > max_bytes:
+        log_total = self._structured_log_bytes()
+        if log_total > log_budget:
             actions.extend(self._prune_expired_response_cache(dry_run=dry_run))
-            total = self._governed_total_bytes()
+            log_total = self._structured_log_bytes()
+        for step in (
+            self._prune_observability_logs,
+            self._prune_completed_runtime_events,
+            self._prune_log_files,
+        ):
+            while log_total > log_budget:
+                step_actions = step(dry_run=dry_run)
+                if not step_actions:
+                    break
+                actions.extend(step_actions)
+                if dry_run:
+                    break
+                log_total = self._structured_log_bytes()
+        checkpoint_total = _sqlite_family_size(CHECKPOINT_DB_PATH)
+        while checkpoint_total > checkpoint_budget:
+            step_actions = self._prune_old_checkpoints(dry_run=dry_run)
+            if not step_actions:
+                break
+            actions.extend(step_actions)
+            if dry_run:
+                break
+            checkpoint_total = _sqlite_family_size(CHECKPOINT_DB_PATH)
+        total = self._governed_total_bytes()
         for step in (
             self._prune_observability_logs,
             self._prune_runtime_snapshots,

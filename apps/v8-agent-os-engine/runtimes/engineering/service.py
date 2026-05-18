@@ -986,6 +986,23 @@ class EngineeringLaneService:
             commands=commands,
             diagnostics=diagnostics,
         )
+        run_failed_before_evidence = (
+            str(run_record.get("status") or "").strip().lower() == "failed"
+            and not commands
+            and not changed_files
+            and bool(str(run_record.get("error_message") or "").strip())
+        )
+        if run_failed_before_evidence:
+            verification_status = "failed_due_to_dispatch_error"
+            diagnostics.append(self._diagnostic_item(
+                source="run",
+                kind="dispatch_error",
+                command="run lifecycle",
+                return_code=None,
+                severity="error",
+                summary=str(run_record.get("error_message") or "run failed before engineering evidence was produced"),
+                raw_preview=str(run_record.get("error_message") or ""),
+            ))
         residual_risks = self._residual_risks(
             verification_status=verification_status,
             changed_files=changed_files,
@@ -1794,6 +1811,8 @@ class EngineeringLaneService:
             risks.append("Code changes were detected but no successful validation command was observed in this run.")
         if verification_status == "failed_verification":
             risks.append("A validation command or diagnostic failed; the work cannot be marked verified.")
+        if verification_status == "failed_due_to_dispatch_error":
+            risks.append("The run failed before Engineering produced command, write-set, or verification evidence.")
         if changed_files and not any(cmd.get("isValidation") for cmd in commands):
             risks.append("No test/typecheck/build/compile evidence was collected for changed files.")
         if workset_risk.get("risk") == "unknown_write_set":
@@ -2008,21 +2027,42 @@ class EngineeringLaneService:
     def _manifest_summary(self, root: Path) -> dict[str, Any]:
         found: list[dict[str, Any]] = []
         scripts: dict[str, Any] = {}
+        candidate_paths: list[Path] = []
         for name in MANIFEST_FILES:
-            path = root / name
-            if not path.exists():
+            candidate_paths.append(root / name)
+        try:
+            for child in root.iterdir():
+                if not child.is_dir() or child.name in IGNORED_DIRS or child.name.startswith("."):
+                    continue
+                for name in MANIFEST_FILES:
+                    candidate_paths.append(child / name)
+        except Exception:
+            pass
+        seen: set[str] = set()
+        project_subroots: list[str] = []
+        for path in candidate_paths:
+            normalized_path = str(path)
+            if normalized_path in seen or not path.exists():
                 continue
+            seen.add(normalized_path)
             rel = _relative(path, root)
             found.append({"path": rel, "size": path.stat().st_size if path.exists() else None})
-            if name == "package.json":
+            if path.name == "package.json":
                 try:
                     package = json.loads(_read_text(path, limit=20000) or "{}")
-                    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+                    package_scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+                    if not scripts and isinstance(package_scripts, dict):
+                        scripts = package_scripts
+                    parent_rel = _relative(path.parent, root)
+                    if parent_rel and parent_rel != ".":
+                        project_subroots.append(parent_rel)
                 except Exception:
-                    scripts = {}
+                    if not scripts:
+                        scripts = {}
         return {
             "manifests": found,
             "packageScripts": {key: scripts[key] for key in list(scripts)[:24]} if isinstance(scripts, dict) else {},
+            "projectSubroots": project_subroots[:12],
         }
 
     def _critical_file_candidates(self, root: Path, *, user_query: str, limit: int = 24) -> list[dict[str, Any]]:

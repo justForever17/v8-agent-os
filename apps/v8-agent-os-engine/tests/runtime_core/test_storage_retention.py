@@ -38,6 +38,35 @@ def _make_service(max_bytes: int) -> StorageRetentionService:
     return service
 
 
+def test_storage_retention_stats_separates_logs_from_checkpoints(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        checkpoint_path = root / "checkpoints.db"
+        checkpoint_path.write_bytes(b"x" * (2 * 1024 * 1024))
+        log_root = root / "logs" / "plugins"
+        log_root.mkdir(parents=True)
+        (log_root / "demo.log").write_text("hello", encoding="utf-8")
+        service = StorageRetentionService()
+        service.get_config = lambda: {
+            "version": 1,
+            "enabled": True,
+            "maxBytes": 5 * 1024 * 1024 * 1024,
+            "mode": "hard_rolling",
+            "protectUserVisibleTranscript": True,
+            "budgets": {
+                "logs": {"maxBytes": 1024 * 1024 * 1024, "mode": "hard_rolling"},
+                "checkpoints": {"maxBytes": 4 * 1024 * 1024 * 1024, "mode": "hard_rolling"},
+            },
+        }
+
+        stats = service.build_stats()
+
+        assert "checkpoints" in stats["budgetComponents"]
+        assert stats["budgetComponents"]["logs"]["usedBytes"] < stats["budgetComponents"]["checkpoints"]["usedBytes"]
+        assert stats["budgetComponents"]["checkpoints"]["usedBytes"] >= 2 * 1024 * 1024
+
+
 def test_retention_migrates_legacy_logs_and_clears_state(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)

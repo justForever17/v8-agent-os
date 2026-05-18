@@ -964,12 +964,60 @@ class DatabaseManager:
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_episodes_class ON memory_workflow_episodes (workflow_class)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_class ON memory_workflow_candidates (workflow_class)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_source_runtime ON memory_workflow_candidates (source_runtime)')
+                self._backfill_internal_computer_use_probe_sessions(conn)
             except Exception as e:
                 print(f"[Database] Migration note: {e}")
             
             conn.commit()
 
     # --- Session Operations ---
+
+    def _backfill_internal_computer_use_probe_sessions(self, conn: sqlite3.Connection) -> None:
+        """Hide legacy Computer Use observe/probe sessions from chat history.
+
+        These sessions are diagnostic runtime probes created without an explicit
+        chat session/run. Keep their rows for diagnostics, but mark them as
+        internal so Phone/Web history filters do not show them as user chats.
+        """
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, metadata
+            FROM sessions
+            WHERE id LIKE 'computer_use:%'
+               OR title LIKE 'Computer Use%'
+            """
+        )
+        for row in cursor.fetchall():
+            metadata: dict[str, Any] = {}
+            raw_metadata = row["metadata"]
+            if raw_metadata:
+                try:
+                    metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else dict(raw_metadata)
+                except Exception:
+                    metadata = {}
+            runtime = str(metadata.get("runtime") or "").strip()
+            trigger_source = str(metadata.get("trigger_source") or metadata.get("triggerSource") or "").strip()
+            goal = str(metadata.get("goal") or "").strip().lower()
+            is_probe = (
+                runtime == "computer_use"
+                and trigger_source in {"computer_use_api", "computer_use_compat_http"}
+                and goal in {"observe_desktop", "observe_scene:desktop"}
+            )
+            if not is_probe:
+                continue
+            updated_metadata = {
+                **metadata,
+                "hiddenFromHistory": True,
+                "internalProbe": True,
+                "ephemeral": True,
+            }
+            if updated_metadata == metadata:
+                continue
+            cursor.execute(
+                "UPDATE sessions SET metadata = ? WHERE id = ?",
+                (json.dumps(updated_metadata, ensure_ascii=False), row["id"]),
+            )
     
     def create_or_update_session(self, session_id: str, title: str, user_id: str = "anonymous", agent_id: Optional[str] = None, metadata: dict = None):
         """Creates a new session or updates the updated_at timestamp if it exists."""
@@ -3466,11 +3514,15 @@ class DatabaseManager:
             row = cursor.fetchone()
             counts["active_runs"] = int(row["count"]) if row else 0
             try:
-                with self.observability_db.get_connection() as obs_conn:
-                    row = obs_conn.execute("SELECT COUNT(*) AS count FROM model_invocation_logs").fetchone()
-                    counts["invocations"] = int(row["count"]) if row else 0
+                row = cursor.execute("SELECT COALESCE(SUM(invocations), 0) AS count FROM usage_ledger").fetchone()
+                counts["invocations"] = int(row["count"]) if row else 0
             except Exception:
-                counts["invocations"] = 0
+                try:
+                    with self.observability_db.get_connection() as obs_conn:
+                        row = obs_conn.execute("SELECT COUNT(*) AS count FROM model_invocation_logs").fetchone()
+                        counts["invocations"] = int(row["count"]) if row else 0
+                except Exception:
+                    counts["invocations"] = 0
             return counts
 
     def get_recent_model_invocations(self, limit: int = 20, days: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -3496,10 +3548,64 @@ class DatabaseManager:
         )
 
     def get_model_usage_distribution(self, days: int = 7, limit: int = 12) -> List[Dict[str, Any]]:
+        rows = self.get_usage_ledger_model_usage_distribution(days=days, limit=limit)
+        if rows:
+            return rows
         return self.observability_db.get_model_usage_distribution(days=days, limit=limit)
 
     def get_model_invocation_window_totals(self, days: int = 1) -> Dict[str, Any]:
+        totals = self.get_usage_ledger_window_totals(days=days)
+        if int(totals.get("invocations") or 0) > 0 or int(totals.get("total_tokens") or 0) > 0:
+            return totals
         return self.observability_db.get_model_invocation_window_totals(days=days)
+
+    def get_usage_ledger_window_totals(self, days: int = 7) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                '''
+                SELECT COALESCE(SUM(invocations), 0) AS invocations,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cost_total), 0) AS cost_total
+                FROM usage_ledger
+                WHERE bucket_date >= date('now', ?)
+                ''',
+                (f'-{max(days - 1, 0)} day',),
+            ).fetchone()
+            return dict(row) if row else {"invocations": 0, "total_tokens": 0, "cost_total": 0.0}
+
+    def get_usage_ledger_daily_activity(self, days: int = 7) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                '''
+                SELECT bucket_date AS day,
+                       COALESCE(SUM(invocations), 0) AS invocations,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM usage_ledger
+                WHERE bucket_date >= date('now', ?)
+                GROUP BY bucket_date
+                ORDER BY bucket_date ASC
+                ''',
+                (f'-{max(days - 1, 0)} day',),
+            ).fetchall()]
+
+    def get_usage_ledger_model_usage_distribution(self, days: int = 7, limit: int = 12) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                '''
+                SELECT model_id,
+                       provider_id AS provider_name,
+                       provider_id,
+                       COALESCE(SUM(invocations), 0) AS invocations,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cost_total), 0) AS cost_total
+                FROM usage_ledger
+                WHERE bucket_date >= date('now', ?)
+                GROUP BY model_id, provider_id
+                ORDER BY invocations DESC, total_tokens DESC
+                LIMIT ?
+                ''',
+                (f'-{max(days - 1, 0)} day', limit),
+            ).fetchall()]
 
     def get_daily_telemetry_activity(self, days: int = 7) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -3543,8 +3649,13 @@ class DatabaseManager:
             rows = [dict(row) for row in cursor.fetchall()]
         invocation_rows = {
             str(item.get("day")): item
-            for item in self.observability_db.get_daily_invocation_activity(days=days)
+            for item in self.get_usage_ledger_daily_activity(days=days)
         }
+        if not invocation_rows:
+            invocation_rows = {
+                str(item.get("day")): item
+                for item in self.observability_db.get_daily_invocation_activity(days=days)
+            }
         for row in rows:
             invocations = invocation_rows.get(str(row.get("day"))) or {}
             row["invocations"] = int(invocations.get("invocations") or 0)

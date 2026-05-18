@@ -21,6 +21,7 @@ import logging
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional, Annotated, Dict
+from core.time_truth import utc_now_iso
 
 if sys.platform == "win32":
     try:

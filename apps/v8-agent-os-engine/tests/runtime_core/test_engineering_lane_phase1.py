@@ -70,7 +70,24 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertTrue(decision["active"])
         self.assertIn("verification", decision["signals"])
 
-    def test_new_project_signal_does_not_auto_trigger_without_repo(self) -> None:
+    def test_manifest_summary_detects_project_subroot_package_json(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        project = root / "ai-chinese-chess"
+        project.mkdir()
+        (project / "package.json").write_text(
+            '{"scripts":{"dev":"vite","build":"tsc -b && vite build"}}',
+            encoding="utf-8",
+        )
+
+        summary = engineering_lane_service._manifest_summary(root)
+
+        self.assertIn("ai-chinese-chess", summary["projectSubroots"])
+        self.assertTrue(any(item["path"] == "ai-chinese-chess/package.json" for item in summary["manifests"]))
+        self.assertEqual(summary["packageScripts"]["build"], "tsc -b && vite build")
+
+    def test_new_project_signal_enters_project_creation_workspace_without_repo(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         descriptor = {"workspaceRoot": temp.name}
@@ -80,10 +97,11 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                 mode="auto",
                 workspace_descriptor=descriptor,
             )
-        self.assertFalse(decision["active"])
+        self.assertTrue(decision["active"])
         self.assertTrue(decision["matched"])
         self.assertIn("project_creation_candidate", decision["signals"])
-        self.assertEqual(decision["reason"], "engineering_signals_without_repo_supervisor_route_choice")
+        self.assertEqual(decision["workspaceMode"], "project_creation_workspace")
+        self.assertEqual(decision["reason"], "project_creation_workspace")
 
     def test_auto_does_not_trigger_for_non_engineering_request(self) -> None:
         temp, root = self._repo()
@@ -288,7 +306,15 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.proof_ids.append(entry["id"])
         self.assertEqual(entry["verificationStatus"], "unverified")
 
-    def _create_completed_run(self, *, root: Path, active: bool = True, mode: str = "auto"):
+    def _create_completed_run(
+        self,
+        *,
+        root: Path,
+        active: bool = True,
+        mode: str = "auto",
+        status: str = "completed",
+        error_message: str | None = None,
+    ):
         session_id = f"eng-test-{uuid.uuid4()}"
         run_id = f"eng-run-{uuid.uuid4()}"
         db.create_or_update_session(session_id, "Engineering test")
@@ -296,7 +322,7 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
             run_id=run_id,
             session_id=session_id,
             run_type="chat",
-            status="completed",
+            status=status,
             trigger_source="test",
             metadata={
                 "engineeringMode": mode,
@@ -304,6 +330,8 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                 "workspace_path": str(root),
             },
         )
+        if error_message:
+            db.update_run_record(run_id, status=status, error_message=error_message)
         db.add_message(
             msg_id=f"msg-{uuid.uuid4()}",
             session_id=session_id,
@@ -366,6 +394,24 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertEqual(entry["verificationStatus"], "unverified")
         self.assertIn("src/admin-panel.tsx", entry["changedFiles"])
         self.assertTrue(any("No test/typecheck/build/compile evidence" in risk for risk in entry["residualRisks"]))
+
+    def test_terminal_proof_marks_failed_run_without_evidence_as_dispatch_error(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        session_id, run_id = self._create_completed_run(
+            root=root,
+            active=True,
+            mode="force",
+            status="failed",
+            error_message="name 'utc_now_iso' is not defined",
+        )
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config(autoProofCollectionEnabled=True)):
+            result = engineering_lane_service.collect_terminal_proof(session_id=session_id, run_id=run_id)
+        entry = result["entry"]
+        self.proof_ids.append(entry["id"])
+        self.assertEqual(entry["verificationStatus"], "failed_due_to_dispatch_error")
+        self.assertTrue(any("before Engineering produced" in risk for risk in entry["residualRisks"]))
 
     def test_terminal_proof_uses_existing_successful_validation_command(self) -> None:
         temp, root = self._repo()

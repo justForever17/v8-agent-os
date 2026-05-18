@@ -285,6 +285,47 @@ class WebAndS3BrokerTests(unittest.TestCase):
         mocked_start.assert_called_once()
         self.assertEqual(mocked_start.call_args.kwargs["mode"], "start")
 
+    def test_delegation_broker_dispatch_local_subagent_records_parallel_invocation_timestamp(self):
+        agent = {
+            "id": "engineering-impl",
+            "name": "Engineering Implementer",
+            "isEnabled": True,
+            "description": "Implements bounded code changes.",
+            "capabilitySnapshot": {
+                "agentClass": "executor",
+                "specialistFamily": "engineering",
+                "domainTags": ["software_engineering"],
+                "operationCapabilities": ["implement", "workspace_changes"],
+                "artifactCapabilities": ["apps/v8-agent-os-engine"],
+                "plannerSuitability": "high",
+            },
+        }
+
+        with patch("core.native_tools.storage.get_all_agents", return_value=[agent]), patch(
+            "core.native_tools.storage.get_supervisor_config",
+            return_value={"delegation": {"externalWorkers": []}},
+        ):
+            command = delegation_broker.func(
+                mode="dispatch",
+                tasks=[
+                    {
+                        "taskBriefId": "task-impl",
+                        "goal": "Implement the requested patch",
+                        "requiredCapabilities": ["software_engineering", "implement"],
+                        "behaviorScope": ["workspace_changes"],
+                        "writeSet": ["apps/v8-agent-os-engine"],
+                        "executionLaneHint": "subagent",
+                    }
+                ],
+                state={"run_id": "run-supervisor-1", "workspace_path": "E:/Projects/v8chat"},
+            )
+
+        self.assertIn("parallel_invocations", command.update)
+        self.assertRegex(command.update["parallel_invocations"][0]["createdAt"], r"^\d{4}-\d{2}-\d{2}T")
+        payload = json.loads(command.update["messages"][0].content)
+        self.assertEqual(payload["items"][0]["lane"], "subagent")
+        self.assertEqual(payload["items"][0]["targetId"], "engineering-impl")
+
     def test_delegation_broker_observe_parses_worker_result_block(self):
         descriptor = {
             "id": "research-writer-worker",

@@ -622,12 +622,16 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "storageRetention": {
         "version": 1,
         "enabled": True,
-        "maxBytes": 209715200,
+        "maxBytes": 5 * 1024 * 1024 * 1024,
         "mode": "hard_rolling",
         "protectUserVisibleTranscript": True,
         "budgets": {
             "logs": {
-                "maxBytes": 209715200,
+                "maxBytes": 1 * 1024 * 1024 * 1024,
+                "mode": "hard_rolling",
+            },
+            "checkpoints": {
+                "maxBytes": 4 * 1024 * 1024 * 1024,
                 "mode": "hard_rolling",
             },
             "rawEvidence": {
@@ -2287,9 +2291,9 @@ class StorageManager:
         raw["mode"] = str(raw.get("mode") or "hard_rolling").strip() or "hard_rolling"
         raw["protectUserVisibleTranscript"] = bool(raw.get("protectUserVisibleTranscript", True))
         try:
-            max_bytes = int(raw.get("maxBytes") or 209715200)
+            max_bytes = int(raw.get("maxBytes") or 5 * 1024 * 1024 * 1024)
         except (TypeError, ValueError):
-            max_bytes = 209715200
+            max_bytes = 5 * 1024 * 1024 * 1024
         raw["maxBytes"] = max(50 * 1024 * 1024, max_bytes)
         input_budgets = data.get("budgets") if isinstance(data, dict) and isinstance(data.get("budgets"), dict) else {}
         budgets = self._deep_merge(
@@ -2299,13 +2303,17 @@ class StorageManager:
         if isinstance(data, dict) and "maxBytes" in data and not dict(input_budgets.get("logs") or {}).get("maxBytes"):
             budgets["logs"] = {**dict(budgets.get("logs") or {}), "maxBytes": raw["maxBytes"]}
         normalized_budgets: Dict[str, Any] = {}
+        minimum_budget_bytes = {
+            "logs": 1 * 1024 * 1024 * 1024,
+            "checkpoints": 1 * 1024 * 1024 * 1024,
+        }
         for key, default_budget in (STRUCTURED_CONFIG_DEFAULTS["storageRetention"].get("budgets") or {}).items():
             budget = dict(budgets.get(key) if isinstance(budgets.get(key), dict) else {})
             try:
                 budget_max = int(budget.get("maxBytes") or default_budget.get("maxBytes") or 0)
             except (TypeError, ValueError):
                 budget_max = int(default_budget.get("maxBytes") or 0)
-            budget["maxBytes"] = max(1 * 1024 * 1024, budget_max)
+            budget["maxBytes"] = max(minimum_budget_bytes.get(key, 1 * 1024 * 1024), budget_max)
             if "retentionDays" in default_budget or "retentionDays" in budget:
                 try:
                     retention_days = int(budget.get("retentionDays") or default_budget.get("retentionDays") or 0)
@@ -2315,7 +2323,11 @@ class StorageManager:
             budget["mode"] = str(budget.get("mode") or default_budget.get("mode") or "warn_only").strip() or "warn_only"
             normalized_budgets[key] = budget
         raw["budgets"] = normalized_budgets
-        raw["maxBytes"] = int((normalized_budgets.get("logs") or {}).get("maxBytes") or raw["maxBytes"])
+        raw["maxBytes"] = max(
+            int(raw.get("maxBytes") or 0),
+            int((normalized_budgets.get("logs") or {}).get("maxBytes") or 0)
+            + int((normalized_budgets.get("checkpoints") or {}).get("maxBytes") or 0),
+        )
         return raw
 
     def get_storage_retention_config(self) -> Dict[str, Any]:

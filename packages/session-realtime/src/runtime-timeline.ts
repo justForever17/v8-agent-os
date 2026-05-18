@@ -82,6 +82,9 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
   if (!topic) {
     return null;
   }
+  if (normalized.type === "reasoning_chunk" && (normalized.runtimeId || normalizeRuntimeId(topic) || "chat") === "chat") {
+    return null;
+  }
   if ((normalized.name === "context_governance_changed" || topic === "context.prepared")
     && !isEffectiveContextGovernancePayload(normalized.data || normalized)) {
     return null;

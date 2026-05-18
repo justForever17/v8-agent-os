@@ -30,7 +30,7 @@ def build_planner_auto_dispatch_node():
                                 "[Planner Auto Dispatch Blocked]\n"
                                 "用户显式要求 Engineering Runtime，但 Engineering Runtime 当前被禁用。"
                                 "Supervisor 不应继续写文件、安装依赖或运行构建命令；请让用户启用 Engineering Runtime，"
-                                "或由用户明确批准 direct exception。"
+                                "复杂工程任务不能用 direct exception 绕过 Engineering 主链。"
                             )
                         )
                     ],
@@ -55,7 +55,7 @@ def build_planner_auto_dispatch_node():
                         content=(
                             "[Planner Auto Dispatch Blocked]\n"
                             f"自动派发被阻断：{reason}。Supervisor 不应继续批量写文件、安装依赖或运行构建命令；"
-                            "请配置工程子代理/worker、修复任务 writeSet，或请求用户批准 direct exception。"
+                            "请配置工程子代理/worker、修复任务 writeSet，或改走 Engineering/delegation。"
                         )
                     )
                 ]
@@ -108,7 +108,7 @@ def build_planner_auto_dispatch_node():
                         "[Planner Auto Dispatch Blocked]\n"
                         "自动派发没有找到可用的工程 subagent / external worker，或写集治理阻断了派发。"
                         "Supervisor 不应继续批量写文件、安装依赖或运行构建命令；请配置工程子代理/worker，"
-                        "或请求用户批准 direct exception。"
+                        "或改走 Engineering/delegation。"
                     )
                 )
             )

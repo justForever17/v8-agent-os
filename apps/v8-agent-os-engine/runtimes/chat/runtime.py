@@ -2483,10 +2483,36 @@ class ChatRuntime:
                 "suppressExtensionsPrefilter": compat_diagnostics.get("suppressExtensionsPrefilter"),
                 "externalToolsPrimary": compat_diagnostics.get("externalToolsPrimary"),
             }
-        if getattr(chat_run.prepared, "explicit_engineering_requested", False) or chat_run.prepared.engineering_trigger_decision:
+        task_shape_hint = dict(getattr(chat_run.prepared, "task_shape_hint", None) or {})
+        secondary_shapes = [
+            str(item or "").strip()
+            for item in list(task_shape_hint.get("secondaryTaskShapes") or [])
+            if str(item or "").strip()
+        ]
+        engineering_required = bool(
+            getattr(chat_run.prepared, "explicit_engineering_requested", False)
+            or task_shape_hint.get("primaryTaskShape") == "project_coding"
+            or (
+                task_shape_hint.get("primaryTaskShape")
+                and "research" in set(secondary_shapes)
+                and task_shape_hint.get("primaryTaskShape") in {"creative_media", "automation"}
+            )
+        )
+        if (
+            getattr(chat_run.prepared, "explicit_engineering_requested", False)
+            or chat_run.prepared.engineering_trigger_decision
+            or task_shape_hint
+            or engineering_required
+            or getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") != "suggest"
+        ):
             current_route_context = {
                 **current_route_context,
                 "explicitEngineeringRequested": bool(getattr(chat_run.prepared, "explicit_engineering_requested", False)),
+                "engineeringMode": str(getattr(chat_run.prepared, "engineering_mode", "auto") or "auto"),
+                "engineeringRequired": engineering_required,
+                "plannerDispatchMode": str(getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") or "suggest"),
+                "taskPlanningMode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
+                "taskShapeHint": task_shape_hint,
                 "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
             }
         runner_bundle = await supervisor_runner.create_execution_bundle(
@@ -3376,7 +3402,11 @@ class ChatRuntime:
         if normalized_tool not in gated_tools and not normalized_tool.startswith(("creative_media_", "computer_use_")):
             return False
         operation_fingerprint = _supervisor_direct_scope_operation_fingerprint(chat_run.active_run_id)
-        if self._is_supervisor_direct_scope_exception_approved(chat_run.active_run_id, operation_fingerprint):
+        route_required = self._supervisor_direct_scope_requires_engineering_route(chat_run)
+        if (
+            not route_required
+            and self._is_supervisor_direct_scope_exception_approved(chat_run.active_run_id, operation_fingerprint)
+        ):
             stream_state.supervisor_direct_scope_gate_active = False
             chat_run.emit_runtime_event(
                 "supervisor.direct_scope.exception_approved",
@@ -3392,12 +3422,22 @@ class ChatRuntime:
             return False
         payload = {
             "riskCode": "supervisor_direct_scope_blocked",
-            "summary": "Supervisor direct 执行已进入硬门禁；复杂任务后续可变更/长耗时工具必须先进入 delegation、Engineering discipline 或用户批准 direct exception。",
+            "summary": (
+                "Supervisor direct 执行已进入硬门禁；复杂工程任务后续可变更/长耗时工具必须先进入 "
+                "delegation 或 Engineering discipline。"
+                if route_required
+                else "Supervisor direct 执行已进入硬门禁；后续可变更/长耗时工具必须先进入 delegation、Engineering discipline 或用户批准 direct exception。"
+            ),
             "blockedTool": normalized_tool,
             "toolStepCount": stream_state.supervisor_tool_step_count,
             "projectWriteCount": stream_state.supervisor_project_write_count,
             "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
-            "recommendedNextAction": "调用 delegation_broker 派发 engineering family/external worker，或请求用户批准继续 direct exception。",
+            "directExceptionAllowed": not route_required,
+            "recommendedNextAction": (
+                "调用 delegation_broker 派发 engineering family/external worker，或进入 Engineering proof/workset 后继续。"
+                if route_required
+                else "调用 delegation_broker 派发 engineering family/external worker，或请求用户批准继续 direct exception。"
+            ),
             "operationFingerprint": operation_fingerprint,
             "operationTargetFingerprint": operation_fingerprint,
         }
@@ -3413,6 +3453,27 @@ class ChatRuntime:
         # diagnostics in the correct timeline without turning the whole run into
         # a generic failure.
         return True
+
+    @staticmethod
+    def _supervisor_direct_scope_requires_engineering_route(chat_run: ChatRunContext) -> bool:
+        prepared = getattr(chat_run, "prepared", None)
+        if prepared is None:
+            return False
+        task_shape = dict(getattr(prepared, "task_shape_hint", None) or {})
+        primary = str(task_shape.get("primaryTaskShape") or "").strip()
+        secondary = {
+            str(item or "").strip()
+            for item in list(task_shape.get("secondaryTaskShapes") or [])
+            if str(item or "").strip()
+        }
+        trigger = dict(getattr(prepared, "engineering_trigger_decision", None) or {})
+        return bool(
+            getattr(prepared, "explicit_engineering_requested", False)
+            or str(getattr(prepared, "engineering_mode", "auto") or "").strip() == "force"
+            or primary == "project_coding"
+            or ("research" in secondary and primary in {"creative_media", "automation"})
+            or bool(trigger.get("active"))
+        )
 
     @staticmethod
     def _is_supervisor_direct_scope_exception_approved(run_id: str, operation_fingerprint: str) -> bool:

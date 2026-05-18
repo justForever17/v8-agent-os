@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
@@ -67,19 +67,27 @@ export function ApprovalPromptCard({
             </View>
 
             <Text style={styles.question}>{title}</Text>
-            {isSafety && safetySummary.reason ? (
-                <Text style={styles.safetyReason}>{safetySummary.reason}</Text>
-            ) : null}
+            {isSafety && (safetySummary.reason || safetySummary.rows.length) ? (
+                <ScrollView
+                    style={styles.safetyDetailScroll}
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={Boolean(safetySummary.reason.length > 180 || safetySummary.rows.length > 4)}
+                >
+                    {safetySummary.reason ? (
+                        <Text style={styles.safetyReason}>{safetySummary.reason}</Text>
+                    ) : null}
 
-            {isSafety && safetySummary.rows.length ? (
-                <View style={styles.summaryBox}>
-                    {safetySummary.rows.map((row) => (
-                        <View key={row.key} style={styles.summaryRow}>
-                            <Text style={styles.summaryKey}>{row.key}</Text>
-                            <Text style={styles.summaryValue}>{row.value}</Text>
+                    {safetySummary.rows.length ? (
+                        <View style={styles.summaryBox}>
+                            {safetySummary.rows.map((row) => (
+                                <View key={row.key} style={styles.summaryRow}>
+                                    <Text style={styles.summaryKey}>{row.key}</Text>
+                                    <Text style={styles.summaryValue}>{row.value}</Text>
+                                </View>
+                            ))}
                         </View>
-                    ))}
-                </View>
+                    ) : null}
+                </ScrollView>
             ) : null}
 
             <TextInput
@@ -163,6 +171,10 @@ const styles = StyleSheet.create({
         lineHeight: 19,
         marginBottom: 10,
     },
+    safetyDetailScroll: {
+        maxHeight: 190,
+        marginBottom: 10,
+    },
     summaryBox: {
         borderWidth: 1,
         borderColor: "rgba(239, 68, 68, 0.18)",
@@ -171,7 +183,6 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         paddingVertical: 8,
         gap: 6,
-        marginBottom: 10,
     },
     summaryRow: {
         flexDirection: "row",

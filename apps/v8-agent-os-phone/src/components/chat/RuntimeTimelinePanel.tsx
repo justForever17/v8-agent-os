@@ -387,8 +387,13 @@ function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[]
     const [index, setIndex] = useState(0);
 
     useEffect(() => {
-        setIndex(0);
-    }, [activities]);
+        setIndex((current) => {
+            if (activities.length === 0) {
+                return 0;
+            }
+            return Math.min(current, activities.length - 1);
+        });
+    }, [activities.length]);
 
     useEffect(() => {
         if (activities.length <= 1) {
@@ -597,8 +602,8 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
             });
     }, [activities, effectiveSelectedRuntimeId]);
     const runtimeListKey = useMemo(
-        () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}:${visibleActivities.map((activity) => activity.id).join("|")}`,
-        [effectiveSelectedRuntimeId, visible, visibleActivities],
+        () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}`,
+        [effectiveSelectedRuntimeId, visible],
     );
     const resetScrollTop = useCallback(() => {
         if (!visible) {
@@ -647,7 +652,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
             cancelAnimationFrame(handle);
             clearTimeout(fallback);
         };
-    }, [activities.length, effectiveSelectedRuntimeId, resetScrollTop, visible]);
+    }, [effectiveSelectedRuntimeId, resetScrollTop, visible]);
 
     const renderActivityItem = useCallback(
         ({ item, index }: { item: PhoneRuntimeStageActivity; index: number }) => {

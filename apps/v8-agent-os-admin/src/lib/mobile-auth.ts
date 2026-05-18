@@ -6,7 +6,7 @@ import { findUserById, findUserByIdentifier, getSessionIdentifier, type AdminUse
 
 const MOBILE_AUTH_CONFIG_FILE = "mobile_app_auth.json";
 const MOBILE_REFRESH_TOKENS_FILE = "mobile_app_tokens.json";
-const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60;
 const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 type MobileAuthConfig = {

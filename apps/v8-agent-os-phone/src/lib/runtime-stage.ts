@@ -467,7 +467,7 @@ export function buildPhoneRuntimeStageModel(
             if (
                 runtimeId === "chat"
                 && node.kind === "execution"
-                && (node.executionType === "tool_call" || node.executionType === "tool_result")
+                && (node.executionType === "tool_call" || node.executionType === "tool_result" || node.executionType === "reasoning")
             ) {
                 continue;
             }

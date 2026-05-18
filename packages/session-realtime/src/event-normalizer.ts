@@ -642,12 +642,10 @@ function hasContextGovernanceRecallSignal(value: unknown) {
 
 export function isEffectiveContextGovernancePayload(value: unknown) {
   const payload = readContextGovernanceData(value);
-  const triggerReason = normalizeString(payload.context_governance_reason || payload.trigger_reason || payload.triggerReason);
-  const compactionMethod = normalizeString(payload.compaction_method || payload.compactionMethod);
-  const compactionMode = normalizeString(payload.compaction_mode || payload.compactionMode);
   const durableFlush = asRecord(payload.durable_flush || payload.durableFlush);
   const durableReason = normalizeString(durableFlush.reason || durableFlush.status);
   const providerError = asRecord(payload.provider_error || payload.providerError);
+  const durableSkipReasons = new Set(["", "compaction_not_needed", "none", "prepared", "context_prepared", "skipped", "unchanged"]);
 
   if (Boolean(payload.compaction_applied || payload.compactionApplied)) {
     return true;
@@ -655,16 +653,10 @@ export function isEffectiveContextGovernancePayload(value: unknown) {
   if (toFiniteNumber(payload.estimated_saved_tokens || payload.estimatedSavedTokens) > 0) {
     return true;
   }
-  if (triggerReason && !["compaction_not_needed", "none", "prepared", "context_prepared"].includes(triggerReason)) {
+  if (toFiniteNumber(payload.block_count || payload.blockCount) > 0) {
     return true;
   }
-  if (compactionMethod && compactionMethod !== "none") {
-    return true;
-  }
-  if (compactionMode && !["none", "prepared", "no_compaction"].includes(compactionMode)) {
-    return true;
-  }
-  if (durableReason && durableReason !== "compaction_not_needed") {
+  if (!durableSkipReasons.has(durableReason)) {
     return true;
   }
   if (Object.keys(providerError).length > 0) {

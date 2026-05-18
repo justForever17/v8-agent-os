@@ -40,7 +40,7 @@ export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "subagent.tool_result", topicPattern: "subagent.tool.finished", eventType: "tool_result", runtimeId: "subagent_swarm", scope: "active_run", visibility: "visible", targets: ["runtime_card", "runtime_timeline", "process"], explicit: true },
   { key: "chat.agent_start", topicPattern: "agent.started", eventType: "agent_start", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["runtime_card", "hud"], explicit: true },
   { key: "chat.text_chunk", topicPattern: "run.text.delta", eventType: "text_chunk", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message"], explicit: true },
-  { key: "chat.reasoning_chunk", topicPattern: "run.reasoning.delta", eventType: "reasoning_chunk", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "runtime_card"], explicit: true },
+  { key: "chat.reasoning_chunk", topicPattern: "run.reasoning.delta", eventType: "reasoning_chunk", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message"], explicit: true },
   { key: "chat.tool_start", topicPattern: "tool.started", eventType: "tool_start", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "process"], explicit: true },
   { key: "chat.tool_result", topicPattern: "tool.finished", eventType: "tool_result", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["message", "process"], explicit: true },
   { key: "chat.ask_user_requested", topicPattern: "ask_user.requested", eventType: "custom_event", eventName: "ask_user", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["hud", "runtime_card"], explicit: true },

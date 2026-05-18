@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { Badge } from "@/src/components/ui/badge";
@@ -130,17 +130,23 @@ export const ApprovalCard = memo(function ApprovalCard({
                         <Text selectable style={[styles.title, { color: isDark ? accent.darkText : accent.lightText }]}>{title}</Text>
                         {displayStatus ? <Badge variant="outline">{displayStatus}</Badge> : null}
                     </View>
-                    <Text selectable style={[styles.copy, { color: isDark ? accent.darkText : accent.lightText }]}>{body}</Text>
-                    {summaryRows.length ? (
-                        <View style={[styles.summaryBox, { borderColor: isDark ? accent.darkBorder : accent.lightBorder }]}>
-                            {summaryRows.map((row) => (
-                                <View key={row.key} style={styles.summaryRow}>
-                                    <Text style={[styles.summaryKey, { color: isDark ? `${accent.darkText}B3` : `${accent.lightText}B3` }]}>{row.key}</Text>
-                                    <Text style={[styles.summaryValue, { color: isDark ? accent.darkText : accent.lightText }]}>{row.value}</Text>
-                                </View>
-                            ))}
-                        </View>
-                    ) : null}
+                    <ScrollView
+                        style={styles.detailScroll}
+                        nestedScrollEnabled
+                        showsVerticalScrollIndicator={body.length > 220 || summaryRows.length > 4}
+                    >
+                        <Text selectable style={[styles.copy, { color: isDark ? accent.darkText : accent.lightText }]}>{body}</Text>
+                        {summaryRows.length ? (
+                            <View style={[styles.summaryBox, { borderColor: isDark ? accent.darkBorder : accent.lightBorder }]}>
+                                {summaryRows.map((row) => (
+                                    <View key={row.key} style={styles.summaryRow}>
+                                        <Text style={[styles.summaryKey, { color: isDark ? `${accent.darkText}B3` : `${accent.lightText}B3` }]}>{row.key}</Text>
+                                        <Text style={[styles.summaryValue, { color: isDark ? accent.darkText : accent.lightText }]}>{row.value}</Text>
+                                    </View>
+                                ))}
+                            </View>
+                        ) : null}
+                    </ScrollView>
                     <Text
                         selectable
                         style={[
@@ -200,6 +206,9 @@ const styles = StyleSheet.create({
     copy: {
         fontSize: 14,
         lineHeight: 22,
+    },
+    detailScroll: {
+        maxHeight: 190,
     },
     hint: {
         fontSize: 12,

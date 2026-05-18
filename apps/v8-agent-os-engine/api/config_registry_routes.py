@@ -889,13 +889,14 @@ def _save_computer_use_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_rpa_domain() -> dict[str, Any]:
+    roles = _roles_snapshot("rpa_discovery")
     return {
         "domain": "rpa",
         "title": "RPA Runtime",
         "summary": "控制 RPA 发现模型和执行保护策略。",
         "data": {
             "modelBindings": {
-                "discoveryModel": model_control_plane.get_role_model_id("rpa_discovery") or "",
+                "discoveryModel": roles.get("rpa_discovery") or "",
             },
             "executionPolicy": {
                 "runtimeFirst": True,

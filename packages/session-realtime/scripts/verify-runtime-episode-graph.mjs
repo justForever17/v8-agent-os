@@ -14,13 +14,13 @@ function episodeEvent(seq, topic, episode, summary = "") {
   };
 }
 
-function handoffEvent(seq, handoffRef) {
+function handoffEvent(seq, handoffRef, key = "handoffRef") {
   return {
     id: `evt-${seq}`,
     topic: "handoff.ref.created",
     summary: handoffRef.compactSummary,
     timestamp: baseTs + seq * 1000,
-    data: { handoffRef },
+    data: { [key]: handoffRef },
   };
 }
 
@@ -88,7 +88,7 @@ const liveEvents = [
     kind: "engineering",
     status: "ready",
     compactSummary: "工程 episode 完成实现和验证。",
-  }),
+  }, "handoff"),
 ];
 
 const kindLabels = {
@@ -96,6 +96,7 @@ const kindLabels = {
   research: "调研运行时",
   engineering: "工程运行时",
   delegation: "子代理",
+  handoff: "交接",
 };
 
 function simplify(nodes) {
@@ -128,6 +129,9 @@ assert.equal(byId.get("episode_subagent")?.parentId, "episode_engineering");
 assert.equal(byId.get("episode_child")?.parentId, "episode_subagent");
 assert.equal(byId.get("episode_child")?.depth, 3);
 assert.match(byId.get("episode_child")?.subtitle || "", /走法生成器/);
+assert.equal(byId.get("handoff:handoff_research")?.parentId, "episode_research");
+assert.equal(byId.get("handoff:handoff_research")?.label, "交接");
+assert.equal(byId.get("handoff:handoff_engineering")?.parentId, "episode_engineering");
 
 const activeGraph = buildRuntimeEpisodeGraph(liveEvents.slice(0, 10), {
   rootLabel: "Supervisor",

@@ -76,8 +76,9 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         self.assertEqual(parsed["rawRef"], "raw://tool/1")
         self.assertEqual(parsed["recommendedNextAction"], "ask_user")
         self.assertIn("verification", parsed)
-        self.assertTrue(parsed["_v8ToolSurface"]["omitted"]["wasBudgetTruncated"])
-        self.assertIn("rawRef", parsed["_v8ToolSurface"]["refs"])
+        self.assertTrue(parsed["_v8ToolSurface"]["truncated"])
+        self.assertGreater(parsed["_v8ToolSurface"]["omittedChars"], 0)
+        self.assertIn("rawRef", parsed["_v8ToolSurface"])
 
     def test_worker_result_marker_is_preserved(self):
         marker = '<V8_WORKER_RESULT>{"status":"succeeded","summary":"done"}</V8_WORKER_RESULT>'
@@ -127,13 +128,14 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
             },
         )
         result_message = result.update["messages"][0]
-        parsed = json.loads(result_message.content)
+        content = str(result_message.content)
 
         self.assertEqual(result.update["other"], "kept")
-        self.assertEqual(parsed["jobId"], "job-1")
-        self.assertEqual(parsed["providerTaskId"], "task-1")
-        self.assertEqual(parsed["operationKind"], "video.text_to_video")
-        self.assertEqual(parsed["artifactIds"], ["artifact-1"])
+        self.assertIn("Creative Media get_job", content)
+        self.assertIn("job-1", content)
+        self.assertIn("video.text_to_video", content)
+        self.assertIn("Artifacts: 1", content)
+        self.assertIn("providerResponse", content)
 
 
 if __name__ == "__main__":

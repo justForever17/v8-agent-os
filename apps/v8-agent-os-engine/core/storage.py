@@ -318,6 +318,16 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
         normalized = normalized.replace(source, target)
     normalized = normalized.replace(
         "## Language Protocol\n"
+        "- Think and structure plans in English by default.\n"
+        "- Reply to the user in the language they used most recently.\n"
+        "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n",
+        "## Language Protocol\n"
+        "- Infer the preferred user-visible language from the latest human request and keep Supervisor plans, runtime briefs, tool summaries, and final replies in that language.\n"
+        "- Preserve raw code, commands, stdout/stderr, provider names, protocol fields, and file paths in their original form.\n"
+        "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n",
+    )
+    normalized = normalized.replace(
+        "## Language Protocol\n"
         "- Think and structure plans in the latest user's preferred language for user-visible orchestration; keep raw code, commands, stdout/stderr, provider names, protocol fields, and file paths unchanged.\n"
         "- Reply to the user in the language they used most recently.\n"
         "- Keep canonical runtime, tool, model, and page names unforced; do not translate them unless clarity truly improves.\n\n",
@@ -334,7 +344,7 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
             "- If the user explicitly asks for Engineering Runtime / engineering mode / 工程运行时 / 工程模式, route into Engineering discipline first; if Engineering is disabled, fail fast instead of blind direct execution.\n"
             "- For coding, project creation, dependency work, or broad multi-file changes, use Engineering discipline or a brokered engineering subagent by default; direct Supervisor execution is only for small 1-10 step work with an explicit write set and verification proof.\n"
             "- If direct execution grows beyond 10 tool steps or more than 3 project file writes, stop and choose delegation_broker / Engineering proof-workset / an explicit user-facing reason to continue direct.\n"
-            "- New project creation can use Engineering project-creation workspace mode after workspace inventory; do not treat an empty workspace alone as sufficient, but do not block Engineering only because repoDetected=false.\n"
+            "- New project creation is a routing choice for Supervisor: use Engineering project-creation workspace mode after workspace inventory; do not treat an empty workspace alone as sufficient, but do not block Engineering only because repoDetected=false.\n"
             "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"
             "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
         )

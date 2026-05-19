@@ -823,7 +823,16 @@ def _render_creative_media_surface(tool_name: str, payload: dict[str, Any], raw_
         if error:
             lines.append(f"Error: {_short_text(error, 180)}")
         artifacts = record.get("artifacts") or payload.get("artifacts") or []
-        artifact_count = record.get("artifactCount") if record.get("artifactCount") not in (None, "") else len(artifacts) if isinstance(artifacts, list) else None
+        artifact_ids = record.get("artifactIds") or payload.get("artifactIds") or []
+        artifact_count = (
+            record.get("artifactCount")
+            if record.get("artifactCount") not in (None, "")
+            else len(artifacts)
+            if isinstance(artifacts, list) and artifacts
+            else len(artifact_ids)
+            if isinstance(artifact_ids, list)
+            else None
+        )
         if artifact_count not in (None, ""):
             lines.append(f"Artifacts: {artifact_count}")
         if isinstance(artifacts, list) and artifacts:
@@ -1430,6 +1439,23 @@ def apply_tool_surface_budget(
             "rawRef": raw_ref,
         }
     )
+
+    if tool_name in COMMAND_TOOL_NAMES and WORKER_RESULT_RE.search(content_str or ""):
+        notice = (
+            "OUTPUT TRUNCATED BY DYNAMIC TOOL OUTPUT BUDGET. "
+            f"Original length: {len(content_str)} chars; budget: {budget} chars"
+        )
+        marker_preserved = _truncate_worker_result_preserving_marker(content_str, budget, notice)
+        if marker_preserved is not None:
+            budget_meta.update(
+                {
+                    "wasBudgetTruncated": len(content_str) > len(marker_preserved),
+                    "semanticTruncationStrategy": "worker_result_marker_preserving",
+                    "originalChars": len(original_content_str),
+                    "visibleChars": len(marker_preserved),
+                }
+            )
+            return _copy_tool_message_with_budget(message, marker_preserved, budget_meta)
 
     if tool_name in COMMAND_TOOL_NAMES:
         command_surface = _command_agent_visible_surface(

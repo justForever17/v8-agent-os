@@ -650,6 +650,7 @@
   "src.components.chat.runtimetimelinepanel.episode_computer_use": "Desktop / browser",
   "src.components.chat.runtimetimelinepanel.episode_rpa": "RPA",
   "src.components.chat.runtimetimelinepanel.episode_delegation": "Subagent",
+  "src.components.chat.runtimetimelinepanel.episode_handoff": "Handoff",
   "src.lib.runtime_stage.context_governance_label": "Context governance",
   "src.lib.runtime_stage.context_governance_short_label": "Govern",
   "src.lib.runtime_stage.context_governance_description": "Inspect context budget, compaction, and recall injection.",

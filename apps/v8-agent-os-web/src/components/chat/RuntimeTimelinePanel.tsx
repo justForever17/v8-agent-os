@@ -167,6 +167,7 @@ const episodeKindLabels: Record<string, string> = {
     computer_use: "桌面 / 浏览器",
     rpa: "RPA",
     delegation: "子代理",
+    handoff: "交接",
 };
 
 function toRuntimeEpisodeGraphActivities(activities: RuntimeStageActivity[]): RuntimeEpisodeGraphActivity[] {

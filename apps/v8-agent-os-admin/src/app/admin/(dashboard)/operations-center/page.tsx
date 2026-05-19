@@ -174,6 +174,21 @@ type ConfigMigrationPlan = {
     after?: unknown;
   }>;
 };
+type RuntimeEpisodeOverviewPayload = {
+  ok?: boolean;
+  summary?: {
+    episodeCount?: number;
+    queueCount?: number;
+    activeLeaseCount?: number;
+    byState?: Record<string, number>;
+    byKind?: Record<string, number>;
+    byTargetKind?: Record<string, number>;
+  };
+  episodes?: Array<Record<string, unknown>>;
+  queue?: Array<Record<string, unknown>>;
+  leases?: Array<Record<string, unknown>>;
+  handoffs?: Array<Record<string, unknown>>;
+};
 type JsonRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): JsonRecord {
@@ -612,6 +627,169 @@ function ConfigMigrationPanel() {
                         <div className="text-slate-500">{String(item.status)} · {String(item.createdAt || "")}</div>
                         <div className="break-all text-slate-500">{String(item.backupPath || "")}</div>
                     </div>)}
+            </div>
+        </div>;
+}
+
+function RuntimeEpisodeFabricPanel() {
+  const t = useT();
+  const [payload, setPayload] = useState<RuntimeEpisodeOverviewPayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/runtime-episodes/overview?limit=120", {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setPayload(null);
+        setError(apiErrorMessage(data, response.status));
+        return;
+      }
+      setPayload(data);
+    } catch (err) {
+      setPayload(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+  const summary = payload?.summary || {};
+  const activeStates = new Set(["detected", "routed", "queued", "leased", "active", "waiting_child", "waiting_external", "waiting_approval"]);
+  const episodes = payload?.episodes || [];
+  const activeEpisodes = episodes.filter(item => activeStates.has(String(item.state || "")));
+  const queue = payload?.queue || [];
+  const activeQueue = queue.filter(item => activeStates.has(String(item.state || "")));
+  const leases = payload?.leases || [];
+  const activeLeases = leases.filter(item => String(item.state || "") === "active");
+  const handoffs = payload?.handoffs || [];
+  const cardItems = [{
+    label: t("app.admin.dashboard.operations.center.advanced.episodeFabric.episodes"),
+    value: Number(summary.episodeCount || episodes.length || 0),
+    hint: t("app.admin.dashboard.operations.center.advanced.episodeFabric.activeCount", {
+      count: activeEpisodes.length
+    })
+  }, {
+    label: t("app.admin.dashboard.operations.center.advanced.episodeFabric.queue"),
+    value: Number(summary.queueCount || queue.length || 0),
+    hint: t("app.admin.dashboard.operations.center.advanced.episodeFabric.activeCount", {
+      count: activeQueue.length
+    })
+  }, {
+    label: t("app.admin.dashboard.operations.center.advanced.episodeFabric.leases"),
+    value: Number(summary.activeLeaseCount || activeLeases.length || 0),
+    hint: t("app.admin.dashboard.operations.center.advanced.episodeFabric.workerLease")
+  }, {
+    label: t("app.admin.dashboard.operations.center.advanced.episodeFabric.handoffs"),
+    value: handoffs.length,
+    hint: t("app.admin.dashboard.operations.center.advanced.episodeFabric.typedArtifacts")
+  }];
+  const renderEpisode = (item: JsonRecord) => {
+    const id = fieldText(item.episodeId || item.id || item.episode_id, "-");
+    const kind = fieldText(item.kind, "runtime");
+    const state = fieldText(item.state, "unknown");
+    const targetKind = fieldText(item.targetKind || item.target_kind, "local_runtime");
+    return <div key={id} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+              <div className="flex items-center justify-between gap-3">
+                  <span className="truncate font-semibold text-slate-900">{kind}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">{state}</span>
+              </div>
+              <div className="truncate font-mono text-[11px] text-slate-500">{id}</div>
+              <div className="text-slate-500">{targetKind}</div>
+              <div className="line-clamp-2 text-slate-600">{fieldText(item.reason || item.errorMessage || item.error_message, "")}</div>
+          </div>;
+  };
+  const renderQueue = (item: JsonRecord) => {
+    const id = fieldText(item.episode_id || item.episodeId || item.id, "-");
+    return <div key={`${id}:${fieldText(item.state, "")}`} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+              <div className="flex items-center justify-between gap-3">
+                  <span className="truncate font-mono text-[11px] text-slate-900">{id}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">{fieldText(item.state, "queued")}</span>
+              </div>
+              <div className="text-slate-500">
+                  {t("app.admin.dashboard.operations.center.advanced.episodeFabric.priority", {
+        priority: String(item.priority || 0)
+      })} · {fieldText(item.scheduled_at || item.updated_at || item.created_at, "-")}
+              </div>
+          </div>;
+  };
+  const renderLease = (item: JsonRecord) => {
+    const id = fieldText(item.episode_id || item.episodeId || item.id, "-");
+    return <div key={`${id}:${fieldText(item.worker_id, "")}`} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+              <div className="flex items-center justify-between gap-3">
+                  <span className="truncate font-semibold text-slate-900">{fieldText(item.worker_id, "worker")}</span>
+                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">{fieldText(item.state, "active")}</span>
+              </div>
+              <div className="truncate font-mono text-[11px] text-slate-500">{id}</div>
+              <div className="text-slate-500">{fieldText(item.progress, "")}</div>
+              <div className="text-slate-400">{fieldText(item.heartbeat_at || item.lease_expires_at, "")}</div>
+          </div>;
+  };
+  const renderHandoff = (item: JsonRecord) => {
+    const payloadRecord = asRecord(item.payload);
+    const id = fieldText(item.handoffId || item.handoffRefId || item.id || payloadRecord.handoffId || payloadRecord.handoffRefId, "-");
+    return <div key={id} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+              <div className="flex items-center justify-between gap-3">
+                  <span className="truncate font-semibold text-slate-900">{fieldText(item.kind || payloadRecord.kind, "handoff")}</span>
+                  <span className="rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700">{fieldText(item.status || payloadRecord.status, "ready")}</span>
+              </div>
+              <div className="truncate font-mono text-[11px] text-slate-500">{id}</div>
+              <div className="line-clamp-2 text-slate-600">{fieldText(item.compactSummary || payloadRecord.compactSummary || payloadRecord.summary, "")}</div>
+          </div>;
+  };
+  return <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.title")}</div>
+                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.description")}</div>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+                    {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                    {t("app.admin.dashboard.operations.center.advanced.refresh")}
+                </Button>
+            </div>
+            {error ? <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700">
+                    {t("app.admin.dashboard.operations.center.advanced.episodeFabric.loadFailed", {
+        error
+      })}
+                </div> : null}
+            <div className="grid gap-3 md:grid-cols-4">
+                {cardItems.map(item => <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                        <div className="text-xs text-slate-500">{item.label}</div>
+                        <div className="font-semibold text-slate-900">{item.value}</div>
+                        <div className="text-xs text-slate-500">{item.hint}</div>
+                    </div>)}
+            </div>
+            <div className="grid gap-3 xl:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.activeEpisodes")}</div>
+                    <div className="max-h-80 space-y-2 overflow-auto pr-1">
+                        {(activeEpisodes.length ? activeEpisodes : episodes.slice(0, 8)).map(item => renderEpisode(item))}
+                        {!episodes.length && !loading ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.empty")}</div> : null}
+                    </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.queueAndLeases")}</div>
+                    <div className="grid max-h-80 gap-2 overflow-auto pr-1 md:grid-cols-2">
+                        {(activeQueue.length ? activeQueue : queue.slice(0, 6)).map(item => renderQueue(item))}
+                        {(activeLeases.length ? activeLeases : leases.slice(0, 6)).map(item => renderLease(item))}
+                        {!queue.length && !leases.length && !loading ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-xs text-slate-500 md:col-span-2">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.emptyQueue")}</div> : null}
+                    </div>
+                </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.recentHandoffs")}</div>
+                <div className="grid max-h-72 gap-2 overflow-auto pr-1 md:grid-cols-3">
+                    {handoffs.slice(0, 12).map(item => renderHandoff(item))}
+                    {!handoffs.length && !loading ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-xs text-slate-500 md:col-span-3">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.emptyHandoff")}</div> : null}
+                </div>
             </div>
         </div>;
 }
@@ -1250,6 +1428,9 @@ export default function OperationsCenterPage() {
                     </AdvancedSection>
                     <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.configMigration.title")} defaultOpen={false}>
                         <ConfigMigrationPanel />
+                    </AdvancedSection>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.episodeFabric.title")} defaultOpen={false}>
+                        <RuntimeEpisodeFabricPanel />
                     </AdvancedSection>
                     <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.storageRetention.title")} defaultOpen={false}>
                         <StorageRetentionPanel />

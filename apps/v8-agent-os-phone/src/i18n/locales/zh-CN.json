@@ -650,6 +650,7 @@
   "src.components.chat.runtimetimelinepanel.episode_computer_use": "桌面/浏览器",
   "src.components.chat.runtimetimelinepanel.episode_rpa": "RPA",
   "src.components.chat.runtimetimelinepanel.episode_delegation": "子代理",
+  "src.components.chat.runtimetimelinepanel.episode_handoff": "交接",
   "src.lib.runtime_stage.context_governance_label": "上下文治理",
   "src.lib.runtime_stage.context_governance_short_label": "治理",
   "src.lib.runtime_stage.context_governance_description": "查看上下文预算、压缩与召回注入。",

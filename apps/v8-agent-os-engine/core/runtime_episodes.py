@@ -13,6 +13,7 @@ ACTIVE_EPISODE_STATES = {
     "detected",
     "routed",
     "queued",
+    "leased",
     "active",
     "waiting",
     "waiting_child",
@@ -20,6 +21,16 @@ ACTIVE_EPISODE_STATES = {
     "waiting_approval",
 }
 TERMINAL_EPISODE_STATES = {"completed", "failed", "merged", "cancelled"}
+
+TYPED_HANDOFF_KINDS = {
+    "research": "research_evidence_bundle",
+    "engineering": "engineering_patch_bundle",
+    "creative_media": "asset_bundle",
+    "computer_use": "computer_observation_bundle",
+    "rpa": "rpa_trace_bundle",
+    "delegation": "subagent_result_bundle",
+    "verification": "verification_report",
+}
 
 
 def normalize_capability_kind(value: Any) -> str:
@@ -89,6 +100,18 @@ def build_runtime_episode(
         "createdAt": str(payload.get("createdAt") or utc_now_iso()),
         "updatedAt": utc_now_iso(),
     }
+    for source_key, target_key in (
+        ("retryPolicy", "retryPolicy"),
+        ("cancelPolicy", "cancelPolicy"),
+        ("resumeToken", "resumeToken"),
+        ("idempotencyKey", "idempotencyKey"),
+        ("deadlineAt", "deadlineAt"),
+        ("compensationPlan", "compensationPlan"),
+        ("targetKind", "targetKind"),
+        ("targetId", "targetId"),
+    ):
+        if source_key in payload and payload.get(source_key) is not None:
+            episode[target_key] = payload.get(source_key)
     if extra:
         episode.update({k: v for k, v in dict(extra).items() if v is not None})
     return episode
@@ -211,11 +234,15 @@ def build_handoff_ref(
     consumer_hint: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    normalized_kind = str(kind or "runtime_result").strip()
+    artifact_kind = TYPED_HANDOFF_KINDS.get(normalize_capability_kind(normalized_kind), normalized_kind)
+    artifact_id = str((extra or {}).get("artifactId") or f"artifact_{uuid.uuid4().hex[:12]}")
     handoff_id = f"handoff_{uuid.uuid4().hex[:12]}"
     ref = {
         "handoffRefId": handoff_id,
+        "artifactId": artifact_id,
         "producerEpisodeId": str(producer_episode_id or ""),
-        "kind": str(kind or "runtime_result"),
+        "kind": artifact_kind,
         "status": str(status or "ready"),
         "compactSummary": str(compact_summary or "").strip(),
         "createdAt": utc_now_iso(),
@@ -229,7 +256,7 @@ def build_handoff_ref(
     if consumer_hint:
         ref["consumerHint"] = str(consumer_hint)
     if extra:
-        ref.update({k: v for k, v in dict(extra).items() if v is not None})
+        ref.update({k: v for k, v in dict(extra).items() if v is not None and k != "artifactId"})
     return ref
 
 

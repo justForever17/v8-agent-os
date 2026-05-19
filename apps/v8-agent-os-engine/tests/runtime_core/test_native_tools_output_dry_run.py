@@ -84,10 +84,10 @@ def test_tool_observation_detail_reads_bounded_redacted_preview(tmp_path, monkey
         }
     )
 
-    result = json.loads(tool_observation_detail.invoke({"raw_ref": "toolobs://obs-test", "max_chars": 1000}))
+    result = tool_observation_detail.invoke({"raw_ref": "toolobs://obs-test", "max_chars": 1000})
 
-    assert result["ok"] is True
-    assert result["toolName"] == "run_system_command"
-    assert result["redacted"] is True
-    assert "super-secret-token-value" not in result["preview"]
-    assert "api_key=<redacted>" in result["preview"]
+    assert "Tool observation detail" in result
+    assert "tool: run_system_command" in result
+    assert "[secrets redacted]" in result
+    assert "super-secret-token-value" not in result
+    assert "api_key=<redacted>" in result

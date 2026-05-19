@@ -7,7 +7,7 @@ from typing import Any
 
 from core.database import db
 from core.json_safe import to_jsonable
-from core.runtime_episodes import build_handoff_ref
+from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
 from core.workspace_state_digest import build_workspace_state_digest_context
 
@@ -79,12 +79,21 @@ class RuntimeEpisodeRunner:
     async def _execute_episode(self, episode: dict[str, Any]) -> None:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         kind = str(episode.get("kind") or "unknown").strip()
+        target_kind = str(episode.get("targetKind") or episode.get("target_kind") or "local_runtime").strip() or "local_runtime"
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
         self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
         try:
             self._heartbeat(episode_id, "executor starting")
-            if kind == "research":
+            if self._should_dispatch_child_needs(episode):
+                waiting = self._dispatch_child_needs(episode, session_id=session_id, run_id=run_id)
+                self._emit("runtime.episode.waiting", episode=waiting, session_id=session_id, run_id=run_id)
+                return
+            if target_kind == "network_peer":
+                handoff = await self._execute_network_peer_target(episode)
+            elif target_kind == "external_worker":
+                handoff = await self._execute_external_worker_target(episode)
+            elif kind == "research":
                 handoff = await self._execute_research(episode)
             elif kind == "engineering":
                 handoff = await self._execute_engineering(episode)
@@ -105,24 +114,73 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
-            final_state = "completed" if str(handoff.get("status") or "ready") not in {"failed", "blocked"} else "failed"
+            handoff_status = str(handoff.get("status") or "ready").strip().lower()
+            if handoff_status in {"running", "waiting", "pending"}:
+                waiting_state = "waiting_external" if target_kind in {"network_peer", "external_worker"} else "waiting"
+                waiting = db.complete_runtime_episode(
+                    episode_id,
+                    state=waiting_state,
+                    result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                    metadata={"handoff": persisted_handoff, "waitingReason": handoff_status},
+                ) or {**episode, "state": waiting_state}
+                self._emit(
+                    "runtime.episode.waiting",
+                    episode=waiting,
+                    handoff=persisted_handoff,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                return
+            if handoff_status in {"failed", "blocked"} and self._can_retry(episode):
+                retry_episode = db.retry_runtime_episode(
+                    episode_id,
+                    error_message=str(handoff.get("errorMessage") or handoff.get("compactSummary") or "episode failed; retry scheduled"),
+                    delay_seconds=self._retry_delay_seconds(episode),
+                ) or {**episode, "state": "queued"}
+                self._emit(
+                    "runtime.episode.retry_scheduled",
+                    episode=retry_episode,
+                    handoff=persisted_handoff,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                return
+            final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
+            recovery = self._build_recovery_bundle(episode, handoff, final_state=final_state)
             completed = db.complete_runtime_episode(
                 episode_id,
                 state=final_state,
                 result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
                 error_code=str(handoff.get("errorCode") or "") or None,
                 error_message=str(handoff.get("errorMessage") or "") or None,
-                metadata={"handoff": persisted_handoff},
+                metadata={"handoff": persisted_handoff, "recovery": recovery},
             )
             self._emit(
                 "runtime.episode.completed" if final_state == "completed" else "runtime.episode.failed",
                 episode=completed or {**episode, "state": final_state},
                 handoff=persisted_handoff,
+                recovery=recovery,
                 session_id=session_id,
                 run_id=run_id,
             )
+            if final_state == "completed":
+                self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
+            if self._can_retry(episode):
+                retry_episode = db.retry_runtime_episode(
+                    episode_id,
+                    error_message=error_message,
+                    delay_seconds=self._retry_delay_seconds(episode),
+                ) or {**episode, "state": "queued"}
+                self._emit(
+                    "runtime.episode.retry_scheduled",
+                    episode=retry_episode,
+                    error={"code": "episode_executor_error", "message": error_message, "recoverable": True},
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                return
             failed = db.complete_runtime_episode(
                 episode_id,
                 state="failed",
@@ -145,6 +203,16 @@ class RuntimeEpisodeRunner:
             progress=progress,
             lease_seconds=self._lease_seconds,
         )
+
+    async def _await_with_heartbeat(self, episode_id: str, awaitable: Any, *, progress: str, interval_seconds: float = 20.0) -> Any:
+        task = asyncio.create_task(awaitable)
+        while not task.done():
+            self._heartbeat(episode_id, progress)
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=interval_seconds)
+            except asyncio.TimeoutError:
+                continue
+        return await task
 
     def _emit(
         self,
@@ -190,6 +258,163 @@ class RuntimeEpisodeRunner:
             confidence="low" if status != "ready" else "medium",
             consumer_hint="Route can be retried after configuring the matching runtime executor.",
             extra={"errorCode": "no_matching_runtime_executor"} if status == "failed" else None,
+        )
+
+    def _episode_attempt(self, episode: dict[str, Any]) -> int:
+        try:
+            return int(episode.get("attempt_count") or episode.get("attemptCount") or 0)
+        except Exception:
+            return 0
+
+    def _retry_policy(self, episode: dict[str, Any]) -> dict[str, Any]:
+        policy = episode.get("retryPolicy")
+        return dict(policy) if isinstance(policy, dict) else {}
+
+    def _can_retry(self, episode: dict[str, Any]) -> bool:
+        policy = self._retry_policy(episode)
+        max_attempts = int(policy.get("maxAttempts") or policy.get("max_attempts") or 1)
+        if max_attempts <= 1:
+            return False
+        return self._episode_attempt(episode) < max_attempts
+
+    def _retry_delay_seconds(self, episode: dict[str, Any]) -> int:
+        policy = self._retry_policy(episode)
+        try:
+            value = policy["delaySeconds"] if "delaySeconds" in policy else policy.get("delay_seconds", 2)
+            return max(0, int(value))
+        except Exception:
+            return 2
+
+    def _build_recovery_bundle(self, episode: dict[str, Any], handoff: dict[str, Any], *, final_state: str) -> dict[str, Any]:
+        failed = final_state == "failed"
+        compensation = episode.get("compensationPlan") if isinstance(episode.get("compensationPlan"), dict) else {}
+        refs = list(handoff.get("refs") or [])
+        return {
+            "episodeId": episode.get("episodeId") or episode.get("id"),
+            "kind": episode.get("kind"),
+            "state": final_state,
+            "done": refs if refs else ([handoff.get("artifactId")] if handoff.get("artifactId") else []),
+            "notDone": [episode.get("reason") or (episode.get("need") or {}).get("reason") or "episode work"] if failed else [],
+            "canRetry": failed and self._can_retry(episode),
+            "canReplaceTarget": failed and bool(episode.get("targetKind") or episode.get("targetId")),
+            "canContinueParent": not failed,
+            "compensationPlan": compensation,
+            "nextAction": (
+                "retry_or_replace_target" if failed else "merge_handoff_into_parent"
+            ),
+        }
+
+    def _child_needs_from_episode(self, episode: dict[str, Any]) -> list[dict[str, Any]]:
+        inputs = dict(episode.get("inputs") or {})
+        need = dict(episode.get("need") or {})
+        raw = inputs.get("capabilityNeeds") or inputs.get("childNeeds") or need.get("capabilityNeeds") or need.get("childNeeds") or []
+        return [dict(item) for item in list(raw or []) if isinstance(item, dict)]
+
+    def _should_dispatch_child_needs(self, episode: dict[str, Any]) -> bool:
+        metadata = dict(episode.get("metadata") or {})
+        if metadata.get("childNeedsDispatched"):
+            return False
+        return bool(self._child_needs_from_episode(episode))
+
+    def _dispatch_child_needs(
+        self,
+        episode: dict[str, Any],
+        *,
+        session_id: str | None,
+        run_id: str | None,
+    ) -> dict[str, Any]:
+        parent_id = str(episode.get("episodeId") or episode.get("id") or "")
+        child_ids: list[str] = []
+        for index, child_need in enumerate(self._child_needs_from_episode(episode), start=1):
+            child_kind = str(child_need.get("kind") or child_need.get("runtimeKind") or "delegation")
+            child_need.setdefault("source", f"{episode.get('kind') or 'runtime'}_episode")
+            child_need.setdefault("reason", child_need.get("reason") or f"Child capability requested by {parent_id}.")
+            child_need.setdefault("parentEpisodeId", parent_id)
+            child_need.setdefault("needId", f"{parent_id}:child:{index}:{child_kind}")
+            child_episode = build_runtime_episode(
+                need=child_need,
+                kind=child_kind,
+                state="queued",
+                required_runtime_access=list(child_need.get("requiredRuntimeAccess") or []),
+                parent_episode_id=parent_id,
+                continuation_target="runtime_episode_runner",
+                extra={
+                    "rootEpisodeId": episode.get("rootEpisodeId") or episode.get("root_episode_id") or parent_id,
+                    "idempotencyKey": child_need.get("idempotencyKey") or f"{parent_id}:child:{index}:{child_kind}",
+                    "retryPolicy": child_need.get("retryPolicy") or {"maxAttempts": 1},
+                    "targetKind": child_need.get("targetKind") or "local_runtime",
+                    "targetId": child_need.get("targetId") or child_kind,
+                },
+            )
+            persisted = db.upsert_runtime_episode_record(child_episode, session_id=session_id, run_id=run_id, enqueue=True)
+            child_ids.append(str(persisted.get("episodeId") or child_episode.get("episodeId")))
+            self._emit(
+                "capability.need.detected",
+                episode=persisted,
+                parentEpisodeId=parent_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+            self._emit("runtime.episode.queued", episode=persisted, session_id=session_id, run_id=run_id)
+        metadata = {**dict(episode.get("metadata") or {}), "childNeedsDispatched": True, "childEpisodeIds": child_ids}
+        waiting = db.complete_runtime_episode(
+            parent_id,
+            state="waiting_child",
+            metadata={"childNeedsDispatched": True, "childEpisodeIds": child_ids, "resumeReason": "waiting_child_handoffs"},
+        ) or {**episode, "state": "waiting_child", "metadata": metadata}
+        return waiting
+
+    def _maybe_resume_parent_episode(
+        self,
+        episode: dict[str, Any],
+        *,
+        session_id: str | None,
+        run_id: str | None,
+    ) -> None:
+        parent_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+        if not parent_id:
+            return
+        parent = db.get_runtime_episode(parent_id)
+        if not parent or str(parent.get("state") or "") != "waiting_child":
+            return
+        children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=1000)
+        if not children:
+            return
+        terminal = {"completed", "failed", "cancelled", "merged"}
+        if any(str(child.get("state") or "") not in terminal for child in children):
+            return
+        completed_children = [child for child in children if str(child.get("state") or "") in {"completed", "merged"}]
+        failed_children = [child for child in children if str(child.get("state") or "") in {"failed", "cancelled"}]
+        child_handoffs: list[dict[str, Any]] = []
+        for child in completed_children:
+            for handoff in db.list_runtime_episode_handoffs(str(child.get("episodeId") or child.get("id") or "")):
+                payload = dict(handoff.get("payload") or {})
+                if payload:
+                    child_handoffs.append(payload)
+        resume_token = {
+            "resumedFrom": "child_handoffs",
+            "childEpisodeIds": [child.get("episodeId") for child in children],
+            "handoffIds": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs],
+            "failedChildCount": len(failed_children),
+        }
+        if failed_children:
+            updated = db.complete_runtime_episode(
+                parent_id,
+                state="failed",
+                error_code="child_episode_failed",
+                error_message=f"{len(failed_children)} child episode(s) failed.",
+                metadata={"resumeToken": resume_token, "childHandoffs": child_handoffs, "recoverable": True},
+            ) or parent
+            self._emit("runtime.episode.failed", episode=updated, session_id=session_id, run_id=run_id, resumeToken=resume_token)
+            return
+        resumed = db.resume_runtime_episode(parent_id, resume_token=resume_token) or parent
+        self._emit(
+            "runtime.episode.resumed",
+            episode=resumed,
+            session_id=session_id,
+            run_id=run_id,
+            handoffBundle=child_handoffs,
+            resumeToken=resume_token,
         )
 
     async def _execute_research(self, episode: dict[str, Any]) -> dict[str, Any]:
@@ -442,6 +667,145 @@ class RuntimeEpisodeRunner:
                 confidence="low",
                 consumer_hint="Check subagent registry/worker configuration.",
                 extra={"errorCode": "delegation_dispatch_failed", "errorMessage": str(exc)},
+            )
+
+    async def _execute_network_peer_target(self, episode: dict[str, Any]) -> dict[str, Any]:
+        self._heartbeat(str(episode.get("episodeId")), "network_peer: delegate")
+        inputs = dict(episode.get("inputs") or {})
+        need = dict(episode.get("need") or {})
+        peer_id = str(episode.get("targetId") or episode.get("target_id") or inputs.get("peerId") or inputs.get("peer_id") or "").strip()
+        task = str(inputs.get("task") or inputs.get("brief") or need.get("reason") or episode.get("reason") or "").strip()
+        if not peer_id:
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary="Network peer episode cannot start because no peer target was selected.",
+                status="failed",
+                confidence="high",
+                consumer_hint="Select a trusted Network Supervisor peer before retrying this episode.",
+                extra={"errorCode": "network_peer_missing_target"},
+            )
+        if not task:
+            task = f"Runtime episode {episode.get('episodeId') or ''}"
+        try:
+            from runtimes.network_supervisor.service import network_supervisor_service
+
+            result = await self._await_with_heartbeat(
+                str(episode.get("episodeId") or ""),
+                network_supervisor_service.delegate_task(
+                    peer_id=peer_id,
+                    task=task,
+                    timeout_seconds=int(inputs.get("timeoutSeconds") or inputs.get("timeout_seconds") or 0) or None,
+                    project_id=inputs.get("projectId") or inputs.get("project_id"),
+                    workspace_id=inputs.get("workspaceId") or inputs.get("workspace_id"),
+                    workspace_path=inputs.get("workspacePath") or inputs.get("workspace_path"),
+                    scope_hint=inputs.get("scopeHint") or inputs.get("scope_hint"),
+                ),
+                progress=f"network_peer: waiting for {peer_id}",
+            )
+            summary = _preview(result.get("result") or f"Network peer {peer_id} completed the delegated task.")
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary=f"Network peer {peer_id} completed.\n{summary}",
+                status="ready",
+                confidence="medium",
+                consumer_hint="Merge this remote peer result into the parent runtime episode.",
+                extra={
+                    "peerId": peer_id,
+                    "delegationId": result.get("delegationId"),
+                    "outerRunId": result.get("outerRunId"),
+                    "refs": [f"network_peer:{peer_id}:{result.get('delegationId') or episode.get('episodeId')}"],
+                },
+            )
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+            detail = getattr(exc, "detail", None)
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary=f"Network peer {peer_id} failed: {detail or exc}",
+                status="failed",
+                confidence="low",
+                consumer_hint="Retry after peer connectivity/auth is fixed, or replace target peer.",
+                extra={
+                    "errorCode": "network_peer_delegate_failed",
+                    "errorMessage": str(detail or exc),
+                    "httpStatus": status_code,
+                    "peerId": peer_id,
+                },
+            )
+
+    async def _execute_external_worker_target(self, episode: dict[str, Any]) -> dict[str, Any]:
+        self._heartbeat(str(episode.get("episodeId")), "external_worker: dispatch")
+        inputs = dict(episode.get("inputs") or {})
+        need = dict(episode.get("need") or {})
+        target_id = str(episode.get("targetId") or episode.get("target_id") or inputs.get("workerId") or inputs.get("workerType") or "").strip()
+        task_brief = dict(inputs.get("taskBrief") or inputs.get("task_brief") or {})
+        task_goal = str(task_brief.get("goal") or inputs.get("task") or inputs.get("brief") or need.get("reason") or episode.get("reason") or "").strip()
+        if not task_goal:
+            task_goal = f"Runtime episode {episode.get('episodeId') or ''}"
+        task_brief.setdefault("taskBriefId", str(inputs.get("taskBriefId") or episode.get("episodeId") or "external-worker-task"))
+        task_brief.setdefault("goal", task_goal)
+        task_brief["executionLaneHint"] = "external_worker"
+        if target_id:
+            task_brief.setdefault("preferredWorkerType", target_id)
+            task_brief.setdefault("preferredAgentId", target_id)
+        try:
+            from core.native_tools import delegation_broker
+
+            command = delegation_broker.func(
+                mode="dispatch",
+                tasks=[task_brief],
+                target_count=1,
+                state={
+                    "delegationDispatchSource": "runtime_episode_runner.external_worker",
+                    "workspace_path": inputs.get("workspacePath") or inputs.get("workspace_path") or "",
+                    "current_route_context": {
+                        "runtimeToolGrants": [{"group": "delegation.recursive", "runtimeKind": "subagent"}],
+                    },
+                },
+                tool_call_id=f"episode:{episode.get('episodeId')}:external_worker_dispatch",
+            )
+            update = dict(getattr(command, "update", None) or {})
+            results = [item for item in list(update.get("parallel_results") or []) if isinstance(item, dict)]
+            first = dict(results[0]) if results else {}
+            worker_status = str(first.get("status") or "running").strip().lower()
+            if worker_status in {"error", "failed", "blocked", "marker_missing"}:
+                status = "failed"
+            elif worker_status in {"queued", "running", "pending"}:
+                status = "waiting"
+            else:
+                status = "ready"
+            label = str(first.get("targetLabel") or first.get("target_label") or target_id or "external worker").strip()
+            summary = f"External worker {label} dispatched."
+            if first.get("workerResult"):
+                summary = f"External worker {label} returned result."
+            if first.get("error"):
+                summary = f"External worker {label} failed: {first.get('error')}"
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary=summary,
+                status=status,
+                confidence="medium" if status != "failed" else "low",
+                consumer_hint="Observe external worker command session until result markers are available.",
+                extra={
+                    "externalWorker": first,
+                    "delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)],
+                    "refs": [first.get("traceRef") or first.get("trace_ref") or f"external_worker:{episode.get('episodeId')}"],
+                    "errorCode": "external_worker_dispatch_failed" if status == "failed" else None,
+                },
+            )
+        except Exception as exc:
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary=f"External worker dispatch failed: {type(exc).__name__}: {exc}",
+                status="failed",
+                confidence="low",
+                consumer_hint="Check external worker descriptors and command profiles before retry.",
+                extra={"errorCode": "external_worker_dispatch_failed", "errorMessage": str(exc)},
             )
 
 

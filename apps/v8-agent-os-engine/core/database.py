@@ -172,6 +172,15 @@ class DatabaseManager:
                     required_runtime_access_json TEXT,
                     handoff_refs_json TEXT,
                     continuation_token_json TEXT,
+                    retry_policy_json TEXT,
+                    cancel_policy_json TEXT,
+                    resume_token_json TEXT,
+                    idempotency_key TEXT,
+                    deadline_at TEXT,
+                    compensation_plan_json TEXT,
+                    target_kind TEXT,
+                    target_id TEXT,
+                    lease_generation INTEGER DEFAULT 0,
                     result_ref TEXT,
                     recoverable INTEGER DEFAULT 1,
                     priority INTEGER DEFAULT 0,
@@ -221,6 +230,8 @@ class DatabaseManager:
                     locked_by TEXT,
                     lease_expires_at TEXT,
                     attempt_count INTEGER DEFAULT 0,
+                    max_attempts INTEGER DEFAULT 1,
+                    retry_policy_json TEXT,
                     last_error TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1045,6 +1056,32 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if canonical_columns and 'finalized_at' not in canonical_columns:
                     conn.execute("ALTER TABLE chat_canonical_messages ADD COLUMN finalized_at TIMESTAMP")
+
+                cursor.execute("PRAGMA table_info(runtime_episodes)")
+                runtime_episode_columns = [row['name'] for row in cursor.fetchall()]
+                for column_name, ddl in (
+                    ("retry_policy_json", "ALTER TABLE runtime_episodes ADD COLUMN retry_policy_json TEXT"),
+                    ("cancel_policy_json", "ALTER TABLE runtime_episodes ADD COLUMN cancel_policy_json TEXT"),
+                    ("resume_token_json", "ALTER TABLE runtime_episodes ADD COLUMN resume_token_json TEXT"),
+                    ("idempotency_key", "ALTER TABLE runtime_episodes ADD COLUMN idempotency_key TEXT"),
+                    ("deadline_at", "ALTER TABLE runtime_episodes ADD COLUMN deadline_at TEXT"),
+                    ("compensation_plan_json", "ALTER TABLE runtime_episodes ADD COLUMN compensation_plan_json TEXT"),
+                    ("target_kind", "ALTER TABLE runtime_episodes ADD COLUMN target_kind TEXT"),
+                    ("target_id", "ALTER TABLE runtime_episodes ADD COLUMN target_id TEXT"),
+                    ("lease_generation", "ALTER TABLE runtime_episodes ADD COLUMN lease_generation INTEGER DEFAULT 0"),
+                ):
+                    if runtime_episode_columns and column_name not in runtime_episode_columns:
+                        conn.execute(ddl)
+                cursor.execute("PRAGMA table_info(runtime_episode_queue)")
+                runtime_episode_queue_columns = [row['name'] for row in cursor.fetchall()]
+                for column_name, ddl in (
+                    ("max_attempts", "ALTER TABLE runtime_episode_queue ADD COLUMN max_attempts INTEGER DEFAULT 1"),
+                    ("retry_policy_json", "ALTER TABLE runtime_episode_queue ADD COLUMN retry_policy_json TEXT"),
+                ):
+                    if runtime_episode_queue_columns and column_name not in runtime_episode_queue_columns:
+                        conn.execute(ddl)
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_idempotency ON runtime_episodes (idempotency_key)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_target ON runtime_episodes (target_kind, target_id)')
 
                 cursor.execute("PRAGMA table_info(memory_workflow_candidates)")
                 workflow_candidate_columns = [row['name'] for row in cursor.fetchall()]
@@ -1929,6 +1966,10 @@ class DatabaseManager:
             ("required_runtime_access_json", "requiredRuntimeAccess", []),
             ("handoff_refs_json", "handoffRefs", []),
             ("continuation_token_json", "continuationToken", {}),
+            ("retry_policy_json", "retryPolicy", {}),
+            ("cancel_policy_json", "cancelPolicy", {}),
+            ("resume_token_json", "resumeToken", {}),
+            ("compensation_plan_json", "compensationPlan", {}),
             ("metadata_json", "metadata", {}),
         ):
             raw_value = data.get(source)
@@ -1949,6 +1990,11 @@ class DatabaseManager:
         data["errorMessage"] = data.get("error_message")
         data["resultRef"] = data.get("result_ref")
         data["recoverable"] = bool(data.get("recoverable", 1))
+        data["idempotencyKey"] = data.get("idempotency_key")
+        data["deadlineAt"] = data.get("deadline_at")
+        data["targetKind"] = data.get("target_kind")
+        data["targetId"] = data.get("target_id")
+        data["leaseGeneration"] = int(data.get("lease_generation") or 0)
         return data
 
     def upsert_runtime_episode_record(
@@ -1996,6 +2042,15 @@ class DatabaseManager:
         )
         handoff_refs = episode.get("handoffRefs") or []
         continuation_token = episode.get("continuationToken") or {}
+        retry_policy = episode.get("retryPolicy") if isinstance(episode.get("retryPolicy"), dict) else {}
+        cancel_policy = episode.get("cancelPolicy") if isinstance(episode.get("cancelPolicy"), dict) else {}
+        resume_token = episode.get("resumeToken") if isinstance(episode.get("resumeToken"), dict) else continuation_token
+        compensation_plan = episode.get("compensationPlan") if isinstance(episode.get("compensationPlan"), dict) else {}
+        idempotency_key = str(episode.get("idempotencyKey") or episode.get("idempotency_key") or "").strip() or None
+        deadline_at = str(episode.get("deadlineAt") or episode.get("deadline_at") or "").strip() or None
+        target_kind = str(episode.get("targetKind") or episode.get("target_kind") or "").strip() or None
+        target_id = str(episode.get("targetId") or episode.get("target_id") or "").strip() or None
+        max_attempts = int(retry_policy.get("maxAttempts") or retry_policy.get("max_attempts") or episode.get("maxAttempts") or 1)
         metadata = episode.get("metadata") if isinstance(episode.get("metadata"), dict) else {}
 
         def _write():
@@ -2005,10 +2060,12 @@ class DatabaseManager:
                     INSERT INTO runtime_episodes (
                         id, session_id, run_id, parent_episode_id, root_episode_id, kind, state,
                         source, reason, need_json, inputs_json, required_runtime_access_json,
-                        handoff_refs_json, continuation_token_json, result_ref, recoverable,
+                        handoff_refs_json, continuation_token_json, retry_policy_json,
+                        cancel_policy_json, resume_token_json, idempotency_key, deadline_at,
+                        compensation_plan_json, target_kind, target_id, result_ref, recoverable,
                         priority, metadata_json, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         session_id = COALESCE(excluded.session_id, runtime_episodes.session_id),
                         run_id = COALESCE(excluded.run_id, runtime_episodes.run_id),
@@ -2023,6 +2080,14 @@ class DatabaseManager:
                         required_runtime_access_json = excluded.required_runtime_access_json,
                         handoff_refs_json = excluded.handoff_refs_json,
                         continuation_token_json = excluded.continuation_token_json,
+                        retry_policy_json = excluded.retry_policy_json,
+                        cancel_policy_json = excluded.cancel_policy_json,
+                        resume_token_json = excluded.resume_token_json,
+                        idempotency_key = COALESCE(excluded.idempotency_key, runtime_episodes.idempotency_key),
+                        deadline_at = COALESCE(excluded.deadline_at, runtime_episodes.deadline_at),
+                        compensation_plan_json = excluded.compensation_plan_json,
+                        target_kind = COALESCE(excluded.target_kind, runtime_episodes.target_kind),
+                        target_id = COALESCE(excluded.target_id, runtime_episodes.target_id),
                         result_ref = COALESCE(excluded.result_ref, runtime_episodes.result_ref),
                         recoverable = excluded.recoverable,
                         priority = excluded.priority,
@@ -2044,6 +2109,14 @@ class DatabaseManager:
                         json.dumps(to_jsonable(required_runtime_access or []), ensure_ascii=False),
                         json.dumps(to_jsonable(handoff_refs or []), ensure_ascii=False),
                         json.dumps(to_jsonable(continuation_token or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(retry_policy or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(cancel_policy or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(resume_token or {}), ensure_ascii=False),
+                        idempotency_key,
+                        deadline_at,
+                        json.dumps(to_jsonable(compensation_plan or {}), ensure_ascii=False),
+                        target_kind,
+                        target_id,
                         episode.get("resultRef") or episode.get("result_ref"),
                         1 if episode.get("recoverable", True) else 0,
                         int(priority or episode.get("priority") or 0),
@@ -2057,15 +2130,17 @@ class DatabaseManager:
                         '''
                         INSERT INTO runtime_episode_queue (
                             id, episode_id, session_id, run_id, kind, priority, state,
-                            available_at, created_at, updated_at
+                            available_at, max_attempts, retry_policy_json, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                         ON CONFLICT(episode_id) DO UPDATE SET
                             state = CASE
                                 WHEN runtime_episode_queue.state IN ('completed', 'cancelled') THEN runtime_episode_queue.state
                                 ELSE 'queued'
                             END,
                             priority = excluded.priority,
+                            max_attempts = excluded.max_attempts,
+                            retry_policy_json = excluded.retry_policy_json,
                             available_at = excluded.available_at,
                             updated_at = excluded.updated_at
                         ''',
@@ -2077,6 +2152,8 @@ class DatabaseManager:
                             kind,
                             int(priority or episode.get("priority") or 0),
                             now_iso,
+                            max(1, max_attempts),
+                            json.dumps(to_jsonable(retry_policy or {}), ensure_ascii=False),
                             now_iso,
                             now_iso,
                         ),
@@ -2187,6 +2264,7 @@ class DatabaseManager:
                         lease_expires_at = ?,
                         last_heartbeat_at = ?,
                         attempt_count = ?,
+                        lease_generation = COALESCE(lease_generation, 0) + 1,
                         updated_at = ?
                     WHERE id = ?
                     ''',
@@ -2327,6 +2405,132 @@ class DatabaseManager:
         self._run_write_with_retry(_write)
         return self.get_runtime_episode(episode_id)
 
+    def retry_runtime_episode(
+        self,
+        episode_id: str,
+        *,
+        error_message: Optional[str] = None,
+        delay_seconds: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+        delay = max(0, int(delay_seconds or 0))
+        available_at = now_iso if delay == 0 else (
+            datetime.now(timezone.utc) + timedelta(seconds=delay)
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET state = 'queued',
+                        error_message = COALESCE(?, error_message),
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (error_message, now_iso, episode_id),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_queue
+                    SET state = 'retry',
+                        last_error = COALESCE(?, last_error),
+                        available_at = ?,
+                        locked_by = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE episode_id = ?
+                    ''',
+                    (error_message, available_at, now_iso, episode_id),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_leases
+                    SET state = 'retry',
+                        released_at = COALESCE(released_at, ?)
+                    WHERE episode_id = ? AND state = 'active'
+                    ''',
+                    (now_iso, episode_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_runtime_episode(episode_id)
+
+    def cancel_runtime_episode(
+        self,
+        episode_id: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        return self.complete_runtime_episode(
+            episode_id,
+            state="cancelled",
+            error_code="episode_cancelled",
+            error_message=reason or "Runtime episode cancelled.",
+            metadata={"recoverable": True, "cancelReason": reason or "manual"},
+        )
+
+    def resume_runtime_episode(
+        self,
+        episode_id: str,
+        *,
+        resume_token: Optional[Dict[str, Any]] = None,
+        priority: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET state = 'queued',
+                        resume_token_json = COALESCE(?, resume_token_json),
+                        priority = COALESCE(?, priority),
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (
+                        json.dumps(to_jsonable(resume_token), ensure_ascii=False) if resume_token is not None else None,
+                        priority,
+                        now_iso,
+                        episode_id,
+                    ),
+                )
+                cursor = conn.cursor()
+                cursor.execute('SELECT session_id, run_id, kind, priority FROM runtime_episodes WHERE id = ?', (episode_id,))
+                row = cursor.fetchone()
+                if row:
+                    conn.execute(
+                        '''
+                        INSERT INTO runtime_episode_queue (
+                            id, episode_id, session_id, run_id, kind, priority, state, available_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                        ON CONFLICT(episode_id) DO UPDATE SET
+                            state = 'queued',
+                            priority = excluded.priority,
+                            available_at = excluded.available_at,
+                            updated_at = excluded.updated_at
+                        ''',
+                        (
+                            f"episode_queue:{episode_id}",
+                            episode_id,
+                            row["session_id"],
+                            row["run_id"],
+                            row["kind"],
+                            int(priority if priority is not None else (row["priority"] or 0)),
+                            now_iso,
+                            now_iso,
+                            now_iso,
+                        ),
+                    )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_runtime_episode(episode_id)
+
     def add_runtime_episode_event_record(
         self,
         *,
@@ -2426,6 +2630,80 @@ class DatabaseManager:
         self._run_write_with_retry(_write)
         return {**handoff, "handoffId": handoff_id}
 
+    def list_runtime_episode_handoffs(self, episode_id: str) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT * FROM runtime_episode_handoffs
+                WHERE episode_id = ?
+                ORDER BY created_at ASC
+                ''',
+                (episode_id,),
+            )
+            rows = cursor.fetchall()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                data = dict(row)
+                try:
+                    payload = json.loads(data.get("payload_json") or "{}")
+                except Exception:
+                    payload = {}
+                items.append({**data, "payload": payload})
+            return items
+
+    def list_runtime_episode_queue(
+        self,
+        *,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM runtime_episode_queue WHERE 1=1"
+        params: list[Any] = []
+        if active_only:
+            query += " AND state IN ('queued', 'retry', 'leased')"
+        query += " ORDER BY priority DESC, updated_at DESC LIMIT ?"
+        params.append(int(limit or 100))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                data = dict(row)
+                try:
+                    data["retryPolicy"] = json.loads(data.get("retry_policy_json") or "{}")
+                except Exception:
+                    data["retryPolicy"] = {}
+                items.append(data)
+            return items
+
+    def list_runtime_episode_leases(
+        self,
+        *,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM runtime_episode_leases WHERE 1=1"
+        params: list[Any] = []
+        if active_only:
+            query += " AND state = 'active'"
+        query += " ORDER BY heartbeat_at DESC, acquired_at DESC LIMIT ?"
+        params.append(int(limit or 100))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                data = dict(row)
+                try:
+                    data["metadata"] = json.loads(data.get("metadata_json") or "{}")
+                except Exception:
+                    data["metadata"] = {}
+                items.append(data)
+            return items
+
     def get_runtime_episode(self, episode_id: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -2440,6 +2718,7 @@ class DatabaseManager:
         *,
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        parent_episode_id: Optional[str] = None,
         active_only: bool = False,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
@@ -2451,6 +2730,9 @@ class DatabaseManager:
         if run_id:
             query += " AND run_id = ?"
             params.append(run_id)
+        if parent_episode_id:
+            query += " AND parent_episode_id = ?"
+            params.append(parent_episode_id)
         if active_only:
             query += " AND state IN ('detected', 'routed', 'queued', 'active', 'waiting_child', 'waiting_external', 'waiting_approval')"
         query += " ORDER BY updated_at DESC LIMIT ?"

@@ -413,6 +413,7 @@ function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeStageActi
             computer_use: t("src.components.chat.runtimetimelinepanel.episode_computer_use"),
             rpa: t("src.components.chat.runtimetimelinepanel.episode_rpa"),
             delegation: t("src.components.chat.runtimetimelinepanel.episode_delegation"),
+            handoff: t("src.components.chat.runtimetimelinepanel.episode_handoff"),
         }),
         [t],
     );

@@ -62,7 +62,9 @@ function getEpisodePayload(activity: RuntimeEpisodeGraphActivity): Record<string
 
 function getHandoffPayload(activity: RuntimeEpisodeGraphActivity): Record<string, unknown> {
   const data = readRecord(activity.data);
-  const handoff = readRecord(data.handoffRef);
+  const handoffRef = readRecord(data.handoffRef);
+  if (Object.keys(handoffRef).length > 0) return handoffRef;
+  const handoff = readRecord(data.handoff);
   return Object.keys(handoff).length > 0 ? handoff : data;
 }
 
@@ -144,13 +146,29 @@ export function buildRuntimeEpisodeGraph(
       const handoff = getHandoffPayload(activity);
       const producerId = readString(handoff.producerEpisodeId) || readString(handoff.producer_episode_id);
       if (!producerId) continue;
+      const handoffId = readString(handoff.handoffRefId)
+        || readString(handoff.handoffId)
+        || readString(handoff.artifactId)
+        || readString(activity.id)
+        || `${producerId}:${timestamp}`;
+      const handoffSummary = readString(handoff.compactSummary) || readString(handoff.summary) || readString(activity.summary);
       upsertNode(nodes, {
         id: producerId,
         parentId: null,
         label: "",
-        subtitle: readString(handoff.compactSummary) || readString(handoff.summary) || readString(activity.summary),
+        subtitle: handoffSummary,
         status: inferStatus(activity, handoff),
         depth: 1,
+        eventCount: 1,
+        timestamp,
+      });
+      upsertNode(nodes, {
+        id: `handoff:${handoffId}`,
+        parentId: producerId,
+        label: labelForKind("handoff", labels),
+        subtitle: handoffSummary,
+        status: inferStatus(activity, handoff),
+        depth: 2,
         eventCount: 1,
         timestamp,
       });

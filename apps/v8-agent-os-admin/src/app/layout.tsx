@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import "./globals.css";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
+import { warmDesktopLiveBridge } from "@/lib/server/desktop-live-bridge";
 
 export const metadata: Metadata = {
   title: "V8 Agent OS",
@@ -25,6 +26,7 @@ export default async function RootLayout({
     cookieStore.get(LOCALE_COOKIE_NAME)?.value,
     headerStore.get("accept-language"),
   );
+  void warmDesktopLiveBridge().catch(() => undefined);
 
   return (
     <html lang={initialLocale} suppressHydrationWarning>

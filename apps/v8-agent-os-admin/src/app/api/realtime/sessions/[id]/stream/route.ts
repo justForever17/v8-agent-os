@@ -4,6 +4,7 @@ import {
     resolveClientSurfaceOriginFromRequest,
     resolveEngineBaseUrl,
 } from "@/lib/server/runtime-config";
+import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import {
     buildAuthoritativeSnapshotFingerprint,
@@ -103,6 +104,7 @@ export async function GET(
                 snapshotPending = false;
 
                 try {
+                    const snapshotStartedAt = Date.now();
                     const snapshotRes = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
                         method: "GET",
                         headers: { "Content-Type": "application/json" },
@@ -116,6 +118,13 @@ export async function GET(
                         await snapshotRes.json().catch(() => null),
                         { publicBaseUrl },
                     );
+                    recordAdminApiMetric({
+                        route: "admin.realtime.stream.snapshot",
+                        status: snapshotRes.status,
+                        elapsedMs: Date.now() - snapshotStartedAt,
+                        payloadBytes: jsonSizeBytes(snapshotData),
+                        engineElapsedMs: readEngineElapsedMs(snapshotData),
+                    });
                     if (!snapshotData) {
                         return;
                     }
@@ -209,6 +218,7 @@ export async function GET(
             void (async () => {
                 while (!closed) {
                     try {
+                        const eventsStartedAt = Date.now();
                         const eventsRes = await fetch(`${ENGINE_URL}/sessions/${id}/runtime-events?after_seq=${latestSeq}`, {
                             method: "GET",
                             headers: { "Content-Type": "application/json" },
@@ -217,6 +227,13 @@ export async function GET(
 
                         if (eventsRes.ok) {
                             const eventsData = await eventsRes.json().catch(() => null);
+                            recordAdminApiMetric({
+                                route: "admin.realtime.stream.events",
+                                status: eventsRes.status,
+                                elapsedMs: Date.now() - eventsStartedAt,
+                                payloadBytes: jsonSizeBytes(eventsData),
+                                engineElapsedMs: readEngineElapsedMs(eventsData),
+                            });
                             const events = Array.isArray(eventsData?.events) ? eventsData.events : [];
                             if (events.length > 0) {
                                 idlePollCount = 0;

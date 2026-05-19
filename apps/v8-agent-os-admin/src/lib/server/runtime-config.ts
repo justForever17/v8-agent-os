@@ -12,6 +12,8 @@ type DesktopLiveConfig = {
     maxHeight?: number;
     targetFps?: number;
     idleReleaseSeconds?: number;
+    keepWarmStandby?: boolean;
+    autoWarmOnStatus?: boolean;
     captureDisplay?: string;
     singleViewerOnly?: boolean;
     audioEnabled?: boolean;

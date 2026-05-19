@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -8,6 +9,7 @@ export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
+    const startedAt = Date.now();
     const userEmail = await resolveAuthorizedUserEmail(req);
 
     if (!userEmail) {
@@ -25,7 +27,22 @@ export async function GET(
             cache: "no-store",
         });
         const data = await res.json().catch(() => ({}));
-        return NextResponse.json(data, { status: res.status });
+        const elapsedMs = Date.now() - startedAt;
+        const payloadBytes = jsonSizeBytes(data);
+        recordAdminApiMetric({
+            route: "admin.realtime.events",
+            status: res.status,
+            elapsedMs,
+            payloadBytes,
+            engineElapsedMs: readEngineElapsedMs(data),
+        });
+        return NextResponse.json(data, {
+            status: res.status,
+            headers: {
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(payloadBytes),
+            },
+        });
     } catch (error) {
         console.error("[Admin Realtime Events] Engine proxy failed:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

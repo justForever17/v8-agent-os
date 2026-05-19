@@ -1,5 +1,7 @@
 import uuid
 import importlib
+import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +51,34 @@ from runtimes.memory.scope_resolution import (
 
 
 router = APIRouter()
+
+
+def _now_perf_ms() -> float:
+    return time.perf_counter() * 1000
+
+
+def _elapsed_ms(started_at_ms: float) -> int:
+    return max(0, int(round(_now_perf_ms() - started_at_ms)))
+
+
+def _payload_size_bytes(payload) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _attach_profile(payload: dict, *, route: str, started_at_ms: float, extra: dict | None = None) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    profile = {
+        "route": route,
+        "elapsedMs": _elapsed_ms(started_at_ms),
+        **(extra or {}),
+    }
+    profile["payloadBytes"] = _payload_size_bytes(payload)
+    payload["_profile"] = profile
+    return payload
 
 
 def _scope_resolution_payload(result) -> dict:
@@ -496,8 +526,22 @@ async def resolve_scope(payload: ScopeResolvePayload):
 
 @router.get("/sessions/{session_id}/runtime-events")
 async def get_session_runtime_events(session_id: str, after_seq: int | None = None):
+    started_at_ms = _now_perf_ms()
     try:
-        return runtime_command_router.get_events(session_id, after_seq=after_seq)
+        payload = runtime_command_router.get_events(session_id, after_seq=after_seq)
+        events = payload.get("events") if isinstance(payload, dict) else []
+        event_count = len(events) if isinstance(events, list) else 0
+        latest_seq = max((int(event.get("seq") or 0) for event in events if isinstance(event, dict)), default=0)
+        return _attach_profile(
+            payload,
+            route="engine.sessions.runtime_events",
+            started_at_ms=started_at_ms,
+            extra={
+                "afterSeq": after_seq,
+                "returnedEventCount": event_count,
+                "latestReturnedSeq": latest_seq,
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -591,37 +635,68 @@ async def get_runtime_artifact_content(artifact_id: str):
 
 @router.get("/sessions/{session_id}/snapshot")
 async def get_session_snapshot(session_id: str):
+    started_at_ms = _now_perf_ms()
     try:
-        return runtime_command_router.get_snapshot(session_id)
+        payload = runtime_command_router.get_snapshot(session_id)
+        runtime_timeline = payload.get("runtimeTimeline") if isinstance(payload, dict) else []
+        return _attach_profile(
+            payload,
+            route="engine.sessions.snapshot",
+            started_at_ms=started_at_ms,
+            extra={
+                "latestSeq": int(payload.get("latestSeq") or 0) if isinstance(payload, dict) else 0,
+                "runtimeTimelineCount": len(runtime_timeline) if isinstance(runtime_timeline, list) else 0,
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/sessions/{session_id}/history")
 async def get_session_history(session_id: str):
+    started_at_ms = _now_perf_ms()
+    timings: dict[str, int] = {}
     try:
+        step_started = _now_perf_ms()
         session_row = db.get_session(session_id)
+        timings["dbSessionMs"] = _elapsed_ms(step_started)
         if session_row is None:
             raise HTTPException(status_code=404, detail="Session not found")
 
+        step_started = _now_perf_ms()
         runtime_events = db.get_runtime_events(session_id)
+        timings["dbRuntimeEventsMs"] = _elapsed_ms(step_started)
+        step_started = _now_perf_ms()
         workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        timings["workflowViewMs"] = _elapsed_ms(step_started)
+        step_started = _now_perf_ms()
         approvals = project_pending_approvals(
             db.list_pending_approvals(session_id=session_id, status="pending")
         )
         ask_user_interactions = project_ask_user_interactions(
             db.list_ask_user_interactions(session_id=session_id, status="pending")
         )
+        timings["dbPendingItemsMs"] = _elapsed_ms(step_started)
         controls = build_projection_controls(workflow_view, approvals)
+        step_started = _now_perf_ms()
         snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
+        timings["snapshotBuildMs"] = _elapsed_ms(step_started)
         snapshot = snapshot_payload.get("snapshot")
         latest_seq = int(snapshot_payload.get("latestSeq") or 0)
+        step_started = _now_perf_ms()
         timeline_messages = build_canonical_chat_messages(session_id)
+        timings["canonicalMessagesMs"] = _elapsed_ms(step_started)
         if not timeline_messages and (snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported")):
             timeline_messages = []
         root_run_id = str(workflow_view.get("rootRunId") or "").strip()
+        step_started = _now_perf_ms()
         run_record = db.get_run_record(root_run_id) if root_run_id else None
+        timings["dbRunRecordMs"] = _elapsed_ms(step_started)
         session_source = _derive_session_source(session_row, run_record)
+        step_started = _now_perf_ms()
+        runtime_timeline = project_runtime_timeline_from_events(runtime_events)
+        timings["runtimeTimelineProjectMs"] = _elapsed_ms(step_started)
+        step_started = _now_perf_ms()
         detail = build_session_history_detail(
             session_row={**session_row, "controls": controls},
             workflow_view=workflow_view,
@@ -631,13 +706,25 @@ async def get_session_history(session_id: str):
             latest_seq=latest_seq,
             source=session_source,
             runtime_events=runtime_events,
-            runtime_timeline=project_runtime_timeline_from_events(runtime_events),
+            runtime_timeline=runtime_timeline,
             run_record=run_record,
         )
+        timings["historyDetailBuildMs"] = _elapsed_ms(step_started)
         detail["askUserInteractions"] = ask_user_interactions
         if snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported"):
             detail["legacyChatUnsupported"] = True
-        return detail
+        return _attach_profile(
+            detail,
+            route="engine.sessions.history",
+            started_at_ms=started_at_ms,
+            extra={
+                **timings,
+                "runtimeEventCount": len(runtime_events),
+                "runtimeTimelineCount": len(runtime_timeline),
+                "messageCount": len(timeline_messages),
+                "latestSeq": latest_seq,
+            },
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -646,12 +733,18 @@ async def get_session_history(session_id: str):
 
 @router.get("/sessions/{session_id}/processes")
 async def get_session_processes(session_id: str):
+    started_at_ms = _now_perf_ms()
+    timings: dict[str, int] = {}
     try:
+        step_started = _now_perf_ms()
         session_row = db.get_session(session_id)
+        timings["dbSessionMs"] = _elapsed_ms(step_started)
         if session_row is None:
             raise HTTPException(status_code=404, detail="Session not found")
 
+        step_started = _now_perf_ms()
         snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
+        timings["snapshotBuildMs"] = _elapsed_ms(step_started)
         snapshot = snapshot_payload.get("snapshot") or {}
         current_run = snapshot_payload.get("currentRun") if isinstance(snapshot_payload.get("currentRun"), dict) else {}
         current_run_id = str(
@@ -660,17 +753,23 @@ async def get_session_processes(session_id: str):
             or (snapshot_payload.get("workflow") or {}).get("rootRunId")
             or ""
         ).strip() or None
+        step_started = _now_perf_ms()
         processes = build_processes_snapshot(
             session_id=session_id,
             snapshot=snapshot if isinstance(snapshot, dict) else {},
             run_id=current_run_id,
         )
-        return {
+        timings["processProjectionMs"] = _elapsed_ms(step_started)
+        return _attach_profile({
             "sessionId": session_id,
             "currentRunId": current_run_id,
             "latestSeq": int(snapshot_payload.get("latestSeq") or 0),
             "processes": processes,
-        }
+        }, route="engine.sessions.processes", started_at_ms=started_at_ms, extra={
+            **timings,
+            "processCount": len(processes) if isinstance(processes, list) else 0,
+            "latestSeq": int(snapshot_payload.get("latestSeq") or 0),
+        })
     except HTTPException:
         raise
     except Exception as e:

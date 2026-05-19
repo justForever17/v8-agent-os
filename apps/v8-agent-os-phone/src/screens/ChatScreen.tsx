@@ -1544,6 +1544,58 @@ function debugRealtimeTrace(stage: string, payload: Record<string, unknown>) {
     }
 }
 
+function debugPerfTrace(stage: string, payload: Record<string, unknown>) {
+    if (!__DEV__) {
+        return;
+    }
+    try {
+        console.debug(`[phone/perf/${stage}]`, payload);
+    } catch {
+        // ignore debug log failures
+    }
+}
+
+function getPerfNowMs() {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+        return performance.now();
+    }
+    return Date.now();
+}
+
+function measureJsonBytes(value: unknown) {
+    if (!__DEV__) {
+        return 0;
+    }
+    try {
+        return new TextEncoder().encode(JSON.stringify(value)).length;
+    } catch {
+        try {
+            return JSON.stringify(value).length;
+        } catch {
+            return 0;
+        }
+    }
+}
+
+function readPayloadProfile(payload: unknown) {
+    const root = asRecord(payload);
+    return asRecord(root._profile);
+}
+
+function countPayloadRuntimeEvents(payload: unknown) {
+    const root = asRecord(payload);
+    const view = deriveAuthoritativeSessionView(payload).view;
+    const viewTimeline = Array.isArray(view?.runtimeTimeline) ? view.runtimeTimeline as unknown[] : null;
+    const runtimeTimeline: unknown[] = viewTimeline
+        ? viewTimeline
+        : Array.isArray(root.runtimeTimeline)
+            ? root.runtimeTimeline as unknown[]
+            : Array.isArray(asRecord(root.snapshot).runtimeTimeline)
+                ? asRecord(root.snapshot).runtimeTimeline as unknown[]
+                : [];
+    return runtimeTimeline.length;
+}
+
 type StreamLatencyStats = {
     count: number;
     deltaChars: number[];
@@ -1812,6 +1864,7 @@ export default function ChatScreen() {
     const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
     const [todos, setTodos] = useState<SessionTodoItem[]>([]);
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
+    const processesRef = useRef<AdminProcessRef[]>([]);
     const lastProcessSurfaceAtRef = useRef(0);
     const [contextReferences, setContextReferences] = useState<ContextReferenceItem[]>([]);
     const [contextGovernance, setContextGovernance] = useState<ContextGovernanceView | null>(null);
@@ -1990,16 +2043,23 @@ export default function ChatScreen() {
         setProcesses((current) => {
             if (normalizedIncoming.length > 0) {
                 lastProcessSurfaceAtRef.current = Date.now();
+                processesRef.current = normalizedIncoming;
                 return normalizedIncoming;
             }
             if (options?.forceClear) {
                 lastProcessSurfaceAtRef.current = 0;
+                processesRef.current = [];
                 return [];
             }
             if (current.length === 0) {
                 return current;
             }
-            return (Date.now() - lastProcessSurfaceAtRef.current) <= 3000 ? current : [];
+            if ((Date.now() - lastProcessSurfaceAtRef.current) <= 3000) {
+                processesRef.current = current;
+                return current;
+            }
+            processesRef.current = [];
+            return [];
         });
     }, []);
 
@@ -2848,6 +2908,7 @@ export default function ChatScreen() {
     }, [authorizedFetch, loadProjects, setActiveConversationId]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
+        const profileStartedAt = getPerfNowMs();
         const { store, view } = deriveAuthoritativeSessionView(payload);
         if (!view) {
             return;
@@ -2981,9 +3042,22 @@ export default function ChatScreen() {
                 createIfMissing: false,
             });
         }
+        const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
+        if (__DEV__ && (elapsedMs >= 16 || nextRuntimeEvents.length >= 40)) {
+            debugPerfTrace("projection-state", {
+                elapsedMs,
+                latestSeq: nextRuntime.latestSeq,
+                runtimeEventCount: nextRuntimeEvents.length,
+                messageCount: Array.isArray(asRecord(view).messages) ? (asRecord(view).messages as unknown[]).length : 0,
+                processCount: Array.isArray(view.processes) ? view.processes.length : 0,
+                engineProfile: readPayloadProfile(payload),
+            });
+        }
     }, [applySessionProcessSurface, patchAssistantTaskShell]);
 
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
+        const profileStartedAt = getPerfNowMs();
+        const payloadBytes = measureJsonBytes(payload);
         const snapshotMessages = extractSnapshotMessages(payload);
         const snapshotSeq = buildSnapshotSequence(payload);
         const snapshotQueuedMessages = extractQueuedMessages(payload);
@@ -3055,6 +3129,18 @@ export default function ChatScreen() {
             lastRealtimeSnapshotAtRef.current = Date.now();
         }
         applyConversationProjection(payload);
+        const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
+        if (__DEV__ && (elapsedMs >= 24 || payloadBytes >= 120000)) {
+            debugPerfTrace("snapshot-apply", {
+                elapsedMs,
+                payloadBytes,
+                snapshotSeq,
+                snapshotMessageCount: Array.isArray(snapshotMessages) ? snapshotMessages.length : 0,
+                runtimeEventCount: countPayloadRuntimeEvents(payload),
+                queuedMessageCount: Array.isArray(snapshotQueuedMessages) ? snapshotQueuedMessages.length : 0,
+                engineProfile: readPayloadProfile(payload),
+            });
+        }
     }, [applyConversationProjection]);
 
     const scheduleRealtimeSnapshotRefresh = useCallback((conversationId?: string | null, options?: { force?: boolean }) => {
@@ -3081,7 +3167,21 @@ export default function ChatScreen() {
                 if (!force && Date.now() - lastRealtimeSnapshotAtRef.current < REALTIME_SNAPSHOT_FALLBACK_GRACE_MS) {
                     return;
                 }
+                const fetchStartedAt = getPerfNowMs();
                 const snapshot = await getRealtimeSnapshot(authorizedFetch, targetConversationId);
+                if (__DEV__) {
+                    const elapsedMs = Math.round(getPerfNowMs() - fetchStartedAt);
+                    const payloadBytes = measureJsonBytes(snapshot);
+                    if (elapsedMs >= 200 || payloadBytes >= 120000) {
+                        debugPerfTrace("snapshot-fetch", {
+                            elapsedMs,
+                            payloadBytes,
+                            latestSeq: buildSnapshotSequence(snapshot),
+                            runtimeEventCount: countPayloadRuntimeEvents(snapshot),
+                            engineProfile: readPayloadProfile(snapshot),
+                        });
+                    }
+                }
                 if (activeConversationIdRef.current === targetConversationId) {
                     applyRealtimeSnapshotPayload(snapshot);
                 }
@@ -4074,6 +4174,17 @@ export default function ChatScreen() {
             });
 
         const timer = setInterval(() => {
+            const runtimeStatus = String(runtimeRef.current.status || "").trim().toLowerCase();
+            const shouldPollProcesses = Boolean(
+                sendingRef.current
+                || processesRef.current.length > 0
+                || runtimeStatus === "running"
+                || runtimeStatus === "waiting_input"
+                || runtimeStatus === "waiting_approval"
+            );
+            if (!shouldPollProcesses) {
+                return;
+            }
             void getSessionProcesses(authorizedFetch, activeConversationId)
                 .then((payload) => {
                     if (activeConversationIdRef.current === activeConversationId) {
@@ -4086,7 +4197,7 @@ export default function ChatScreen() {
                         applySessionProcessSurface([]);
                     }
                 });
-        }, 1800);
+        }, 5000);
 
         return () => {
             clearInterval(timer);
@@ -4660,23 +4771,39 @@ export default function ChatScreen() {
     }, [authorizedFetch, editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
 
     const projection = useMemo(
-        () => buildPhoneChatProjection({
-            conversations,
-            activeConversationId,
-            messages,
-            approvals,
-            askUserInteractions,
-            todos,
-            processes,
-            contextReferences,
-            contextGovernance,
-            contextGovernanceHistory,
-            runtime,
-            runtimeTimeline,
-            selectedRuntimeId,
-            t,
-            locale,
-        }),
+        () => {
+            const profileStartedAt = getPerfNowMs();
+            const nextProjection = buildPhoneChatProjection({
+                conversations,
+                activeConversationId,
+                messages,
+                approvals,
+                askUserInteractions,
+                todos,
+                processes,
+                contextReferences,
+                contextGovernance,
+                contextGovernanceHistory,
+                runtime,
+                runtimeTimeline,
+                selectedRuntimeId,
+                t,
+                locale,
+            });
+            const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
+            if (__DEV__ && (elapsedMs >= 16 || runtimeTimeline.length >= 40 || messages.length >= 30)) {
+                debugPerfTrace("projection-build", {
+                    elapsedMs,
+                    messageCount: messages.length,
+                    projectedMessageCount: nextProjection.projectedMessages.length,
+                    runtimeEventCount: runtimeTimeline.length,
+                    processCount: processes.length,
+                    todoCount: todos.length,
+                    selectedRuntimeId,
+                });
+            }
+            return nextProjection;
+        },
         [activeConversationId, approvals, askUserInteractions, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
     );
 

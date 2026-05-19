@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from .models import ChatMessage, ChatRequest
 from core.database import db
@@ -331,7 +332,7 @@ async def chat_upload(request: Request):
     content = await upload.read()
     if not isinstance(content, (bytes, bytearray)):
         raise HTTPException(status_code=400, detail="上传文件内容不可读取。")
-    target.write_bytes(bytes(content))
+    await run_in_threadpool(target.write_bytes, bytes(content))
     mark_workspace_state_stale(
         {
             "runtime_kind": "chat",

@@ -596,6 +596,13 @@ export type RPADraftSummary = {
     updated_at?: string;
 };
 
+export type RPARobotScriptSummary = {
+    name?: string;
+    path?: string;
+    updatedAt?: string;
+    size?: number;
+};
+
 export type ProfileUpdatePayload = {
     name?: string;
     image?: string;

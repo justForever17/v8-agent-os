@@ -1,5 +1,5 @@
 import { Redirect, router, type Href } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -19,11 +19,19 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { getRpaAvailability, listRpaDrafts, runExistingRobotFlow, runRpaCompile } from "@/src/lib/phone-api";
+import { getRpaAvailability, listRpaDrafts, listRpaScripts, runExistingRobotFlow, runRpaCompile, runRpaDraft } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
-import type { RPAAvailability, RPADraftSummary } from "@/src/types/admin";
+import type { RPAAvailability, RPADraftSummary, RPARobotScriptSummary } from "@/src/types/admin";
+
+type RPAFlowOption = {
+    key: string;
+    kind: "draft" | "script";
+    id: string;
+    label: string;
+    meta?: string;
+};
 
 export default function RPAScreen() {
     const { status, authorizedFetch } = useAppSession();
@@ -32,11 +40,13 @@ export default function RPAScreen() {
     const [refreshing, setRefreshing] = useState(false);
     const [availability, setAvailability] = useState<RPAAvailability | null>(null);
     const [drafts, setDrafts] = useState<RPADraftSummary[]>([]);
+    const [scripts, setScripts] = useState<RPARobotScriptSummary[]>([]);
     const [compileRunIds, setCompileRunIds] = useState("");
-    const [existingRobotFile, setExistingRobotFile] = useState("");
-    const [variablesText, setVariablesText] = useState("{\n  \n}");
+    const [selectedFlowKey, setSelectedFlowKey] = useState("");
+    const [flowPickerOpen, setFlowPickerOpen] = useState(false);
+    const [variablesText, setVariablesText] = useState("");
     const [latestResult, setLatestResult] = useState<Record<string, unknown> | null>(null);
-    const [busyAction, setBusyAction] = useState<"" | "compile" | "run-existing">("");
+    const [busyAction, setBusyAction] = useState<"" | "compile" | "run-existing" | "run-draft">("");
 
     const actions: PhoneTopbarAction[] = [
         { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
@@ -48,18 +58,57 @@ export default function RPAScreen() {
     const load = useCallback(async () => {
         setRefreshing(true);
         try {
-            const [nextAvailability, nextDrafts] = await Promise.all([
+            const [nextAvailability, nextDrafts, nextScripts] = await Promise.all([
                 getRpaAvailability(authorizedFetch),
                 listRpaDrafts(authorizedFetch, 8),
+                listRpaScripts(authorizedFetch, 50),
             ]);
             setAvailability(nextAvailability);
             setDrafts(nextDrafts);
+            setScripts(nextScripts);
         } catch (error) {
             Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_load_the_rpa_user_entry_state"));
         } finally {
             setRefreshing(false);
         }
     }, [authorizedFetch, t]);
+
+    const flowOptions = useMemo<RPAFlowOption[]>(() => {
+        const draftOptions: RPAFlowOption[] = [];
+        for (const draft of drafts) {
+            const id = String(draft.script_id || draft.id || "").trim();
+            if (!id) {
+                continue;
+            }
+            draftOptions.push({
+                key: `draft:${id}`,
+                kind: "draft",
+                id,
+                label: draft.title || id,
+                meta: `${t("src.screens.rpascreen.draft_flow")} · ${draft.status || "draft"}`,
+            });
+        }
+        const scriptOptions: RPAFlowOption[] = [];
+        for (const script of scripts) {
+            const id = String(script.path || script.name || "").trim();
+            if (!id) {
+                continue;
+            }
+            scriptOptions.push({
+                key: `script:${id}`,
+                kind: "script",
+                id,
+                label: script.name || id,
+                meta: t("src.screens.rpascreen.robot_script"),
+            });
+        }
+        return [...draftOptions, ...scriptOptions];
+    }, [drafts, scripts, t]);
+
+    const selectedFlow = useMemo(
+        () => flowOptions.find((item) => item.key === selectedFlowKey) || null,
+        [flowOptions, selectedFlowKey],
+    );
 
     const parseVariables = useCallback(() => {
         const raw = variablesText.trim();
@@ -99,9 +148,8 @@ export default function RPAScreen() {
     }, [authorizedFetch, compileRunIds, load, t]);
 
     const handleRunExisting = useCallback(async () => {
-        const robotFile = existingRobotFile.trim();
-        if (!robotFile) {
-            Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id"));
+        if (!selectedFlow) {
+            Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.select_flow_to_run"));
             return;
         }
         let variables: Record<string, unknown>;
@@ -113,7 +161,9 @@ export default function RPAScreen() {
         }
         setBusyAction("run-existing");
         try {
-            const payload = await runExistingRobotFlow(authorizedFetch, robotFile, variables);
+            const payload = selectedFlow.kind === "draft"
+                ? await runRpaDraft(authorizedFetch, selectedFlow.id, variables)
+                : await runExistingRobotFlow(authorizedFetch, selectedFlow.id, variables);
             setLatestResult(payload);
             await load();
         } catch (error) {
@@ -121,7 +171,7 @@ export default function RPAScreen() {
         } finally {
             setBusyAction("");
         }
-    }, [authorizedFetch, existingRobotFile, load, parseVariables, t]);
+    }, [authorizedFetch, load, parseVariables, selectedFlow, t]);
 
     const handleRunDraft = useCallback(async (draft: RPADraftSummary) => {
         const robotFile = String(draft.script_id || draft.id || "").trim();
@@ -129,14 +179,14 @@ export default function RPAScreen() {
             Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id"));
             return;
         }
-        setExistingRobotFile(robotFile);
-        setBusyAction("run-existing");
+        setSelectedFlowKey(`draft:${robotFile}`);
+        setBusyAction("run-draft");
         try {
-            const payload = await runExistingRobotFlow(authorizedFetch, robotFile, {});
+            const payload = await runRpaDraft(authorizedFetch, robotFile, {});
             setLatestResult(payload);
             await load();
         } catch (error) {
-            Alert.alert(t("src.screens.rpascreen.execution_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_execute_the_existing_rpa_flow"));
+            Alert.alert(t("src.screens.rpascreen.execution_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_execute_the_rpa_draft"));
         } finally {
             setBusyAction("");
         }
@@ -215,7 +265,12 @@ export default function RPAScreen() {
                                 >
                                     <Pressable
                                         style={styles.draftBody}
-                                        onPress={() => setExistingRobotFile(draft.script_id || draft.id || draft.title || "")}
+                                        onPress={() => {
+                                            const id = String(draft.script_id || draft.id || "").trim();
+                                            if (id) {
+                                                setSelectedFlowKey(`draft:${id}`);
+                                            }
+                                        }}
                                     >
                                         <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || t("src.screens.rpascreen.untitled_draft")}</Text>
                                         <Text style={styles.draftMeta}>
@@ -252,19 +307,48 @@ export default function RPAScreen() {
 
                     <GlassCard style={styles.compactCard}>
                         <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.run_existing_flow")}</Text>
-                        <TextInput
-                            value={existingRobotFile}
-                            onChangeText={setExistingRobotFile}
-                            placeholder={t("src.screens.rpascreen.scripts_example_robot_or_an_existing_script_id")}
-                            placeholderTextColor={colors.textSoft}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            style={styles.input}
-                        />
+                        <Pressable
+                            style={({ pressed }) => [styles.flowSelector, pressed && styles.pressed]}
+                            onPress={() => setFlowPickerOpen((value) => !value)}
+                        >
+                            <View style={styles.flowSelectorBody}>
+                                <Text style={[styles.flowSelectorLabel, !selectedFlow && styles.placeholderText]} numberOfLines={1}>
+                                    {selectedFlow?.label || t("src.screens.rpascreen.select_an_rpa_flow")}
+                                </Text>
+                                {selectedFlow?.meta ? <Text style={styles.flowSelectorMeta} numberOfLines={1}>{selectedFlow.meta}</Text> : null}
+                            </View>
+                            <MaterialCommunityIcons name={flowPickerOpen ? "chevron-up" : "chevron-down"} size={22} color={colors.textMuted} />
+                        </Pressable>
+                        {flowPickerOpen ? (
+                            <View style={styles.flowMenu}>
+                                {flowOptions.length === 0 ? (
+                                    <Text style={styles.emptyBody}>{t("src.screens.rpascreen.no_rpa_flows_available")}</Text>
+                                ) : (
+                                    flowOptions.map((option) => (
+                                        <Pressable
+                                            key={option.key}
+                                            style={({ pressed }) => [
+                                                styles.flowOption,
+                                                selectedFlowKey === option.key && styles.flowOptionSelected,
+                                                pressed && styles.pressed,
+                                            ]}
+                                            onPress={() => {
+                                                setSelectedFlowKey(option.key);
+                                                setFlowPickerOpen(false);
+                                            }}
+                                        >
+                                            <Text style={styles.flowOptionTitle} numberOfLines={1}>{option.label}</Text>
+                                            <Text style={styles.flowOptionMeta} numberOfLines={1}>{option.meta}</Text>
+                                        </Pressable>
+                                    ))
+                                )}
+                            </View>
+                        ) : null}
+                        <Text style={styles.fieldHint}>{t("src.screens.rpascreen.flow_variables")}</Text>
                         <TextInput
                             value={variablesText}
                             onChangeText={setVariablesText}
-                            placeholder='{"username":"demo"}'
+                            placeholder={t("src.screens.rpascreen.variables_optional_json_placeholder")}
                             placeholderTextColor={colors.textSoft}
                             multiline
                             textAlignVertical="top"
@@ -479,6 +563,71 @@ const styles = StyleSheet.create({
         color: colors.text,
         fontSize: 15,
         marginTop: 8,
+    },
+    flowSelector: {
+        marginTop: 8,
+        minHeight: 58,
+        borderWidth: 1,
+        borderColor: "rgba(148,163,184,0.24)",
+        borderRadius: 18,
+        backgroundColor: "rgba(255,255,255,0.86)",
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+    },
+    flowSelectorBody: {
+        flex: 1,
+        gap: 3,
+    },
+    flowSelectorLabel: {
+        color: colors.text,
+        fontSize: 15,
+        fontWeight: "800",
+    },
+    placeholderText: {
+        color: colors.textSoft,
+    },
+    flowSelectorMeta: {
+        color: colors.textMuted,
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    flowMenu: {
+        marginTop: 8,
+        borderWidth: 1,
+        borderColor: "rgba(148,163,184,0.20)",
+        borderRadius: 18,
+        backgroundColor: "rgba(255,255,255,0.78)",
+        padding: 8,
+        gap: 6,
+    },
+    flowOption: {
+        borderRadius: 14,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
+        backgroundColor: "rgba(248,250,252,0.78)",
+    },
+    flowOptionSelected: {
+        backgroundColor: "rgba(124,58,237,0.12)",
+    },
+    flowOptionTitle: {
+        color: colors.text,
+        fontSize: 13,
+        fontWeight: "800",
+    },
+    flowOptionMeta: {
+        color: colors.textMuted,
+        fontSize: 11,
+        fontWeight: "700",
+        marginTop: 2,
+    },
+    fieldHint: {
+        marginTop: spacing.sm,
+        color: colors.textMuted,
+        fontSize: 12,
+        fontWeight: "700",
     },
     multilineInput: {
         minHeight: 124,

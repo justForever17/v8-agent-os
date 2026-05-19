@@ -430,6 +430,17 @@ class RPADraftPreparePayload(RPARuntimeBasePayload):
     variables: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RPADraftPatchPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    app_id: Optional[str] = Field(default=None, alias="appId")
+    steps: Optional[List[Dict[str, Any]]] = None
+    variables: Optional[List[Dict[str, Any]]] = None
+    metadata_patch: Dict[str, Any] = Field(default_factory=dict, alias="metadataPatch")
+
+
 class RPADraftRunPayload(RPADraftPreparePayload):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -442,6 +453,49 @@ class RPAExistingFlowPayload(RPARuntimeBasePayload):
     robot_file: str = Field(alias="robotFile")
     variables: Dict[str, Any] = Field(default_factory=dict)
     timeout_ms: int = Field(default=600000, alias="timeoutMs")
+
+
+class RPARecordingStartPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_id: Optional[str] = Field(default=None, alias="sessionId")
+    user_id: Optional[str] = Field(default="admin_ui", alias="userId")
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    target_mode: str = Field(default="agent_browser", alias="targetMode")
+    browser_kind: Optional[str] = Field(default=None, alias="browserKind")
+    browser_profile_id: Optional[str] = Field(default=None, alias="browserProfileId")
+    app_id: Optional[str] = Field(default=None, alias="appId")
+    window_handle: Optional[Any] = Field(default=None, alias="windowHandle")
+    active_app: Dict[str, Any] = Field(default_factory=dict, alias="activeApp")
+    capture_options: Dict[str, Any] = Field(default_factory=dict, alias="captureOptions")
+
+
+class RPARecordingEventPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    event_id: Optional[str] = Field(default=None, alias="eventId")
+    step_id: Optional[str] = Field(default=None, alias="stepId")
+    action: str
+    intent: Optional[str] = None
+    params: Dict[str, Any] = Field(default_factory=dict)
+    target: Dict[str, Any] = Field(default_factory=dict)
+    coordinate: Dict[str, Any] = Field(default_factory=dict)
+    viewport: Dict[str, Any] = Field(default_factory=dict)
+    screen: Dict[str, Any] = Field(default_factory=dict)
+    selector_candidates: List[Dict[str, Any]] = Field(default_factory=list, alias="selectorCandidates")
+    sensitive_input: bool = Field(default=False, alias="sensitiveInput")
+    variable_name: Optional[str] = Field(default=None, alias="variableName")
+    verification: Dict[str, Any] = Field(default_factory=dict)
+    artifacts: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RPARecordingStopPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    compile_draft: bool = Field(default=True, alias="compileDraft")
+    save: bool = True
 
 
 class RPATemplateDecisionPayload(BaseModel):

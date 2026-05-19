@@ -27,6 +27,7 @@ import type {
     RealtimeSessionSnapshot,
     RPAAvailability,
     RPADraftSummary,
+    RPARobotScriptSummary,
     SkillReferenceSummary,
     SubagentFamilySummary,
     AdminProcessRef,
@@ -816,6 +817,16 @@ export async function listRpaDrafts(authorizedFetch: AuthorizedFetch, limit = 8)
     return normalizeArray<RPADraftSummary>(payload.drafts);
 }
 
+export async function listRpaScripts(authorizedFetch: AuthorizedFetch, limit = 50) {
+    const payload = await authorizedJson<{ scripts?: RPARobotScriptSummary[] }>(
+        authorizedFetch,
+        `/api/client/rpa/scripts?limit=${encodeURIComponent(String(limit))}`,
+        translateCurrent("src.lib.phone_api.rpa_6"),
+        { cache: "no-store" },
+    );
+    return normalizeArray<RPARobotScriptSummary>(payload.scripts);
+}
+
 export async function runRpaCompile(authorizedFetch: AuthorizedFetch, runIds: string[]) {
     const endpoint = runIds.length === 1
         ? `/api/client/rpa/compile/${encodeURIComponent(runIds[0])}`
@@ -826,6 +837,23 @@ export async function runRpaCompile(authorizedFetch: AuthorizedFetch, runIds: st
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
+}
+
+export async function runRpaDraft(
+    authorizedFetch: AuthorizedFetch,
+    scriptId: string,
+    variables: Record<string, unknown>,
+) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        `/api/client/rpa/drafts/${encodeURIComponent(scriptId)}/run`,
+        translateCurrent("src.lib.phone_api.rpa_5"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ variables }),
+        },
+    );
 }
 
 export async function runExistingRobotFlow(

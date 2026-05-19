@@ -3,6 +3,7 @@ import {
     resolveClientSurfaceOriginFromRequest,
     resolveEngineBaseUrl,
 } from "@/lib/server/runtime-config";
+import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 
@@ -13,6 +14,7 @@ export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
+    const startedAt = Date.now();
     const userEmail = await resolveAuthorizedUserEmail(req);
 
     if (!userEmail) {
@@ -32,11 +34,24 @@ export async function GET(
             await res.json().catch(() => ({})),
             { publicBaseUrl },
         );
+        const elapsedMs = Date.now() - startedAt;
+        const payloadBytes = jsonSizeBytes(data);
+        recordAdminApiMetric({
+            route: "admin.realtime.snapshot",
+            status: res.status,
+            elapsedMs,
+            payloadBytes,
+            engineElapsedMs: readEngineElapsedMs(data),
+        });
         return NextResponse.json(data, {
             status: res.status,
-            headers: res.headers.get(ENGINE_NOW_HEADER)
-                ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
-                : undefined,
+            headers: {
+                ...(res.headers.get(ENGINE_NOW_HEADER)
+                    ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
+                    : {}),
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(payloadBytes),
+            },
         });
     } catch (error) {
         console.error("[Admin Realtime Snapshot] Engine proxy failed:", error);

@@ -20,6 +20,7 @@ from runtimes.computer_use.runtime import computer_use_runtime
 from runtimes.rpa.compiler import RPATraceCompiler, rpa_trace_compiler
 from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
 from runtimes.rpa.execution_semantics import normalize_script_assessment_status, outcome_family_for_execution_state
+from runtimes.rpa.recording import RPARecordingManager
 from runtimes.rpa.robot_adapter import RobotFrameworkAdapter, robot_framework_adapter
 from runtimes.rpa.store import RPAScriptStore, rpa_script_store
 from runtimes.rpa.template_service import RPATemplateService, rpa_template_service
@@ -76,7 +77,7 @@ class RPARuntime:
             "ownedSteps": ["rpa.compile", "rpa.execute_draft", "rpa.local_repair", "rpa.export_robot"],
             "supportsPause": True,
             "supportsResume": False,
-            "supportsApproval": True,
+            "supportsApproval": False,
             "supportsRepair": True,
             "visibility": "specialized",
             "promptHints": [
@@ -112,6 +113,7 @@ class RPARuntime:
         self.adapter = adapter
         self.script_store = script_store
         self.template_service = template_service
+        self.recording_manager = RPARecordingManager(trace_store_instance=self.compiler.trace_store)
         ensure_system_rpa_seed_templates(self.script_store)
 
     def list_drafts(self, *, limit: int = 100) -> list[Dict[str, Any]]:
@@ -143,6 +145,92 @@ class RPARuntime:
 
     def get_draft(self, script_id: str) -> Optional[Dict[str, Any]]:
         return self.script_store.get_draft(script_id)
+
+    def patch_draft(self, script_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+        draft = self.get_draft(script_id)
+        if not draft:
+            raise ValueError(f"未找到 draft: {script_id}")
+        allowed_top_level = {"name", "goal", "appId", "steps", "variables"}
+        for key in allowed_top_level:
+            if key in patch:
+                draft[key] = patch[key]
+        metadata_patch = patch.get("metadataPatch")
+        if isinstance(metadata_patch, dict):
+            metadata = dict(draft.get("metadata") or {})
+            metadata.update(metadata_patch)
+            draft["metadata"] = metadata
+        saved = self.script_store.save_draft(draft)
+        self._log_audit(
+            action=f"Patch RPA draft: {script_id}",
+            status="SUCCESS",
+            details=json.dumps({"scriptId": script_id, "patchedKeys": sorted(set(patch.keys()) & (allowed_top_level | {"metadataPatch"}))}, ensure_ascii=False),
+        )
+        return saved
+
+    def list_recordings(self, *, limit: int = 20) -> list[Dict[str, Any]]:
+        return self.recording_manager.list(limit=limit)
+
+    def get_recording(self, recording_id: str) -> Optional[Dict[str, Any]]:
+        return self.recording_manager.get(recording_id)
+
+    def start_recording(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.start(payload)
+        self._log_audit(
+            action=f"Start RPA recording: {recording.get('recordingSessionId')}",
+            status="INFO",
+            details=json.dumps(
+                {
+                    "recordingSessionId": recording.get("recordingSessionId"),
+                    "targetMode": recording.get("targetMode"),
+                    "traceRunId": recording.get("traceRunId"),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return recording
+
+    def pause_recording(self, recording_id: str) -> Dict[str, Any]:
+        return self.recording_manager.pause(recording_id)
+
+    def resume_recording(self, recording_id: str) -> Dict[str, Any]:
+        return self.recording_manager.resume(recording_id)
+
+    def cancel_recording(self, recording_id: str) -> Dict[str, Any]:
+        return self.recording_manager.cancel(recording_id)
+
+    def append_recording_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+        return self.recording_manager.append_event(recording_id, event)
+
+    def stop_recording(self, recording_id: str, *, compile_draft: bool = True, save: bool = True) -> Dict[str, Any]:
+        recording = self.recording_manager.stop(recording_id)
+        draft = None
+        compile_error = None
+        if compile_draft and int(recording.get("stepCount") or 0) > 0:
+            self.recording_manager.mark_compiling(recording_id)
+            try:
+                draft = self.compile_trace_to_draft(str(recording.get("traceRunId")), save=save)
+                recording = self.recording_manager.mark_draft_ready(recording_id, draft)
+            except Exception as exc:
+                compile_error = str(exc)
+                recording = self.recording_manager.mark_failed(recording_id, exc)
+        self._log_audit(
+            action=f"Stop RPA recording: {recording_id}",
+            status="SUCCESS" if not compile_error else "ERROR",
+            details=json.dumps(
+                {
+                    "recordingSessionId": recording_id,
+                    "traceRunId": recording.get("traceRunId"),
+                    "createdDraftId": recording.get("createdDraftId"),
+                    "compileError": compile_error,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return {
+            "recording": recording,
+            "draft": draft,
+            "compileError": compile_error,
+        }
 
     def list_templates(self, *, limit: int = 100, app_id: str | None = None, status: str | None = None) -> list[Dict[str, Any]]:
         return self.template_service.list_templates(limit=limit, app_id=app_id, status=status)
@@ -682,6 +770,52 @@ class RPARuntime:
             "runId": run_handle.run_id,
             "sessionId": run_handle.session_id,
         }
+
+    def _rpa_safety_gate_enabled(self) -> bool:
+        # RPA flows are user-authored or user-approved automations. By default
+        # the runtime records Safety evidence but does not gate execution.
+        return False
+
+    def _audit_preflight_decision(
+        self,
+        *,
+        run_handle,
+        decision: SafetyDecision,
+        trigger_source: str | None,
+        subject: str,
+    ) -> None:
+        safety_guardian.log_decision_event(
+            action="rpa_preflight_audit_only",
+            decision=decision,
+            subject=subject,
+            metadata={
+                "runId": run_handle.run_id,
+                "sessionId": run_handle.session_id,
+                "triggerSource": trigger_source,
+                "gate": "audit_only",
+            },
+        )
+        run_handle.emit(
+            "rpa.safety.audit_only",
+            {
+                "subject": subject,
+                "triggerSource": trigger_source,
+                "decision": decision.to_payload(),
+            },
+        )
+        self._log_audit(
+            action=f"RPA preflight audit-only: {subject}",
+            status="INFO" if decision.is_allow() else "WARNING",
+            details=json.dumps(
+                {
+                    "runId": run_handle.run_id,
+                    "sessionId": run_handle.session_id,
+                    "reason": decision.reason,
+                    "decision": decision.to_payload(),
+                },
+                ensure_ascii=False,
+            ),
+        )
 
     def _resolve_template_execution_policy(self, *, mode: str, prepared: Dict[str, Any]) -> Dict[str, Any]:
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
@@ -1223,6 +1357,45 @@ class RPARuntime:
             "sessionId": run_handle.session_id,
         }
 
+    def _rpa_step_approval_gate_enabled(self) -> bool:
+        # Same policy as Safety preflight: RPA records governance evidence by
+        # default, while execution remains frictionless unless a future config
+        # explicitly re-enables the gate.
+        return False
+
+    def _audit_step_approvals(
+        self,
+        *,
+        run_handle,
+        prepared: Dict[str, Any],
+        subject: str,
+        template_policy: Dict[str, Any],
+    ) -> None:
+        approvals = self._required_approvals(prepared, template_policy=template_policy)
+        if not approvals:
+            return
+        run_handle.emit(
+            "rpa.approval.audit_only",
+            {
+                "subject": subject,
+                "requiredApprovals": approvals,
+                "scriptId": (prepared.get("script") or {}).get("id") if isinstance(prepared.get("script"), dict) else None,
+                "robotFile": prepared.get("robotFile") or (prepared.get("export") or {}).get("path"),
+            },
+        )
+        self._log_audit(
+            action=f"RPA step approval audit-only: {subject}",
+            status="WARNING",
+            details=json.dumps(
+                {
+                    "runId": run_handle.run_id,
+                    "sessionId": run_handle.session_id,
+                    "steps": approvals,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
     def _execute_computer_use_primary(
         self,
         *,
@@ -1437,20 +1610,29 @@ class RPARuntime:
                 "robotFile": prepared.get("robotFile") or (prepared.get("export") or {}).get("path"),
             },
         )
-        preflight = self._handle_preflight_decision(
-            run_handle=run_handle,
-            decision=self._run_preflight(run_handle=run_handle, trigger_source=trigger_source, user_id=user_id),
-            trigger_source=trigger_source,
-            subject=subject,
-        )
-        if preflight is not None:
-            self._update_run_metadata(
-                run_handle.run_id,
-                executionState=preflight.get("status"),
-                reason=preflight.get("reason"),
-                approvalId=preflight.get("approvalId"),
+        preflight_decision = self._run_preflight(run_handle=run_handle, trigger_source=trigger_source, user_id=user_id)
+        if self._rpa_safety_gate_enabled():
+            preflight = self._handle_preflight_decision(
+                run_handle=run_handle,
+                decision=preflight_decision,
+                trigger_source=trigger_source,
+                subject=subject,
             )
-            return {**prepared, **preflight, "templateExecutionPolicy": self._resolve_template_execution_policy(mode=mode, prepared=prepared)}
+            if preflight is not None:
+                self._update_run_metadata(
+                    run_handle.run_id,
+                    executionState=preflight.get("status"),
+                    reason=preflight.get("reason"),
+                    approvalId=preflight.get("approvalId"),
+                )
+                return {**prepared, **preflight, "templateExecutionPolicy": self._resolve_template_execution_policy(mode=mode, prepared=prepared)}
+        else:
+            self._audit_preflight_decision(
+                run_handle=run_handle,
+                decision=preflight_decision,
+                trigger_source=trigger_source,
+                subject=subject,
+            )
 
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
         assessment = script.get("assessment") if isinstance(script.get("assessment"), dict) else {}
@@ -1487,24 +1669,32 @@ class RPARuntime:
                 },
             )
 
-        step_approval = self._request_step_approval(run_handle=run_handle, prepared=prepared, subject=subject)
-        if step_approval is not None:
-            self._update_run_metadata(
-                run_handle.run_id,
-                executionState="review_required",
-                approvalId=step_approval.get("approvalId"),
-                requiredApprovals=step_approval.get("requiredApprovals"),
-                trustStatus=normalized_assessment_status,
-                templateExecutionPolicy=template_policy,
-                templateExecutionPath=template_policy.get("executionPath"),
+        if self._rpa_step_approval_gate_enabled():
+            step_approval = self._request_step_approval(run_handle=run_handle, prepared=prepared, subject=subject)
+            if step_approval is not None:
+                self._update_run_metadata(
+                    run_handle.run_id,
+                    executionState="review_required",
+                    approvalId=step_approval.get("approvalId"),
+                    requiredApprovals=step_approval.get("requiredApprovals"),
+                    trustStatus=normalized_assessment_status,
+                    templateExecutionPolicy=template_policy,
+                    templateExecutionPath=template_policy.get("executionPath"),
+                )
+                self._record_run_feedback(prepared=prepared, execution_state="review_required")
+                return {
+                    **prepared,
+                    **step_approval,
+                    "outcomeFamily": outcome_family_for_execution_state("review_required"),
+                    "templateExecutionPolicy": template_policy,
+                }
+        else:
+            self._audit_step_approvals(
+                run_handle=run_handle,
+                prepared=prepared,
+                subject=subject,
+                template_policy=template_policy,
             )
-            self._record_run_feedback(prepared=prepared, execution_state="review_required")
-            return {
-                **prepared,
-                **step_approval,
-                "outcomeFamily": outcome_family_for_execution_state("review_required"),
-                "templateExecutionPolicy": template_policy,
-            }
 
         if str(template_policy.get("executionPath") or "").strip() == "computer_use_first":
             return self._execute_computer_use_primary(

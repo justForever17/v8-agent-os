@@ -1,10 +1,15 @@
 from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from .models import (
     RPACompileTracePayload,
+    RPADraftPatchPayload,
     RPADraftPreparePayload,
     RPADraftRunPayload,
     RPAExistingFlowPayload,
+    RPARecordingEventPayload,
+    RPARecordingStartPayload,
+    RPARecordingStopPayload,
     RPATemplateDecisionPayload,
     RPATemplateReviewPayload,
     RPATemplateRollbackPayload,
@@ -62,6 +67,101 @@ async def get_rpa_draft_source_traces(script_id: str, include_steps: bool = True
         return payload
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/drafts/{script_id}/patch")
+async def patch_rpa_draft(script_id: str, payload: RPADraftPatchPayload):
+    try:
+        patch = payload.model_dump(by_alias=True, exclude_none=True)
+        return _rpa_runtime().patch_draft(script_id, patch)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rpa/recordings")
+async def list_rpa_recordings(limit: int = 20):
+    try:
+        return {"recordings": _rpa_runtime().list_recordings(limit=max(1, min(limit, 100)))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rpa/recordings/{recording_id}")
+async def get_rpa_recording(recording_id: str):
+    try:
+        recording = _rpa_runtime().get_recording(recording_id)
+        if recording is None:
+            raise HTTPException(status_code=404, detail=f"Recording '{recording_id}' not found")
+        return recording
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/start")
+async def start_rpa_recording(payload: RPARecordingStartPayload):
+    try:
+        return _rpa_runtime().start_recording(payload.model_dump(by_alias=True, exclude_none=True))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/events")
+async def append_rpa_recording_event(recording_id: str, payload: RPARecordingEventPayload):
+    try:
+        return _rpa_runtime().append_recording_event(recording_id, payload.model_dump(by_alias=True, exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/pause")
+async def pause_rpa_recording(recording_id: str):
+    try:
+        return _rpa_runtime().pause_recording(recording_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/resume")
+async def resume_rpa_recording(recording_id: str):
+    try:
+        return _rpa_runtime().resume_recording(recording_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/cancel")
+async def cancel_rpa_recording(recording_id: str):
+    try:
+        return _rpa_runtime().cancel_recording(recording_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/stop")
+async def stop_rpa_recording(recording_id: str, payload: RPARecordingStopPayload):
+    try:
+        return await run_in_threadpool(
+            _rpa_runtime().stop_recording,
+            recording_id,
+            compile_draft=payload.compile_draft,
+            save=payload.save,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -191,7 +291,7 @@ async def list_rpa_robot_scripts(limit: int = 100):
 @router.post("/rpa/compile/{run_id}")
 async def compile_rpa_draft_from_trace(run_id: str, payload: RPACompileTracePayload):
     try:
-        return _rpa_runtime().compile_trace_to_draft(run_id, save=payload.save)
+        return await run_in_threadpool(_rpa_runtime().compile_trace_to_draft, run_id, save=payload.save)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -202,7 +302,7 @@ async def compile_rpa_draft_from_traces(payload: RPACompileTracePayload):
         run_ids = [str(item or "").strip() for item in list(payload.run_ids or []) if str(item or "").strip()]
         if not run_ids:
             raise HTTPException(status_code=400, detail="runIds 不能为空")
-        return _rpa_runtime().compile_traces_to_draft(run_ids, save=payload.save)
+        return await run_in_threadpool(_rpa_runtime().compile_traces_to_draft, run_ids, save=payload.save)
     except HTTPException:
         raise
     except Exception as e:
@@ -212,7 +312,7 @@ async def compile_rpa_draft_from_traces(payload: RPACompileTracePayload):
 @router.post("/rpa/drafts/{script_id}/export")
 async def export_rpa_draft(script_id: str, payload: RPADraftPreparePayload):
     try:
-        return _rpa_runtime().export_draft_to_robot(script_id=script_id, output_dir=payload.output_dir)
+        return await run_in_threadpool(_rpa_runtime().export_draft_to_robot, script_id=script_id, output_dir=payload.output_dir)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -220,7 +320,8 @@ async def export_rpa_draft(script_id: str, payload: RPADraftPreparePayload):
 @router.post("/rpa/drafts/{script_id}/prepare")
 async def prepare_rpa_draft_run(script_id: str, payload: RPADraftPreparePayload):
     try:
-        return _rpa_runtime().prepare_draft_run(
+        return await run_in_threadpool(
+            _rpa_runtime().prepare_draft_run,
             script_id=script_id,
             variables=dict(payload.variables or {}),
             output_dir=payload.output_dir,
@@ -232,7 +333,8 @@ async def prepare_rpa_draft_run(script_id: str, payload: RPADraftPreparePayload)
 @router.post("/rpa/drafts/{script_id}/run")
 async def run_rpa_draft(script_id: str, payload: RPADraftRunPayload):
     try:
-        return _rpa_runtime().run_draft(
+        return await run_in_threadpool(
+            _rpa_runtime().run_draft,
             script_id=script_id,
             variables=dict(payload.variables or {}),
             output_dir=payload.output_dir,
@@ -253,7 +355,8 @@ async def run_rpa_draft(script_id: str, payload: RPADraftRunPayload):
 @router.post("/rpa/run-existing")
 async def run_existing_rpa_flow(payload: RPAExistingFlowPayload):
     try:
-        return _rpa_runtime().run_existing_flow(
+        return await run_in_threadpool(
+            _rpa_runtime().run_existing_flow,
             robot_file=payload.robot_file,
             variables=dict(payload.variables or {}),
             output_dir=payload.output_dir,
@@ -274,7 +377,8 @@ async def run_existing_rpa_flow(payload: RPAExistingFlowPayload):
 @router.post("/rpa/prepare-existing")
 async def prepare_existing_rpa_flow(payload: RPAExistingFlowPayload):
     try:
-        return _rpa_runtime().prepare_existing_run(
+        return await run_in_threadpool(
+            _rpa_runtime().prepare_existing_run,
             robot_file=payload.robot_file,
             variables=dict(payload.variables or {}),
             output_dir=payload.output_dir,

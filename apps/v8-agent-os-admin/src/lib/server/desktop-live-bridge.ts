@@ -53,6 +53,8 @@ export type BridgeStatusPayload = {
         maxHeight?: number;
         targetFps?: number;
         idleReleaseSeconds?: number;
+        keepWarmStandby?: boolean;
+        autoWarmOnStatus?: boolean;
         captureDisplay?: string;
         audioEnabled?: boolean;
         audioSource?: string;
@@ -101,6 +103,14 @@ function clearDesktopLiveIdleStopTimer() {
         clearTimeout(idleStopTimer);
         idleStopTimer = null;
     }
+}
+
+function shouldKeepWarmStandby() {
+    return resolveDesktopLiveConfig().keepWarmStandby !== false;
+}
+
+function shouldAutoWarmOnStatus() {
+    return resolveDesktopLiveConfig().autoWarmOnStatus !== false;
 }
 
 function getBridgeScriptPath() {
@@ -374,6 +384,8 @@ function buildDormantBridgeStatus(): BridgeStatusPayload {
             maxHeight: Number(config.maxHeight || 360),
             targetFps: Number(config.targetFps || 5),
             idleReleaseSeconds: Number(config.idleReleaseSeconds || 15),
+            keepWarmStandby: shouldKeepWarmStandby(),
+            autoWarmOnStatus: shouldAutoWarmOnStatus(),
             captureDisplay: String(config.captureDisplay || "primary"),
             audioEnabled: config.audioEnabled !== false,
             audioSource: String(config.audioSource || "system"),
@@ -421,7 +433,25 @@ export async function getDesktopLiveBridgeStatus() {
             reason: "桌面直播 bridge 正在启动，请稍候。",
         };
     }
-    return buildDormantBridgeStatus();
+    const dormant = buildDormantBridgeStatus();
+    if (dormant.bridgeStartable === true && shouldAutoWarmOnStatus()) {
+        setBridgeRuntimeState({
+            phase: "warming",
+            warmingStartedAt: bridgeRuntimeState.warmingStartedAt || new Date().toISOString(),
+            lastErrorStage: null,
+            lastErrorMessage: null,
+            retryAllowed: false,
+        });
+        void ensureDesktopLiveBridge().catch(() => undefined);
+        return {
+            ...dormant,
+            phase: "warming",
+            bridgeWarming: true,
+            retryAllowed: false,
+            reason: "桌面直播 bridge 正在后台预热，请稍候。",
+        } satisfies BridgeStatusPayload;
+    }
+    return dormant;
 }
 
 export async function warmDesktopLiveBridge() {
@@ -544,6 +574,9 @@ function resolveHiddenBridgePythonExecutable(pythonExecutable: string) {
 
 export function scheduleDesktopLiveBridgeIdleStop() {
     clearDesktopLiveIdleStopTimer();
+    if (shouldKeepWarmStandby()) {
+        return;
+    }
     const idleReleaseSeconds = Number(resolveDesktopLiveConfig().idleReleaseSeconds || 15);
     if (!Number.isFinite(idleReleaseSeconds) || idleReleaseSeconds <= 0) {
         return;

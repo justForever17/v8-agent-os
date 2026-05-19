@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
+import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveClientSurfaceOriginFromRequest, resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { normalizeMessageForRealtimeSurface, normalizeProcessForRealtimeSurface, normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
@@ -16,6 +17,7 @@ export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> },
 ) {
+    const startedAt = Date.now();
     const userEmail = await resolveClientUserEmail(req);
     if (!userEmail) {
         return unauthorizedClientJson();
@@ -76,7 +78,7 @@ export async function GET(
 
         const engineNow = snapshotResponse.headers.get(ENGINE_NOW_HEADER) || historyResponse.headers.get(ENGINE_NOW_HEADER);
 
-        return NextResponse.json(applyCanonicalSourceGroup({
+        const responsePayload = applyCanonicalSourceGroup({
             id,
             messages: detailMessages,
             timeline: historyTimeline.length > 0 ? historyTimeline : historyMessages,
@@ -110,8 +112,27 @@ export async function GET(
                     ? snapshotData.contextGovernanceHistory
                     : [],
             projection: snapshotData,
-        }), {
-            headers: engineNow ? { [ENGINE_NOW_HEADER]: engineNow } : undefined,
+            _profile: {
+                snapshot: snapshotData._profile,
+                history: historyRecord._profile,
+            },
+        });
+        const elapsedMs = Date.now() - startedAt;
+        const payloadBytes = jsonSizeBytes(responsePayload);
+        recordAdminApiMetric({
+            route: "client.conversations.detail",
+            status: 200,
+            elapsedMs,
+            payloadBytes,
+            engineElapsedMs: Math.max(readEngineElapsedMs(snapshotData) || 0, readEngineElapsedMs(historyRecord) || 0),
+        });
+
+        return NextResponse.json(responsePayload, {
+            headers: {
+                ...(engineNow ? { [ENGINE_NOW_HEADER]: engineNow } : {}),
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(payloadBytes),
+            },
         });
     } catch (error) {
         console.error("[Client Conversations] Engine communication failed:", error);

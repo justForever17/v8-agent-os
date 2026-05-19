@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, FileCode2, Play, RefreshCw, ShieldAlert, Wand2 } from "lucide-react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, FileCode2, Pause, Play, RefreshCw, Save, ShieldAlert, Square, Trash2, Video, Wand2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,17 +66,7 @@ type DraftPayload = {
     traceRunId?: string;
     traceRunIds?: string[];
   };
-  steps?: Array<{
-    stepId?: string;
-    use?: string;
-    approval?: {
-      mode?: string;
-    };
-    assessment?: {
-      score?: number;
-      status?: string;
-    };
-  }>;
+  steps?: EditableDraftStep[];
   variables?: Array<{
     name?: string;
     required?: boolean;
@@ -243,6 +233,55 @@ type RunRecord = {
   created_at?: string;
   metadata?: Record<string, unknown>;
 };
+type RecordingSessionPayload = {
+  recordingSessionId: string;
+  traceRunId: string;
+  sessionId?: string;
+  state?: string;
+  targetMode?: string;
+  name?: string;
+  goal?: string;
+  appId?: string;
+  browserKind?: string;
+  browserProfileId?: string;
+  windowHandle?: string | number | null;
+  createdDraftId?: string | null;
+  compileError?: string | null;
+  stepCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+};
+type ObservationCandidate = {
+  css?: string;
+  selector?: string;
+  elementId?: string;
+  name?: string;
+  role?: string;
+  controlType?: string;
+  automationId?: string;
+  windowTitle?: string;
+  confidence?: number;
+  source?: string;
+};
+type EditableDraftStep = {
+  stepId?: string;
+  use?: string;
+  intent?: string;
+  approval?: {
+    mode?: string;
+  };
+  target?: Record<string, unknown>;
+  params?: Record<string, unknown>;
+  variables?: Array<Record<string, unknown>>;
+  verification?: Record<string, unknown>;
+  recovery?: Record<string, unknown>;
+  risk?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  assessment?: {
+    score?: number;
+    status?: string;
+  };
+};
 function formatConfidence(score?: number | null) {
   if (typeof score !== "number" || Number.isNaN(score)) {
     return "n/a";
@@ -342,6 +381,99 @@ function parseJsonObject(value: string) {
   }
   return parsed;
 }
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    const text = stringValue(value);
+    if (text) return text;
+  }
+  return "";
+}
+function collectCandidateRecords(value: unknown, out: Record<string, unknown>[] = [], depth = 0) {
+  if (depth > 4 || out.length >= 30) return out;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (isPlainRecord(item)) {
+        out.push(item);
+      }
+      if (out.length >= 30) break;
+    }
+    return out;
+  }
+  if (!isPlainRecord(value)) return out;
+  for (const item of Object.values(value)) {
+    if (Array.isArray(item)) {
+      collectCandidateRecords(item, out, depth + 1);
+    } else if (isPlainRecord(item)) {
+      collectCandidateRecords(item, out, depth + 1);
+    }
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+function normalizeObservationCandidate(value: Record<string, unknown>): ObservationCandidate | null {
+  const nestedTarget = isPlainRecord(value.target) ? value.target : {};
+  const nestedSelector = isPlainRecord(nestedTarget.selector) ? nestedTarget.selector : {};
+  const nestedWindow = isPlainRecord(nestedTarget.window) ? nestedTarget.window : {};
+  const candidate: ObservationCandidate = {
+    css: firstString(value.css, value.selector, nestedSelector.css),
+    selector: firstString(value.selector, nestedSelector.selector),
+    elementId: firstString(value.elementId, value.id),
+    name: firstString(value.name, value.text, value.label),
+    role: firstString(value.role),
+    controlType: firstString(value.controlType, value.type),
+    automationId: firstString(value.automationId),
+    windowTitle: firstString(value.windowTitle, nestedWindow.title),
+    confidence: typeof value.confidence === "number" ? value.confidence : undefined,
+    source: firstString(value.source) || "computer_use_observe",
+  };
+  if (!candidate.css && !candidate.selector && !candidate.elementId && !candidate.name && !candidate.controlType && !candidate.role) {
+    return null;
+  }
+  return candidate;
+}
+function extractObservationCandidates(payload: unknown) {
+  const raw = collectCandidateRecords(payload);
+  const candidates: ObservationCandidate[] = [];
+  for (const item of raw) {
+    const normalized = normalizeObservationCandidate(item);
+    if (normalized) {
+      candidates.push(normalized);
+    }
+    if (candidates.length >= 8) break;
+  }
+  return candidates;
+}
+function candidateSelector(candidate?: ObservationCandidate | null) {
+  if (!candidate) return "";
+  return firstString(
+    candidate.css,
+    candidate.selector,
+    candidate.elementId ? `elementId:${candidate.elementId}` : "",
+    candidate.automationId ? `automationId:${candidate.automationId}` : "",
+    candidate.name ? `name:${candidate.name}` : "",
+  );
+}
+function summarizeObservation(payload: unknown, candidates: ObservationCandidate[]) {
+  const record = isPlainRecord(payload) ? payload : {};
+  const scene = isPlainRecord(record.scene) ? record.scene : {};
+  const windowPayload = isPlainRecord(record.window) ? record.window : {};
+  const activeWindow = isPlainRecord(record.activeWindow) ? record.activeWindow : {};
+  const best = candidates[0];
+  return {
+    observedAt: new Date().toISOString(),
+    windowTitle: firstString(windowPayload.title, activeWindow.title, scene.windowTitle, best?.windowTitle),
+    candidateCount: candidates.length,
+    bestSelector: candidateSelector(best),
+    bestName: best?.name,
+    bestRole: best?.role || best?.controlType,
+  };
+}
 function parseRunIdsInput(value: string) {
   return Array.from(new Set(value.split(/[\s,，]+/).map(item => item.trim()).filter(Boolean)));
 }
@@ -415,8 +547,42 @@ export function RPAWorkbench() {
   const [outputDir, setOutputDir] = useState("");
   const [timeoutMs, setTimeoutMs] = useState("600000");
   const [latestResult, setLatestResult] = useState<unknown>(null);
+  const [recordings, setRecordings] = useState<RecordingSessionPayload[]>([]);
+  const [activeRecording, setActiveRecording] = useState<RecordingSessionPayload | null>(null);
+  const [recordingName, setRecordingName] = useState("");
+  const [recordingGoal, setRecordingGoal] = useState("");
+  const [recordingTargetMode, setRecordingTargetMode] = useState("agent_browser");
+  const [recordingBrowserKind, setRecordingBrowserKind] = useState("chrome");
+  const [recordingAppId, setRecordingAppId] = useState("desktop");
+  const [recordingAction, setRecordingAction] = useState("click");
+  const [recordingIntent, setRecordingIntent] = useState("");
+  const [recordingSelector, setRecordingSelector] = useState("");
+  const [recordingX, setRecordingX] = useState("");
+  const [recordingY, setRecordingY] = useState("");
+  const [recordingVariableName, setRecordingVariableName] = useState("");
+  const [recordingSensitive, setRecordingSensitive] = useState(false);
+  const [recordingParamsText, setRecordingParamsText] = useState("{}");
+  const [desktopLiveSessionId, setDesktopLiveSessionId] = useState("");
+  const [desktopLiveError, setDesktopLiveError] = useState("");
+  const [desktopLiveLoading, setDesktopLiveLoading] = useState(false);
+  const [latestComputerObservation, setLatestComputerObservation] = useState<Record<string, unknown> | null>(null);
+  const [computerSampling, setComputerSampling] = useState(false);
+  const liveImageRef = useRef<HTMLImageElement | null>(null);
+  const [draftStepEdits, setDraftStepEdits] = useState<Record<string, string>>({});
   const selectedDraft = useMemo(() => drafts.find(item => item.id === selectedDraftId) || null, [drafts, selectedDraftId]);
   const selectedTemplate = useMemo(() => templates.find(item => item.id === selectedTemplateId) || null, [templates, selectedTemplateId]);
+  useEffect(() => {
+    if (!selectedDraft) {
+      setDraftStepEdits({});
+      return;
+    }
+    const next: Record<string, string> = {};
+    (selectedDraft.steps || []).forEach((step, index) => {
+      const key = step.stepId || `${selectedDraft.id}:step:${index}`;
+      next[key] = JSON.stringify(step, null, 2);
+    });
+    setDraftStepEdits(next);
+  }, [selectedDraft]);
   const isRpaRun = (run: RunRecord) => run.run_type === "rpa" || run.metadata?.runtime === "rpa" || run.metadata?.mode === "draft" || run.metadata?.mode === "existing_robot" || String(run.session_id || "").startsWith("rpa:");
   const isRpaApproval = (approval: ApprovalRecord) => String(approval.approval_kind || "").startsWith("rpa") || !!approval.request?.rpa || String(approval.session_id || "").startsWith("rpa:");
   const rpaRuns = useMemo(() => runs.filter(isRpaRun).slice(0, 8), [runs]);
@@ -424,13 +590,15 @@ export function RPAWorkbench() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [availabilityRes, draftsRes, scriptsRes, templatesRes, approvalsRes, runsRes] = await Promise.all([fetch("/api/rpa/availability", {
+      const [availabilityRes, draftsRes, scriptsRes, templatesRes, recordingsRes, approvalsRes, runsRes] = await Promise.all([fetch("/api/rpa/availability", {
         cache: "no-store"
       }), fetch("/api/rpa/drafts", {
         cache: "no-store"
       }), fetch("/api/rpa/scripts", {
         cache: "no-store"
       }), fetch("/api/rpa/templates", {
+        cache: "no-store"
+      }), fetch("/api/rpa/recordings?limit=12", {
         cache: "no-store"
       }), fetch("/api/approvals?status=pending", {
         cache: "no-store"
@@ -441,15 +609,18 @@ export function RPAWorkbench() {
       const nextDraftsPayload = draftsRes.ok ? await draftsRes.json() : {};
       const nextScriptsPayload = scriptsRes.ok ? await scriptsRes.json() : {};
       const nextTemplatesPayload = templatesRes.ok ? await templatesRes.json() : {};
+      const nextRecordingsPayload = recordingsRes.ok ? await recordingsRes.json() : {};
       const approvalsData = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
       const runsData = runsRes.ok ? await runsRes.json().catch(() => ({})) : {};
       setAvailability(nextAvailability || {});
       const nextDrafts = Array.isArray(nextDraftsPayload?.drafts) ? nextDraftsPayload.drafts : [];
       const nextScripts = Array.isArray(nextScriptsPayload?.scripts) ? nextScriptsPayload.scripts : [];
       const nextTemplates = Array.isArray(nextTemplatesPayload?.templates) ? nextTemplatesPayload.templates : [];
+      const nextRecordings = Array.isArray(nextRecordingsPayload?.recordings) ? nextRecordingsPayload.recordings : [];
       setDrafts(nextDrafts);
       setScripts(nextScripts);
       setTemplates(nextTemplates);
+      setRecordings(nextRecordings);
       setTemplateSummary(nextTemplatesPayload?.summary || {});
       setApprovals(Array.isArray(approvalsData?.approvals) ? approvalsData.approvals : []);
       setRuns(Array.isArray(runsData?.runs) ? runsData.runs : []);
@@ -469,10 +640,25 @@ export function RPAWorkbench() {
     } finally {
       setLoading(false);
     }
-  }, [selectedDraftId, selectedTemplateId, toast]);
+  }, [selectedDraftId, selectedTemplateId, toast, t]);
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+  useEffect(() => {
+    return () => {
+      const sessionId = desktopLiveSessionId;
+      if (!sessionId) return;
+      void fetch("/api/desktop-live/release", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sessionId
+        })
+      }).catch(() => undefined);
+    };
+  }, [desktopLiveSessionId]);
   useEffect(() => {
     if (!selectedTemplateId) {
       setTemplateHistory([]);
@@ -532,6 +718,238 @@ export function RPAWorkbench() {
     cwd: cwd.trim() || undefined,
     outputDir: outputDir.trim() || undefined
   });
+  const handlePrepareDesktopLive = async () => {
+    setDesktopLiveLoading(true);
+    setDesktopLiveError("");
+    try {
+      const res = await fetch("/api/desktop-live/session", {
+        method: "POST",
+        cache: "no-store"
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.sessionId) {
+        throw new Error(data?.error || data?.detail || t("components.rpa.RPAWorkbench.desktopLiveFailed"));
+      }
+      setDesktopLiveSessionId(String(data.sessionId));
+      setLatestResult(data);
+      toast({
+        title: t("components.rpa.RPAWorkbench.desktopLiveReady"),
+        description: t("components.rpa.RPAWorkbench.desktopLiveClickHint")
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.desktopLiveFailed");
+      setDesktopLiveError(message);
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.desktopLiveFailed"),
+        description: message
+      });
+    } finally {
+      setDesktopLiveLoading(false);
+    }
+  };
+  const handleReleaseDesktopLive = async () => {
+    const sessionId = desktopLiveSessionId;
+    if (!sessionId) return;
+    setDesktopLiveLoading(true);
+    try {
+      await fetch("/api/desktop-live/release", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sessionId
+        })
+      });
+      setDesktopLiveSessionId("");
+    } finally {
+      setDesktopLiveLoading(false);
+    }
+  };
+  const submitRecordingEvent = async (payload: Record<string, unknown>) => {
+    if (!activeRecording?.recordingSessionId) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
+        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
+      });
+      return null;
+    }
+    const data = await runAction(`recording:event:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/events`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }), t("components.rpa.RPAWorkbench.recordingEventAdded"));
+    if (data?.recording) {
+      setActiveRecording(data.recording as RecordingSessionPayload);
+    }
+    return data;
+  };
+  const captureComputerObservation = async (options?: {
+    toastResult?: boolean;
+    updateForm?: boolean;
+  }) => {
+    const res = await fetch("/api/computer-use/observe", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        goal: "rpa_recording_observe",
+        depthLimit: 4,
+        elementLimit: 30,
+        includeScreenshot: false
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.detail || data?.error || t("components.rpa.RPAWorkbench.computerSampleFailed"));
+    }
+    const candidates = extractObservationCandidates(data);
+    const summary = summarizeObservation(data, candidates);
+    setLatestComputerObservation({
+      summary,
+      candidates: candidates.slice(0, 5)
+    });
+    if (options?.updateForm !== false) {
+      const selector = candidateSelector(candidates[0]);
+      if (selector) {
+        setRecordingSelector(selector);
+      }
+      if (summary.windowTitle) {
+        let currentParams: Record<string, unknown> = {};
+        try {
+          currentParams = parseJsonObject(recordingParamsText);
+        } catch {
+          currentParams = {};
+        }
+        setRecordingParamsText(JSON.stringify({
+          ...currentParams,
+          observedWindowTitle: summary.windowTitle
+        }, null, 2));
+      }
+    }
+    setLatestResult(data);
+    if (options?.toastResult) {
+      toast({
+        title: t("components.rpa.RPAWorkbench.computerSampled"),
+        description: candidates.length ? t("components.rpa.RPAWorkbench.computerSampleCandidates", {
+          count: candidates.length
+        }) : t("components.rpa.RPAWorkbench.computerSampleNoCandidates")
+      });
+    }
+    return {
+      summary,
+      candidates,
+      raw: data
+    };
+  };
+  const handleSampleComputerUse = async () => {
+    setComputerSampling(true);
+    try {
+      await captureComputerObservation({
+        toastResult: true,
+        updateForm: true
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.computerSampleFailed"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
+      });
+    } finally {
+      setComputerSampling(false);
+    }
+  };
+  const handleLivePreviewClick = async (event: MouseEvent<HTMLImageElement>) => {
+    if (!activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
+        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
+      });
+      return;
+    }
+    const image = event.currentTarget;
+    const rect = image.getBoundingClientRect();
+    const naturalWidth = image.naturalWidth || Math.round(rect.width);
+    const naturalHeight = image.naturalHeight || Math.round(rect.height);
+    const clientX = event.clientX - rect.left;
+    const clientY = event.clientY - rect.top;
+    const x = Math.round(clientX * naturalWidth / Math.max(1, rect.width));
+    const y = Math.round(clientY * naturalHeight / Math.max(1, rect.height));
+    setRecordingX(String(x));
+    setRecordingY(String(y));
+    let params: Record<string, unknown> = {};
+    try {
+      params = parseJsonObject(recordingParamsText);
+    } catch {
+      params = {};
+    }
+    let observationSummary = isPlainRecord(latestComputerObservation?.summary) ? latestComputerObservation.summary : {};
+    let observationCandidates = Array.isArray(latestComputerObservation?.candidates) ? latestComputerObservation.candidates as ObservationCandidate[] : [];
+    if (!observationCandidates.length) {
+      try {
+        const autoObservation = await captureComputerObservation({
+          updateForm: false
+        });
+        observationSummary = autoObservation.summary;
+        observationCandidates = autoObservation.candidates;
+      } catch {
+        observationSummary = {};
+        observationCandidates = [];
+      }
+    }
+    const selector = recordingSelector.trim();
+    const payload = {
+      action: "click",
+      intent: recordingIntent.trim() || t("components.rpa.RPAWorkbench.desktopLiveRecordedClick"),
+      params,
+      target: {
+        window: {
+          appId: recordingAppId.trim() || "desktop",
+          title: firstString(observationSummary.windowTitle)
+        },
+        ...(selector ? {
+          selector: {
+            css: selector,
+            source: "admin_recorder"
+          }
+        } : {})
+      },
+      coordinate: {
+        x,
+        y
+      },
+      viewport: {
+        source: "desktop_live_bridge",
+        desktopLiveSessionId,
+        naturalWidth,
+        naturalHeight,
+        renderedWidth: Math.round(rect.width),
+        renderedHeight: Math.round(rect.height),
+        clientX: Math.round(clientX),
+        clientY: Math.round(clientY),
+        devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : undefined
+      },
+      ...(selector || observationCandidates.length ? {
+        selectorCandidates: selector ? [{
+          css: selector,
+          source: "admin_recorder"
+        }] : observationCandidates.slice(0, 5)
+      } : {}),
+      metadata: {
+        source: "admin_desktop_live_overlay",
+        fragileCoordinateFallback: !selector,
+        desktopLiveSessionId,
+        computerObservation: observationSummary
+      }
+    };
+    await submitRecordingEvent(payload);
+  };
   const handleCompile = async () => {
     const runIds = parseRunIdsInput(compileRunId);
     if (runIds.length === 0) {
@@ -564,6 +982,185 @@ export function RPAWorkbench() {
     if (data?.id) {
       setSelectedDraftId(data.id);
     }
+  };
+  const handleStartRecording = async () => {
+    const payload = {
+      name: recordingName.trim() || undefined,
+      goal: recordingGoal.trim() || recordingName.trim() || undefined,
+      targetMode: recordingTargetMode,
+      browserKind: recordingTargetMode === "agent_browser" ? recordingBrowserKind : undefined,
+      appId: recordingAppId.trim() || "desktop",
+      captureOptions: {
+        screenshotAnchors: true,
+        domSelectors: true,
+        windowInfo: true,
+        keyboardInput: true
+      }
+    };
+    const data = await runAction("recording:start", () => fetch("/api/rpa/recordings/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }), t("components.rpa.RPAWorkbench.recordingStarted"));
+    if (data?.recordingSessionId) {
+      setActiveRecording(data as RecordingSessionPayload);
+      if (!desktopLiveSessionId) {
+        void handlePrepareDesktopLive();
+      }
+    }
+  };
+  const handleRecordingControl = async (action: "pause" | "resume" | "cancel" | "stop") => {
+    if (!activeRecording?.recordingSessionId) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
+        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
+      });
+      return;
+    }
+    const body = action === "stop" ? {
+      compileDraft: true,
+      save: true
+    } : undefined;
+    const data = await runAction(`recording:${action}:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/${action}`, {
+      method: "POST",
+      headers: body ? {
+        "Content-Type": "application/json"
+      } : undefined,
+      body: body ? JSON.stringify(body) : undefined
+    }), t(action === "stop" ? "components.rpa.RPAWorkbench.recordingStopped" : "components.rpa.RPAWorkbench.recordingUpdated"));
+    const nextRecording = (data?.recording || data) as RecordingSessionPayload;
+    if (nextRecording?.recordingSessionId) {
+      setActiveRecording(nextRecording);
+    }
+    if (data?.draft?.id) {
+      setSelectedDraftId(data.draft.id);
+    }
+  };
+  const handleOpenAgentBrowser = async () => {
+    await runAction("recording:open-agent-browser", () => fetch("/api/computer-use/agent-browser/open", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        browserKind: recordingBrowserKind,
+        url: "about:blank"
+      })
+    }), t("components.rpa.RPAWorkbench.agentBrowserOpened"));
+  };
+  const handleAppendRecordingEvent = async (overrideAction?: string) => {
+    if (!activeRecording?.recordingSessionId) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
+        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
+      });
+      return;
+    }
+    let params: Record<string, unknown>;
+    try {
+      params = parseJsonObject(recordingParamsText);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.invalidEventParams"),
+        description: error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")
+      });
+      return;
+    }
+    const selector = recordingSelector.trim();
+    const x = recordingX.trim() ? Number(recordingX) : undefined;
+    const y = recordingY.trim() ? Number(recordingY) : undefined;
+    const action = overrideAction || recordingAction;
+    const payload = {
+      action,
+      intent: recordingIntent.trim() || action,
+      params,
+      target: {
+        window: {
+          appId: recordingAppId.trim() || "desktop"
+        },
+        ...(selector ? {
+          selector: {
+            css: selector,
+            source: "admin_recorder"
+          }
+        } : {})
+      },
+      ...(Number.isFinite(x) && Number.isFinite(y) ? {
+        coordinate: {
+          x,
+          y
+        }
+      } : {}),
+      ...(selector ? {
+        selectorCandidates: [{
+          css: selector,
+          source: "admin_recorder"
+        }]
+      } : {}),
+      sensitiveInput: recordingSensitive,
+      variableName: recordingVariableName.trim() || undefined,
+      metadata: {
+        source: "admin_rpa_workbench",
+        fragileCoordinateFallback: !selector && Number.isFinite(x) && Number.isFinite(y)
+      }
+    };
+    await submitRecordingEvent(payload);
+  };
+  const handlePatchDraftSteps = async () => {
+    if (!selectedDraft) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.ke05762b8"),
+        description: t("components.rpa.RPAWorkbench.k95f5425c")
+      });
+      return;
+    }
+    const steps: EditableDraftStep[] = [];
+    for (const [key, value] of Object.entries(draftStepEdits)) {
+      if (!value.trim()) {
+        continue;
+      }
+      try {
+        steps.push(JSON.parse(value) as EditableDraftStep);
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: t("components.rpa.RPAWorkbench.invalidDraftStep"),
+          description: `${key}: ${error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")}`
+        });
+        return;
+      }
+    }
+    const data = await runAction(`draft:patch:${selectedDraft.id}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraft.id)}/patch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        steps,
+        metadataPatch: {
+          editedBy: "admin_ui",
+          editedFrom: "rpa_draft_editor"
+        }
+      })
+    }), t("components.rpa.RPAWorkbench.draftSaved"));
+    if (data?.id) {
+      setSelectedDraftId(data.id);
+    }
+  };
+  const handleDeleteDraftStep = (stepKey: string) => {
+    setDraftStepEdits(current => {
+      const next = {
+        ...current
+      };
+      delete next[stepKey];
+      return next;
+    });
   };
   const handleViewSourceTrace = async () => {
     if (!selectedDraftId) {
@@ -788,6 +1385,194 @@ export function RPAWorkbench() {
                 </Card>
             </div>
 
+            <Card className="border-border/60">
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                        <Video className="h-5 w-5 text-primary" />
+                        {t("components.rpa.RPAWorkbench.recordingTitle")}
+                    </CardTitle>
+                    <CardDescription>{t("components.rpa.RPAWorkbench.recordingDescription")}</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-5 xl:grid-cols-[1fr_1.15fr]">
+                    <div className="space-y-4">
+                        <div className="grid gap-3 md:grid-cols-2">
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-name">{t("components.rpa.RPAWorkbench.flowName")}</Label>
+                                <Input id="recording-name" value={recordingName} onChange={event => setRecordingName(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.flowNamePlaceholder")} />
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-app-id">{t("components.rpa.RPAWorkbench.targetApp")}</Label>
+                                <Input id="recording-app-id" value={recordingAppId} onChange={event => setRecordingAppId(event.target.value)} placeholder="desktop / chrome / wechat" />
+                            </div>
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="recording-goal">{t("components.rpa.RPAWorkbench.flowGoal")}</Label>
+                            <Textarea id="recording-goal" className="min-h-[84px]" value={recordingGoal} onChange={event => setRecordingGoal(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.flowGoalPlaceholder")} />
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-target-mode">{t("components.rpa.RPAWorkbench.recordingTarget")}</Label>
+                                <select id="recording-target-mode" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={recordingTargetMode} onChange={event => setRecordingTargetMode(event.target.value)}>
+                                    <option value="agent_browser">{t("components.rpa.RPAWorkbench.targetAgentBrowser")}</option>
+                                    <option value="desktop_window">{t("components.rpa.RPAWorkbench.targetDesktopWindow")}</option>
+                                    <option value="launch_app">{t("components.rpa.RPAWorkbench.targetLaunchApp")}</option>
+                                </select>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-browser-kind">{t("components.rpa.RPAWorkbench.browserKind")}</Label>
+                                <select id="recording-browser-kind" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={recordingBrowserKind} onChange={event => setRecordingBrowserKind(event.target.value)}>
+                                    <option value="chrome">Chrome</option>
+                                    <option value="edge">Edge</option>
+                                </select>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label>{t("components.rpa.RPAWorkbench.recordingState")}</Label>
+                                <div className="flex h-10 items-center gap-2 rounded-md border border-border/60 px-3 text-sm">
+                                    <Badge variant={activeRecording?.state === "recording" ? "default" : activeRecording?.state === "failed" ? "destructive" : "secondary"}>{activeRecording?.state || "idle"}</Badge>
+                                    {activeRecording?.stepCount != null ? <span className="text-muted-foreground">{activeRecording.stepCount} steps</span> : null}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button onClick={() => void handleStartRecording()} disabled={!!busyAction || activeRecording?.state === "recording"}>
+                                <Video className="mr-2 h-4 w-4" />
+                                {t("components.rpa.RPAWorkbench.startRecording")}
+                            </Button>
+                            <Button variant="outline" onClick={() => void handleRecordingControl("pause")} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
+                                <Pause className="mr-2 h-4 w-4" />
+                                {t("components.rpa.RPAWorkbench.pauseRecording")}
+                            </Button>
+                            <Button variant="outline" onClick={() => void handleRecordingControl("resume")} disabled={!activeRecording || activeRecording.state !== "paused" || !!busyAction}>
+                                <Play className="mr-2 h-4 w-4" />
+                                {t("components.rpa.RPAWorkbench.resumeRecording")}
+                            </Button>
+                            <Button variant="outline" onClick={() => void handleRecordingControl("stop")} disabled={!activeRecording || !["recording", "paused", "stopped"].includes(activeRecording.state || "") || !!busyAction}>
+                                <Square className="mr-2 h-4 w-4" />
+                                {t("components.rpa.RPAWorkbench.stopAndCompile")}
+                            </Button>
+                            <Button variant="ghost" onClick={() => void handleOpenAgentBrowser()} disabled={!!busyAction}>
+                                {t("components.rpa.RPAWorkbench.openAgentBrowser")}
+                            </Button>
+                        </div>
+                        <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                            {activeRecording ? <>
+                                    <div>{t("components.rpa.RPAWorkbench.recordingId")}: <span className="text-foreground">{activeRecording.recordingSessionId}</span></div>
+                                    <div>traceRunId: <span className="text-foreground">{activeRecording.traceRunId}</span></div>
+                                    {activeRecording.createdDraftId ? <div>{t("components.rpa.RPAWorkbench.createdDraft")}: <span className="text-foreground">{activeRecording.createdDraftId}</span></div> : null}
+                                    {activeRecording.compileError ? <div className="text-destructive">{activeRecording.compileError}</div> : null}
+                                </> : <>
+                                    <div>{t("components.rpa.RPAWorkbench.noRecordingYet")}</div>
+                                    <div>{t("components.rpa.RPAWorkbench.recentRecordings")}: <span className="text-foreground">{recordings.length}</span></div>
+                                </>}
+                        </div>
+                    </div>
+                    <div className="space-y-4">
+                        <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-3 text-sm text-muted-foreground">
+                            {t("components.rpa.RPAWorkbench.liveBoundaryNote")}
+                        </div>
+                        <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <div className="text-sm font-semibold">{t("components.rpa.RPAWorkbench.desktopLiveOverlay")}</div>
+                                    <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.desktopLiveOverlayDescription")}</div>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    <Button size="sm" variant="outline" onClick={() => void handlePrepareDesktopLive()} disabled={desktopLiveLoading}>
+                                        <Video className="mr-2 h-4 w-4" />
+                                        {desktopLiveSessionId ? t("components.rpa.RPAWorkbench.restartLivePreview") : t("components.rpa.RPAWorkbench.startLivePreview")}
+                                    </Button>
+                                    <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={computerSampling}>
+                                        <RefreshCw className="mr-2 h-4 w-4" />
+                                        {t("components.rpa.RPAWorkbench.sampleComputerUse")}
+                                    </Button>
+                                    {desktopLiveSessionId ? <Button size="sm" variant="ghost" onClick={() => void handleReleaseDesktopLive()} disabled={desktopLiveLoading}>
+                                            {t("components.rpa.RPAWorkbench.stopLivePreview")}
+                                        </Button> : null}
+                                </div>
+                            </div>
+                            {desktopLiveError ? <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopLiveError}</div> : null}
+                            {desktopLiveSessionId ? <div className="mt-3 overflow-hidden rounded-lg border border-border/60 bg-background">
+                                    {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
+                                    <img ref={liveImageRef} src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt={t("components.rpa.RPAWorkbench.desktopLiveOverlay")} className="h-[280px] w-full cursor-crosshair object-contain" onClick={event => void handleLivePreviewClick(event)} />
+                                </div> : <div className="mt-3 rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
+                                    {t("components.rpa.RPAWorkbench.noLivePreview")}
+                                </div>}
+                            {latestComputerObservation?.summary && isPlainRecord(latestComputerObservation.summary) ? <div className="mt-3 grid gap-2 rounded-lg border border-border/60 bg-background/70 p-3 text-xs text-muted-foreground md:grid-cols-3">
+                                    <div>
+                                        <span className="font-medium text-foreground">{t("components.rpa.RPAWorkbench.observedWindow")}</span>
+                                        <div className="truncate">{firstString(latestComputerObservation.summary.windowTitle) || "n/a"}</div>
+                                    </div>
+                                    <div>
+                                        <span className="font-medium text-foreground">{t("components.rpa.RPAWorkbench.selectorCandidates")}</span>
+                                        <div>{String(latestComputerObservation.summary.candidateCount ?? 0)}</div>
+                                    </div>
+                                    <div>
+                                        <span className="font-medium text-foreground">{t("components.rpa.RPAWorkbench.bestSelector")}</span>
+                                        <div className="truncate">{firstString(latestComputerObservation.summary.bestSelector) || "n/a"}</div>
+                                    </div>
+                                </div> : null}
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-action">{t("components.rpa.RPAWorkbench.actionType")}</Label>
+                                <select id="recording-action" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={recordingAction} onChange={event => setRecordingAction(event.target.value)}>
+                                    <option value="click">click</option>
+                                    <option value="type_text">type_text</option>
+                                    <option value="scroll">scroll</option>
+                                    <option value="drag">drag</option>
+                                    <option value="wait_for_element">wait</option>
+                                    <option value="assert_condition">assert</option>
+                                    <option value="launch_app">launch_app</option>
+                                </select>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-x">X</Label>
+                                <Input id="recording-x" value={recordingX} onChange={event => setRecordingX(event.target.value)} placeholder="124" />
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-y">Y</Label>
+                                <Input id="recording-y" value={recordingY} onChange={event => setRecordingY(event.target.value)} placeholder="320" />
+                            </div>
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="recording-intent">{t("components.rpa.RPAWorkbench.stepIntent")}</Label>
+                            <Input id="recording-intent" value={recordingIntent} onChange={event => setRecordingIntent(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.stepIntentPlaceholder")} />
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="recording-selector">{t("components.rpa.RPAWorkbench.selectorOrAnchor")}</Label>
+                            <Input id="recording-selector" value={recordingSelector} onChange={event => setRecordingSelector(event.target.value)} placeholder="button[aria-label='Submit'] / role=button[name=...]" />
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-[1fr_14rem]">
+                            <div className="grid gap-2">
+                                <Label htmlFor="recording-params">{t("components.rpa.RPAWorkbench.eventParams")}</Label>
+                                <Textarea id="recording-params" className="min-h-[120px] font-mono text-xs" value={recordingParamsText} onChange={event => setRecordingParamsText(event.target.value)} />
+                            </div>
+                            <div className="space-y-3">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="recording-variable">{t("components.rpa.RPAWorkbench.variableName")}</Label>
+                                    <Input id="recording-variable" value={recordingVariableName} onChange={event => setRecordingVariableName(event.target.value)} placeholder="user_name" />
+                                </div>
+                                <label className="flex items-center gap-2 rounded-md border border-border/60 p-3 text-sm">
+                                    <input type="checkbox" checked={recordingSensitive} onChange={event => setRecordingSensitive(event.target.checked)} />
+                                    {t("components.rpa.RPAWorkbench.markSensitive")}
+                                </label>
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button onClick={() => void handleAppendRecordingEvent()} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
+                                {t("components.rpa.RPAWorkbench.addRecordedAction")}
+                            </Button>
+                            <Button variant="outline" onClick={() => void handleAppendRecordingEvent("wait_for_element")} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
+                                {t("components.rpa.RPAWorkbench.insertWait")}
+                            </Button>
+                            <Button variant="outline" onClick={() => void handleAppendRecordingEvent("assert_condition")} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
+                                {t("components.rpa.RPAWorkbench.insertAssert")}
+                            </Button>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
+
             <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
@@ -955,6 +1740,41 @@ export function RPAWorkbench() {
                                 {(selectedDraft.metadata?.compileIssues || []).slice(0, 2).map((issue, index) => <div key={`${selectedDraft.id}:issue:${index}`} className="pt-1 text-destructive">
                                         {issue}
                                     </div>)}
+                            </div> : null}
+                        {selectedDraft ? <div className="rounded-xl border border-border/60 p-3">
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <div className="text-sm font-medium">{t("components.rpa.RPAWorkbench.draftStepEditor")}</div>
+                                        <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.draftStepEditorDescription")}</div>
+                                    </div>
+                                    <Button size="sm" onClick={() => void handlePatchDraftSteps()} disabled={busyAction === `draft:patch:${selectedDraft.id}`}>
+                                        <Save className="mr-2 h-4 w-4" />
+                                        {t("components.rpa.RPAWorkbench.saveDraftSteps")}
+                                    </Button>
+                                </div>
+                                <ScrollArea className="h-[360px] pr-4">
+                                    <div className="space-y-3">
+                                        {(selectedDraft.steps || []).map((step, index) => {
+                  const stepKey = step.stepId || `${selectedDraft.id}:step:${index}`;
+                  return <div key={stepKey} className="rounded-lg border border-border/60 p-3">
+                                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                                    <div className="text-xs font-medium text-muted-foreground">
+                                                        {index + 1}. {step.stepId || step.use || "step"}
+                                                    </div>
+                                                    <Button variant="ghost" size="sm" onClick={() => handleDeleteDraftStep(stepKey)}>
+                                                        <Trash2 className="mr-2 h-4 w-4" />
+                                                        {t("components.rpa.RPAWorkbench.deleteNoiseStep")}
+                                                    </Button>
+                                                </div>
+                                                <Textarea className="min-h-[180px] font-mono text-xs" value={draftStepEdits[stepKey] || ""} onChange={event => setDraftStepEdits(current => ({
+                        ...current,
+                        [stepKey]: event.target.value
+                      }))} />
+                                            </div>;
+                })}
+                                        {(selectedDraft.steps || []).length === 0 ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.noDraftSteps")}</div> : null}
+                                    </div>
+                                </ScrollArea>
                             </div> : null}
                     </CardContent>
                 </Card>

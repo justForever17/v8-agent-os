@@ -5,12 +5,14 @@ import {
 } from "@v8/session-realtime/history";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
+import { jsonSizeBytes, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 const ENGINE_NOW_HEADER = "x-v8-engine-now";
 
 export async function GET(req: NextRequest) {
+    const startedAt = Date.now();
     const userEmail = await resolveClientUserEmail(req);
     if (!userEmail) {
         return unauthorizedClientJson();
@@ -32,10 +34,22 @@ export async function GET(req: NextRequest) {
         const sessions = normalizeAuthoritativeSessionHistoryList(
             Array.isArray(data.sessions) ? data.sessions : [],
         );
+        const elapsedMs = Date.now() - startedAt;
+        const payloadBytes = jsonSizeBytes(sessions);
+        recordAdminApiMetric({
+            route: "client.conversations.list",
+            status: response.status,
+            elapsedMs,
+            payloadBytes,
+        });
         return NextResponse.json(sessions, {
-            headers: response.headers.get(ENGINE_NOW_HEADER)
-                ? { [ENGINE_NOW_HEADER]: response.headers.get(ENGINE_NOW_HEADER)! }
-                : undefined,
+            headers: {
+                ...(response.headers.get(ENGINE_NOW_HEADER)
+                    ? { [ENGINE_NOW_HEADER]: response.headers.get(ENGINE_NOW_HEADER)! }
+                    : {}),
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(payloadBytes),
+            },
         });
     } catch (error) {
         console.error("[Client Conversations] Engine communication failed:", error);

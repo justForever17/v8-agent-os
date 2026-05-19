@@ -8,6 +8,7 @@ import {
     resolveInternalSecret,
 } from "@/lib/server/runtime-config";
 import { resolveClientUser, unauthorizedClientJson } from "@/lib/server/client-request-auth";
+import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 
 type ClientContext = {
     user: AdminUserRecord;
@@ -71,12 +72,25 @@ export async function proxyClientAdminJson(
     targetPath: string,
     init?: RequestInit,
 ) {
+    const startedAt = Date.now();
     try {
         const response = await fetchClientAdmin(req, targetPath, init);
         const payload = await response.json().catch(() => ({}));
+        const elapsedMs = Date.now() - startedAt;
+        const payloadBytes = jsonSizeBytes(payload);
+        recordAdminApiMetric({
+            route: `admin:${targetPath}`,
+            status: response.status,
+            elapsedMs,
+            payloadBytes,
+            engineElapsedMs: readEngineElapsedMs(payload),
+        });
         return NextResponse.json(payload, {
             status: response.status,
-            headers: buildPassthroughHeaders(response),
+            headers: buildPassthroughHeaders(response, {
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(payloadBytes),
+            }),
         });
     } catch (error) {
         return toClientProxyErrorResponse(error, "Backend Service Unavailable");
@@ -88,12 +102,25 @@ export async function proxyClientEngineJson(
     targetPath: string,
     init?: RequestInit,
 ) {
+    const startedAt = Date.now();
     try {
         const response = await fetchClientEngine(req, targetPath, init);
         const payload = await response.json().catch(() => ({}));
+        const elapsedMs = Date.now() - startedAt;
+        const payloadBytes = jsonSizeBytes(payload);
+        recordAdminApiMetric({
+            route: `engine:${targetPath}`,
+            status: response.status,
+            elapsedMs,
+            payloadBytes,
+            engineElapsedMs: readEngineElapsedMs(payload),
+        });
         return NextResponse.json(payload, {
             status: response.status,
-            headers: buildPassthroughHeaders(response),
+            headers: buildPassthroughHeaders(response, {
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(payloadBytes),
+            }),
         });
     } catch (error) {
         return toClientProxyErrorResponse(error, "Engine Service Unavailable");

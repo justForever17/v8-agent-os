@@ -182,12 +182,6 @@ const WORKSET_GOVERNANCE_OPTIONS = [
 { value: "off", labelKey: "app.admin.dashboard.engineeringLane.worksetGovernance.off" }] as
 const;
 
-const PROOF_SCOPE_OPTIONS = [
-{ value: "engineering_active", labelKey: "app.admin.dashboard.engineeringLane.proofScope.engineeringActive" },
-{ value: "force_only", labelKey: "app.admin.dashboard.engineeringLane.proofScope.forceOnly" },
-{ value: "off", labelKey: "app.admin.dashboard.engineeringLane.proofScope.off" }] as
-const;
-
 const DIAGNOSTICS_PROVIDER_LABEL_KEYS: Record<keyof DiagnosticsProviders, string> = {
   git: "app.admin.dashboard.engineeringLane.diagnosticsProvider.git",
   command: "app.admin.dashboard.engineeringLane.diagnosticsProvider.command",

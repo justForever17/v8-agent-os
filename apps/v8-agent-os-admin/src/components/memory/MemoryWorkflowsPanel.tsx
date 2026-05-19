@@ -246,7 +246,7 @@ export default function MemoryWorkflowsPanel() {
         const id = activeCandidate?.id || "";
         if (id && id !== selectedId) setSelectedId(id);
         if (id) void loadSelected(id);
-    }, [activeCandidate?.id]);
+    }, [activeCandidate?.id, loadSelected, selectedId]);
 
     const saveSelected = useCallback(async (statusOverride?: string) => {
         if (!selected?.id) return;

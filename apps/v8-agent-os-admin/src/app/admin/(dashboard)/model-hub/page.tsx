@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
@@ -130,7 +131,6 @@ type CatalogProvider = {
     models?: CatalogModel[];
 };
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
-type MediaModelType = "MEDIA" | "IMAGE" | "VIDEO" | "AUDIO" | "VOICE" | "MUSIC" | "WORKFLOW" | "MODEL3D";
 type CatalogRuntimeProtocol = "default" | "anthropic";
 
 const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string; modelType: string; modality?: string }[] = [
@@ -210,7 +210,7 @@ function ProviderOptionLabel({
     return (
         <span className="flex min-w-0 items-center gap-2">
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600">
-                {logo ? <img src={logo} alt="" className="h-4 w-4 object-contain" /> : initial}
+                {logo ? <Image src={logo} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : initial}
             </span>
             <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` · ${suffix}` : ""}</span>
         </span>
@@ -1042,7 +1042,7 @@ export default function ModelHubPage() {
                                                 >
                                                     <span className="flex min-w-0 items-center gap-2">
                                                         <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-white/10" : "bg-slate-100"}`}>
-                                                            {modelIcon ? <img src={modelIcon} alt="" className="h-4 w-4 object-contain" /> : null}
+                                                            {modelIcon ? <Image src={modelIcon} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : null}
                                                         </span>
                                                         <span className="truncate">{modelId}</span>
                                                     </span>

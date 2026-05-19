@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
 import type { ControlPlaneModel } from "@/components/models/control-plane-types";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -161,7 +162,7 @@ export function ModelCardV2({
                 <div className="flex min-w-0 items-start gap-2">
                     <AdminHoverInfo lines={details} triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600">
 
-                        {modelIcon ? <img src={modelIcon} alt="" className="h-5 w-5 rounded object-contain" /> : model.provider?.icon || providerMark}
+                        {modelIcon ? <Image src={modelIcon} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized /> : model.provider?.icon || providerMark}
                     </AdminHoverInfo>
                     <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">

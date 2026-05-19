@@ -136,7 +136,6 @@ export default function DesktopAutomationPage() {
         void loadData();
     }, []);
 
-    const appCount = useMemo(() => Object.keys(envelope?.data.memoryProfiles?.apps || {}).length, [envelope]);
     const llmModels = useMemo(
         () => models.filter((model) => ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes((model.type || "").toUpperCase())),
         [models]

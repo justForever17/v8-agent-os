@@ -239,7 +239,7 @@ export default function MemoryConfigPanel() {
     } finally {
       setRecallPreviewLoading(false);
     }
-  }, [recallQuery]);
+  }, [recallQuery, t]);
   const handleSave = async () => {
     setSaving(true);
     try {

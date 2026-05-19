@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -77,7 +78,7 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
                             triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600"
                         >
                             {providerLogo ? (
-                                <img src={providerLogo} alt="" className="h-5 w-5 rounded object-contain" />
+                                <Image src={providerLogo} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized />
                             ) : (
                                 providerMark
                             )}

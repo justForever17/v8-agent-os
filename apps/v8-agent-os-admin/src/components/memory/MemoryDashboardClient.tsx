@@ -150,7 +150,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         variant: "destructive"
       });
     }
-  }, [loadKnowledge, toast]);
+  }, [loadKnowledge, t, toast]);
   const handleRevalidateKnowledge = useCallback(async (item: KnowledgeItem) => {
     try {
       const res = await fetch(`/api/memory/knowledge/${item.id}/revalidate`, { method: "POST" });
@@ -171,7 +171,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         variant: "destructive"
       });
     }
-  }, [loadKnowledge, toast]);
+  }, [loadKnowledge, t, toast]);
   const handleSaveKnowledge = useCallback(async (id: string, updated: {
     fact: string;
     category: string;

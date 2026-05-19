@@ -447,7 +447,7 @@ export function RuntimeGovernanceWorkbench({
       }
       return next;
     });
-  }, []);
+  }, [t]);
   const loadObservability = useCallback(async () => {
     const [runsRes, approvalsRes, sessionsRes, memoryRes, auditRes] = await Promise.all([fetch("/api/runs?limit=40", {
       cache: "no-store"
@@ -495,7 +495,7 @@ export function RuntimeGovernanceWorkbench({
     } finally {
       setDetailLoading(false);
     }
-  }, [toast]);
+  }, [t, toast]);
   useEffect(() => {
     void (async () => {
       try {
@@ -510,7 +510,7 @@ export function RuntimeGovernanceWorkbench({
         setLoading(false);
       }
     })();
-  }, [loadAll, toast]);
+  }, [loadAll, t, toast]);
   const patchPolicy = (kind: string, patch: Partial<Required<RuntimePolicy>>) => {
     setDraftPolicies(current => ({
       ...current,

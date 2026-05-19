@@ -13,9 +13,12 @@ import { spacing } from "@/src/theme/tokens";
 
 type InlineToken =
     | { type: "text"; value: string }
-    | { type: "link"; value: string; href: string };
+    | { type: "link"; value: string; href: string }
+    | { type: "code"; value: string }
+    | { type: "strong"; value: string }
+    | { type: "em"; value: string }
+    | { type: "strike"; value: string };
 
-const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)]+)\)/gi;
 const BARE_LINK = /(https?:\/\/[^\s)'"`]+|\/(?:api\/workspace\/files\/[^\s)'"`]+|api\/client\/workspace\/files\/[^\s)'"`]+|api\/(?:client\/)?workspace\/resource\?[^\s)'"`]+|workspace\/[^\s)'"`]+)|downloaded_media\/[^\s)'"`]+)/gi;
 const IMAGE_URL = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i;
 const VIDEO_URL = /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i;
@@ -106,49 +109,174 @@ function findEmbeddedMediaHref(value: string) {
     return null;
 }
 
+type InlineCandidate = {
+    type: Exclude<InlineToken["type"], "text">;
+    index: number;
+    raw: string;
+    value: string;
+    href?: string;
+};
+
+function findRegexCandidate(
+    content: string,
+    from: number,
+    pattern: RegExp,
+    build: (match: RegExpExecArray) => InlineCandidate | null,
+) {
+    pattern.lastIndex = from;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+        const candidate = build(match);
+        if (candidate) {
+            return candidate;
+        }
+        if (pattern.lastIndex <= (match.index ?? from)) {
+            pattern.lastIndex = (match.index ?? from) + 1;
+        }
+    }
+    return null;
+}
+
+function findNextInlineCandidate(content: string, from: number): InlineCandidate | null {
+    const candidates = [
+        findRegexCandidate(content, from, /\[([^\]]+)\]\(([^)]+)\)/g, (match) => {
+            const index = match.index ?? 0;
+            if (content[index - 1] === "!") {
+                return null;
+            }
+            const href = cleanHrefCandidate(match[2]);
+            return isRenderableHref(href)
+                ? { type: "link", index, raw: match[0], value: match[1], href }
+                : null;
+        }),
+        findRegexCandidate(content, from, /`([^`\n]+)`/g, (match) => ({
+            type: "code",
+            index: match.index ?? 0,
+            raw: match[0],
+            value: match[1],
+        })),
+        findRegexCandidate(content, from, /\*\*([^\n]+?)\*\*/g, (match) => ({
+            type: "strong",
+            index: match.index ?? 0,
+            raw: match[0],
+            value: match[1],
+        })),
+        findRegexCandidate(content, from, /__([^\n]+?)__/g, (match) => ({
+            type: "strong",
+            index: match.index ?? 0,
+            raw: match[0],
+            value: match[1],
+        })),
+        findRegexCandidate(content, from, /~~([^\n]+?)~~/g, (match) => ({
+            type: "strike",
+            index: match.index ?? 0,
+            raw: match[0],
+            value: match[1],
+        })),
+        findRegexCandidate(content, from, /(^|[\s([{])\*([^*\n]+?)\*(?=$|[\s.,!?;:)\]}])/g, (match) => ({
+            type: "em",
+            index: (match.index ?? 0) + match[1].length,
+            raw: match[0].slice(match[1].length),
+            value: match[2],
+        })),
+        findRegexCandidate(content, from, /(https?:\/\/[^\s)'"`]+|\/(?:api\/workspace\/files\/[^\s)'"`]+|api\/client\/workspace\/files\/[^\s)'"`]+|api\/(?:client\/)?workspace\/resource\?[^\s)'"`]+|workspace\/[^\s)'"`]+)|downloaded_media\/[^\s)'"`]+)/g, (match) => {
+            const href = cleanHrefCandidate(match[0]);
+            return href
+                ? { type: "link", index: match.index ?? 0, raw: match[0], value: href, href }
+                : null;
+        }),
+    ].filter(Boolean) as InlineCandidate[];
+
+    if (candidates.length === 0) {
+        return null;
+    }
+    return candidates.sort((left, right) => left.index - right.index || left.raw.length - right.raw.length)[0];
+}
+
 function tokenizeInline(content: string): InlineToken[] {
     const tokens: InlineToken[] = [];
     let cursor = 0;
-    const markdownMatches = Array.from(content.matchAll(MARKDOWN_LINK));
+    const source = String(content || "");
 
-    if (markdownMatches.length === 0) {
-        let innerCursor = 0;
-        const allMatches = Array.from(content.matchAll(BARE_LINK)).map((match) => ({ kind: "url" as const, match }));
-
-        if (allMatches.length === 0) {
-            return [{ type: "text", value: content }];
+    while (cursor < source.length) {
+        const candidate = findNextInlineCandidate(source, cursor);
+        if (!candidate) {
+            tokens.push({ type: "text", value: source.slice(cursor) });
+            break;
         }
-        for (const entry of allMatches) {
-            const match = entry.match;
-            const index = match.index ?? 0;
-            if (index > innerCursor) {
-                tokens.push({ type: "text", value: content.slice(innerCursor, index) });
-            }
-            tokens.push({ type: "link", value: match[0], href: match[0] });
-            innerCursor = index + match[0].length;
+        if (candidate.index > cursor) {
+            tokens.push({ type: "text", value: source.slice(cursor, candidate.index) });
         }
-        if (innerCursor < content.length) {
-            tokens.push({ type: "text", value: content.slice(innerCursor) });
-        }
-        return tokens;
-    }
-
-    for (const match of markdownMatches) {
-        const index = match.index ?? 0;
-        if (index > cursor) {
-            tokens.push({ type: "text", value: content.slice(cursor, index) });
-        }
-        if (isRenderableHref(match[2])) {
-            tokens.push({ type: "link", value: match[1], href: match[2] });
+        if (candidate.type === "link") {
+            tokens.push({ type: "link", value: candidate.value, href: candidate.href || candidate.value });
         } else {
-            tokens.push({ type: "text", value: match[0] });
+            tokens.push({ type: candidate.type, value: candidate.value });
         }
-        cursor = index + match[0].length;
+        cursor = candidate.index + candidate.raw.length;
     }
-    if (cursor < content.length) {
-        tokens.push({ type: "text", value: content.slice(cursor) });
+
+    return tokens.length ? tokens : [{ type: "text", value: source }];
+}
+
+function parseLinePrefix(line: string) {
+    const trimmed = String(line || "");
+    const unordered = trimmed.match(/^(\s*)[-*+]\s+(?:\[([ xX])\]\s+)?(.+)$/);
+    if (unordered) {
+        const checked = unordered[2] ? unordered[2].toLowerCase() === "x" : undefined;
+        return {
+            type: "list" as const,
+            prefix: checked === undefined ? "•" : checked ? "☑" : "☐",
+            content: unordered[3],
+        };
     }
-    return tokens;
+    const ordered = trimmed.match(/^\s*(\d+)[.)]\s+(.+)$/);
+    if (ordered) {
+        return {
+            type: "list" as const,
+            prefix: `${ordered[1]}.`,
+            content: ordered[2],
+        };
+    }
+    const quote = trimmed.match(/^>\s?(.*)$/);
+    if (quote) {
+        return {
+            type: "quote" as const,
+            content: quote[1],
+        };
+    }
+    const hr = trimmed.trim().match(/^(-{3,}|\*{3,}|_{3,})$/);
+    if (hr) {
+        return { type: "hr" as const };
+    }
+    return { type: "text" as const, content: trimmed };
+}
+
+function splitTableCells(line: string) {
+    return String(line || "")
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim());
+}
+
+function isTableSeparator(line: string) {
+    const cells = splitTableCells(line);
+    return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseMarkdownTable(lines: string[]) {
+    if (lines.length < 2 || !lines[0].includes("|") || !isTableSeparator(lines[1])) {
+        return null;
+    }
+    const headers = splitTableCells(lines[0]);
+    const rows = lines.slice(2)
+        .filter((line) => line.includes("|"))
+        .map((line) => splitTableCells(line));
+    if (!headers.length || !rows.length) {
+        return null;
+    }
+    return { headers, rows };
 }
 
 function resolveMedia(line: string, adminBaseUrl: string) {
@@ -205,6 +333,59 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
         [content],
     );
 
+    const renderInlineTokens = (tokens: InlineToken[]) => tokens.map((token, tokenIndex) => {
+        if (token.type === "link") {
+            const label = renderLinkLabel(token.value);
+            if (looksLikeWindowsAbsolutePath(token.value)) {
+                return (
+                    <Text
+                        key={`link-local:${tokenIndex}`}
+                        style={{ color: colors.text }}
+                    >
+                        {label}
+                    </Text>
+                );
+            }
+            return (
+                <Text
+                    key={`link:${token.href}:${tokenIndex}`}
+                    selectable
+                    style={[styles.link, { color: colors.primaryDeep }]}
+                    onPress={() => void Linking.openURL(normalizeRenderableWorkspaceUrl(adminBaseUrl, token.href))}
+                >
+                    {label}
+                </Text>
+            );
+        }
+        if (token.type === "strong") {
+            return <Text key={`strong:${tokenIndex}`} style={styles.strong}>{token.value}</Text>;
+        }
+        if (token.type === "em") {
+            return <Text key={`em:${tokenIndex}`} style={styles.em}>{token.value}</Text>;
+        }
+        if (token.type === "strike") {
+            return <Text key={`strike:${tokenIndex}`} style={styles.strike}>{token.value}</Text>;
+        }
+        if (token.type === "code") {
+            return (
+                <Text
+                    key={`code:${tokenIndex}`}
+                    style={[
+                        styles.inlineCode,
+                        {
+                            color: colors.text,
+                            backgroundColor: colors.surface,
+                            borderColor: colors.border,
+                        },
+                    ]}
+                >
+                    {token.value}
+                </Text>
+            );
+        }
+        return <Text key={`text:${tokenIndex}`}>{token.value}</Text>;
+    });
+
     return (
         <View style={styles.stack}>
             {paragraphs.map((paragraph, index) => {
@@ -217,10 +398,80 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                 }
 
                 const lines = paragraph.split("\n");
+                const table = parseMarkdownTable(lines);
+                if (table) {
+                    return (
+                        <View
+                            key={`${index}:table:${paragraph.slice(0, 16)}`}
+                            style={[styles.table, { borderColor: colors.border }]}
+                        >
+                            <View style={[styles.tableRow, styles.tableHeaderRow, { borderBottomColor: colors.border, backgroundColor: colors.surface }]}>
+                                {table.headers.map((header, cellIndex) => (
+                                    <Text
+                                        key={`header:${cellIndex}`}
+                                        selectable
+                                        style={[styles.tableHeaderCell, { color: colors.text }]}
+                                    >
+                                        {renderInlineTokens(tokenizeInline(header))}
+                                    </Text>
+                                ))}
+                            </View>
+                            {table.rows.map((row, rowIndex) => (
+                                <View
+                                    key={`row:${rowIndex}`}
+                                    style={[
+                                        styles.tableRow,
+                                        rowIndex < table.rows.length - 1 ? { borderBottomColor: colors.border } : null,
+                                    ]}
+                                >
+                                    {table.headers.map((_, cellIndex) => (
+                                        <Text
+                                            key={`cell:${rowIndex}:${cellIndex}`}
+                                            selectable
+                                            style={[styles.tableCell, { color: colors.text }]}
+                                        >
+                                            {renderInlineTokens(tokenizeInline(row[cellIndex] || ""))}
+                                        </Text>
+                                    ))}
+                                </View>
+                            ))}
+                        </View>
+                    );
+                }
                 return (
                     <View key={`${index}:${paragraph.slice(0, 24)}`} style={styles.paragraph}>
                         {lines.map((line, lineIndex) => {
-                            const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+                            const lineShape = parseLinePrefix(line);
+                            if (lineShape.type === "hr") {
+                                return (
+                                    <View
+                                        key={`${lineIndex}:hr`}
+                                        style={[styles.hr, { backgroundColor: colors.border }]}
+                                    />
+                                );
+                            }
+                            if (lineShape.type === "quote") {
+                                const quoteContent = lineShape.content || "";
+                                return (
+                                    <View
+                                        key={`${lineIndex}:quote:${quoteContent.slice(0, 12)}`}
+                                        style={[
+                                            styles.blockquote,
+                                            {
+                                                borderLeftColor: colors.border,
+                                                backgroundColor: colors.surface,
+                                            },
+                                        ]}
+                                    >
+                                        <Text selectable style={[styles.text, { color: colors.text }]}>
+                                            {renderInlineTokens(tokenizeInline(quoteContent))}
+                                        </Text>
+                                    </View>
+                                );
+                            }
+
+                            const effectiveLine = lineShape.content || "";
+                            const headingMatch = lineShape.type === "text" ? effectiveLine.match(/^(#{1,6})\s+(.+)$/) : null;
                             if (headingMatch) {
                                 const level = headingMatch[1].length;
                                 return (
@@ -232,54 +483,37 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                                             { color: colors.text },
                                         ]}
                                     >
-                                        {headingMatch[2]}
+                                        {renderInlineTokens(tokenizeInline(headingMatch[2]))}
                                     </Text>
                                 );
                             }
 
-                            const bulletMatch = line.match(/^[-*]\s+(.+)$/);
-                            const lineMedia = resolveMedia(bulletMatch ? bulletMatch[1] : line, adminBaseUrl);
+                            const lineMedia = resolveMedia(effectiveLine, adminBaseUrl);
                             if (lineMedia?.kind === "image") {
                                 return <ImagePreview key={`${lineIndex}:${lineMedia.href}`} src={lineMedia.href} alt={lineMedia.label} candidates={lineMedia.candidates} />;
                             }
                             if (lineMedia?.kind === "video" || lineMedia?.kind === "audio") {
                                 return <MediaPlayer key={`${lineIndex}:${lineMedia.href}`} src={lineMedia.href} type={lineMedia.kind} title={lineMedia.label} candidates={lineMedia.candidates} />;
                             }
-                            const tokens = tokenizeInline(bulletMatch ? bulletMatch[1] : line);
                             return (
-                                <Text
+                                <View
                                     key={`${lineIndex}:${line.slice(0, 12)}`}
-                                    selectable
-                                    style={[styles.text, { color: colors.text }]}
+                                    style={lineShape.type === "list" ? styles.listRow : undefined}
                                 >
-                                    {bulletMatch ? <Text style={{ color: colors.text }}>• </Text> : null}
-                                    {tokens.map((token, tokenIndex) => {
-                                        if (token.type === "link") {
-                                            const label = renderLinkLabel(token.value);
-                                            if (looksLikeWindowsAbsolutePath(token.value)) {
-                                                return (
-                                                    <Text
-                                                        key={`${token.href}:${tokenIndex}`}
-                                                        style={{ color: colors.text }}
-                                                    >
-                                                        {label}
-                                                    </Text>
-                                                );
-                                            }
-                                            return (
-                                                <Text
-                                                    key={`${token.href}:${tokenIndex}`}
-                                                    selectable
-                                                    style={[styles.link, { color: colors.primaryDeep }]}
-                                                    onPress={() => void Linking.openURL(normalizeRenderableWorkspaceUrl(adminBaseUrl, token.href))}
-                                                >
-                                                    {label}
-                                                </Text>
-                                            );
-                                        }
-                                        return <Text key={`${tokenIndex}:${token.value.slice(0, 12)}`}>{token.value}</Text>;
-                                    })}
-                                </Text>
+                                    {lineShape.type === "list" ? (
+                                        <Text style={[styles.listPrefix, { color: colors.textMuted }]}>{lineShape.prefix}</Text>
+                                    ) : null}
+                                    <Text
+                                        selectable
+                                        style={[
+                                            styles.text,
+                                            { color: colors.text },
+                                            lineShape.type === "list" ? styles.listText : null,
+                                        ]}
+                                    >
+                                        {renderInlineTokens(tokenizeInline(effectiveLine))}
+                                    </Text>
+                                </View>
                             );
                         })}
                     </View>
@@ -301,8 +535,80 @@ const styles = StyleSheet.create({
         fontSize: 14,
         lineHeight: 21,
     },
+    strong: {
+        fontWeight: "800",
+    },
+    em: {
+        fontStyle: "italic",
+    },
+    strike: {
+        textDecorationLine: "line-through",
+    },
+    inlineCode: {
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 5,
+        fontFamily: "monospace",
+        fontSize: 13,
+        lineHeight: 20,
+        paddingHorizontal: 3,
+    },
     link: {
         textDecorationLine: "underline",
+    },
+    listRow: {
+        width: "100%",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+    },
+    listPrefix: {
+        width: 20,
+        fontSize: 14,
+        lineHeight: 21,
+        textAlign: "right",
+    },
+    listText: {
+        flex: 1,
+    },
+    blockquote: {
+        borderLeftWidth: 3,
+        borderRadius: 8,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 6,
+    },
+    hr: {
+        height: StyleSheet.hairlineWidth,
+        marginVertical: spacing.xs,
+        width: "100%",
+        opacity: 0.75,
+    },
+    table: {
+        width: "100%",
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 10,
+        overflow: "hidden",
+    },
+    tableRow: {
+        flexDirection: "row",
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    tableHeaderRow: {
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    tableHeaderCell: {
+        flex: 1,
+        fontSize: 12,
+        fontWeight: "800",
+        lineHeight: 18,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 7,
+    },
+    tableCell: {
+        flex: 1,
+        fontSize: 12,
+        lineHeight: 18,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 7,
     },
     h1: {
         fontSize: 22,

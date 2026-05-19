@@ -675,6 +675,8 @@ export async function submitChatMessage(
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 plannerMode: options.taskPlanningMode ? "force" : undefined,
                 taskPlanningMode: options.taskPlanningMode ? true : undefined,
+                taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
+                taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
                         name: skill.name,
@@ -935,6 +937,8 @@ export async function sendChatMessageStream(
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 plannerMode: options.taskPlanningMode ? "force" : undefined,
                 taskPlanningMode: options.taskPlanningMode ? true : undefined,
+                taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
+                taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
                         name: skill.name,

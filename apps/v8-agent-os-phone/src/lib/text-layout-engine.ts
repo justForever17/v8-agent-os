@@ -17,7 +17,3 @@ const DEFAULT_ENGINE: TextLayoutEngineCapabilities = {
 export function resolveTextLayoutEngine(): TextLayoutEngineCapabilities {
     return DEFAULT_ENGINE;
 }
-
-export function shouldUseStreamingPlainTextRenderer(engine: TextLayoutEngineCapabilities, isStreaming: boolean) {
-    return isStreaming && engine.kind === "native";
-}

@@ -30,7 +30,7 @@ export const lightColors: ThemeColors = {
     backgroundDeep: "#F8FAFC",
     surface: "#FFFFFF",
     surfaceMuted: "rgba(255,255,255,0.72)",
-    surfaceStrong: "rgba(255,255,255,0.9)",
+    surfaceStrong: "#FFFFFF",
     text: "#0F172A",
     textMuted: "#64748B",
     textSoft: "#94A3B8",

@@ -26,6 +26,7 @@ export function LocaleMenu({
     const { locale, setLocale, colors, themeMode, t } = useUiPrefs();
     const current = LOCALE_OPTIONS.find((item) => item.value === locale) || LOCALE_OPTIONS[0];
     const compact = variant === "compact";
+    const subtleSurface = themeMode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.14)";
 
     return (
         <DropdownMenu>
@@ -36,8 +37,8 @@ export function LocaleMenu({
                     styles.trigger,
                     compact ? styles.triggerCompact : styles.triggerDefault,
                     {
-                        backgroundColor: themeMode === "dark" ? "rgba(15,23,42,0.52)" : "rgba(255,255,255,0.78)",
-                        borderColor: `${colors.border}A6`,
+                        backgroundColor: subtleSurface,
+                        borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(148,163,184,0.10)",
                     },
                 ]}
             >
@@ -81,18 +82,18 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        borderWidth: 1,
+        borderWidth: StyleSheet.hairlineWidth,
         shadowColor: "#0F172A",
-        shadowOpacity: 0.04,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.07,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 5 },
         elevation: 1,
     },
     triggerCompact: {
-        width: 44,
-        height: 36,
+        width: 40,
+        height: 32,
         gap: 2,
-        borderRadius: 12,
+        borderRadius: 11,
     },
     triggerDefault: {
         minWidth: 128,

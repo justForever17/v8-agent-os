@@ -77,7 +77,14 @@ function hasRenderableMessage(message: ChatMessage) {
     if (Array.isArray(message.images) && message.images.length > 0) {
         return true;
     }
-    if (metadata.taskPlanningMode === true) {
+    if (
+        metadata.taskPlanningMode === true
+        && (
+            metadata.taskPlanningSource === "composer"
+            || metadata.taskPlanningModeSource === "composer"
+            || metadata.taskPlanningRequestedByComposer === true
+        )
+    ) {
         return true;
     }
     if (metadata.commandPreset && typeof metadata.commandPreset === "object") {

@@ -267,6 +267,8 @@ function buildUserMessage(
     }
     if (options.taskPlanningMode) {
         metadata.taskPlanningMode = true;
+        metadata.taskPlanningSource = "composer";
+        metadata.taskPlanningRequestedByComposer = true;
     }
     if (attachments.length > 0) {
         metadata.attachments = attachments;
@@ -1069,12 +1071,18 @@ function hasRenderableMessagePayload(message: ChatMessage) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
+    const composerTaskPlanning = metadata.taskPlanningMode === true
+        && (
+            metadata.taskPlanningSource === "composer"
+            || metadata.taskPlanningModeSource === "composer"
+            || metadata.taskPlanningRequestedByComposer === true
+        );
     return Boolean(
         String(message.content || "").trim()
         || (Array.isArray(message.images) && message.images.length > 0)
         || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
         || (Array.isArray(message.nodes) && message.nodes.length > 0)
-        || metadata.taskPlanningMode === true
+        || composerTaskPlanning
         || (metadata.commandPreset && typeof metadata.commandPreset === "object")
         || (Array.isArray(metadata.skillReferences) && metadata.skillReferences.length > 0)
         || (Array.isArray(metadata.attachments) && metadata.attachments.length > 0)
@@ -1108,6 +1116,12 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
+    const composerTaskPlanning = metadata.taskPlanningMode === true
+        && (
+            metadata.taskPlanningSource === "composer"
+            || metadata.taskPlanningModeSource === "composer"
+            || metadata.taskPlanningRequestedByComposer === true
+        );
     return (
         String(message.content || "").trim().length
         + ((message.nodes || []).length * 120)
@@ -1117,7 +1131,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
         + (Array.isArray(metadata.skillReferences) ? metadata.skillReferences.length * 40 : 0)
         + (Array.isArray(metadata.contextMentions) ? metadata.contextMentions.length * 40 : 0)
         + (Array.isArray(metadata.attachments) ? metadata.attachments.length * 80 : 0)
-        + (metadata.taskPlanningMode === true ? 30 : 0)
+        + (composerTaskPlanning ? 30 : 0)
     );
 }
 
@@ -1168,6 +1182,12 @@ function mergeUserStructuredMetadata(
     }
     if (snapshotMetadata.taskPlanningMode !== true && localMetadata.taskPlanningMode === true) {
         preservedMetadata.taskPlanningMode = true;
+    }
+    if (!snapshotMetadata.taskPlanningSource && localMetadata.taskPlanningSource) {
+        preservedMetadata.taskPlanningSource = localMetadata.taskPlanningSource;
+    }
+    if (snapshotMetadata.taskPlanningRequestedByComposer !== true && localMetadata.taskPlanningRequestedByComposer === true) {
+        preservedMetadata.taskPlanningRequestedByComposer = true;
     }
     if (
         (!Array.isArray(snapshotMetadata.attachments) || snapshotMetadata.attachments.length === 0)
@@ -5783,7 +5803,7 @@ export default function ChatScreen() {
                                 side="left"
                                 open={leftRailOpen}
                                 expandedWidth={154}
-                                top={10}
+                                top={4}
                                 onOpen={() => {
                                     setLeftRailOpen(true);
                                     setRightRailOpen(false);
@@ -5850,7 +5870,7 @@ export default function ChatScreen() {
                                 side="right"
                                 open={rightRailOpen}
                                 expandedWidth={356}
-                                top={10}
+                                top={4}
                                 onOpen={() => {
                                     setRightRailOpen(true);
                                     setLeftRailOpen(false);
@@ -6200,15 +6220,15 @@ const styles = StyleSheet.create({
     leftEdgeRailContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 3,
+        gap: 1,
     },
     edgeIconButton: {
-        width: 36,
-        height: 36,
+        width: 32,
+        height: 32,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 18,
-        borderWidth: 1,
+        borderRadius: 16,
+        borderWidth: StyleSheet.hairlineWidth,
     },
     scopeTrigger: {
         width: 40,

@@ -211,6 +211,34 @@ function extractCommandPresetName(message: ChatMessage) {
     return typeof name === "string" ? name.trim() : "";
 }
 
+function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripCommandPresetPrefix(content: string, commandName: string) {
+    const trimmed = String(content || "").trim();
+    const normalizedCommand = String(commandName || "").trim();
+    if (!trimmed || !normalizedCommand) {
+        return trimmed;
+    }
+    const commandPattern = escapeRegExp(normalizedCommand.replace(/^\/+/, ""));
+    return trimmed
+        .replace(new RegExp(`^\\s*/\\s*${commandPattern}(?:\\s+|\\r?\\n|$)`, "i"), "")
+        .trim();
+}
+
+function isComposerTaskPlanningMode(message: ChatMessage) {
+    const metadata = message.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
+    if (metadata.taskPlanningMode !== true) {
+        return false;
+    }
+    return metadata.taskPlanningSource === "composer"
+        || metadata.taskPlanningModeSource === "composer"
+        || metadata.taskPlanningRequestedByComposer === true;
+}
+
 function extractSkillReferences(message: ChatMessage): SkillReferenceSummary[] {
     const raw = message.metadata?.skillReferences;
     if (!Array.isArray(raw)) return [];
@@ -437,7 +465,11 @@ export const MessageBubble = memo(function MessageBubble({
         })),
         [userMediaAttachments],
     );
-    const taskPlanningMode = Boolean(message.metadata?.taskPlanningMode);
+    const taskPlanningMode = isComposerTaskPlanningMode(message);
+    const userContentText = useMemo(
+        () => stripCommandPresetPrefix(String(message.content || "").trim(), commandPresetName),
+        [commandPresetName, message.content],
+    );
     const renderMessageKey = String(message.renderKey || message.id || "").trim();
     const messageIdentity = useMemo(
         () => String(message.runId || renderMessageKey || message.id || `${message.role}:${message.timestamp || 0}`).trim(),
@@ -605,7 +637,7 @@ export const MessageBubble = memo(function MessageBubble({
         ? { maxWidth: assistantBubbleWidth, minWidth: assistantMinWidth }
         : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
-        const directContent = String(message.content || "").trim();
+        const directContent = isUser ? userContentText : String(message.content || "").trim();
         if (directContent) {
             return directContent;
         }
@@ -640,7 +672,7 @@ export const MessageBubble = memo(function MessageBubble({
             return metadataLines.join("\n");
         }
         return "";
-    }, [commandPresetName, message.content, renderableNodes, skillReferences, taskPlanningMode, t, userAttachments]);
+    }, [commandPresetName, isUser, renderableNodes, skillReferences, taskPlanningMode, t, userAttachments, userContentText]);
 
     useEffect(() => {
         if (!copied) {
@@ -652,7 +684,6 @@ export const MessageBubble = memo(function MessageBubble({
 
     const userColumnWidth = sharedTextBubbleWidth;
     const userBubbleWidth = sharedTextBubbleWidth;
-    const userContentText = String(message.content || "").trim();
     const hasUserVisualPayload = Boolean(
         commandPresetName
         || skillReferences.length > 0
@@ -680,7 +711,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         {commandPresetName ? (
                                             <View style={styles.userChip}>
                                                 <MaterialCommunityIcons name="slash-forward" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>/{commandPresetName}</Text>
+                                                <Text style={styles.userChipText}>{commandPresetName.replace(/^\/+/, "")}</Text>
                                             </View>
                                         ) : null}
                                         {skillReferences.map((skill) => (

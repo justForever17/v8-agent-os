@@ -68,6 +68,18 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     },
                 ]}
             >
+                {!open ? (
+                    <Pressable
+                        accessibilityRole="button"
+                        style={[
+                            styles.collapsedPressTarget,
+                            side === "left" ? styles.collapsedPressTargetLeft : styles.collapsedPressTargetRight,
+                            { width: collapsedPeekWidth + 18 },
+                        ]}
+                        onPress={onOpen}
+                        hitSlop={8}
+                    />
+                ) : null}
                 <Pressable
                     style={[
                         styles.peekHandle,
@@ -77,7 +89,7 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     onPress={open ? onClose : onOpen}
                     hitSlop={10}
                 />
-                <View style={styles.content}>
+                <View pointerEvents={open ? "auto" : "none"} style={styles.content}>
                     {children}
                 </View>
             </Animated.View>
@@ -108,12 +120,26 @@ const styles = StyleSheet.create({
         minWidth: 0,
         justifyContent: "center",
     },
+    collapsedPressTarget: {
+        position: "absolute",
+        top: 0,
+        bottom: 0,
+        zIndex: 4,
+        backgroundColor: "transparent",
+    },
+    collapsedPressTargetLeft: {
+        right: 0,
+    },
+    collapsedPressTargetRight: {
+        left: 0,
+    },
     peekHandle: {
         position: "absolute",
         top: 7,
         width: 20,
         height: 38,
         borderWidth: 0,
+        zIndex: 5,
     },
     leftHandle: {
         right: -9,

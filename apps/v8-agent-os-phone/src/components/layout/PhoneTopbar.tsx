@@ -219,22 +219,23 @@ function TopbarButton({
     const Icon = resolveActionIcon(action.key, themeMode);
     const color = iconColor(action.tone, colors);
     const round = isRoundAction(action.key);
+    const neutralSurface = themeMode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.14)";
     const surfaceStyle = action.tone === "primary"
         ? {
-            backgroundColor: colors.primarySoft,
-            borderColor: `${colors.primary}52`,
-            borderWidth: 1,
+            backgroundColor: themeMode === "dark" ? `${colors.primary}1F` : `${colors.primary}10`,
+            borderColor: `${colors.primary}20`,
+            borderWidth: StyleSheet.hairlineWidth,
         }
         : action.tone === "accent"
             ? {
-                backgroundColor: colors.accentSoft,
-                borderColor: `${colors.accent}44`,
-                borderWidth: 1,
+                backgroundColor: themeMode === "dark" ? `${colors.accent}1F` : `${colors.accent}10`,
+                borderColor: `${colors.accent}1F`,
+                borderWidth: StyleSheet.hairlineWidth,
             }
             : {
-                backgroundColor: colors.surfaceStrong,
-                borderColor: `${colors.border}CC`,
-                borderWidth: 1,
+                backgroundColor: neutralSurface,
+                borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(148,163,184,0.10)",
+                borderWidth: StyleSheet.hairlineWidth,
             };
 
     return (
@@ -319,8 +320,8 @@ export function PhoneTopbar({
             style={[
                 styles.topbar,
                 {
-                    backgroundColor: themeMode === "dark" ? "rgba(10,15,26,0.94)" : "rgba(255,255,255,0.95)",
-                    borderBottomColor: `${colors.border}CC`,
+                    backgroundColor: themeMode === "dark" ? "rgba(10,15,26,0.94)" : "rgba(255,255,255,0.96)",
+                    borderBottomColor: themeMode === "dark" ? "rgba(148,163,184,0.16)" : "rgba(148,163,184,0.12)",
                 },
             ]}
         >
@@ -357,8 +358,8 @@ export function PhoneTopbar({
                     style={({ pressed }) => [
                         styles.profileButton,
                         {
-                            backgroundColor: themeMode === "dark" ? "rgba(15,23,42,0.5)" : "rgba(255,255,255,0.78)",
-                            borderColor: `${colors.border}A6`,
+                            backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.12)",
+                            borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(148,163,184,0.10)",
                             opacity: pressed ? 0.82 : 1,
                         },
                     ]}
@@ -377,17 +378,17 @@ export function PhoneTopbar({
 
 const styles = StyleSheet.create({
     topbar: {
-        minHeight: 56,
+        minHeight: 50,
         paddingHorizontal: 12,
-        paddingVertical: 7,
+        paddingVertical: 5,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         borderBottomWidth: StyleSheet.hairlineWidth,
         shadowColor: "#0F172A",
-        shadowOpacity: 0.04,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.055,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 4 },
         elevation: 1,
     },
     brandSide: {
@@ -406,16 +407,16 @@ const styles = StyleSheet.create({
         opacity: 0.82,
     },
     brandMark: {
-        width: 32,
-        height: 32,
+        width: 30,
+        height: 30,
         borderRadius: 8,
     },
     brandMarkWrap: {
-        width: 32,
-        height: 32,
+        width: 30,
+        height: 30,
         borderRadius: 10,
         overflow: "hidden",
-        borderWidth: 1,
+        borderWidth: StyleSheet.hairlineWidth,
     },
     wordmark: {
         height: 22,
@@ -463,32 +464,32 @@ const styles = StyleSheet.create({
         flexShrink: 0,
     },
     actionButton: {
-        width: 36,
-        height: 36,
+        width: 32,
+        height: 32,
         alignItems: "center",
         justifyContent: "center",
         shadowColor: "#0F172A",
-        shadowOpacity: 0.04,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.07,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 5 },
         elevation: 1,
     },
     actionButtonRound: {
-        borderRadius: 18,
+        borderRadius: 16,
     },
     actionButtonSoftSquare: {
-        borderRadius: 12,
+        borderRadius: 11,
     },
     profileButton: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
+        width: 32,
+        height: 32,
+        borderRadius: 16,
         overflow: "hidden",
-        borderWidth: 1,
+        borderWidth: StyleSheet.hairlineWidth,
         shadowColor: "#0F172A",
-        shadowOpacity: 0.04,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.07,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 5 },
         elevation: 1,
     },
     profileImage: {

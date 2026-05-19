@@ -24,7 +24,6 @@ import type { PhoneUiTimelineNode } from "@/src/types/admin";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import { resolveTextLayoutEngine, shouldUseStreamingPlainTextRenderer } from "@/src/lib/text-layout-engine";
 import { coerceAdminResourceRef } from "@v8/session-realtime";
 
 function stringifyPayload(value: unknown) {
@@ -277,15 +276,6 @@ function useStreamingRevealContent(content: string, _enabled: boolean) {
     return content;
 }
 
-function StreamingPlainTextBlock({ content }: { content: string }) {
-    const { colors } = useUiPrefs();
-    return (
-        <Text selectable style={[styles.streamingText, { color: colors.text }]}>
-            {content}
-        </Text>
-    );
-}
-
 export const MessageBlockItem = memo(function MessageBlockItem({
     block,
     node,
@@ -301,7 +291,6 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 }) {
     const { adminBaseUrl } = useAppSession();
     const { colors, t } = useUiPrefs();
-    const textLayoutEngine = resolveTextLayoutEngine();
     const blockContent = String(block?.content || "");
     const revealedBlockContent = useStreamingRevealContent(
         blockContent,
@@ -624,10 +613,6 @@ export const MessageBlockItem = memo(function MessageBlockItem({
         );
     }
 
-    if (shouldUseStreamingPlainTextRenderer(textLayoutEngine, resolvedStreaming)) {
-        return <StreamingPlainTextBlock content={revealedBlockContent} />;
-    }
-
     return <MarkdownRenderer content={revealedBlockContent} />;
 });
 
@@ -660,11 +645,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         flexWrap: "wrap",
         gap: 8,
-    },
-    streamingText: {
-        width: "100%",
-        fontSize: 14,
-        lineHeight: 21,
     },
     unresolvedCard: {
         borderRadius: radii.lg,

@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.build.json",
     "clean": "if exist dist rmdir /s /q dist",
     "prepare": "npm run build",
-    "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs"
+    "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs",
+    "verify:episode-graph": "npm run build && node scripts/verify-runtime-episode-graph.mjs"
   },
   "exports": {
     ".": {
@@ -54,6 +55,10 @@
     "./runtime-timeline": {
       "types": "./dist/runtime-timeline.d.ts",
       "default": "./dist/runtime-timeline.js"
+    },
+    "./runtime-episode-graph": {
+      "types": "./dist/runtime-episode-graph.d.ts",
+      "default": "./dist/runtime-episode-graph.js"
     },
     "./runtime-projection-matrix": {
       "types": "./dist/runtime-projection-matrix.d.ts",

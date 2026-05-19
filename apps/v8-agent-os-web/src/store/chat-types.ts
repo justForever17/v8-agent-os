@@ -34,6 +34,8 @@ export interface UiExecutionNode extends UiTimelineNodeBase {
     content?: string;
     time?: number;
     startTime?: number;
+    reasoningKind?: string;
+    reasoningSurface?: Record<string, unknown>;
     
     // For tools
     toolCallId?: string;

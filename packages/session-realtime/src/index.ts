@@ -8,6 +8,7 @@ export * from "./message-lifecycle.js";
 export * from "./cdc.js";
 export * from "./session-view.js";
 export * from "./runtime-timeline.js";
+export * from "./runtime-episode-graph.js";
 export * from "./runtime-projection-matrix.js";
 export * from "./history.js";
 export * from "./timeline-node-identity.js";

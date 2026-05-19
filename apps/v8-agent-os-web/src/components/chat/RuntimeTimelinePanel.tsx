@@ -3,8 +3,11 @@
 import React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+    buildRuntimeEpisodeGraph,
+    isRuntimeEpisodeGraphActivity,
     type AdminProcessRef,
     type ContextGovernanceView,
+    type RuntimeEpisodeGraphActivity,
     normalizeContextGovernanceDigest,
     normalizeContextGovernanceHistory,
 } from "@v8/session-realtime";
@@ -85,30 +88,6 @@ function getSwarmTaskBriefId(activity?: RuntimeStageActivity): string {
         || activity.id;
 }
 
-function getSwarmTaskLabel(activity: RuntimeStageActivity): { title: string; meta: string } {
-    const data = readExecutionData(activity);
-    const title = readString(data.taskGoal) || readString(data.task_goal) || activity.summary || "Subagent task";
-    const lane = readString(data.lane) || "subagent";
-    const agent = lane === "external_worker"
-        ? readString(data.workerType) || readString(data.targetLabel) || readString(data.subagentName) || "External worker"
-        : readString(data.subagentName) || readString(data.targetLabel) || readString(data.subagentId) || activity.actorLabel || "Subagent";
-    const status = readString(data.status) || "running";
-    const commandSession = readRecord(data.commandSession);
-    const traceRef = readRecord(data.traceRef);
-    const commandId = readString(commandSession.commandId) || readString(traceRef.commandId);
-    const metaParts = [`${agent}`, status];
-    if (lane === "external_worker") {
-        metaParts.unshift("external");
-    }
-    if (commandId) {
-        metaParts.push(commandId);
-    }
-    return {
-        title,
-        meta: metaParts.join(" · "),
-    };
-}
-
 function getPlannerPlanId(activity?: RuntimeStageActivity): string {
     if (!activity) return "";
     const data = readExecutionData(activity);
@@ -180,17 +159,6 @@ function getEngineeringLabel(activity: RuntimeStageActivity): { title: string; m
     };
 }
 
-function isEpisodeActivity(activity: RuntimeStageActivity): boolean {
-    const topic = String(activity.topic || ("topic" in activity.node ? activity.node.topic : "") || "").trim();
-    return topic.startsWith("capability.need.") || topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.");
-}
-
-function getEpisodePayload(activity: RuntimeStageActivity): Record<string, unknown> {
-    const data = readExecutionData(activity);
-    const episode = readRecord(data.episode);
-    return Object.keys(episode).length > 0 ? episode : data;
-}
-
 const episodeKindLabels: Record<string, string> = {
     runtime: "运行时",
     engineering: "工程运行时",
@@ -201,59 +169,19 @@ const episodeKindLabels: Record<string, string> = {
     delegation: "子代理",
 };
 
-function buildEpisodeGraph(activities: RuntimeStageActivity[]): SwarmGraphNode[] {
-    const nodes = new Map<string, SwarmGraphNode>();
-    nodes.set("supervisor", {
-        id: "supervisor",
-        parentId: null,
-        label: "Supervisor",
-        subtitle: "router",
-        status: "active",
-        depth: 0,
-        eventCount: 0,
-        timestamp: 0,
-    });
+function toRuntimeEpisodeGraphActivities(activities: RuntimeStageActivity[]): RuntimeEpisodeGraphActivity[] {
+    return activities.map((activity) => ({
+        id: activity.id,
+        topic: activity.topic || ("topic" in activity.node ? String(activity.node.topic || "") : ""),
+        summary: activity.summary,
+        timestamp: activity.timestamp,
+        data: readExecutionData(activity),
+    }));
+}
 
-    for (const activity of [...activities].reverse()) {
-        if (!isEpisodeActivity(activity)) continue;
-        const data = getEpisodePayload(activity);
-        const id = readString(data.episodeId) || readString(data.needId) || readString(data.need_id) || activity.id;
-        const kind = readString(data.kind) || readString(data.runtimeKind) || "runtime";
-        const parentId = readString(data.parentEpisodeId) || readString(data.parent_episode_id) || "supervisor";
-        const status = inferSwarmStatus(activity, data);
-        const reason = readString(data.reason) || readString(data.summary) || activity.summary;
-        const grants = Array.isArray(data.requiredRuntimeAccess)
-            ? data.requiredRuntimeAccess.map((item) => readString(item)).filter(Boolean)
-            : [];
-        const existing = nodes.get(id);
-        nodes.set(id, {
-            id,
-            parentId,
-            label: existing?.label || episodeKindLabels[kind] || kind || episodeKindLabels.runtime,
-            subtitle: reason || grants.slice(0, 2).join(" · ") || existing?.subtitle || "",
-            status: status === "pending" ? (existing?.status || "pending") : status,
-            depth: existing?.depth || 1,
-            eventCount: (existing?.eventCount || 0) + 1,
-            timestamp: Math.max(existing?.timestamp || 0, activity.timestamp),
-        });
-    }
-
-    const visited = new Set<string>();
-    const resolveDepth = (id: string): number => {
-        const node = nodes.get(id);
-        if (!node || !node.parentId || node.parentId === id) return 0;
-        if (visited.has(id)) return node.depth || 1;
-        visited.add(id);
-        const parentDepth = nodes.has(node.parentId) ? resolveDepth(node.parentId) : 0;
-        node.depth = Math.min(8, parentDepth + 1);
-        return node.depth;
-    };
-    for (const id of nodes.keys()) {
-        resolveDepth(id);
-    }
-    return Array.from(nodes.values()).sort((left, right) => {
-        if (left.depth !== right.depth) return left.depth - right.depth;
-        return left.timestamp - right.timestamp;
+function isWebRuntimeEpisodeActivity(activity: RuntimeStageActivity): boolean {
+    return isRuntimeEpisodeGraphActivity({
+        topic: activity.topic || ("topic" in activity.node ? String(activity.node.topic || "") : ""),
     });
 }
 
@@ -449,7 +377,13 @@ function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) 
 }
 
 function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
-    const nodes = React.useMemo(() => buildEpisodeGraph(activities), [activities]);
+    const nodes = React.useMemo(
+        () => buildRuntimeEpisodeGraph(toRuntimeEpisodeGraphActivities(activities), {
+            rootLabel: "Supervisor",
+            kindLabels: episodeKindLabels,
+        }),
+        [activities],
+    );
     const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
     const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
     const statusClass: Record<SwarmNodeStatus, string> = {
@@ -817,7 +751,8 @@ export function RuntimeTimelinePanel({
     const activities = runtimeId
         ? model.activities.filter((activity) => activity.runtimeId === runtimeId)
         : [];
-    const episodeActivities = activities.filter(isEpisodeActivity);
+    const episodeActivities = activities.filter(isWebRuntimeEpisodeActivity);
+    const isSubagentRuntime = runtimeId === "subagent_swarm";
     return (
         <AnimatePresence>
             {isOpen && (
@@ -901,40 +836,34 @@ export function RuntimeTimelinePanel({
                                     />
                                 )}
 
-                                {runtimeId !== "subagent_swarm" && activities.length > 0 && (
+                                {!isSubagentRuntime && activities.length > 0 && (
                                     <div className={cn("hidden md:block", (contextGovernance || (contextGovernanceHistory || []).length > 0) ? "mt-4" : "")}>
                                         <BroadcastRail activities={activities.slice(0, 8)} />
                                     </div>
                                 )}
 
                                 <div className={cn("space-y-3", activities.length > 0 ? "md:mt-4" : "")}>
-                                    {runtimeId === "subagent_swarm" ? (
+                                    {isSubagentRuntime ? (
                                         <SwarmNodeBoard activities={activities} />
                                     ) : activities.length > 0 ? (
                                         <>
                                             {episodeActivities.length > 0 && <RuntimeEpisodeBoard activities={episodeActivities} />}
                                             {activities.map((activity, index) => {
-                                                const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane" || runtimeId === "engineering_lane";
+                                                const shouldGroup = runtimeId === "planner_lane" || runtimeId === "engineering_lane";
                                                 const currentGroupId = !shouldGroup
                                                     ? ""
-                                                    : runtimeId === "subagent_swarm"
-                                                        ? getSwarmTaskBriefId(activity)
-                                                        : runtimeId === "planner_lane"
+                                                    : runtimeId === "planner_lane"
                                                             ? getPlannerPlanId(activity)
                                                             : getEngineeringGroupId(activity);
                                                 const previousGroupId = !shouldGroup
                                                     ? ""
-                                                    : runtimeId === "subagent_swarm"
-                                                        ? getSwarmTaskBriefId(activities[index - 1])
-                                                        : runtimeId === "planner_lane"
+                                                    : runtimeId === "planner_lane"
                                                             ? getPlannerPlanId(activities[index - 1])
                                                             : getEngineeringGroupId(activities[index - 1]);
                                                 const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
                                                 const taskLabel = !showTaskHeader
                                                     ? null
-                                                    : runtimeId === "subagent_swarm"
-                                                        ? getSwarmTaskLabel(activity)
-                                                        : runtimeId === "planner_lane"
+                                                    : runtimeId === "planner_lane"
                                                             ? getPlannerPlanLabel(activity)
                                                             : getEngineeringLabel(activity);
                                                 return (

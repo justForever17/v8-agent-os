@@ -27,6 +27,7 @@ class AgentState(TypedDict):
     delegation_contexts: Annotated[list, operator.add]
     parallel_results: Annotated[list, operator.add]
     parallel_invocations: Annotated[list, operator.add]
+    pending_child_delegations: Annotated[list, operator.add]
     current_route_context: dict
     transport: NotRequired[str]
     planner_plan: NotRequired[dict]

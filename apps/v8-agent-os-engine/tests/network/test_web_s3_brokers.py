@@ -171,7 +171,19 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["code"], "missing_destination_path")
 
     def test_run_system_command_auto_starts_session_preferred_commands(self):
-        payload = json.loads(run_system_command.func(command="npm run dev", mode="auto"))
+        with patch(
+            "core.native_tools._launch_background_command",
+            return_value={
+                "commandId": "cmd-dev-1",
+                "sessionId": "cmd-dev-1",
+                "runId": "run-dev-1",
+                "interactive": False,
+                "profile": "shell",
+                "status": {"is_running": True, "awaiting_input": False},
+                "initialOutput": "",
+            },
+        ):
+            payload = json.loads(run_system_command.func(command="npm run dev", mode="auto"))
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["kind"], "command_session")
         self.assertEqual(payload["mode"], "session")

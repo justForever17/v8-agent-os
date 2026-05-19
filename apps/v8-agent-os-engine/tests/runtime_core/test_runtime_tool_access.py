@@ -142,6 +142,25 @@ def test_runtime_broker_grant_does_not_repeat_catalog_by_default():
     assert payload["availableGroups"] == []
 
 
+def test_runtime_broker_route_creates_episode_and_grants_access():
+    command = runtime_broker.func(
+        mode="route",
+        need={"kind": "research", "source": "supervisor", "reason": "need multi-source evidence"},
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-route",
+    )
+    payload = _tool_message_payload(command)
+    updated_context = command.update["current_route_context"]
+
+    assert payload["mode"] == "route"
+    assert payload["episode"]["kind"] == "research"
+    assert payload["episode"]["state"] == "queued"
+    assert payload["episode"]["continuationTarget"] == "runtime_episode_runner"
+    assert runtime_access_from_route_context(updated_context) == ["research.core"]
+    assert updated_context["capabilityEpisodes"][-1]["kind"] == "research"
+    assert updated_context["capabilityEpisodes"][-1]["state"] == "queued"
+
+
 def test_windows_shell_syntax_violation_blocks_posix_mkdir(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
 

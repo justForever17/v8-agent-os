@@ -4,14 +4,104 @@ from langgraph.types import Command
 
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.delegation_broker import expand_delegation_task_briefs
+from core.runtime_episodes import (
+    build_runtime_episode,
+    emit_runtime_episode_event,
+    enqueue_runtime_episode,
+    transition_runtime_episode,
+    upsert_runtime_episode,
+)
 from erc.runtime_stability import runtime_stability_service
 from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
 
 
 def build_planner_auto_dispatch_node():
+    def _matching_task_briefs(plan: dict, item: dict) -> list[dict]:
+        briefs = [dict(brief) for brief in list(plan.get("taskBriefs") or []) if isinstance(brief, dict)]
+        task_brief_id = str(item.get("taskBriefId") or "").strip()
+        if task_brief_id:
+            matched = [
+                brief
+                for brief in briefs
+                if str(brief.get("id") or brief.get("taskBriefId") or brief.get("title") or "").strip() == task_brief_id
+            ]
+            if matched:
+                return matched
+        kind = str(item.get("kind") or "").strip()
+        if kind == "delegation":
+            return briefs
+        return briefs[:1] if briefs else []
+
+    def _with_capability_episodes(route_context: dict, plan: dict, *, enqueue: bool = False) -> dict:
+        updated = dict(route_context or {})
+        for item in list(plan.get("capabilityPlan") or []):
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").strip()
+            if not kind:
+                continue
+            state = str(item.get("state") or ("queued" if enqueue else "detected"))
+            matching_briefs = _matching_task_briefs(plan, item)
+            need_payload = {**item, "source": item.get("source") or "planner"}
+            inputs = dict(need_payload.get("inputs") or {})
+            if matching_briefs:
+                inputs.setdefault("taskBriefs", matching_briefs)
+                if kind == "delegation":
+                    inputs.setdefault("workerBriefs", matching_briefs)
+                    inputs.setdefault("targetCount", len(matching_briefs))
+            if inputs:
+                need_payload["inputs"] = inputs
+            episode = build_runtime_episode(
+                need=need_payload,
+                kind=kind,
+                state=state,
+                required_runtime_access=list(item.get("requiredRuntimeAccess") or []),
+                continuation_target=str(item.get("continuationTarget") or "planner_auto_dispatch"),
+                extra={"taskBriefId": str(item.get("taskBriefId") or "")},
+            )
+            item["episodeId"] = episode.get("episodeId")
+            item["needId"] = episode.get("needId")
+            before_ids = {
+                str(existing_item.get("episodeId") or existing_item.get("needId") or "")
+                for existing_item in list(updated.get("capabilityEpisodes") or [])
+                if isinstance(existing_item, dict)
+            }
+            updated = upsert_runtime_episode(updated, episode)
+            if str(episode.get("episodeId") or "") not in before_ids:
+                emit_runtime_episode_event("capability.need.detected", {"episode": episode})
+            if enqueue:
+                persisted = enqueue_runtime_episode(episode, priority=int(item.get("priority") or 0))
+                updated = upsert_runtime_episode(updated, {**episode, "state": persisted.get("state") or "queued"})
+                emit_runtime_episode_event("runtime.episode.queued", {"episode": {**episode, "state": "queued"}})
+        return updated
+
+    def _mark_plan_episodes(route_context: dict, plan: dict, *, state: str, reason: str | None = None) -> dict:
+        updated = dict(route_context or {})
+        for item in list(plan.get("capabilityPlan") or []):
+            if not isinstance(item, dict):
+                continue
+            episode_id = str(item.get("episodeId") or item.get("needId") or "").strip()
+            if not episode_id:
+                continue
+            updated, episode = transition_runtime_episode(
+                updated,
+                episode_id,
+                state=state,
+                **({"statusReason": reason} if reason else {}),
+            )
+            if episode:
+                topic = {
+                    "active": "runtime.episode.started",
+                    "waiting": "runtime.episode.waiting",
+                    "failed": "runtime.episode.failed",
+                    "completed": "runtime.episode.completed",
+                }.get(state, "runtime.episode.progress")
+                emit_runtime_episode_event(topic, {"episode": episode})
+        return updated
+
     def planner_auto_dispatch_node(state):
         plan = dict((state or {}).get("planner_plan") or {})
-        route_context = dict((state or {}).get("current_route_context") or {})
+        route_context = _with_capability_episodes(dict((state or {}).get("current_route_context") or {}), plan)
         engineering_trigger = dict(route_context.get("engineeringTriggerDecision") or {})
         if route_context.get("explicitEngineeringRequested") and engineering_trigger.get("reason") == "engineering_lane_disabled":
             return Command(
@@ -24,6 +114,7 @@ def build_planner_auto_dispatch_node():
                         "reason": "engineering_runtime_disabled",
                         "blockedReason": "engineering_runtime_disabled",
                     },
+                    "current_route_context": route_context,
                     "messages": [
                         HumanMessage(
                             content=(
@@ -49,7 +140,14 @@ def build_planner_auto_dispatch_node():
                     **({"blockedReason": reason} if blocked else {}),
                 }
             }
+            update["current_route_context"] = route_context
             if blocked:
+                update["current_route_context"] = _mark_plan_episodes(
+                    route_context,
+                    plan,
+                    state="failed",
+                    reason=reason,
+                )
                 update["messages"] = [
                     HumanMessage(
                         content=(
@@ -64,43 +162,32 @@ def build_planner_auto_dispatch_node():
                 update=update,
             )
         if dict((state or {}).get("planner_dispatch_status") or {}).get("dispatched"):
-            return Command(goto="supervisor", update={})
-        from core.native_tools import delegation_broker
-
-        dispatch_state = {
-            **dict(state or {}),
-            "delegationDispatchSource": "planner_auto_dispatch",
-        }
-        command = delegation_broker.func(
-            mode="dispatch",
-            tasks=list(plan.get("taskBriefs") or []),
-            state=dispatch_state,
-            tool_call_id=f"planner_auto:{str(plan.get('planId') or 'plan')}",
-        )
-        update = dict(getattr(command, "update", None) or {})
-        # Auto-dispatch is an internal orchestration step. Keep process/swarm
-        # projection inputs, but do not inject a synthetic broker ToolMessage
-        # into the supervisor narrative chain.
-        update.pop("messages", None)
-        parallel_results = [item for item in list(update.get("parallel_results") or []) if isinstance(item, dict)]
-        failed_results = [
+            return Command(goto="supervisor", update={"current_route_context": route_context})
+        route_context = _with_capability_episodes(route_context, plan, enqueue=True)
+        update = {"current_route_context": route_context}
+        queued_episodes = [
             item
-            for item in parallel_results
-            if str(item.get("status") or "").strip().lower() in {"error", "blocked", "failed"}
+            for item in list(route_context.get("capabilityEpisodes") or [])
+            if isinstance(item, dict) and str(item.get("state") or "") == "queued"
         ]
-        no_matching_target = any(str(item.get("error") or "").strip() == "no_matching_target" for item in failed_results)
-        workset_blocked = any(str(item.get("error") or "").strip() == "workset_dispatch_blocked" for item in failed_results)
-        dispatch_blocked = bool(parallel_results) and len(failed_results) == len(parallel_results) and (no_matching_target or workset_blocked)
+        dispatch_blocked = not bool(queued_episodes)
         update["planner_dispatch_status"] = {
             "mode": str(decision.get("mode") or "auto"),
             "dispatched": True,
             "blocked": dispatch_blocked,
             "reason": str(decision.get("reason") or "eligible"),
-            **({"blockedReason": "no_matching_target" if no_matching_target else "workset_dispatch_blocked"} if dispatch_blocked else {}),
+            **({"blockedReason": "no_runtime_episode_queued"} if dispatch_blocked else {}),
             "planId": plan.get("planId"),
             "macroTaskCount": len(list(plan.get("taskBriefs") or [])),
             "taskCount": len(expand_delegation_task_briefs(plan.get("taskBriefs") or [])),
+            "episodeCount": len(queued_episodes),
         }
+        update["current_route_context"] = _mark_plan_episodes(
+            dict(update.get("current_route_context") or route_context),
+            plan,
+            state="queued" if not dispatch_blocked else "failed",
+            reason="runtime_episode_queued" if not dispatch_blocked else "dispatch_blocked",
+        )
         if dispatch_blocked:
             update.setdefault("messages", []).append(
                 HumanMessage(
@@ -112,7 +199,7 @@ def build_planner_auto_dispatch_node():
                     )
                 )
             )
-        return Command(goto=getattr(command, "goto", None) or "supervisor", update=update)
+        return Command(goto="supervisor", update=update)
 
     return planner_auto_dispatch_node
 

@@ -25,6 +25,7 @@ SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS = {
 SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS = {
     "run_system_command",
     "command_session_broker",
+    "web_broker",
     "write_native_file",
     "replace_native_file",
     "edit_native_file",
@@ -143,6 +144,34 @@ def _supervisor_direct_scope_requires_engineering_route(state_mapping: dict[str,
     )
 
 
+def _supervisor_direct_scope_tool_allowed_by_runtime_episode(tool_name: str, state_mapping: dict[str, Any]) -> bool:
+    normalized_tool = str(tool_name or "").strip()
+    if normalized_tool.startswith("creative_media_"):
+        tool_kind = "creative_media"
+    elif normalized_tool.startswith("computer_use_"):
+        tool_kind = "computer_use"
+    elif normalized_tool.startswith("rpa_"):
+        tool_kind = "rpa"
+    else:
+        return False
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    active_id = str(route_context.get("activeCapabilityEpisodeId") or "").strip()
+    for raw_episode in list(route_context.get("capabilityEpisodes") or []):
+        if not isinstance(raw_episode, dict):
+            continue
+        episode_kind = str(raw_episode.get("kind") or "").strip()
+        episode_id = str(raw_episode.get("episodeId") or raw_episode.get("needId") or "").strip()
+        episode_state = str(raw_episode.get("state") or "").strip()
+        if episode_kind != tool_kind:
+            continue
+        if episode_state and episode_state not in {"detected", "routed", "active", "waiting"}:
+            continue
+        if active_id and episode_id and active_id != episode_id:
+            continue
+        return True
+    return False
+
+
 def _supervisor_direct_scope_hard_block_message(
     request: Any,
     *,
@@ -155,23 +184,27 @@ def _supervisor_direct_scope_hard_block_message(
     tool_name = str(tool_call.get("name") or "").strip()
     if not tool_name or tool_name in SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS:
         return None
-    is_gated_tool = tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_"))
+    is_gated_tool = tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_", "rpa_"))
     if not is_gated_tool:
         return None
 
     state_mapping = _state_mapping(getattr(request, "state", None))
+    if _supervisor_direct_scope_tool_allowed_by_runtime_episode(tool_name, state_mapping):
+        return None
     planner_dispatch_status = dict(state_mapping.get("planner_dispatch_status") or {})
     route_required = _supervisor_direct_scope_requires_engineering_route(state_mapping)
     tool_names = _supervisor_direct_tool_names(getattr(request, "state", None), tool_call)
     tool_step_count = len([name for name in tool_names if name])
     project_write_count = len([name for name in tool_names if name in SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS])
     hard_reasons: list[str] = []
-    if route_required and bool(planner_dispatch_status.get("blocked")):
+    if bool(planner_dispatch_status.get("blocked")):
         hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
-    if route_required and tool_step_count > 10:
-        hard_reasons.append("complex_project_tool_steps_gt_10")
-    if route_required and project_write_count > 3:
-        hard_reasons.append("complex_project_file_writes_gt_3")
+    if route_required:
+        hard_reasons.append("capability_route_required")
+    if tool_step_count > 10:
+        hard_reasons.append("supervisor_tool_steps_gt_10")
+    if project_write_count > 3:
+        hard_reasons.append("supervisor_project_file_writes_gt_3")
     if not hard_reasons:
         return None
 
@@ -185,9 +218,9 @@ def _supervisor_direct_scope_hard_block_message(
         f"Blocked direct Supervisor tool: {tool_name}\n"
         f"Reason: {raw_reasons}\n"
         "This run is classified as a complex Engineering/project task. Direct exception is not available for "
-        "mutating or long-running tools after the direct scope threshold.\n"
-        "Next step: call delegation_broker to dispatch an engineering worker/subagent, or enter the Engineering "
-        "proof/workset path before writing files, installing dependencies, building, or running long commands."
+        "mutating, research, or long-running tools.\n"
+        "Next step: call runtime_broker(mode='route') to create a Runtime episode; dispatch workers with "
+        "delegation_broker only after the route is selected."
     )
     return ToolMessage(
         content=content,
@@ -201,122 +234,25 @@ def _supervisor_direct_scope_hard_block_message(
             "toolStepCount": tool_step_count,
             "projectWriteCount": project_write_count,
             "reasons": hard_reasons,
-            "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
+            "capabilityNeed": {
+                "kind": "engineering" if route_required else "delegation",
+                "source": "supervisor_direct_gate",
+                "reason": hard_reasons[0],
+                "tool": tool_name,
+                "requiredRuntimeAccess": [],
+            },
+            "allowedNextTools": ["runtime_broker", "delegation_broker", "ask_user"],
+            "recommendedNextAction": "runtime_broker(mode='route')",
         },
     )
 
 
 def _maybe_raise_supervisor_direct_scope_gate(request: Any, *, tool_node_name: str = "") -> None:
-    node_name = str(tool_node_name or "").strip()
-    if node_name != "supervisor_tools":
-        return
-    tool_call = dict(getattr(request, "tool_call", {}) or {})
-    tool_name = str(tool_call.get("name") or "").strip()
-    if not tool_name or tool_name in SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS:
-        return
-    is_gated_tool = tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_"))
-    if not is_gated_tool:
-        return
-
-    state_mapping = _state_mapping(getattr(request, "state", None))
-    planner_dispatch_status = dict(state_mapping.get("planner_dispatch_status") or {})
-    if bool(planner_dispatch_status.get("blocked")):
-        from core.model_governance_exceptions import ModelGovernanceInterventionRequired
-        from erc.runtime_context import get_runtime_context
-
-        runtime_context = get_runtime_context()
-        run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
-        operation_fingerprint = _supervisor_direct_scope_operation_fingerprint(run_id)
-        if _supervisor_direct_scope_approved(run_id, operation_fingerprint):
-            return
-        payload = {
-            "riskCode": "planner_auto_dispatch_blocked_direct_tool",
-            "summary": "Planner 自动派发没有可用工程执行目标或被写集治理阻断，Supervisor 不能继续 direct 执行高影响工具。",
-            "blockedTool": tool_name,
-            "dispatchStatus": planner_dispatch_status,
-            "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
-            "recommendedNextAction": "配置工程 subagent/external worker，修复 writeSet，或让 Supervisor 改走 delegation/Engineering 路径。",
-            "operationFingerprint": operation_fingerprint,
-            "operationTargetFingerprint": operation_fingerprint,
-        }
-        raise ModelGovernanceInterventionRequired(
-            "Planner auto-dispatch blocked direct tool execution.",
-            approval_kind="supervisor_direct_scope_exception",
-            question=(
-                "Planner 自动派发没有找到可用工程执行目标，当前 Supervisor 想继续直接执行高影响工具。"
-                "是否允许本轮继续 direct exception？"
-            ),
-            details=payload,
-            request_payload={
-                **payload,
-                "approvalKind": "supervisor_direct_scope_exception",
-                "interactionKind": "approval",
-                "eventSummary": {
-                    "actionFamily": "runtime_governance",
-                    "operation": "planner_auto_dispatch_blocked_direct_tool",
-                    "target": tool_name,
-                    "riskCode": "planner_auto_dispatch_blocked_direct_tool",
-                    "verdict": "review",
-                    "reason": payload["summary"],
-                    "nextAction": payload["recommendedNextAction"],
-                },
-            },
-        )
-
-    tool_names = _supervisor_direct_tool_names(getattr(request, "state", None), tool_call)
-    tool_step_count = len([name for name in tool_names if name])
-    project_write_count = len([name for name in tool_names if name in SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS])
-    exceeded_reasons: list[str] = []
-    if tool_step_count > 10:
-        exceeded_reasons.append("tool_steps_gt_10")
-    if project_write_count > 3:
-        exceeded_reasons.append("project_file_writes_gt_3")
-    if not exceeded_reasons:
-        return
-
-    from core.model_governance_exceptions import ModelGovernanceInterventionRequired
-    from erc.runtime_context import get_runtime_context
-
-    runtime_context = get_runtime_context()
-    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
-    operation_fingerprint = _supervisor_direct_scope_operation_fingerprint(run_id)
-    if _supervisor_direct_scope_approved(run_id, operation_fingerprint):
-        return
-    payload = {
-        "riskCode": "supervisor_direct_scope_blocked",
-        "summary": "Supervisor direct 执行已进入硬门禁；复杂任务后续可变更/长耗时工具必须先进入 delegation、Engineering discipline 或用户批准 direct exception。",
-        "blockedTool": tool_name,
-        "toolStepCount": tool_step_count,
-        "projectWriteCount": project_write_count,
-        "reasons": exceeded_reasons,
-        "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
-        "recommendedNextAction": "调用 delegation_broker 派发 engineering family/external worker，或请求用户批准继续 direct exception。",
-        "operationFingerprint": operation_fingerprint,
-        "operationTargetFingerprint": operation_fingerprint,
-    }
-    raise ModelGovernanceInterventionRequired(
-        "Supervisor direct scope gate requires routing or explicit approval.",
-        approval_kind="supervisor_direct_scope_exception",
-        question=(
-            "Supervisor 已超过小任务 direct 执行阈值，当前想继续直接执行高影响工具。"
-            "是否允许本轮继续 direct exception？也可以拒绝后让它改走 Engineering/delegation。"
-        ),
-        details=payload,
-        request_payload={
-            **payload,
-            "approvalKind": "supervisor_direct_scope_exception",
-            "interactionKind": "approval",
-            "eventSummary": {
-                "actionFamily": "runtime_governance",
-                "operation": "supervisor_direct_scope_exception",
-                "target": tool_name,
-                "riskCode": "supervisor_direct_scope_blocked",
-                "verdict": "review",
-                "reason": payload["summary"],
-                "nextAction": payload["recommendedNextAction"],
-            },
-        },
-    )
+    # Runtime routing is not an approval surface. Older builds raised a
+    # `supervisor_direct_scope_exception` review here, which let the Supervisor
+    # keep doing complex project work directly. The hard-block ToolMessage above
+    # now returns the route-required next action instead.
+    return
 
 
 def _tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, Any]:

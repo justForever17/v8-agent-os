@@ -120,6 +120,10 @@ def _get_network_supervisor_service():
     return _import_module("runtimes.network_supervisor.service").network_supervisor_service
 
 
+def _get_runtime_episode_runner():
+    return _import_module("core.runtime_episode_runner").runtime_episode_runner
+
+
 def _ensure_network_supervisor_runtime_registered() -> None:
     _import_module("runtimes.network_supervisor.runtime")
 
@@ -354,10 +358,12 @@ async def lifespan(app: FastAPI):
     if service_flags["network_supervisor"]:
         _ensure_network_supervisor_runtime_registered()
         await _get_network_supervisor_service().start()
+    await _get_runtime_episode_runner().start()
     
     yield
     # Shutdown logic
     print("[Engine] Shutting down V8 Agent OS Engine...")
+    await _get_runtime_episode_runner().stop()
     if service_flags["cron"]:
         _get_cron_manager().shutdown()
     if service_flags["network_supervisor"]:

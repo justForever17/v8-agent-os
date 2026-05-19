@@ -176,6 +176,81 @@ function getEngineeringLabel(activity: PhoneRuntimeStageActivity): { title: stri
     };
 }
 
+function isEpisodeActivity(activity: PhoneRuntimeStageActivity): boolean {
+    const topic = String(activity.topic || ("topic" in activity.node ? activity.node.topic : "") || "").trim();
+    return topic.startsWith("capability.need.") || topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.");
+}
+
+function getEpisodePayload(activity: PhoneRuntimeStageActivity): Record<string, unknown> {
+    const data = readExecutionData(activity);
+    const episode = readRecord(data.episode);
+    return Object.keys(episode).length > 0 ? episode : data;
+}
+
+function getEpisodeKindLabel(kind: string, labels: Record<string, string>): string {
+    return labels[kind] || kind || labels.runtime;
+}
+
+function buildEpisodeGraph(
+    activities: PhoneRuntimeStageActivity[],
+    rootLabel: string,
+    kindLabels: Record<string, string>,
+): SwarmGraphNode[] {
+    const nodes = new Map<string, SwarmGraphNode>();
+    nodes.set("supervisor", {
+        id: "supervisor",
+        parentId: null,
+        label: rootLabel,
+        subtitle: "router",
+        status: "active",
+        depth: 0,
+        eventCount: 0,
+        timestamp: 0,
+    });
+
+    for (const activity of [...activities].reverse()) {
+        if (!isEpisodeActivity(activity)) continue;
+        const data = getEpisodePayload(activity);
+        const id = readString(data.episodeId) || readString(data.needId) || readString(data.need_id) || activity.id;
+        const kind = readString(data.kind) || readString(data.runtimeKind) || "runtime";
+        const parentId = readString(data.parentEpisodeId) || readString(data.parent_episode_id) || "supervisor";
+        const status = inferSwarmStatus(activity, data);
+        const reason = readString(data.reason) || readString(data.summary) || activity.summary;
+        const grants = Array.isArray(data.requiredRuntimeAccess)
+            ? data.requiredRuntimeAccess.map((item) => readString(item)).filter(Boolean)
+            : [];
+        const existing = nodes.get(id);
+        nodes.set(id, {
+            id,
+            parentId,
+            label: existing?.label || getEpisodeKindLabel(kind, kindLabels),
+            subtitle: reason || grants.slice(0, 2).join(" · ") || existing?.subtitle || "",
+            status: status === "pending" ? (existing?.status || "pending") : status,
+            depth: existing?.depth || 1,
+            eventCount: (existing?.eventCount || 0) + 1,
+            timestamp: Math.max(existing?.timestamp || 0, activity.timestamp),
+        });
+    }
+
+    const visited = new Set<string>();
+    const resolveDepth = (id: string): number => {
+        const node = nodes.get(id);
+        if (!node || !node.parentId || node.parentId === id) return 0;
+        if (visited.has(id)) return node.depth || 1;
+        visited.add(id);
+        const parentDepth = nodes.has(node.parentId) ? resolveDepth(node.parentId) : 0;
+        node.depth = Math.min(8, parentDepth + 1);
+        return node.depth;
+    };
+    for (const id of nodes.keys()) {
+        resolveDepth(id);
+    }
+    return Array.from(nodes.values()).sort((left, right) => {
+        if (left.depth !== right.depth) return left.depth - right.depth;
+        return left.timestamp - right.timestamp;
+    });
+}
+
 type SwarmNodeStatus = "active" | "completed" | "failed" | "pending";
 
 type SwarmGraphNode = {
@@ -327,6 +402,96 @@ function SwarmNodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[
         <View style={styles.swarmBoard}>
             <Text style={[styles.swarmBoardTitle, { color: colors.text }]}>
                 {t("src.components.chat.runtimetimelinepanel.swarm_topology")}
+            </Text>
+            <View style={styles.swarmTree}>
+                {visibleNodes.map((node) => {
+                    const isRoot = node.id === "supervisor";
+                    const activeLine = Boolean(node.parentId && activeIds.has(node.id));
+                    const lineColor = activeLine ? colors.accent : (dark ? "rgba(255,255,255,0.14)" : "rgba(148,163,184,0.34)");
+                    const dotColor = node.status === "failed"
+                        ? colors.danger
+                        : node.status === "completed"
+                            ? colors.success
+                            : node.status === "active"
+                                ? colors.accent
+                                : colors.textMuted;
+                    return (
+                        <View key={node.id} style={styles.swarmNodeRow}>
+                            <View style={{ width: Math.min(node.depth, 6) * 20 }} />
+                            {!isRoot ? (
+                                <View style={styles.swarmConnectorWrap}>
+                                    <View style={[styles.swarmConnectorHorizontal, { backgroundColor: lineColor }]} />
+                                </View>
+                            ) : null}
+                            <View
+                                style={[
+                                    styles.swarmDot,
+                                    {
+                                        backgroundColor: dotColor,
+                                        shadowColor: dotColor,
+                                        shadowOpacity: node.status === "active" ? 0.42 : 0,
+                                    },
+                                ]}
+                            />
+                            <View style={styles.swarmNodeBody}>
+                                <View style={styles.swarmNodeTitleRow}>
+                                    <Text style={[styles.swarmNodeTitle, { color: colors.text }]} numberOfLines={1}>
+                                        {node.label}
+                                    </Text>
+                                    <Text style={[styles.swarmNodeStatus, { color: dotColor }]} numberOfLines={1}>
+                                        {statusLabels[node.status]}
+                                    </Text>
+                                </View>
+                                {node.subtitle ? (
+                                    <Text style={[styles.swarmNodeSubtitle, { color: colors.textMuted }]} numberOfLines={2}>
+                                        {node.subtitle}
+                                    </Text>
+                                ) : null}
+                            </View>
+                        </View>
+                    );
+                })}
+            </View>
+        </View>
+    );
+}
+
+function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
+    const { colors, t, themeMode } = useUiPrefs();
+    const kindLabels = useMemo(
+        () => ({
+            runtime: t("src.components.chat.runtimetimelinepanel.episode_runtime"),
+            engineering: t("src.components.chat.runtimetimelinepanel.episode_engineering"),
+            research: t("src.components.chat.runtimetimelinepanel.episode_research"),
+            creative_media: t("src.components.chat.runtimetimelinepanel.episode_creative_media"),
+            computer_use: t("src.components.chat.runtimetimelinepanel.episode_computer_use"),
+            rpa: t("src.components.chat.runtimetimelinepanel.episode_rpa"),
+            delegation: t("src.components.chat.runtimetimelinepanel.episode_delegation"),
+        }),
+        [t],
+    );
+    const nodes = useMemo(
+        () => buildEpisodeGraph(activities, t("src.components.chat.runtimetimelinepanel.swarm_supervisor"), kindLabels),
+        [activities, kindLabels, t],
+    );
+    const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
+    const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
+    const dark = themeMode === "dark";
+    const statusLabels: Record<SwarmNodeStatus, string> = {
+        active: t("src.components.chat.runtimetimelinepanel.swarm_status_active"),
+        completed: t("src.components.chat.runtimetimelinepanel.swarm_status_completed"),
+        failed: t("src.components.chat.runtimetimelinepanel.swarm_status_failed"),
+        pending: t("src.components.chat.runtimetimelinepanel.swarm_status_pending"),
+    };
+
+    if (visibleNodes.length <= 1) {
+        return null;
+    }
+
+    return (
+        <View style={styles.swarmBoard}>
+            <Text style={[styles.swarmBoardTitle, { color: colors.text }]}>
+                {t("src.components.chat.runtimetimelinepanel.episode_topology")}
             </Text>
             <View style={styles.swarmTree}>
                 {visibleNodes.map((node) => {
@@ -601,6 +766,10 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                 return true;
             });
     }, [activities, effectiveSelectedRuntimeId]);
+    const episodeActivities = useMemo(
+        () => visibleActivities.filter(isEpisodeActivity),
+        [visibleActivities],
+    );
     const runtimeListKey = useMemo(
         () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}`,
         [effectiveSelectedRuntimeId, visible],
@@ -882,7 +1051,12 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                         resetScrollTop();
                                     }
                                 }}
-                                ListHeaderComponent={visibleActivities.length > 0 ? <BroadcastRail activities={visibleActivities} /> : undefined}
+                                ListHeaderComponent={visibleActivities.length > 0 ? (
+                                    <>
+                                        {episodeActivities.length > 0 ? <RuntimeEpisodeBoard activities={episodeActivities} /> : null}
+                                        <BroadcastRail activities={visibleActivities} />
+                                    </>
+                                ) : undefined}
                                 ListEmptyComponent={renderEmptyState}
                             />
                         )}

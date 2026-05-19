@@ -1,9 +1,8 @@
 import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData
 from graph.workflow_assembly import build_planner_auto_dispatch_node
+from graph.parallel_support import build_parallel_delegate_join_node
 from runtimes.chat.runtime import ChatRuntime
 
 
@@ -15,7 +14,7 @@ class ChatPlannerModeTests(unittest.TestCase):
             data=ChatRequestData(taskPlanningMode=True),
         )
 
-        _, task_planning_mode, planner_mode, planner_dispatch_mode, diagnostics, _, _ = runtime._resolve_request_context(request)
+        _, task_planning_mode, planner_mode, planner_dispatch_mode, diagnostics, *_ = runtime._resolve_request_context(request)
 
         self.assertTrue(task_planning_mode)
         self.assertEqual(planner_mode, "force")
@@ -29,7 +28,7 @@ class ChatPlannerModeTests(unittest.TestCase):
             data=ChatRequestData(plannerMode="auto"),
         )
 
-        _, task_planning_mode, planner_mode, planner_dispatch_mode, diagnostics, _, _ = runtime._resolve_request_context(request)
+        _, task_planning_mode, planner_mode, planner_dispatch_mode, diagnostics, *_ = runtime._resolve_request_context(request)
 
         self.assertEqual(planner_mode, "auto")
         self.assertEqual(planner_dispatch_mode, "suggest")
@@ -43,7 +42,7 @@ class ChatPlannerModeTests(unittest.TestCase):
             data=ChatRequestData(taskPlanningMode=True, plannerMode="off"),
         )
 
-        _, task_planning_mode, planner_mode, planner_dispatch_mode, _, _, _ = runtime._resolve_request_context(request)
+        _, task_planning_mode, planner_mode, planner_dispatch_mode, *_ = runtime._resolve_request_context(request)
 
         self.assertEqual(planner_mode, "off")
         self.assertEqual(planner_dispatch_mode, "suggest")
@@ -56,7 +55,7 @@ class ChatPlannerModeTests(unittest.TestCase):
             data=ChatRequestData(plannerMode="force", plannerDispatchMode="auto"),
         )
 
-        _, task_planning_mode, planner_mode, planner_dispatch_mode, _, _, _ = runtime._resolve_request_context(request)
+        _, task_planning_mode, planner_mode, planner_dispatch_mode, *_ = runtime._resolve_request_context(request)
 
         self.assertTrue(task_planning_mode)
         self.assertEqual(planner_mode, "force")
@@ -321,35 +320,125 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertFalse(decision["willDispatch"])
         self.assertEqual(decision["reason"], "no_matching_target")
 
-    def test_planner_auto_dispatch_node_strips_internal_tool_message(self):
+    def test_planner_auto_dispatch_node_enqueues_episode_without_tool_message(self):
         node = build_planner_auto_dispatch_node()
-        with patch(
-            "core.native_tools.delegation_broker.func",
-            return_value=SimpleNamespace(
-                goto="supervisor",
-                update={
-                    "messages": ["internal broker tool result"],
-                    "parallel_results": [{"delegationId": "subagent::demo"}],
-                },
-            ),
-        ):
-            command = node(
-                {
-                    "planner_plan": {
-                        "planId": "plan-1",
-                        "taskBriefs": [{"taskBriefId": "task-1", "goal": "Do work"}],
-                        "autoDispatchDecision": {
-                            "mode": "auto",
-                            "willDispatch": True,
-                            "reason": "eligible",
-                        },
-                    }
+        command = node(
+            {
+                "planner_plan": {
+                    "planId": "plan-1",
+                    "capabilityPlan": [
+                        {
+                            "kind": "engineering",
+                            "source": "planner",
+                            "reason": "implementation_required",
+                            "taskBriefId": "task-1",
+                        }
+                    ],
+                    "taskBriefs": [{"taskBriefId": "task-1", "goal": "Do work"}],
+                    "autoDispatchDecision": {
+                        "mode": "auto",
+                        "willDispatch": True,
+                        "reason": "eligible",
+                    },
                 }
-            )
+            }
+        )
 
         self.assertNotIn("messages", command.update)
-        self.assertEqual(command.update["parallel_results"][0]["delegationId"], "subagent::demo")
+        self.assertNotIn("parallel_results", command.update)
         self.assertTrue(command.update["planner_dispatch_status"]["dispatched"])
+        self.assertEqual(command.update["planner_dispatch_status"]["episodeCount"], 1)
+        episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+        self.assertEqual(episode["kind"], "engineering")
+        self.assertEqual(episode["state"], "queued")
+
+    def test_parallel_join_routes_pending_child_delegations_from_top_level(self):
+        join_node = build_parallel_delegate_join_node()
+        child_state = {
+            "messages": [],
+            "parallel_branch": {
+                "invocationId": "delegation_child",
+                "branchIndex": 0,
+                "agentId": "child-agent",
+                "agentName": "Child Agent",
+                "reason": "Review one isolated file",
+                "taskBriefId": "task-child",
+                "delegationId": "subagent::child",
+                "parentDelegationId": "subagent::parent",
+                "delegationDepth": 2,
+                "lane": "subagent",
+            },
+        }
+
+        command = join_node(
+            {
+                "parallel_invocations": [{"invocationId": "delegation_parent", "expected": 1}],
+                "parallel_results": [
+                    {
+                        "invocationId": "delegation_parent",
+                        "status": "waiting_child_delegation",
+                        "childDelegationRequestIds": ["child_req"],
+                    }
+                ],
+                "pending_child_delegations": [
+                    {
+                        "requestId": "child_req",
+                        "sourceInvocationId": "delegation_parent",
+                        "sourceDelegationId": "subagent::parent",
+                        "send": {"node": "parallel_delegate_task", "arg": child_state},
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(command.goto, "supervisor")
+        self.assertIn("child_req", command.update["routed_child_delegation_request_ids"])
+        self.assertNotIn("parallel_invocations", command.update)
+        self.assertNotIn("messages", command.update)
+        route_context = command.update["current_route_context"]
+        child_episode = route_context["capabilityEpisodes"][-1]
+        self.assertEqual(child_episode["kind"], "delegation")
+        self.assertEqual(child_episode["state"], "queued")
+        self.assertEqual(child_episode["parentEpisodeId"], "subagent::parent")
+        self.assertEqual(route_context["lastChildDelegationRouted"]["childEpisodeIds"], [child_episode["episodeId"]])
+
+    def test_parallel_join_creates_handoff_ref_for_completed_subagent(self):
+        join_node = build_parallel_delegate_join_node()
+
+        command = join_node(
+            {
+                "parallel_invocations": [{"invocationId": "delegation_parent", "expected": 1}],
+                "current_route_context": {
+                    "activeCapabilityEpisodeId": "subagent::child",
+                    "capabilityEpisodes": [
+                        {
+                            "episodeId": "subagent::child",
+                            "needId": "subagent::child",
+                            "kind": "delegation",
+                            "state": "waiting",
+                        }
+                    ]
+                },
+                "parallel_results": [
+                    {
+                        "invocationId": "delegation_parent",
+                        "delegationId": "subagent::child",
+                        "status": "ok",
+                        "taskBriefId": "task-child",
+                        "agentId": "child-agent",
+                        "compactTranscript": "Reviewed the isolated file and found no blocking issues.",
+                    }
+                ],
+            }
+        )
+
+        route_context = command.update["current_route_context"]
+        self.assertEqual(command.goto, "supervisor")
+        self.assertEqual(route_context["handoffRefs"][0]["producerEpisodeId"], "subagent::child")
+        self.assertIn("Reviewed the isolated file", route_context["handoffRefs"][0]["compactSummary"])
+        self.assertEqual(route_context["capabilityEpisodes"][0]["state"], "completed")
+        self.assertNotIn("activeCapabilityEpisodeId", route_context)
+        self.assertEqual(route_context["lastDelegationHandoff"]["handoffRefs"], [route_context["handoffRefs"][0]["handoffRefId"]])
 
 
 if __name__ == "__main__":

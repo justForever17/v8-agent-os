@@ -8,11 +8,31 @@ from typing import Any, Callable
 INITIAL_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
 ACTIVE_MODEL_STREAM_IDLE_TIMEOUT_SECONDS = 45.0
 ACTIVE_TOOL_STREAM_IDLE_TIMEOUT_SECONDS = 360.0
+ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS = 900.0
 _IGNORED_CHAIN_START_NAMES = {"LangGraph", "__start__", "supervisor_tools"}
+_LONG_RUNNING_CHAIN_NAMES = {
+    "planner_auto_dispatch",
+    "parallel_delegate_task",
+    "parallel_delegate_join",
+    "capability_router",
+    "runtime_episode",
+}
+
+
+def _event_scope_id(event: dict[str, Any], name: str) -> str:
+    run_id = str(event.get("run_id") or event.get("runId") or "").strip()
+    if run_id:
+        return run_id
+    return name
 
 
 class GraphStreamIdleTimeoutError(TimeoutError):
     def __init__(self, *, run_id: str, session_id: str, idle_seconds: float, phase: str, last_event: str | None) -> None:
+        self.run_id = run_id
+        self.session_id = session_id
+        self.idle_seconds = idle_seconds
+        self.phase = phase
+        self.last_event = last_event
         last_event_hint = f", last_event={last_event}" if last_event else ""
         super().__init__(
             "Supervisor event stream timeout after "
@@ -42,12 +62,15 @@ class GraphStreamDownstreamTimeoutError(TimeoutError):
 @dataclass(slots=True)
 class GraphStreamWatchdogState:
     active_tool_call_ids: set[str] = field(default_factory=set)
+    active_runtime_episode_ids: set[str] = field(default_factory=set)
     has_productive_stream_activity: bool = False
     last_observed_event: str | None = None
 
     def idle_phase(self) -> str:
         if self.active_tool_call_ids:
             return "tool_wait"
+        if self.active_runtime_episode_ids:
+            return "runtime_episode_wait"
         if self.has_productive_stream_activity:
             return "stream_progress"
         return "stream_start"
@@ -55,6 +78,8 @@ class GraphStreamWatchdogState:
     def idle_timeout_seconds(self) -> float:
         if self.active_tool_call_ids:
             return ACTIVE_TOOL_STREAM_IDLE_TIMEOUT_SECONDS
+        if self.active_runtime_episode_ids:
+            return ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS
         if self.has_productive_stream_activity:
             return ACTIVE_MODEL_STREAM_IDLE_TIMEOUT_SECONDS
         return INITIAL_STREAM_IDLE_TIMEOUT_SECONDS
@@ -63,10 +88,17 @@ class GraphStreamWatchdogState:
         kind = str(event.get("event") or "").strip()
         name = str(event.get("name") or "").strip()
         self.last_observed_event = f"{kind}:{name}" if name else kind or None
+        if kind == "on_chain_start" and name in _LONG_RUNNING_CHAIN_NAMES:
+            self.has_productive_stream_activity = True
+            self.active_runtime_episode_ids.add(_event_scope_id(event, name))
 
     def finish_event(self, event: dict[str, Any]) -> None:
         kind = str(event.get("event") or "").strip()
         name = str(event.get("name") or "").strip()
+        if kind in {"on_chain_end", "on_chain_error"} and name in _LONG_RUNNING_CHAIN_NAMES:
+            self.has_productive_stream_activity = True
+            self.active_runtime_episode_ids.discard(_event_scope_id(event, name))
+            return
         if kind == "on_tool_end":
             if not self.active_tool_call_ids:
                 self.has_productive_stream_activity = False
@@ -149,6 +181,8 @@ async def next_graph_stream_event(
             "idleTimeoutSeconds": idle_timeout,
             "phase": phase,
             "activeToolCount": len(state.active_tool_call_ids),
+            "activeRuntimeEpisodeCount": len(state.active_runtime_episode_ids),
+            "activeRuntimeEpisodeIds": sorted(str(item) for item in state.active_runtime_episode_ids),
             "lastObservedEvent": state.last_observed_event,
         }
         if on_timeout is not None:

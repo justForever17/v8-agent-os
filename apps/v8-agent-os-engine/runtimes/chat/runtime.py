@@ -263,8 +263,10 @@ class PlannerPlanPayload(BaseModel):
     planId: str = ""
     executionStrategy: Literal["direct", "delegate", "mixed"] = "direct"
     planSummary: str = ""
+    capabilityPlan: list[dict[str, Any]] = Field(default_factory=list)
     taskGraph: list[PlannerTaskNodePayload] = Field(default_factory=list)
     taskBriefs: list[PlannerTaskBriefPayload] = Field(default_factory=list)
+    handoffPlan: list[dict[str, Any]] = Field(default_factory=list)
     globalAcceptanceContract: str = ""
     riskFlags: list[str] = Field(default_factory=list)
     codingPlannerContract: dict[str, Any] = Field(default_factory=dict)
@@ -1133,6 +1135,8 @@ class ChatRuntime:
             "- Broad product tasks may require multiple runtime lanes; model them explicitly instead of flattening them into one direct task.\n"
             "Output rules:\n"
             "- executionStrategy must be one of: direct, delegate, mixed.\n"
+            "- capabilityPlan should list runtime needs such as research, engineering, creative_media, computer_use, rpa, or delegation.\n"
+            "- handoffPlan should describe refs passed between runtime episodes, e.g. research evidence refs into engineering implementation.\n"
             "- taskBriefs must align with executionStrategy.\n"
             "- direct may still include one compact task brief for governance and verification.\n"
             "- preferredAgentId and preferredWorkerType are optional hints, not guesses.\n"
@@ -1232,6 +1236,24 @@ class ChatRuntime:
                 "planId": f"plan_{uuid.uuid4().hex[:10]}",
                 "executionStrategy": "mixed",
                 "planSummary": latest_user_content or "Research first, then implement with engineering proof discipline.",
+                "capabilityPlan": [
+                    {
+                        "kind": "research",
+                        "source": "planner_fallback",
+                        "reason": "research_required_before_implementation",
+                        "taskBriefId": "task-1",
+                        "requiredRuntimeAccess": ["research.core"],
+                        "state": "detected",
+                    },
+                    {
+                        "kind": "engineering",
+                        "source": "planner_fallback",
+                        "reason": "project_creation_or_implementation_required",
+                        "taskBriefId": "task-2",
+                        "requiredRuntimeAccess": [],
+                        "state": "detected",
+                    },
+                ],
                 "taskGraph": [
                     {
                         "taskBriefId": brief["taskBriefId"],
@@ -1242,6 +1264,14 @@ class ChatRuntime:
                     for brief in briefs
                 ],
                 "taskBriefs": briefs,
+                "handoffPlan": [
+                    {
+                        "fromTaskBriefId": "task-1",
+                        "toTaskBriefId": "task-2",
+                        "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"],
+                        "reason": "Implementation must consume source-backed research evidence.",
+                    }
+                ],
                 "globalAcceptanceContract": "Complete the user request through source-backed research, project implementation, and observable verification, or report the exact recoverable blocker.",
                 "riskFlags": ["planner_fallback_used", "mixed_research_engineering_fallback", "tentative_project_write_set"],
                 "qualityFlags": ["planner_fallback_used", "source_quality_required"],
@@ -1288,6 +1318,15 @@ class ChatRuntime:
             "planId": f"plan_{uuid.uuid4().hex[:10]}",
             "executionStrategy": execution_strategy,
             "planSummary": latest_user_content or "Plan the current request.",
+            "capabilityPlan": [
+                {
+                    "kind": "delegation",
+                    "source": "planner_fallback",
+                    "reason": "delegated_or_parallel_work_required",
+                    "taskBriefId": "task-1",
+                    "state": "detected",
+                }
+            ] if should_delegate else [],
             "taskGraph": [
                 {
                     "taskBriefId": brief["taskBriefId"],
@@ -1298,6 +1337,7 @@ class ChatRuntime:
                 for brief in briefs
             ],
             "taskBriefs": briefs,
+            "handoffPlan": [],
             "globalAcceptanceContract": "Satisfy the user request and report concrete outputs, touched files, and verification status.",
             "riskFlags": ["planner_fallback_used"] if reason else [],
             "qualityFlags": ["planner_fallback_used"] if reason else [],
@@ -1399,6 +1439,16 @@ class ChatRuntime:
                 "parallelGroup": str(item.get("parallelGroup") or "").strip(),
             }
             for index, item in enumerate(repaired_briefs)
+        ]
+        repaired["capabilityPlan"] = [
+            dict(item)
+            for item in list(repaired.get("capabilityPlan") or fallback_plan.get("capabilityPlan") or [])
+            if isinstance(item, dict)
+        ]
+        repaired["handoffPlan"] = [
+            dict(item)
+            for item in list(repaired.get("handoffPlan") or fallback_plan.get("handoffPlan") or [])
+            if isinstance(item, dict)
         ]
         repaired["globalAcceptanceContract"] = global_acceptance
         repaired["qualityFlags"] = list(dict.fromkeys(quality_flags))
@@ -1538,12 +1588,24 @@ class ChatRuntime:
         global_acceptance = str(payload.get("globalAcceptanceContract") or fallback_plan.get("globalAcceptanceContract") or "").strip()
         risk_flags = [str(item).strip() for item in list(payload.get("riskFlags") or fallback_plan.get("riskFlags") or []) if str(item).strip()]
         quality_flags = [str(item).strip() for item in list(payload.get("qualityFlags") or fallback_plan.get("qualityFlags") or []) if str(item).strip()]
+        capability_plan = [
+            dict(item)
+            for item in list(payload.get("capabilityPlan") or fallback_plan.get("capabilityPlan") or [])
+            if isinstance(item, dict)
+        ]
+        handoff_plan = [
+            dict(item)
+            for item in list(payload.get("handoffPlan") or fallback_plan.get("handoffPlan") or [])
+            if isinstance(item, dict)
+        ]
         return {
             "planId": str(payload.get("planId") or fallback_plan.get("planId") or f"plan_{uuid.uuid4().hex[:10]}").strip(),
             "executionStrategy": execution_strategy,
             "planSummary": plan_summary or str(fallback_plan.get("planSummary") or "").strip(),
+            "capabilityPlan": capability_plan,
             "taskGraph": normalized_graph,
             "taskBriefs": normalized_briefs,
+            "handoffPlan": handoff_plan,
             "globalAcceptanceContract": global_acceptance or str(fallback_plan.get("globalAcceptanceContract") or "").strip(),
             "riskFlags": risk_flags,
             "codingPlannerContract": payload.get("codingPlannerContract") if isinstance(payload.get("codingPlannerContract"), dict) else dict(fallback_plan.get("codingPlannerContract") or {}),
@@ -3355,12 +3417,12 @@ class ChatRuntime:
             "supervisor.direct_scope.exceeded",
             {
                 "riskCode": "supervisor_direct_scope_exceeded",
-                "summary": "Supervisor direct 执行已超过小任务阈值，应转入 Engineering/delegation 或明确说明继续 direct 的理由。",
+                "summary": "Supervisor direct 执行已超过小任务阈值，应转入对应 Runtime episode。",
                 "toolStepCount": stream_state.supervisor_tool_step_count,
                 "projectWriteCount": stream_state.supervisor_project_write_count,
                 "latestTool": normalized_tool,
                 "reasons": exceeded_reasons,
-                "recommendedNextAction": "调用 delegation_broker 派发 engineering family/external worker，或进入 Engineering proof/workset 纪律后继续。",
+                "recommendedNextAction": "调用 runtime_broker(mode='route') 创建能力 episode；需要 worker 时再调用 delegation_broker(dispatch)。",
             },
             agent_id=stream_state.current_agent,
             node="supervisor_direct_scope_guard",
@@ -3388,6 +3450,7 @@ class ChatRuntime:
         gated_tools = {
             "run_system_command",
             "command_session_broker",
+            "web_broker",
             "write_native_file",
             "replace_native_file",
             "edit_native_file",
@@ -3399,47 +3462,28 @@ class ChatRuntime:
             "computer_use_type_text",
             "computer_use_drag",
         }
-        if normalized_tool not in gated_tools and not normalized_tool.startswith(("creative_media_", "computer_use_")):
+        if normalized_tool not in gated_tools and not normalized_tool.startswith(("creative_media_", "computer_use_", "rpa_")):
             return False
-        operation_fingerprint = _supervisor_direct_scope_operation_fingerprint(chat_run.active_run_id)
+        if self._supervisor_tool_allowed_by_runtime_episode(chat_run, normalized_tool):
+            return False
         route_required = self._supervisor_direct_scope_requires_engineering_route(chat_run)
-        if (
-            not route_required
-            and self._is_supervisor_direct_scope_exception_approved(chat_run.active_run_id, operation_fingerprint)
-        ):
-            stream_state.supervisor_direct_scope_gate_active = False
-            chat_run.emit_runtime_event(
-                "supervisor.direct_scope.exception_approved",
-                {
-                    "riskCode": "supervisor_direct_scope_exception_approved",
-                    "summary": "用户已批准本轮 Supervisor direct exception，允许继续当前 direct 执行路径。",
-                    "approvedOperationFingerprint": operation_fingerprint,
-                    "latestTool": normalized_tool,
-                },
-                agent_id=stream_state.current_agent,
-                node="supervisor_direct_scope_guard",
-            )
-            return False
         payload = {
             "riskCode": "supervisor_direct_scope_blocked",
             "summary": (
-                "Supervisor direct 执行已进入硬门禁；复杂工程任务后续可变更/长耗时工具必须先进入 "
-                "delegation 或 Engineering discipline。"
+                "Supervisor direct 执行已进入硬门禁；复杂工程任务后续可变更/长耗时工具必须先进入对应 Runtime episode。"
                 if route_required
-                else "Supervisor direct 执行已进入硬门禁；后续可变更/长耗时工具必须先进入 delegation、Engineering discipline 或用户批准 direct exception。"
+                else "Supervisor direct 执行已进入硬门禁；后续可变更/长耗时工具必须先进入 Runtime/delegation 主链。"
             ),
             "blockedTool": normalized_tool,
             "toolStepCount": stream_state.supervisor_tool_step_count,
             "projectWriteCount": stream_state.supervisor_project_write_count,
-            "allowedNextTools": ["delegation_broker", "runtime_broker", "ask_user"],
-            "directExceptionAllowed": not route_required,
+            "allowedNextTools": ["runtime_broker", "delegation_broker", "ask_user"],
+            "directExceptionAllowed": False,
             "recommendedNextAction": (
-                "调用 delegation_broker 派发 engineering family/external worker，或进入 Engineering proof/workset 后继续。"
+                "调用 runtime_broker(mode='route') 创建 Engineering/Research/Creative/Computer/RPA/delegation episode。"
                 if route_required
-                else "调用 delegation_broker 派发 engineering family/external worker，或请求用户批准继续 direct exception。"
+                else "调用 runtime_broker(mode='route') 或 delegation_broker(dispatch)，不要请求 direct exception。"
             ),
-            "operationFingerprint": operation_fingerprint,
-            "operationTargetFingerprint": operation_fingerprint,
         }
         chat_run.emit_runtime_event(
             "supervisor.direct_scope.blocked",
@@ -3453,6 +3497,34 @@ class ChatRuntime:
         # diagnostics in the correct timeline without turning the whole run into
         # a generic failure.
         return True
+
+    @staticmethod
+    def _supervisor_tool_allowed_by_runtime_episode(chat_run: ChatRunContext, tool_name: str) -> bool:
+        normalized_tool = str(tool_name or "").strip()
+        if normalized_tool.startswith("creative_media_"):
+            tool_kind = "creative_media"
+        elif normalized_tool.startswith("computer_use_"):
+            tool_kind = "computer_use"
+        elif normalized_tool.startswith("rpa_"):
+            tool_kind = "rpa"
+        else:
+            return False
+        route_context = dict(chat_run.state.get("current_route_context") or chat_run.prepared.current_route_context or {})
+        active_id = str(route_context.get("activeCapabilityEpisodeId") or "").strip()
+        for raw_episode in list(route_context.get("capabilityEpisodes") or []):
+            if not isinstance(raw_episode, dict):
+                continue
+            episode_kind = str(raw_episode.get("kind") or "").strip()
+            episode_id = str(raw_episode.get("episodeId") or raw_episode.get("needId") or "").strip()
+            episode_state = str(raw_episode.get("state") or "").strip()
+            if episode_kind != tool_kind:
+                continue
+            if episode_state and episode_state not in {"detected", "routed", "active", "waiting"}:
+                continue
+            if active_id and episode_id and active_id != episode_id:
+                continue
+            return True
+        return False
 
     @staticmethod
     def _supervisor_direct_scope_requires_engineering_route(chat_run: ChatRunContext) -> bool:
@@ -3866,6 +3938,12 @@ class ChatRuntime:
             if selected_deadline_kind == "text_flush":
                 return "text_flush", None
 
+            failure_class = "episode_stalled" if phase == "runtime_episode_wait" else "stream_idle_timeout"
+            recommended_next_action = (
+                "Runtime episode 长时间没有进展；请查看 active child episode / handoff refs，必要时继续、重试或拆分该 episode。"
+                if failure_class == "episode_stalled"
+                else "模型流 45 秒没有新事件；可重试本轮、检查 provider streaming，若后台命令仍在运行请先查看 Command card。"
+            )
             payload = {
                 "idleTimeoutSeconds": idle_timeout,
                 "configuredIdleTimeoutSeconds": idle_timeout,
@@ -3874,6 +3952,8 @@ class ChatRuntime:
                 "phase": phase,
                 "activeToolCount": len(stream_state.watchdog.active_tool_call_ids),
                 "activeToolCallIds": sorted(str(item) for item in stream_state.watchdog.active_tool_call_ids),
+                "activeRuntimeEpisodeCount": len(stream_state.watchdog.active_runtime_episode_ids),
+                "activeRuntimeEpisodeIds": sorted(str(item) for item in stream_state.watchdog.active_runtime_episode_ids),
                 "activeRuntimeToolCallIds": sorted(str(item) for item in stream_state.active_tool_call_ids),
                 "lastObservedEvent": stream_state.watchdog.last_observed_event,
                 "lastGraphEventKind": stream_state.last_graph_event_kind or stream_state.watchdog.last_observed_event,
@@ -3883,12 +3963,12 @@ class ChatRuntime:
                 "provider": str(getattr(chat_run.request.config, "provider", "") or "").strip(),
                 "model": str(getattr(chat_run.request.config, "model_name", "") or "").strip(),
                 "recoverable": True,
-                "failureClass": "stream_idle_timeout",
-                "recommendedNextAction": "模型流 45 秒没有新事件；可重试本轮、检查 provider streaming，若后台命令仍在运行请先查看 Command card。",
+                "failureClass": failure_class,
+                "recommendedNextAction": recommended_next_action,
             }
             await self._cancel_pending_stream_event_task(stream_state)
             chat_run.emit_runtime_event(
-                "run.watchdog.stream_idle_timeout",
+                "run.watchdog.runtime_episode_stalled" if failure_class == "episode_stalled" else "run.watchdog.stream_idle_timeout",
                 payload,
                 agent_id=None,
                 node="stream_watchdog",
@@ -6495,11 +6575,16 @@ class ChatRuntime:
             normalized["failureClass"] = failure_class
             normalized["code"] = failure_class
         if isinstance(exc, GraphStreamIdleTimeoutError):
-            normalized["failureClass"] = "stream_idle_timeout"
-            normalized["code"] = "stream_idle_timeout"
+            timeout_phase = str(getattr(exc, "phase", "") or "")
+            failure_class = "episode_stalled" if timeout_phase == "runtime_episode_wait" else "stream_idle_timeout"
+            normalized["failureClass"] = failure_class
+            normalized["code"] = failure_class
             normalized["recoverable"] = True
+            normalized["watchdogPhase"] = timeout_phase
             normalized["userAction"] = (
-                "模型流长时间没有新事件。可以重试本轮，或先检查 provider streaming / 后台命令状态。"
+                "Runtime episode 长时间没有进展。可以继续/重试该 episode，或查看 active child episode、handoff refs 和后台命令。"
+                if failure_class == "episode_stalled"
+                else "模型流长时间没有新事件。可以重试本轮，或先检查 provider streaming / 后台命令状态。"
             )
         if isinstance(exc, GraphRecursionContinuationBudgetExceeded):
             normalized["message"] = str(exc)
@@ -6564,6 +6649,7 @@ class ChatRuntime:
                 preserve_background_commands = bool(normalized.get("recoverable")) and str(normalized.get("failureClass") or "") in {
                     "graph_recursion_continuation_budget",
                     "stream_idle_timeout",
+                    "episode_stalled",
                 }
                 if not preserve_background_commands:
                     from core.system_tools.native import _terminate_run_background_commands
@@ -6585,7 +6671,11 @@ class ChatRuntime:
                 elif isinstance(exc, GraphStreamIdleTimeoutError):
                     run_service.update_metadata(
                         chat_run.active_run_id,
-                        {"failureClass": "stream_idle_timeout", "recoverable": True},
+                        {
+                            "failureClass": normalized.get("failureClass") or "stream_idle_timeout",
+                            "recoverable": True,
+                            "watchdogPhase": normalized.get("watchdogPhase"),
+                        },
                     )
                 elif isinstance(exc, GraphRecursionContinuationBudgetExceeded):
                     run_service.update_metadata(

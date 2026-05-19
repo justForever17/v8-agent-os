@@ -180,6 +180,83 @@ function getEngineeringLabel(activity: RuntimeStageActivity): { title: string; m
     };
 }
 
+function isEpisodeActivity(activity: RuntimeStageActivity): boolean {
+    const topic = String(activity.topic || ("topic" in activity.node ? activity.node.topic : "") || "").trim();
+    return topic.startsWith("capability.need.") || topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.");
+}
+
+function getEpisodePayload(activity: RuntimeStageActivity): Record<string, unknown> {
+    const data = readExecutionData(activity);
+    const episode = readRecord(data.episode);
+    return Object.keys(episode).length > 0 ? episode : data;
+}
+
+const episodeKindLabels: Record<string, string> = {
+    runtime: "运行时",
+    engineering: "工程运行时",
+    research: "调研运行时",
+    creative_media: "创意媒体",
+    computer_use: "桌面 / 浏览器",
+    rpa: "RPA",
+    delegation: "子代理",
+};
+
+function buildEpisodeGraph(activities: RuntimeStageActivity[]): SwarmGraphNode[] {
+    const nodes = new Map<string, SwarmGraphNode>();
+    nodes.set("supervisor", {
+        id: "supervisor",
+        parentId: null,
+        label: "Supervisor",
+        subtitle: "router",
+        status: "active",
+        depth: 0,
+        eventCount: 0,
+        timestamp: 0,
+    });
+
+    for (const activity of [...activities].reverse()) {
+        if (!isEpisodeActivity(activity)) continue;
+        const data = getEpisodePayload(activity);
+        const id = readString(data.episodeId) || readString(data.needId) || readString(data.need_id) || activity.id;
+        const kind = readString(data.kind) || readString(data.runtimeKind) || "runtime";
+        const parentId = readString(data.parentEpisodeId) || readString(data.parent_episode_id) || "supervisor";
+        const status = inferSwarmStatus(activity, data);
+        const reason = readString(data.reason) || readString(data.summary) || activity.summary;
+        const grants = Array.isArray(data.requiredRuntimeAccess)
+            ? data.requiredRuntimeAccess.map((item) => readString(item)).filter(Boolean)
+            : [];
+        const existing = nodes.get(id);
+        nodes.set(id, {
+            id,
+            parentId,
+            label: existing?.label || episodeKindLabels[kind] || kind || episodeKindLabels.runtime,
+            subtitle: reason || grants.slice(0, 2).join(" · ") || existing?.subtitle || "",
+            status: status === "pending" ? (existing?.status || "pending") : status,
+            depth: existing?.depth || 1,
+            eventCount: (existing?.eventCount || 0) + 1,
+            timestamp: Math.max(existing?.timestamp || 0, activity.timestamp),
+        });
+    }
+
+    const visited = new Set<string>();
+    const resolveDepth = (id: string): number => {
+        const node = nodes.get(id);
+        if (!node || !node.parentId || node.parentId === id) return 0;
+        if (visited.has(id)) return node.depth || 1;
+        visited.add(id);
+        const parentDepth = nodes.has(node.parentId) ? resolveDepth(node.parentId) : 0;
+        node.depth = Math.min(8, parentDepth + 1);
+        return node.depth;
+    };
+    for (const id of nodes.keys()) {
+        resolveDepth(id);
+    }
+    return Array.from(nodes.values()).sort((left, right) => {
+        if (left.depth !== right.depth) return left.depth - right.depth;
+        return left.timestamp - right.timestamp;
+    });
+}
+
 type SwarmNodeStatus = "active" | "completed" | "failed" | "pending";
 
 type SwarmGraphNode = {
@@ -329,6 +406,70 @@ function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) 
     return (
         <div className="space-y-3">
             <div className="text-[13px] font-semibold tracking-tight text-foreground">实际派发拓扑</div>
+            <div className="space-y-2.5">
+                {visibleNodes.map((node) => {
+                    const activeLine = Boolean(node.parentId && activeIds.has(node.id));
+                    return (
+                        <div key={node.id} className="flex min-h-[48px] items-center">
+                            <div style={{ width: Math.min(node.depth, 6) * 22 }} />
+                            {node.id !== "supervisor" && (
+                                <div
+                                    className={cn(
+                                        "h-0.5 w-5 rounded-full",
+                                        activeLine ? "bg-sky-400 shadow-[0_0_14px_rgba(56,189,248,0.65)]" : "bg-stone-300/70 dark:bg-white/15",
+                                    )}
+                                />
+                            )}
+                            <span
+                                className={cn(
+                                    "h-2.5 w-2.5 rounded-full shadow-[0_0_0_rgba(0,0,0,0)]",
+                                    statusClass[node.status].split(" ")[0],
+                                    node.status === "active" && "shadow-[0_0_16px_rgba(56,189,248,0.72)]",
+                                )}
+                            />
+                            <div className="ml-2.5 min-w-0 flex-1 py-1">
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <div className="truncate text-[13px] font-semibold text-foreground">{node.label}</div>
+                                    <div className={cn("shrink-0 text-[10px] font-semibold uppercase", statusClass[node.status].split(" ").slice(1).join(" "))}>
+                                        {statusLabel[node.status]}
+                                    </div>
+                                </div>
+                                {node.subtitle && (
+                                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                                        {node.subtitle}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
+    const nodes = React.useMemo(() => buildEpisodeGraph(activities), [activities]);
+    const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
+    const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
+    const statusClass: Record<SwarmNodeStatus, string> = {
+        active: "bg-sky-500 text-sky-700 dark:text-sky-300",
+        completed: "bg-emerald-500 text-emerald-700 dark:text-emerald-300",
+        failed: "bg-rose-500 text-rose-700 dark:text-rose-300",
+        pending: "bg-stone-400 text-stone-500 dark:text-stone-300",
+    };
+    const statusLabel: Record<SwarmNodeStatus, string> = {
+        active: "运行",
+        completed: "完成",
+        failed: "失败",
+        pending: "等待",
+    };
+
+    if (visibleNodes.length <= 1) return null;
+
+    return (
+        <div className="space-y-3 rounded-[22px] border border-stone-200/80 bg-white/86 p-3.5 shadow-[0_12px_32px_rgba(15,23,42,0.05)] dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="text-[13px] font-semibold tracking-tight text-foreground">Runtime 路由拓扑</div>
             <div className="space-y-2.5">
                 {visibleNodes.map((node) => {
                     const activeLine = Boolean(node.parentId && activeIds.has(node.id));
@@ -676,6 +817,7 @@ export function RuntimeTimelinePanel({
     const activities = runtimeId
         ? model.activities.filter((activity) => activity.runtimeId === runtimeId)
         : [];
+    const episodeActivities = activities.filter(isEpisodeActivity);
     return (
         <AnimatePresence>
             {isOpen && (
@@ -769,46 +911,49 @@ export function RuntimeTimelinePanel({
                                     {runtimeId === "subagent_swarm" ? (
                                         <SwarmNodeBoard activities={activities} />
                                     ) : activities.length > 0 ? (
-                                        activities.map((activity, index) => {
-                                            const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane" || runtimeId === "engineering_lane";
-                                            const currentGroupId = !shouldGroup
-                                                ? ""
-                                                : runtimeId === "subagent_swarm"
-                                                    ? getSwarmTaskBriefId(activity)
-                                                    : runtimeId === "planner_lane"
-                                                        ? getPlannerPlanId(activity)
-                                                        : getEngineeringGroupId(activity);
-                                            const previousGroupId = !shouldGroup
-                                                ? ""
-                                                : runtimeId === "subagent_swarm"
-                                                    ? getSwarmTaskBriefId(activities[index - 1])
-                                                    : runtimeId === "planner_lane"
-                                                        ? getPlannerPlanId(activities[index - 1])
-                                                        : getEngineeringGroupId(activities[index - 1]);
-                                            const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
-                                            const taskLabel = !showTaskHeader
-                                                ? null
-                                                : runtimeId === "subagent_swarm"
-                                                    ? getSwarmTaskLabel(activity)
-                                                    : runtimeId === "planner_lane"
-                                                        ? getPlannerPlanLabel(activity)
-                                                        : getEngineeringLabel(activity);
-                                            return (
-                                                <div key={activity.id} className="space-y-2.5">
-                                                    {taskLabel && (
-                                                        <div className="rounded-[20px] border border-stone-200/80 bg-stone-50/90 px-3.5 py-2.5 dark:border-white/10 dark:bg-white/[0.035]">
-                                                            <div className="line-clamp-2 text-[13px] font-semibold leading-5 text-foreground/90">
-                                                                {taskLabel.title}
+                                        <>
+                                            {episodeActivities.length > 0 && <RuntimeEpisodeBoard activities={episodeActivities} />}
+                                            {activities.map((activity, index) => {
+                                                const shouldGroup = runtimeId === "subagent_swarm" || runtimeId === "planner_lane" || runtimeId === "engineering_lane";
+                                                const currentGroupId = !shouldGroup
+                                                    ? ""
+                                                    : runtimeId === "subagent_swarm"
+                                                        ? getSwarmTaskBriefId(activity)
+                                                        : runtimeId === "planner_lane"
+                                                            ? getPlannerPlanId(activity)
+                                                            : getEngineeringGroupId(activity);
+                                                const previousGroupId = !shouldGroup
+                                                    ? ""
+                                                    : runtimeId === "subagent_swarm"
+                                                        ? getSwarmTaskBriefId(activities[index - 1])
+                                                        : runtimeId === "planner_lane"
+                                                            ? getPlannerPlanId(activities[index - 1])
+                                                            : getEngineeringGroupId(activities[index - 1]);
+                                                const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
+                                                const taskLabel = !showTaskHeader
+                                                    ? null
+                                                    : runtimeId === "subagent_swarm"
+                                                        ? getSwarmTaskLabel(activity)
+                                                        : runtimeId === "planner_lane"
+                                                            ? getPlannerPlanLabel(activity)
+                                                            : getEngineeringLabel(activity);
+                                                return (
+                                                    <div key={activity.id} className="space-y-2.5">
+                                                        {taskLabel && (
+                                                            <div className="rounded-[20px] border border-stone-200/80 bg-stone-50/90 px-3.5 py-2.5 dark:border-white/10 dark:bg-white/[0.035]">
+                                                                <div className="line-clamp-2 text-[13px] font-semibold leading-5 text-foreground/90">
+                                                                    {taskLabel.title}
+                                                                </div>
+                                                                <div className="mt-1 text-[11px] text-muted-foreground">
+                                                                    {taskLabel.meta}
+                                                                </div>
                                                             </div>
-                                                            <div className="mt-1 text-[11px] text-muted-foreground">
-                                                                {taskLabel.meta}
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    <ActivityFeedItem activity={activity} processes={processes} />
-                                                </div>
-                                            );
-                                        })
+                                                        )}
+                                                        <ActivityFeedItem activity={activity} processes={processes} />
+                                                    </div>
+                                                );
+                                            })}
+                                        </>
                                     ) : (
                                         <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
                                             当前还没有可展示的运行记录。

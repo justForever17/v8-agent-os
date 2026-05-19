@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Iterator
 
@@ -153,6 +153,117 @@ class DatabaseManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
                     FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS runtime_episodes (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    run_id TEXT,
+                    parent_episode_id TEXT,
+                    root_episode_id TEXT,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    source TEXT,
+                    reason TEXT,
+                    need_json TEXT,
+                    inputs_json TEXT,
+                    required_runtime_access_json TEXT,
+                    handoff_refs_json TEXT,
+                    continuation_token_json TEXT,
+                    result_ref TEXT,
+                    recoverable INTEGER DEFAULT 1,
+                    priority INTEGER DEFAULT 0,
+                    attempt_count INTEGER DEFAULT 0,
+                    worker_id TEXT,
+                    lease_expires_at TEXT,
+                    last_heartbeat_at TEXT,
+                    last_progress TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL,
+                    FOREIGN KEY (parent_episode_id) REFERENCES runtime_episodes (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS runtime_episode_events (
+                    id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    session_id TEXT,
+                    run_id TEXT,
+                    topic TEXT NOT NULL,
+                    state TEXT,
+                    payload_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (episode_id) REFERENCES runtime_episodes (id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS runtime_episode_queue (
+                    id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL UNIQUE,
+                    session_id TEXT,
+                    run_id TEXT,
+                    kind TEXT NOT NULL,
+                    priority INTEGER DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'queued',
+                    available_at TEXT,
+                    locked_by TEXT,
+                    lease_expires_at TEXT,
+                    attempt_count INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (episode_id) REFERENCES runtime_episodes (id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS runtime_episode_handoffs (
+                    id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    session_id TEXT,
+                    run_id TEXT,
+                    kind TEXT,
+                    status TEXT,
+                    confidence TEXT,
+                    compact_summary TEXT,
+                    refs_json TEXT,
+                    raw_ref TEXT,
+                    detail_tool TEXT,
+                    consumer_hint TEXT,
+                    payload_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (episode_id) REFERENCES runtime_episodes (id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS runtime_episode_leases (
+                    id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    worker_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    acquired_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    heartbeat_at TEXT,
+                    released_at TEXT,
+                    metadata_json TEXT,
+                    FOREIGN KEY (episode_id) REFERENCES runtime_episodes (id) ON DELETE CASCADE
                 )
             ''')
 
@@ -791,6 +902,16 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_events_run_id ON runtime_events (run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_events_topic ON runtime_events (topic)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_session_id ON runtime_snapshots (session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_session_id ON runtime_episodes (session_id, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_run_id ON runtime_episodes (run_id, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_state ON runtime_episodes (state, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episodes_parent ON runtime_episodes (parent_episode_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_events_episode ON runtime_episode_events (episode_id, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_events_session ON runtime_episode_events (session_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_queue_state ON runtime_episode_queue (state, priority DESC, available_at ASC, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_queue_episode ON runtime_episode_queue (episode_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_handoffs_episode ON runtime_episode_handoffs (episode_id, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_episode_leases_episode ON runtime_episode_leases (episode_id, heartbeat_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_session_id ON chat_canonical_messages (session_id, ordinal ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_run_id ON chat_canonical_messages (run_id, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_updated_at ON chat_canonical_messages (updated_at DESC)')
@@ -1797,6 +1918,547 @@ class DatabaseManager:
             data = dict(row)
             data["snapshot"] = json.loads(data["snapshot_json"]) if data.get("snapshot_json") else {}
             return data
+
+    # --- Runtime Episode Queue Operations ---
+
+    def _hydrate_runtime_episode_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        for source, target, default in (
+            ("need_json", "need", {}),
+            ("inputs_json", "inputs", {}),
+            ("required_runtime_access_json", "requiredRuntimeAccess", []),
+            ("handoff_refs_json", "handoffRefs", []),
+            ("continuation_token_json", "continuationToken", {}),
+            ("metadata_json", "metadata", {}),
+        ):
+            raw_value = data.get(source)
+            if raw_value:
+                try:
+                    data[target] = json.loads(raw_value)
+                except Exception:
+                    data[target] = default
+            else:
+                data[target] = default
+        data["episodeId"] = data.get("id")
+        data["parentEpisodeId"] = data.get("parent_episode_id")
+        data["rootEpisodeId"] = data.get("root_episode_id")
+        data["runtimeAccess"] = data.get("requiredRuntimeAccess") or []
+        data["lastHeartbeatAt"] = data.get("last_heartbeat_at")
+        data["lastProgress"] = data.get("last_progress")
+        data["errorCode"] = data.get("error_code")
+        data["errorMessage"] = data.get("error_message")
+        data["resultRef"] = data.get("result_ref")
+        data["recoverable"] = bool(data.get("recoverable", 1))
+        return data
+
+    def upsert_runtime_episode_record(
+        self,
+        episode: Dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        priority: int = 0,
+        enqueue: bool = False,
+    ) -> Dict[str, Any]:
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not episode_id:
+            raise ValueError("runtime episode requires episodeId")
+        now_iso = utc_now_iso()
+        kind = str(episode.get("kind") or episode.get("runtimeKind") or "unknown").strip() or "unknown"
+        state = str(episode.get("state") or "detected").strip() or "detected"
+        resolved_session_id = str(session_id or episode.get("sessionId") or episode.get("session_id") or "").strip() or None
+        resolved_run_id = str(run_id or episode.get("runId") or episode.get("run_id") or "").strip() or None
+        parent_episode_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip() or None
+        root_episode_id = str(episode.get("rootEpisodeId") or episode.get("root_episode_id") or parent_episode_id or episode_id).strip() or episode_id
+        source = str(episode.get("source") or (episode.get("need") or {}).get("source") or "").strip() or None
+        reason = str(episode.get("reason") or (episode.get("need") or {}).get("reason") or "").strip() or None
+        need = episode.get("need") if isinstance(episode.get("need"), dict) else {
+            key: value
+            for key, value in dict(episode).items()
+            if key
+            in {
+                "kind",
+                "source",
+                "reason",
+                "inputs",
+                "requiredRuntimeAccess",
+                "handoffRefs",
+                "parentEpisodeId",
+                "continuationTarget",
+            }
+        }
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else (need or {}).get("inputs") or {}
+        required_runtime_access = (
+            episode.get("requiredRuntimeAccess")
+            or episode.get("runtimeAccess")
+            or (need or {}).get("requiredRuntimeAccess")
+            or []
+        )
+        handoff_refs = episode.get("handoffRefs") or []
+        continuation_token = episode.get("continuationToken") or {}
+        metadata = episode.get("metadata") if isinstance(episode.get("metadata"), dict) else {}
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO runtime_episodes (
+                        id, session_id, run_id, parent_episode_id, root_episode_id, kind, state,
+                        source, reason, need_json, inputs_json, required_runtime_access_json,
+                        handoff_refs_json, continuation_token_json, result_ref, recoverable,
+                        priority, metadata_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        session_id = COALESCE(excluded.session_id, runtime_episodes.session_id),
+                        run_id = COALESCE(excluded.run_id, runtime_episodes.run_id),
+                        parent_episode_id = COALESCE(excluded.parent_episode_id, runtime_episodes.parent_episode_id),
+                        root_episode_id = COALESCE(excluded.root_episode_id, runtime_episodes.root_episode_id),
+                        kind = excluded.kind,
+                        state = excluded.state,
+                        source = COALESCE(excluded.source, runtime_episodes.source),
+                        reason = COALESCE(excluded.reason, runtime_episodes.reason),
+                        need_json = excluded.need_json,
+                        inputs_json = excluded.inputs_json,
+                        required_runtime_access_json = excluded.required_runtime_access_json,
+                        handoff_refs_json = excluded.handoff_refs_json,
+                        continuation_token_json = excluded.continuation_token_json,
+                        result_ref = COALESCE(excluded.result_ref, runtime_episodes.result_ref),
+                        recoverable = excluded.recoverable,
+                        priority = excluded.priority,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        episode_id,
+                        resolved_session_id,
+                        resolved_run_id,
+                        parent_episode_id,
+                        root_episode_id,
+                        kind,
+                        state,
+                        source,
+                        reason,
+                        json.dumps(to_jsonable(need or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(inputs or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(required_runtime_access or []), ensure_ascii=False),
+                        json.dumps(to_jsonable(handoff_refs or []), ensure_ascii=False),
+                        json.dumps(to_jsonable(continuation_token or {}), ensure_ascii=False),
+                        episode.get("resultRef") or episode.get("result_ref"),
+                        1 if episode.get("recoverable", True) else 0,
+                        int(priority or episode.get("priority") or 0),
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        str(episode.get("createdAt") or now_iso),
+                        now_iso,
+                    ),
+                )
+                if enqueue:
+                    conn.execute(
+                        '''
+                        INSERT INTO runtime_episode_queue (
+                            id, episode_id, session_id, run_id, kind, priority, state,
+                            available_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                        ON CONFLICT(episode_id) DO UPDATE SET
+                            state = CASE
+                                WHEN runtime_episode_queue.state IN ('completed', 'cancelled') THEN runtime_episode_queue.state
+                                ELSE 'queued'
+                            END,
+                            priority = excluded.priority,
+                            available_at = excluded.available_at,
+                            updated_at = excluded.updated_at
+                        ''',
+                        (
+                            f"episode_queue:{episode_id}",
+                            episode_id,
+                            resolved_session_id,
+                            resolved_run_id,
+                            kind,
+                            int(priority or episode.get("priority") or 0),
+                            now_iso,
+                            now_iso,
+                            now_iso,
+                        ),
+                    )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_runtime_episode(episode_id) or {**episode, "episodeId": episode_id, "state": state}
+
+    def enqueue_runtime_episode(
+        self,
+        episode_id: str,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        kind: str = "unknown",
+        priority: int = 0,
+        available_at: Optional[str] = None,
+    ) -> None:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO runtime_episode_queue (
+                        id, episode_id, session_id, run_id, kind, priority, state,
+                        available_at, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                    ON CONFLICT(episode_id) DO UPDATE SET
+                        state = 'queued',
+                        priority = excluded.priority,
+                        available_at = excluded.available_at,
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        f"episode_queue:{episode_id}",
+                        episode_id,
+                        session_id,
+                        run_id,
+                        kind or "unknown",
+                        int(priority or 0),
+                        available_at or now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+
+    def claim_runtime_episode(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 60,
+        kinds: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+        expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=int(lease_seconds or 60))).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        normalized_kinds = [str(item).strip() for item in list(kinds or []) if str(item).strip()]
+
+        def _write():
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                params: list[Any] = [now_iso, now_iso]
+                query = '''
+                    SELECT q.*, e.state AS episode_state
+                    FROM runtime_episode_queue q
+                    JOIN runtime_episodes e ON e.id = q.episode_id
+                    WHERE (
+                        q.state IN ('queued', 'retry')
+                        OR (q.state = 'leased' AND COALESCE(q.lease_expires_at, '') <= ?)
+                    )
+                      AND COALESCE(q.available_at, ?) <= ?
+                '''
+                params.append(now_iso)
+                if normalized_kinds:
+                    placeholders = ",".join("?" for _ in normalized_kinds)
+                    query += f" AND q.kind IN ({placeholders})"
+                    params.extend(normalized_kinds)
+                query += " ORDER BY q.priority DESC, q.created_at ASC LIMIT 1"
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                queue_id = row["id"]
+                episode_id = row["episode_id"]
+                attempt_count = int(row["attempt_count"] or 0) + 1
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_queue
+                    SET state = 'leased',
+                        locked_by = ?,
+                        lease_expires_at = ?,
+                        attempt_count = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (worker_id, expires_iso, attempt_count, now_iso, queue_id),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET state = 'active',
+                        worker_id = ?,
+                        lease_expires_at = ?,
+                        last_heartbeat_at = ?,
+                        attempt_count = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (worker_id, expires_iso, now_iso, attempt_count, now_iso, episode_id),
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO runtime_episode_leases (
+                        id, episode_id, worker_id, state, acquired_at, expires_at, heartbeat_at, metadata_json
+                    )
+                    VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+                    ''',
+                    (
+                        f"episode_lease:{episode_id}:{attempt_count}",
+                        episode_id,
+                        worker_id,
+                        now_iso,
+                        expires_iso,
+                        now_iso,
+                        json.dumps({"queueId": queue_id}, ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+                return episode_id
+
+        episode_id = self._run_write_with_retry(_write)
+        if not episode_id:
+            return None
+        return self.get_runtime_episode(str(episode_id))
+
+    def heartbeat_runtime_episode(
+        self,
+        episode_id: str,
+        *,
+        worker_id: Optional[str] = None,
+        progress: Optional[str] = None,
+        lease_seconds: int = 60,
+    ) -> None:
+        now_iso = utc_now_iso()
+        expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=int(lease_seconds or 60))).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET last_heartbeat_at = ?,
+                        lease_expires_at = ?,
+                        last_progress = COALESCE(?, last_progress),
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (now_iso, expires_iso, progress, now_iso, episode_id),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_queue
+                    SET lease_expires_at = ?,
+                        updated_at = ?
+                    WHERE episode_id = ?
+                    ''',
+                    (expires_iso, now_iso, episode_id),
+                )
+                if worker_id:
+                    conn.execute(
+                        '''
+                        UPDATE runtime_episode_leases
+                        SET heartbeat_at = ?,
+                            expires_at = ?
+                        WHERE episode_id = ? AND worker_id = ? AND state = 'active'
+                        ''',
+                        (now_iso, expires_iso, episode_id, worker_id),
+                    )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+
+    def complete_runtime_episode(
+        self,
+        episode_id: str,
+        *,
+        state: str,
+        result_ref: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+        terminal = state in {"completed", "failed", "cancelled", "merged"}
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET state = ?,
+                        result_ref = COALESCE(?, result_ref),
+                        error_code = COALESCE(?, error_code),
+                        error_message = COALESCE(?, error_message),
+                        metadata_json = COALESCE(?, metadata_json),
+                        completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (
+                        state,
+                        result_ref,
+                        error_code,
+                        error_message,
+                        json.dumps(to_jsonable(metadata), ensure_ascii=False) if metadata is not None else None,
+                        1 if terminal else 0,
+                        now_iso,
+                        now_iso,
+                        episode_id,
+                    ),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_queue
+                    SET state = ?,
+                        last_error = COALESCE(?, last_error),
+                        updated_at = ?
+                    WHERE episode_id = ?
+                    ''',
+                    ("completed" if state in {"completed", "merged"} else state, error_message, now_iso, episode_id),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_leases
+                    SET state = ?,
+                        released_at = COALESCE(released_at, ?)
+                    WHERE episode_id = ? AND state = 'active'
+                    ''',
+                    (state, now_iso, episode_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_runtime_episode(episode_id)
+
+    def add_runtime_episode_event_record(
+        self,
+        *,
+        episode_id: str,
+        topic: str,
+        payload: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        state: Optional[str] = None,
+    ) -> None:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO runtime_episode_events (
+                        id, episode_id, session_id, run_id, topic, state, payload_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        f"episode_event:{episode_id}:{uuid.uuid4().hex}",
+                        episode_id,
+                        session_id,
+                        run_id,
+                        topic,
+                        state,
+                        json.dumps(to_jsonable(payload or {}), ensure_ascii=False),
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+
+    def add_runtime_episode_handoff(
+        self,
+        *,
+        episode_id: str,
+        handoff: Dict[str, Any],
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        handoff_id = str(handoff.get("handoffId") or handoff.get("id") or f"handoff:{episode_id}:{uuid.uuid4().hex[:10]}")
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT OR REPLACE INTO runtime_episode_handoffs (
+                        id, episode_id, session_id, run_id, kind, status, confidence,
+                        compact_summary, refs_json, raw_ref, detail_tool, consumer_hint, payload_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        handoff_id,
+                        episode_id,
+                        session_id,
+                        run_id,
+                        handoff.get("kind"),
+                        handoff.get("status"),
+                        handoff.get("confidence"),
+                        handoff.get("compactSummary") or handoff.get("summary"),
+                        json.dumps(to_jsonable(handoff.get("refs") or []), ensure_ascii=False),
+                        handoff.get("rawRef"),
+                        handoff.get("detailTool"),
+                        handoff.get("consumerHint"),
+                        json.dumps(to_jsonable({**handoff, "handoffId": handoff_id}), ensure_ascii=False),
+                        now_iso,
+                    ),
+                )
+                cursor = conn.cursor()
+                cursor.execute('SELECT handoff_refs_json FROM runtime_episodes WHERE id = ?', (episode_id,))
+                row = cursor.fetchone()
+                refs: list[Any] = []
+                if row and row["handoff_refs_json"]:
+                    try:
+                        refs = json.loads(row["handoff_refs_json"])
+                    except Exception:
+                        refs = []
+                compact_handoff = {**handoff, "handoffId": handoff_id}
+                if not any(str(item.get("handoffId") or item.get("id") or "") == handoff_id for item in refs if isinstance(item, dict)):
+                    refs.append(compact_handoff)
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET handoff_refs_json = ?, updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (json.dumps(to_jsonable(refs), ensure_ascii=False), now_iso, episode_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return {**handoff, "handoffId": handoff_id}
+
+    def get_runtime_episode(self, episode_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM runtime_episodes WHERE id = ?', (episode_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._hydrate_runtime_episode_row(dict(row))
+
+    def list_runtime_episodes(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM runtime_episodes WHERE 1=1"
+        params: list[Any] = []
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if run_id:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        if active_only:
+            query += " AND state IN ('detected', 'routed', 'queued', 'active', 'waiting_child', 'waiting_external', 'waiting_approval')"
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(int(limit or 100))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_runtime_episode_row(dict(row)) for row in cursor.fetchall()]
 
     def upsert_session_lane_record(
         self,

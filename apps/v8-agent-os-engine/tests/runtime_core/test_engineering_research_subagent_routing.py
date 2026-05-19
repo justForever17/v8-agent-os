@@ -32,6 +32,29 @@ def test_planner_list_payload_is_wrapped_as_valid_plan() -> None:
     assert "planner_list_payload_wrapped" in payload["qualityFlags"]
 
 
+def test_project_research_fallback_includes_runtime_capability_plan() -> None:
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(
+            latest_user_content="调研规则并开发一个 Web 项目",
+            planner_intent_diagnostics={"signals": []},
+            task_shape_hint={
+                "primaryTaskShape": "project_coding",
+                "secondaryTaskShapes": ["research"],
+                "optionalRuntimeGrants": ["research.core"],
+            },
+            planner_mode="auto",
+        )
+    )
+
+    plan = runtime._fallback_planner_plan(chat_run=chat_run, reason="structured_empty")
+
+    assert plan["executionStrategy"] == "mixed"
+    assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "engineering"]
+    assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"
+    assert plan["handoffPlan"][0]["toTaskBriefId"] == "task-2"
+
+
 def test_engineering_project_creation_workspace_activates_without_git(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(engineering_lane_service, "get_config", lambda: {"enabled": True, "triggerMode": "auto"})
     decision = engineering_lane_service.trigger_decision(

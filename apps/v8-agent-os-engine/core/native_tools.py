@@ -130,6 +130,13 @@ from core.runtime_tool_access import (
     runtime_access_from_route_context,
     runtime_tool_groups_catalog,
 )
+from core.runtime_episodes import (
+    build_runtime_episode,
+    enqueue_runtime_episode,
+    emit_runtime_episode_event,
+    normalize_capability_kind,
+    upsert_runtime_episode,
+)
 from core.computer_use_execution_route import (
     _compact_environment_signal_summary,
     _compact_timing_signal_summary,
@@ -5251,6 +5258,7 @@ def _runtime_broker_payload(
     error: str | None = None,
     detail_level: str = "summary",
     changed: list[dict[str, Any]] | None = None,
+    episode: dict[str, Any] | None = None,
     next_action: str | None = None,
 ) -> str:
     normalized_detail = str(detail_level or "summary").strip().lower()
@@ -5277,6 +5285,14 @@ def _runtime_broker_payload(
     }
     if changed is not None:
         payload["changed"] = list(changed or [])
+    if episode:
+        payload["episode"] = {
+            "episodeId": str(episode.get("episodeId") or episode.get("needId") or ""),
+            "kind": str(episode.get("kind") or ""),
+            "state": str(episode.get("state") or ""),
+            "reason": str(episode.get("reason") or ""),
+            "continuationTarget": str(episode.get("continuationTarget") or ""),
+        }
     if next_action:
         payload["recommendedNextAction"] = next_action
     if normalized_detail not in {"catalog", "detail", "full"} and groups:
@@ -5291,6 +5307,66 @@ def _runtime_broker_payload(
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+_RUNTIME_ROUTE_DEFAULT_GROUPS: dict[str, list[str]] = {
+    "engineering": ["delegation.recursive"],
+    "research": ["research.core"],
+    "creative_media": ["creative_media.core"],
+    "computer_use": ["computer_use.control"],
+    "rpa": ["rpa.run"],
+    "delegation": ["delegation.recursive"],
+    "memory": ["memory.read"],
+}
+
+
+def _normalize_capability_kind(value: Any) -> str:
+    return normalize_capability_kind(value)
+
+
+def _capability_route_groups(
+    *,
+    need: dict[str, Any],
+    runtime_kind: Optional[str],
+    tool_group: Optional[str],
+    tool_groups: Optional[list[str]],
+) -> list[str]:
+    kind = _normalize_capability_kind(need.get("kind") or runtime_kind)
+    requested: list[str] = []
+    requested.extend(list(need.get("requiredRuntimeAccess") or []))
+    requested.extend(list(tool_groups or []))
+    if tool_group:
+        requested.append(tool_group)
+    requested.extend(_RUNTIME_ROUTE_DEFAULT_GROUPS.get(kind, []))
+    return normalize_runtime_access(requested, runtime_kind=runtime_kind or kind)
+
+
+def _append_runtime_episode(
+    route_context: dict[str, Any],
+    *,
+    need: dict[str, Any],
+    kind: str,
+    groups: list[dict[str, Any]],
+    allow_direct_fallback: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    episode = build_runtime_episode(
+        need=need,
+        kind=kind,
+        state="queued",
+        required_runtime_access=[str((item or {}).get("group") or item) for item in groups],
+        continuation_target=str(need.get("continuationTarget") or "runtime_episode_runner"),
+        extra={"allowDirectFallback": bool(allow_direct_fallback)},
+    )
+    runtime_context = get_runtime_context()
+    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip() or None
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip() or None
+    persisted = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=int(need.get("priority") or 0))
+    merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "run_id", "state", "lastHeartbeatAt"}}}
+    return upsert_runtime_episode(route_context, merged_episode), merged_episode
+
+
+def _emit_runtime_episode_event(topic: str, payload: dict[str, Any]) -> None:
+    emit_runtime_episode_event(topic, payload, source={"runtime": "supervisor", "tool": "runtime_broker"})
+
+
 @tool
 def runtime_broker(
     mode: str = "list",
@@ -5299,10 +5375,12 @@ def runtime_broker(
     tool_groups: Optional[list[str]] = None,
     reason: Optional[str] = None,
     detail_level: str = "summary",
+    need: Optional[dict[str, Any]] = None,
+    allow_direct_fallback: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Supervisor-only broker for listing, granting, checking, and revoking runtime tool groups for the current run."""
+    """Supervisor-only broker for listing, granting, routing, checking, and revoking runtime tool groups for the current run."""
     normalized_mode = str(mode or "list").strip().lower()
     route_context = dict((state or {}).get("current_route_context") or {})
 
@@ -5328,6 +5406,86 @@ def runtime_broker(
                     )
                 ],
                 "current_route_context": route_context,
+            },
+        )
+
+    if normalized_mode == "route":
+        need_payload = dict(need or {})
+        route_kind = _normalize_capability_kind(need_payload.get("kind") or runtime_kind or tool_group)
+        if not route_kind:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="runtime_broker(mode=route) requires need.kind or runtime_kind.",
+                                error="missing_capability_kind",
+                                next_action="Call runtime_broker(mode='route', need={'kind':'research'|'engineering'|...}).",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+        requested_groups = _capability_route_groups(
+            need=need_payload,
+            runtime_kind=runtime_kind or route_kind,
+            tool_group=tool_group,
+            tool_groups=tool_groups,
+        )
+        updated_context = route_context
+        grants: list[dict[str, Any]] = []
+        rejected: list[str] = []
+        if requested_groups:
+            updated_context, grants, rejected = grant_runtime_tool_groups(
+                route_context,
+                requested_groups,
+                reason=str(reason or need_payload.get("reason") or "capability_route").strip(),
+            )
+        updated_context, episode = _append_runtime_episode(
+            updated_context,
+            need=need_payload,
+            kind=route_kind,
+            groups=grants,
+            allow_direct_fallback=allow_direct_fallback,
+        )
+        _emit_runtime_episode_event("capability.need.detected", {"episode": episode})
+        _emit_runtime_episode_event("runtime.episode.queued", {"episode": episode})
+        if route_kind in {"engineering", "delegation"}:
+            next_action = "Episode queued for Engineering/delegation runner; observe runtime episodes rather than continuing direct mutating tools."
+        elif route_kind == "research":
+            next_action = "Research episode queued; wait for evidence handoff before implementation."
+        elif route_kind == "creative_media":
+            next_action = "Creative Media episode queued; wait for asset/recipe handoff."
+        elif route_kind in {"computer_use", "rpa"}:
+            next_action = "Runtime episode queued; wait for observation/trace handoff."
+        else:
+            next_action = "Continue through the routed runtime lane; avoid direct fallback unless explicitly enabled."
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=not rejected,
+                            summary=f"Routed capability need to {route_kind}.",
+                            grants=grants,
+                            rejected=rejected,
+                            error="unknown_tool_group" if rejected else None,
+                            detail_level=detail_level,
+                            changed=grants,
+                            episode=episode,
+                            next_action=next_action,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
             },
         )
 
@@ -9261,6 +9419,11 @@ def delegation_broker(
     mode: str = "observe",
     family: str = "",
     tasks: list[dict[str, Any]] | None = None,
+    target_count: int | None = None,
+    worker_briefs: list[dict[str, Any]] | None = None,
+    allow_child_delegation: bool = False,
+    child_delegation_budget: dict[str, Any] | None = None,
+    write_set_partitions: list[dict[str, Any]] | None = None,
     delegation_id: str = "",
     followup: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -9325,8 +9488,23 @@ def delegation_broker(
         )
 
     if normalized_mode == "dispatch":
-        macro_tasks = normalize_task_briefs(tasks or [])
-        normalized_tasks = expand_delegation_task_briefs(tasks or [])
+        requested_tasks = list(tasks or worker_briefs or [])
+        if target_count and target_count > len(requested_tasks) and requested_tasks:
+            seed = dict(requested_tasks[-1])
+            for index in range(len(requested_tasks), int(target_count)):
+                requested_tasks.append({**seed, "title": f"{seed.get('title') or 'Delegated task'} #{index + 1}"})
+        macro_tasks = normalize_task_briefs(requested_tasks)
+        normalized_tasks = expand_delegation_task_briefs(requested_tasks)
+        if allow_child_delegation or child_delegation_budget or write_set_partitions:
+            for task in normalized_tasks:
+                task.setdefault("delegationPolicy", {})
+                task["delegationPolicy"].update(
+                    {
+                        "allowChildDelegation": bool(allow_child_delegation),
+                        **({"childDelegationBudget": child_delegation_budget} if child_delegation_budget else {}),
+                        **({"writeSetPartitions": write_set_partitions} if write_set_partitions else {}),
+                    }
+                )
         if not normalized_tasks:
             return Command(
                 goto="supervisor",
@@ -9718,6 +9896,46 @@ def delegation_broker(
                 )
             ],
         }
+        dispatch_route_context = dict(inherited_context or {})
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            delegation_id_value = str(item.get("delegationId") or "").strip()
+            if not delegation_id_value:
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            episode_state = "failed" if status in {"error", "blocked", "failed"} else "waiting"
+            task_brief_value = item.get("taskBrief") if isinstance(item.get("taskBrief"), dict) else {}
+            episode = build_runtime_episode(
+                need={
+                    "kind": "delegation",
+                    "needId": delegation_id_value,
+                    "source": "delegation_broker",
+                    "reason": str(item.get("taskGoal") or item.get("targetLabel") or "delegated task"),
+                    "parentEpisodeId": parent_delegation_id or inherited_context.get("activeCapabilityEpisodeId") or "",
+                },
+                kind="delegation",
+                state=episode_state,
+                required_runtime_access=list(task_brief_value.get("runtimeAccess") or []),
+                parent_episode_id=parent_delegation_id or inherited_context.get("activeCapabilityEpisodeId") or "",
+                continuation_target="parallel_delegate_join" if item.get("lane") == "subagent" else "delegation_broker.observe",
+                extra={
+                    "invocationId": invocation_id,
+                    "taskBriefId": item.get("taskBriefId"),
+                    "targetId": item.get("targetId"),
+                    "targetLabel": item.get("targetLabel"),
+                    "lane": item.get("lane"),
+                    "branchIndex": item.get("branchIndex"),
+                    "error": item.get("error"),
+                },
+            )
+            dispatch_route_context = upsert_runtime_episode(dispatch_route_context, episode)
+            emit_runtime_episode_event("capability.need.detected", {"episode": episode})
+            emit_runtime_episode_event(
+                "runtime.episode.failed" if episode_state == "failed" else "runtime.episode.waiting",
+                {"episode": episode},
+            )
+        update["current_route_context"] = dispatch_route_context
         if sends:
             update["parallel_invocations"] = [
                 {

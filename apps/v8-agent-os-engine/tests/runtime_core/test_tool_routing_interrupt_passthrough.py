@@ -8,12 +8,13 @@ from graph.tool_routing import async_tool_call_wrapper
 
 
 class _DummyRequest:
-    def __init__(self, tool_name: str, tool_call_id: str = "tool_call_1") -> None:
+    def __init__(self, tool_name: str, tool_call_id: str = "tool_call_1", state=None) -> None:
         self.tool_call = {
             "name": tool_name,
             "id": tool_call_id,
             "args": {},
         }
+        self.state = state
 
 
 class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
@@ -66,6 +67,23 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RuntimeError):
             await async_tool_call_wrapper(request, execute)
+
+    async def test_complex_direct_write_returns_route_required_not_approval(self):
+        request = _DummyRequest(
+            "write_native_file",
+            "tool_call_write",
+            state={"current_route_context": {"engineeringRequired": True}},
+        )
+
+        async def execute(_request):
+            raise AssertionError("direct write should have been blocked before execution")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(getattr(result, "status", None), "error")
+        self.assertIn("[route required]", str(result.content))
+        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "runtime_broker(mode='route')")
 
 
 if __name__ == "__main__":

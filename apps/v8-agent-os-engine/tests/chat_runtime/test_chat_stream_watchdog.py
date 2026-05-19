@@ -4,6 +4,7 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -61,6 +62,7 @@ class FakeChatRun:
     def __init__(self) -> None:
         self.active_run_id = "run_test"
         self.session_id = "session_test"
+        self.request = SimpleNamespace(config=SimpleNamespace(provider="test-provider", model_name="test-model"))
         self.events: list[dict] = []
 
     def emit_runtime_event(self, topic: str, payload: dict, **kwargs):
@@ -70,6 +72,61 @@ class FakeChatRun:
 
 
 class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
+    def test_runtime_episode_chain_uses_long_timeout_window(self):
+        state = GraphStreamWatchdogState()
+
+        state.observe_event(
+            {
+                "event": "on_chain_start",
+                "name": "parallel_delegate_task",
+                "run_id": "runtime_episode_1",
+            }
+        )
+
+        self.assertEqual(state.idle_phase(), "runtime_episode_wait")
+        self.assertEqual(
+            state.idle_timeout_seconds(),
+            watchdog_module.ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(state.active_runtime_episode_ids, {"runtime_episode_1"})
+
+        state.finish_event(
+            {
+                "event": "on_chain_end",
+                "name": "parallel_delegate_task",
+                "run_id": "runtime_episode_1",
+            }
+        )
+
+        self.assertEqual(state.active_runtime_episode_ids, set())
+        self.assertEqual(state.idle_phase(), "stream_progress")
+
+    async def test_runtime_episode_timeout_payload_includes_active_episode(self):
+        state = GraphStreamWatchdogState()
+        state.observe_event(
+            {
+                "event": "on_chain_start",
+                "name": "parallel_delegate_join",
+                "run_id": "runtime_episode_join",
+            }
+        )
+        timeout_payloads: list[dict] = []
+
+        with mock.patch.object(watchdog_module, "ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(GraphStreamIdleTimeoutError):
+                await next_graph_stream_event(
+                    NeverYieldIterator(),
+                    state=state,
+                    session_id="session_test",
+                    run_id="run_test",
+                    on_timeout=timeout_payloads.append,
+                )
+
+        self.assertEqual(len(timeout_payloads), 1)
+        self.assertEqual(timeout_payloads[0]["phase"], "runtime_episode_wait")
+        self.assertEqual(timeout_payloads[0]["activeRuntimeEpisodeCount"], 1)
+        self.assertEqual(timeout_payloads[0]["activeRuntimeEpisodeIds"], ["runtime_episode_join"])
+
     async def test_shared_watchdog_distinguishes_downstream_timeout(self):
         state = GraphStreamWatchdogState(has_productive_stream_activity=True)
         timeout_payloads: list[dict] = []
@@ -118,6 +175,33 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         topics = [event["topic"] for event in chat_run.events]
         self.assertIn("run.stream.downstream_timeout", topics)
         self.assertNotIn("run.watchdog.stream_idle_timeout", topics)
+
+    async def test_chat_runtime_runtime_episode_idle_reports_episode_stalled(self):
+        runtime = ChatRuntime()
+        chat_run = FakeChatRun()
+        stream_state = ChatStreamState()
+        stream_state.watchdog.observe_event(
+            {
+                "event": "on_chain_start",
+                "name": "parallel_delegate_task",
+                "run_id": "runtime_episode_child",
+            }
+        )
+
+        with mock.patch.object(watchdog_module, "ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(GraphStreamIdleTimeoutError):
+                await runtime._wait_for_stream_signal(
+                    stream_iter=NeverYieldIterator(),
+                    chat_run=chat_run,
+                    stream_state=stream_state,
+                )
+
+        topics = [event["topic"] for event in chat_run.events]
+        self.assertIn("run.watchdog.runtime_episode_stalled", topics)
+        self.assertNotIn("run.watchdog.stream_idle_timeout", topics)
+        stalled_payload = next(event["payload"] for event in chat_run.events if event["topic"] == "run.watchdog.runtime_episode_stalled")
+        self.assertEqual(stalled_payload["phase"], "runtime_episode_wait")
+        self.assertEqual(stalled_payload["failureClass"], "episode_stalled")
 
     async def test_text_flush_keeps_pending_stream_task_alive(self):
         runtime = ChatRuntime()

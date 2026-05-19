@@ -23,10 +23,9 @@ export function LocaleMenu({
 }: {
     variant?: "compact" | "default";
 }) {
-    const { locale, setLocale, colors, themeMode, t } = useUiPrefs();
+    const { locale, setLocale, colors, t } = useUiPrefs();
     const current = LOCALE_OPTIONS.find((item) => item.value === locale) || LOCALE_OPTIONS[0];
     const compact = variant === "compact";
-    const subtleSurface = themeMode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.14)";
 
     return (
         <DropdownMenu>
@@ -37,8 +36,8 @@ export function LocaleMenu({
                     styles.trigger,
                     compact ? styles.triggerCompact : styles.triggerDefault,
                     {
-                        backgroundColor: subtleSurface,
-                        borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(148,163,184,0.10)",
+                        backgroundColor: "transparent",
+                        borderColor: "transparent",
                     },
                 ]}
             >
@@ -50,7 +49,7 @@ export function LocaleMenu({
                 ) : null}
                 <ChevronDown color={colors.textSoft} size={compact ? 12 : 14} strokeWidth={2.2} />
             </DropdownMenuTrigger>
-            <DropdownMenuContent sideOffset={8} style={{ minWidth: compact ? 176 : 196 }}>
+            <DropdownMenuContent align="end" sideOffset={8} style={{ minWidth: compact ? 176 : 196 }}>
                 <DropdownMenuLabel>{t("shared.locale.switch_language")}</DropdownMenuLabel>
                 <DropdownMenuRadioGroup
                     value={locale}
@@ -84,10 +83,10 @@ const styles = StyleSheet.create({
         justifyContent: "center",
         borderWidth: StyleSheet.hairlineWidth,
         shadowColor: "#0F172A",
-        shadowOpacity: 0.07,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 5 },
-        elevation: 1,
+        shadowOpacity: 0,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 0,
     },
     triggerCompact: {
         width: 40,

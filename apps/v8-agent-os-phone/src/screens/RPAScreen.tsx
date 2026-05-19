@@ -19,6 +19,7 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
+import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { getRpaAvailability, listRpaDrafts, listRpaScripts, runExistingRobotFlow, runRpaCompile, runRpaDraft } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -34,9 +35,10 @@ type RPAFlowOption = {
 };
 
 export default function RPAScreen() {
-    const { status, authorizedFetch } = useAppSession();
+    const { status, user, adminBaseUrl, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
+    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const [refreshing, setRefreshing] = useState(false);
     const [availability, setAvailability] = useState<RPAAvailability | null>(null);
     const [drafts, setDrafts] = useState<RPADraftSummary[]>([]);
@@ -214,7 +216,7 @@ export default function RPAScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}

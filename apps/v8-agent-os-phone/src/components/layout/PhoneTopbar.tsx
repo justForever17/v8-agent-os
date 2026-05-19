@@ -219,24 +219,11 @@ function TopbarButton({
     const Icon = resolveActionIcon(action.key, themeMode);
     const color = iconColor(action.tone, colors);
     const round = isRoundAction(action.key);
-    const neutralSurface = themeMode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.14)";
-    const surfaceStyle = action.tone === "primary"
-        ? {
-            backgroundColor: themeMode === "dark" ? `${colors.primary}1F` : `${colors.primary}10`,
-            borderColor: `${colors.primary}20`,
-            borderWidth: StyleSheet.hairlineWidth,
-        }
+    const glowColor = action.tone === "primary"
+        ? (themeMode === "dark" ? `${colors.primary}26` : `${colors.primary}16`)
         : action.tone === "accent"
-            ? {
-                backgroundColor: themeMode === "dark" ? `${colors.accent}1F` : `${colors.accent}10`,
-                borderColor: `${colors.accent}1F`,
-                borderWidth: StyleSheet.hairlineWidth,
-            }
-            : {
-                backgroundColor: neutralSurface,
-                borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(148,163,184,0.10)",
-                borderWidth: StyleSheet.hairlineWidth,
-            };
+            ? (themeMode === "dark" ? `${colors.accent}24` : `${colors.accent}14`)
+            : (themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.045)");
 
     return (
         <Pressable
@@ -246,7 +233,13 @@ function TopbarButton({
             style={({ pressed }) => [
                 styles.actionButton,
                 round ? styles.actionButtonRound : styles.actionButtonSoftSquare,
-                surfaceStyle,
+                {
+                    backgroundColor: pressed ? glowColor : "transparent",
+                    borderColor: "transparent",
+                    borderWidth: StyleSheet.hairlineWidth,
+                    shadowOpacity: pressed ? 0.10 : 0,
+                    elevation: pressed ? 2 : 0,
+                },
                 { opacity: action.disabled ? 0.45 : pressed ? 0.78 : 1 },
             ]}
         >
@@ -358,8 +351,12 @@ export function PhoneTopbar({
                     style={({ pressed }) => [
                         styles.profileButton,
                         {
-                            backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.12)",
-                            borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(148,163,184,0.10)",
+                            backgroundColor: pressed
+                                ? (themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.045)")
+                                : "transparent",
+                            borderColor: "transparent",
+                            shadowOpacity: pressed ? 0.10 : 0,
+                            elevation: pressed ? 2 : 0,
                             opacity: pressed ? 0.82 : 1,
                         },
                     ]}
@@ -469,10 +466,10 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         shadowColor: "#0F172A",
-        shadowOpacity: 0.07,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 5 },
-        elevation: 1,
+        shadowOpacity: 0,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 0,
     },
     actionButtonRound: {
         borderRadius: 16,
@@ -487,10 +484,10 @@ const styles = StyleSheet.create({
         overflow: "hidden",
         borderWidth: StyleSheet.hairlineWidth,
         shadowColor: "#0F172A",
-        shadowOpacity: 0.07,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 5 },
-        elevation: 1,
+        shadowOpacity: 0,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 0,
     },
     profileImage: {
         width: "100%",

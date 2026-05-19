@@ -197,7 +197,7 @@ export default function SettingsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={avatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView contentContainerStyle={styles.content}>
                     <GlassCard>

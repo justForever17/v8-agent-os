@@ -18,6 +18,7 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
+import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import {
     type AdminConnectionProfile,
     readActiveAdminConnectionProfileId,
@@ -46,6 +47,7 @@ export default function ConnectScreen() {
     const { status, user, adminBaseUrl, setAdminBaseUrl, signOut, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
+    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const [draftBaseUrl, setDraftBaseUrl] = useState(adminBaseUrl);
     const [busy, setBusy] = useState(false);
     const [summary, setSummary] = useState<ConnectionSummary | null>(null);
@@ -211,7 +213,7 @@ export default function ConnectScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView contentContainerStyle={styles.content}>
                     <GlassCard style={styles.heroCard}>
@@ -356,8 +358,8 @@ const styles = StyleSheet.create({
     heroCard: {
         padding: 14,
         borderRadius: 24,
-        backgroundColor: "rgba(255,255,255,0.82)",
-        borderColor: "rgba(148,163,184,0.22)",
+        backgroundColor: colors.surface,
+        borderColor: "rgba(148,163,184,0.18)",
     },
     connectionHeroHeader: {
         flexDirection: "row",
@@ -421,7 +423,7 @@ const styles = StyleSheet.create({
         borderRadius: 18,
         paddingHorizontal: 10,
         paddingVertical: 9,
-        backgroundColor: "rgba(248,250,252,0.78)",
+        backgroundColor: colors.surface,
         borderWidth: 1,
         borderColor: "rgba(148,163,184,0.18)",
     },
@@ -553,7 +555,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: "rgba(148,163,184,0.24)",
         borderRadius: 18,
-        backgroundColor: "rgba(255,255,255,0.86)",
+        backgroundColor: colors.surface,
         paddingHorizontal: 14,
         paddingVertical: 13,
         color: colors.text,
@@ -578,7 +580,7 @@ const styles = StyleSheet.create({
         borderRadius: 16,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(255,255,255,0.58)",
+        backgroundColor: colors.surface,
     },
     emptyProfilesText: {
         color: colors.textSoft,
@@ -593,12 +595,12 @@ const styles = StyleSheet.create({
         borderColor: "rgba(148,163,184,0.20)",
         borderRadius: 20,
         padding: 12,
-        backgroundColor: "rgba(255,255,255,0.72)",
+        backgroundColor: colors.surface,
         gap: spacing.sm,
     },
     profileCardActive: {
         borderColor: "rgba(124,58,237,0.34)",
-        backgroundColor: "rgba(124,58,237,0.06)",
+        backgroundColor: "rgba(124,58,237,0.035)",
     },
     profileMain: {
         gap: 4,

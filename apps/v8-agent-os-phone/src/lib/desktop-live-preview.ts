@@ -48,6 +48,7 @@ export function buildDesktopLivePreviewHtml() {
         var remoteStream = null;
         var starting = false;
         var videoReadyTimer = null;
+        var videoReadyPosted = false;
         var video = document.getElementById("desktopLiveVideo");
         var fallbackImage = document.getElementById("desktopLiveFallback");
 
@@ -65,8 +66,11 @@ export function buildDesktopLivePreviewHtml() {
               clearTimeout(videoReadyTimer);
               videoReadyTimer = null;
             }
+            videoReadyPosted = false;
             if (video) {
               try { video.pause(); } catch (error) {}
+              video.onloadeddata = null;
+              video.onplaying = null;
               video.srcObject = null;
               video.style.display = "";
             }
@@ -89,6 +93,38 @@ export function buildDesktopLivePreviewHtml() {
           } finally {
             starting = false;
           }
+        }
+
+        function markVideoReady(payload) {
+          if (videoReadyPosted) return;
+          videoReadyPosted = true;
+          if (videoReadyTimer) {
+            clearTimeout(videoReadyTimer);
+            videoReadyTimer = null;
+          }
+          post("video-ready", payload || {});
+        }
+
+        function armVideoReady() {
+          if (!video) return;
+          var maybeReady = function () {
+            if (!video || videoReadyPosted) return;
+            if (video.videoWidth > 0 || video.videoHeight > 0 || video.readyState >= 2) {
+              markVideoReady();
+            }
+          };
+          video.onloadeddata = maybeReady;
+          video.onplaying = maybeReady;
+          if (typeof video.requestVideoFrameCallback === "function") {
+            try {
+              video.requestVideoFrameCallback(function () {
+                markVideoReady();
+              });
+            } catch (error) {
+              // keep the normal media events as fallback
+            }
+          }
+          setTimeout(maybeReady, 250);
         }
 
         async function start(payload) {
@@ -124,14 +160,15 @@ export function buildDesktopLivePreviewHtml() {
                 remoteStream.addTrack(event.track);
               }
               if (video && event.track && event.track.kind === "video") {
-                if (videoReadyTimer) {
-                  clearTimeout(videoReadyTimer);
-                  videoReadyTimer = null;
-                }
                 video.srcObject = stream;
-                video.play().catch(function () {});
+                armVideoReady();
+                video.play().then(function () {
+                  armVideoReady();
+                }).catch(function () {});
               }
-              post(event.track && event.track.kind === "audio" ? "audio-ready" : "video-ready");
+              if (event.track && event.track.kind === "audio") {
+                post("audio-ready");
+              }
             };
 
             pc.onconnectionstatechange = function () {
@@ -169,7 +206,7 @@ export function buildDesktopLivePreviewHtml() {
             fallbackImage.style.display = "";
             fallbackImage.src = streamUrl;
           }
-          post("video-ready", { fallback: true });
+          markVideoReady({ fallback: true });
         }
 
         window.__desktopLiveReceive = async function (payload) {

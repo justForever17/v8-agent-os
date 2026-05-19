@@ -1,5 +1,6 @@
 import React, { createContext, forwardRef, useContext, useMemo, useRef, useState } from "react";
 import {
+    Dimensions,
     Modal,
     Pressable,
     StyleSheet,
@@ -9,6 +10,7 @@ import {
     type PressableStateCallbackType,
     type PressableProps,
     type TextProps,
+    type ViewStyle,
     type ViewProps,
 } from "react-native";
 
@@ -92,8 +94,8 @@ export function DropdownMenuSub({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
 }
 
-export const DropdownMenuContent = forwardRef<View, ViewProps & { sideOffset?: number }>(function DropdownMenuContent(
-    { children, style, sideOffset = 4, ...rest },
+export const DropdownMenuContent = forwardRef<View, ViewProps & { align?: "start" | "end"; screenPadding?: number; sideOffset?: number }>(function DropdownMenuContent(
+    { align = "start", children, screenPadding = 8, style, sideOffset = 4, ...rest },
     ref,
 ) {
     const context = useContext(DropdownMenuContext);
@@ -103,7 +105,15 @@ export const DropdownMenuContent = forwardRef<View, ViewProps & { sideOffset?: n
     }
 
     const top = context.triggerLayout.y + context.triggerLayout.height + sideOffset;
-    const left = Math.max(8, context.triggerLayout.x);
+    const flattenedStyle = StyleSheet.flatten(style) as ViewStyle | undefined;
+    const screenWidth = Dimensions.get("window").width;
+    const styleWidth = Number(flattenedStyle?.width || flattenedStyle?.minWidth || 180);
+    const measuredWidth = Number.isFinite(styleWidth) && styleWidth > 0 ? styleWidth : 180;
+    const preferredLeft = align === "end"
+        ? context.triggerLayout.x + context.triggerLayout.width - measuredWidth
+        : context.triggerLayout.x;
+    const maxLeft = Math.max(screenPadding, screenWidth - measuredWidth - screenPadding);
+    const left = Math.min(Math.max(screenPadding, preferredLeft), maxLeft);
 
     return (
         <Modal transparent visible animationType="fade" onRequestClose={() => context.setOpen(false)}>

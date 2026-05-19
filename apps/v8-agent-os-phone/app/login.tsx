@@ -18,7 +18,11 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
-import { readActiveAdminConnectionProfileId, readAdminConnectionProfiles } from "@/src/lib/admin-connection-profiles";
+import {
+    type AdminConnectionProfile,
+    readActiveAdminConnectionProfileId,
+    readAdminConnectionProfiles,
+} from "@/src/lib/admin-connection-profiles";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
@@ -48,6 +52,8 @@ export default function LoginScreen() {
     const [email, setEmail] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
+    const [profiles, setProfiles] = useState<AdminConnectionProfile[]>([]);
+    const [activeProfileId, setActiveProfileId] = useState("");
 
     useEffect(() => {
         if (adminBaseUrl) {
@@ -60,9 +66,6 @@ export default function LoginScreen() {
     }, [adminBaseUrl, defaultWebBaseUrl]);
 
     useEffect(() => {
-        if (adminBaseUrl || defaultWebBaseUrl) {
-            return undefined;
-        }
         let cancelled = false;
         const hydrateSavedConnection = async () => {
             const [profiles, activeId] = await Promise.all([
@@ -70,7 +73,12 @@ export default function LoginScreen() {
                 readActiveAdminConnectionProfileId(),
             ]);
             const activeProfile = profiles.find((profile) => profile.id === activeId) || profiles[0];
-            if (!cancelled && activeProfile?.adminBaseUrl) {
+            if (cancelled) {
+                return;
+            }
+            setProfiles(profiles);
+            setActiveProfileId(activeId || "");
+            if (!adminBaseUrl && !defaultWebBaseUrl && activeProfile?.adminBaseUrl) {
                 setBaseUrl((current) => current || activeProfile.adminBaseUrl);
             }
         };
@@ -305,6 +313,44 @@ export default function LoginScreen() {
                         </View>
                     </GlassCard>
 
+                    {profiles.length > 0 ? (
+                        <GlassCard style={styles.savedConnectionsCard}>
+                            <View style={styles.savedHeaderRow}>
+                                <Text style={styles.savedTitle}>{t("src.screens.connectscreen.saved_targets")}</Text>
+                                <Text style={styles.savedHint}>{t("src.screens.connectscreen.reconnect")}</Text>
+                            </View>
+                            <View style={styles.savedProfilesList}>
+                                {profiles.slice(0, 3).map((profile) => {
+                                    const active = profile.id === activeProfileId || profile.adminBaseUrl === baseUrl;
+                                    return (
+                                        <Pressable
+                                            key={profile.id}
+                                            style={[styles.savedProfileCard, active && styles.savedProfileCardActive]}
+                                            onPress={() => {
+                                                setBaseUrl(profile.adminBaseUrl);
+                                                resetError();
+                                            }}
+                                        >
+                                            <View style={styles.savedProfileBody}>
+                                                <Text style={styles.savedProfileTitle} numberOfLines={1}>
+                                                    {profile.label || profile.adminBaseUrl}
+                                                </Text>
+                                                <Text style={styles.savedProfileUrl} numberOfLines={1}>
+                                                    {profile.adminBaseUrl}
+                                                </Text>
+                                            </View>
+                                            {active ? (
+                                                <View style={styles.savedCurrentBadge}>
+                                                    <Text style={styles.savedCurrentBadgeText}>{t("src.screens.connectscreen.current")}</Text>
+                                                </View>
+                                            ) : null}
+                                        </Pressable>
+                                    );
+                                })}
+                            </View>
+                        </GlassCard>
+                    ) : null}
+
                     <Pressable style={styles.connectHint} onPress={() => router.push("/connect" as Href)}>
                         <MaterialCommunityIcons name="lan-connect" size={16} color={colors.textMuted} />
                         <Text style={styles.connectHintText}>{t("app.login.check_the_connection_first")}</Text>
@@ -451,6 +497,71 @@ const styles = StyleSheet.create({
     },
     disabled: {
         opacity: 0.7,
+    },
+    savedConnectionsCard: {
+        gap: spacing.md,
+        backgroundColor: colors.surface,
+    },
+    savedHeaderRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: spacing.sm,
+    },
+    savedTitle: {
+        color: colors.text,
+        fontSize: 16,
+        fontWeight: "900",
+    },
+    savedHint: {
+        color: colors.textSoft,
+        fontSize: 12,
+        fontWeight: "800",
+    },
+    savedProfilesList: {
+        gap: spacing.sm,
+    },
+    savedProfileCard: {
+        minHeight: 68,
+        borderRadius: radii.md,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.sm,
+    },
+    savedProfileCardActive: {
+        borderColor: "rgba(124,58,237,0.34)",
+        backgroundColor: "rgba(124,58,237,0.035)",
+    },
+    savedProfileBody: {
+        flex: 1,
+        gap: 4,
+        minWidth: 0,
+    },
+    savedProfileTitle: {
+        color: colors.text,
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    savedProfileUrl: {
+        color: colors.textMuted,
+        fontSize: 12,
+        fontWeight: "600",
+    },
+    savedCurrentBadge: {
+        borderRadius: radii.pill,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        backgroundColor: "rgba(16,185,129,0.12)",
+    },
+    savedCurrentBadgeText: {
+        color: colors.success,
+        fontSize: 10,
+        fontWeight: "900",
     },
     connectHint: {
         flexDirection: "row",

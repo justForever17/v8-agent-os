@@ -17,6 +17,7 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
+import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { conversationGroupOrder, getConversationGroupLabel, groupConversations, type ConversationGroupKey } from "@/src/lib/conversation-groups";
 import { deleteConversation, listConversations } from "@/src/lib/phone-api";
 import { formatRelativeTime } from "@/src/lib/time";
@@ -33,9 +34,10 @@ const groupIcons: Record<ConversationGroupKey, keyof typeof MaterialCommunityIco
 };
 
 export default function SessionsScreen() {
-    const { status, activeConversationId, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, user, adminBaseUrl, activeConversationId, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
+    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -116,7 +118,7 @@ export default function SessionsScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}

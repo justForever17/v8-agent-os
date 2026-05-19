@@ -18,6 +18,7 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
+import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { openCachedFile, saveResponseToCache } from "@/src/lib/file-transfer";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import {
@@ -38,9 +39,10 @@ function normalizeParam(value: string | string[] | undefined) {
 }
 
 export default function ArtifactsScreen() {
-    const { status, adminBaseUrl, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, user, adminBaseUrl, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
+    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const params = useLocalSearchParams<{ conversationId?: string | string[]; artifactId?: string | string[] }>();
     const conversationId = normalizeParam(params.conversationId).trim();
     const artifactId = normalizeParam(params.artifactId).trim();
@@ -149,7 +151,7 @@ export default function ArtifactsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 {loading ? (
                     <LoadingScreen label={t("src.screens.artifactsscreen.syncing_artifacts")} />

@@ -29,7 +29,7 @@ type CronJob = {
     id: string;
     name: string;
     cron_expression: string;
-    action_type: "command" | "python" | "agent";
+    action_type: "command" | "python" | "agent" | "rpa";
     action_target: string;
     payload?: Record<string, unknown>;
     enabled: boolean;
@@ -376,6 +376,7 @@ export default function ScheduledTasksPage() {
             agent: jobs.filter((job) => job.action_type === "agent").length,
             command: jobs.filter((job) => job.action_type === "command").length,
             python: jobs.filter((job) => job.action_type === "python").length,
+            rpa: jobs.filter((job) => job.action_type === "rpa").length,
         }),
         [jobs],
     );
@@ -519,6 +520,7 @@ export default function ScheduledTasksPage() {
                     { label: "app.admin.dashboard.automation.cron.page.k4aad49cf", value: jobs.length, description: "app.admin.dashboard.automation.cron.page.k940f50d5" },
                     { label: "app.admin.dashboard.automation.cron.page.kdb6c0cc1", value: enabledCount, description: "app.admin.dashboard.automation.cron.page.k0172371d" },
                     { label: "app.admin.dashboard.automation.cron.page.k32c6dff4", value: runByType.agent, description: "app.admin.dashboard.automation.cron.page.k95a43d4f" },
+                    { label: "app.admin.dashboard.automation.cron.page.actionType.rpa", value: runByType.rpa, description: "app.admin.dashboard.automation.cron.page.actionType.rpaDescription" },
                     { label: "app.admin.dashboard.automation.cron.page.k0f0a35ef", value: runByType.command + runByType.python, description: "app.admin.dashboard.automation.cron.page.k5fdd739b" },
                 ]}
             />
@@ -643,6 +645,7 @@ export default function ScheduledTasksPage() {
                                     </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="agent">{t("app.admin.dashboard.automation.cron.page.k7c6312bb")}</SelectItem>
+                                        <SelectItem value="rpa">{t("app.admin.dashboard.automation.cron.page.actionType.rpa")}</SelectItem>
                                         <SelectItem value="command">{t("app.admin.dashboard.automation.cron.page.k5924d6b5")}</SelectItem>
                                         <SelectItem value="python">{t("app.admin.dashboard.automation.cron.page.ke83fbd7a")}</SelectItem>
                                     </SelectContent>

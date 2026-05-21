@@ -96,6 +96,96 @@ def test_runtime_episode_typed_handoff_artifact_for_research(monkeypatch):
     assert handoffs[-1]["payload"]["artifactId"].startswith("artifact_")
 
 
+def test_runtime_episode_rpa_prepare_draft_creates_trace_bundle(monkeypatch):
+    episode = build_runtime_episode(
+        need={
+            "kind": "rpa",
+            "source": "test",
+            "reason": "prepare rpa draft",
+            "inputs": {"draftId": "draft_canvas", "variables": {"name": "Jack"}},
+        },
+        kind="rpa",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    from runtimes.rpa.runtime import rpa_runtime
+
+    def _fake_prepare_draft_run(**kwargs):
+        assert kwargs["script_id"] == "draft_canvas"
+        assert kwargs["variables"] == {"name": "Jack"}
+        return {
+            "script": {"id": "draft_canvas"},
+            "export": {"path": "E:/tmp/draft_canvas.robot", "dryRunPassed": True},
+            "command": ["python", "-m", "robot", "E:/tmp/draft_canvas.robot"],
+        }
+
+    monkeypatch.setattr(rpa_runtime, "prepare_draft_run", _fake_prepare_draft_run)
+    runner = RuntimeEpisodeRunner()
+    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["rpa"])
+    assert claimed is not None
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = db.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "completed"
+    handoffs = db.list_runtime_episode_handoffs(episode["episodeId"])
+    payload = handoffs[-1]["payload"]
+    assert payload["kind"] == "rpa_trace_bundle"
+    assert payload["robotRefs"] == ["E:/tmp/draft_canvas.robot"]
+    assert payload["prepared"]["scriptId"] == "draft_canvas"
+    assert payload["verification"]["dryRunPassed"] is True
+
+
+def test_runtime_episode_rpa_execute_draft_uses_non_chat_run(monkeypatch):
+    episode = build_runtime_episode(
+        need={
+            "kind": "rpa",
+            "source": "test",
+            "reason": "execute rpa draft",
+            "inputs": {"draftId": "draft_canvas", "mode": "execute", "variables": {"target": "demo"}},
+        },
+        kind="rpa",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    from runtimes.rpa.runtime import rpa_runtime
+
+    def _fake_run_draft(**kwargs):
+        assert kwargs["script_id"] == "draft_canvas"
+        assert kwargs["trigger_source"] == "runtime_episode_runner"
+        assert kwargs["non_chat_run"] is True
+        assert kwargs["session_id"] is None
+        assert kwargs["run_id"] is None
+        return {
+            "status": "completed",
+            "runId": "run-rpa",
+            "sessionId": "rpa:draft:draft_canvas",
+            "script": {"id": "draft_canvas"},
+            "export": {"path": "E:/tmp/draft_canvas.robot", "dryRunPassed": True},
+            "command": ["python", "-m", "robot", "E:/tmp/draft_canvas.robot"],
+            "outcomeFamily": "success",
+        }
+
+    monkeypatch.setattr(rpa_runtime, "run_draft", _fake_run_draft)
+    runner = RuntimeEpisodeRunner()
+    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["rpa"])
+    assert claimed is not None
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = db.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "completed"
+    payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
+    assert payload["kind"] == "rpa_trace_bundle"
+    assert payload["runRefs"] == ["rpa_run:run-rpa"]
+    assert "rpa_session:rpa:draft:draft_canvas" in payload["refs"]
+    assert payload["verification"]["executionStatus"] == "completed"
+
+
 def test_child_capability_need_promotes_to_episode_and_resumes_parent(monkeypatch):
     parent = build_runtime_episode(
         need={

@@ -15,7 +15,9 @@ _BRIDGE_KEYWORD_BY_USE = {
     "page_scroll": "Page Scroll",
     "hotkey": "Hotkey",
     "wait_for_element": "Wait For Element",
+    "wait_window": "Focus Window",
     "capture_screenshot": "Capture Screenshot",
+    "screenshot": "Capture Screenshot",
     "execute_plan": "Execute Plan",
     "observe": "Observe",
     "observe_desktop": "Observe Desktop",
@@ -24,7 +26,21 @@ _BRIDGE_KEYWORD_BY_USE = {
     "type_text": "Type Text",
     "scroll": "Scroll",
     "wait": "Wait",
+    "browser_click": "Click",
+    "browser_type": "Find And Type",
+    "browser_assert": "Assert Text",
+    "browser_extract": "Observe",
+    "assert_text": "Assert Text",
+    "assert_condition": "Assert Condition",
+    "set_variable": "Set Workflow Variable",
+    "file_copy": "Copy File",
+    "http_request": "HTTP Request",
+    "ocr": "OCR",
+    "llm_call": "LLM Call",
+    "subflow": "Run Subflow",
 }
+
+_ROBOT_CONTROL_USES = {"comment", "if", "loop", "try_catch"}
 
 
 def keyword_name_for_use(use: str) -> str:
@@ -43,7 +59,8 @@ def supported_bridge_uses() -> Set[str]:
 
 
 def is_supported_bridge_use(use: str) -> bool:
-    return str(use or "").strip().lower() in supported_bridge_uses()
+    normalized = str(use or "").strip().lower()
+    return normalized in supported_bridge_uses() or normalized in _ROBOT_CONTROL_USES
 
 
 def bridge_keyword_issues(step_uses: Iterable[str]) -> List[str]:
@@ -52,6 +69,8 @@ def bridge_keyword_issues(step_uses: Iterable[str]) -> List[str]:
         normalized = str(use or "").strip().lower()
         if not normalized:
             issues.append("存在缺少 use 的步骤，无法映射 bridge keyword。")
+            continue
+        if normalized in _ROBOT_CONTROL_USES:
             continue
         if normalized not in _BRIDGE_KEYWORD_BY_USE:
             issues.append(f"步骤 use={normalized} 缺少 bridge keyword 契约。")

@@ -22,11 +22,12 @@ from erc.safety_guardian import safety_guardian
 from erc.snapshot_service import snapshot_service
 from erc.workflow_ledger import workflow_ledger_service
 from runtimes.automation.runtime import automation_runtime
+from core.runtime_episodes import build_runtime_episode, enqueue_runtime_episode
 
 class ActionExecutor:
     """
     A generic executor for running Background/Scheduled/Hook Actions.
-    Action types supported: 'command', 'python', 'agent'.
+    Action types supported: 'command', 'python', 'agent', 'rpa'.
     """
     _active_targets = set()
     _main_loop = None  # Reference to the main FastAPI event loop (captured on first async execute)
@@ -35,6 +36,134 @@ class ActionExecutor:
     def _uses_workflow_envelope(trigger_source: str | None, kwargs: Dict[str, Any]) -> bool:
         trigger = str(trigger_source or "").strip().lower()
         return trigger == "cron" or trigger.startswith("hook") or bool(kwargs.get("event_name"))
+
+    @staticmethod
+    def _normalize_rpa_route_inputs(target: str, payload: Optional[Dict[str, Any]], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        source_payload = dict(payload or {})
+        nested_payload = source_payload.get("payload") if isinstance(source_payload.get("payload"), dict) else {}
+        merged = {**dict(nested_payload or {}), **{k: v for k, v in source_payload.items() if k != "payload"}}
+        target_value = str(target or merged.get("target") or "").strip()
+        inputs: Dict[str, Any] = {
+            "mode": str(merged.get("mode") or merged.get("executionMode") or "execute").strip() or "execute",
+            "variables": merged.get("variables") if isinstance(merged.get("variables"), dict) else {},
+            "nonChatRun": True,
+            "triggerSource": kwargs.get("trigger") or kwargs.get("trigger_source"),
+            "cronJobId": kwargs.get("cron_job_id") or merged.get("cronJobId"),
+            "hookName": kwargs.get("hook_name") or merged.get("hookName"),
+            "eventName": kwargs.get("event_name") or merged.get("eventName"),
+            "sessionId": kwargs.get("session_id"),
+            "runId": kwargs.get("run_id"),
+            "source": "automation",
+        }
+        for key in ("templateId", "draftId", "scriptId", "robotFile", "traceRunId", "traceRunIds", "runIds", "cwd", "outputDir", "timeoutMs"):
+            if merged.get(key) not in (None, ""):
+                inputs[key] = merged.get(key)
+        lowered = target_value.lower()
+        if target_value and not any(inputs.get(key) for key in ("templateId", "draftId", "scriptId", "robotFile")):
+            if lowered.startswith("rpa:template:"):
+                inputs["templateId"] = target_value.split(":", 2)[2]
+            elif lowered.startswith("template:"):
+                inputs["templateId"] = target_value.split(":", 1)[1]
+            elif lowered.startswith("rpa:draft:"):
+                inputs["draftId"] = target_value.split(":", 2)[2]
+            elif lowered.startswith("draft:"):
+                inputs["draftId"] = target_value.split(":", 1)[1]
+            elif lowered.startswith("script:"):
+                inputs["scriptId"] = target_value.split(":", 1)[1]
+            elif lowered.startswith("robot:"):
+                inputs["robotFile"] = target_value.split(":", 1)[1]
+            elif lowered.endswith(".robot"):
+                inputs["robotFile"] = target_value
+            else:
+                inputs["draftId"] = target_value
+        if not any(inputs.get(key) for key in ("templateId", "draftId", "scriptId", "robotFile", "traceRunId", "traceRunIds", "runIds")):
+            inputs["mode"] = str(merged.get("mode") or "prepare")
+        return {k: v for k, v in inputs.items() if v not in (None, "", [], {})}
+
+    @classmethod
+    def _build_rpa_route_need(
+        cls,
+        *,
+        target: str,
+        payload: Optional[Dict[str, Any]],
+        kwargs: Dict[str, Any],
+        task_name: str,
+        trigger_source: str | None,
+        session_id: str,
+        run_id: str,
+    ) -> Dict[str, Any]:
+        route_kwargs = {**kwargs, "trigger_source": trigger_source, "session_id": session_id, "run_id": run_id}
+        inputs = cls._normalize_rpa_route_inputs(target, payload, route_kwargs)
+        source = "cron" if str(trigger_source or "").lower() == "cron" else "hook" if str(trigger_source or "").lower().startswith("hook") else "automation"
+        idempotency_key = str(
+            (payload or {}).get("idempotencyKey")
+            or kwargs.get("idempotency_key")
+            or f"{source}:rpa:{target}:{inputs.get('templateId') or inputs.get('draftId') or inputs.get('robotFile') or inputs.get('scriptId') or run_id}"
+        )
+        return {
+            "kind": "rpa",
+            "source": source,
+            "reason": task_name or target or "rpa automation",
+            "inputs": inputs,
+            "requiredRuntimeAccess": ["rpa.core"],
+            "targetKind": "local_runtime",
+            "targetId": "rpa",
+            "idempotencyKey": idempotency_key,
+        }
+
+    @classmethod
+    def _execute_rpa_route(
+        cls,
+        target: str,
+        payload: Dict[str, Any],
+        *,
+        run_handle,
+        task_name: str,
+        trigger_source: str | None,
+        kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        need = cls._build_rpa_route_need(
+            target=target,
+            payload=payload,
+            kwargs=kwargs,
+            task_name=task_name,
+            trigger_source=trigger_source,
+            session_id=run_handle.session_id,
+            run_id=run_handle.run_id,
+        )
+        priority = int((payload or {}).get("priority") or kwargs.get("priority") or 0)
+        episode = build_runtime_episode(
+            need=need,
+            kind="rpa",
+            state="queued",
+            required_runtime_access=["rpa.core"],
+            extra={"targetKind": "local_runtime", "targetId": "rpa"},
+        )
+        persisted = enqueue_runtime_episode(
+            episode,
+            session_id=run_handle.session_id,
+            run_id=run_handle.run_id,
+            priority=priority,
+        )
+        run_handle.emit(
+            "runtime.episode.queued",
+            {
+                "episode": persisted,
+                "episodeId": persisted.get("episodeId") or persisted.get("needId"),
+                "kind": "rpa",
+                "source": need.get("source"),
+                "target": target,
+            },
+        )
+        return {
+            "status": "queued",
+            "actionType": "rpa",
+            "target": target,
+            "episodeId": persisted.get("episodeId") or persisted.get("needId"),
+            "run_id": run_handle.run_id,
+            "session_id": run_handle.session_id,
+            "runtimeKind": "rpa",
+        }
 
     @classmethod
     def _build_automation_trigger_payload(
@@ -472,6 +601,25 @@ class ActionExecutor:
                 kwargs.setdefault("run_id", run_handle.run_id)
                 kwargs.setdefault("session_id", run_handle.session_id)
                 result = cls._execute_agent_sync(target, payload, **kwargs)
+            elif action_type in {"rpa", "rpa_runtime"}:
+                kwargs.setdefault("run_id", run_handle.run_id)
+                kwargs.setdefault("session_id", run_handle.session_id)
+                with automation_runtime.bind_execution_context(
+                    runtime_kind="automation",
+                    trigger_source=trigger_source,
+                    run_handle=run_handle,
+                    user_id=kwargs.get("user_id"),
+                    project_id=kwargs.get("project_id"),
+                    workspace_id=kwargs.get("workspace_id"),
+                ):
+                    result = cls._execute_rpa_route(
+                        target,
+                        payload,
+                        run_handle=run_handle,
+                        task_name=task_name,
+                        trigger_source=trigger_source,
+                        kwargs=kwargs,
+                    )
             else:
                 error_message = f"Unknown action type: {action_type}"
                 print(f"[ActionExecutor] {error_message}")

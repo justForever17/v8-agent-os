@@ -4517,7 +4517,8 @@ def manage_cron(
             - action_type="python": A dotted Python module path with a `run()` function (e.g. "apps.engine.scripts.cron_nightly_memo").
             - action_type="agent": A dotted Python module path containing a LangGraph `compiled_graph` (e.g. "agents.memory_agent"). 
               NOTE: This must be a valid importable Python module, NOT a display name or .md filename.
-        action_type (str, optional): "command", "python", or "agent". Auto-inferred from target if omitted.
+            - action_type="rpa": An RPA template/draft/script/robot target (e.g. "template:github-star", "draft:<id>", "path/to/flow.robot").
+        action_type (str, optional): "command", "python", "agent", or "rpa". Auto-inferred from target if omitted.
         payload (dict, optional): Keyword arguments or standard input for the target.
         name (str, optional): Human readable display name for the task.
     
@@ -4557,8 +4558,10 @@ def manage_cron(
                 return "Missing required arguments for 'add' action."
             
             # Improved action_type inference
-            if action_type in ["command", "python", "agent"]:
+            if action_type in ["command", "python", "agent", "rpa", "rpa_runtime"]:
                 inferred_type = action_type
+            elif target.startswith(("rpa:", "template:", "draft:", "script:", "robot:")) or target.endswith(".robot"):
+                inferred_type = "rpa"
             elif target.startswith("agents.") or target.startswith("graph."):
                 inferred_type = "agent"
             elif "." in target:
@@ -4616,6 +4619,7 @@ def manage_hook(
     target: str = None,
     action_type: str = None,
     name: str = None,
+    payload: dict = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Manage lifecycle event hooks in the V8Chat Engine.
@@ -4628,8 +4632,10 @@ def manage_hook(
             - action_type="python": A dotted Python module path with a `run()` function.
             - action_type="agent": A dotted Python module path containing a LangGraph `compiled_graph` (e.g. "agents.memory_agent").
               NOTE: This must be a valid importable Python module, NOT a display name or .md filename.
-        action_type (str, optional): "command", "python", or "agent". Auto-inferred from target if omitted.
+            - action_type="rpa": An RPA template/draft/script/robot target (e.g. "template:github-star", "draft:<id>", "path/to/flow.robot").
+        action_type (str, optional): "command", "python", "agent", or "rpa". Auto-inferred from target if omitted.
         name (str, optional): Human readable display name for the hook.
+        payload (dict, optional): Runtime input, variables, or execution options for the target.
     """
     try:
         if action == "add":
@@ -4661,8 +4667,10 @@ def manage_hook(
                 return "Missing required arguments for 'add' action."
             
             # Improved action_type inference
-            if action_type in ["command", "python", "agent"]:
+            if action_type in ["command", "python", "agent", "rpa", "rpa_runtime"]:
                 inferred_type = action_type
+            elif target.startswith(("rpa:", "template:", "draft:", "script:", "robot:")) or target.endswith(".robot"):
+                inferred_type = "rpa"
             elif target.startswith("agents.") or target.startswith("graph."):
                 inferred_type = "agent"
             elif "." in target:
@@ -4676,6 +4684,7 @@ def manage_hook(
                 "events": [event],
                 "type": inferred_type,
                 "target": target,
+                "payload": payload or {},
                 "async": True,
                 "enabled": True
             }

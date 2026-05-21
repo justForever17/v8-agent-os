@@ -375,7 +375,15 @@ class RobotFrameworkAdapter:
 
     def _derived_step_robot_semantic(self, script: Dict[str, Any], step: Dict[str, Any]) -> Dict[str, Any]:
         app_id = str(script.get("appId") or "").strip()
-        use = str(step.get("use") or "").strip()
+        raw_use = self._step_use(step)
+        use = {
+            "browser_click": "click_toolbar_action",
+            "browser_type": "find_and_type",
+            "browser_assert": "wait_for_element",
+            "screenshot": "capture_screenshot",
+            "scroll": "scroll_list",
+            "type_text": "find_and_type",
+        }.get(raw_use, raw_use)
         params = dict(step.get("params") or {})
         action_name = str(params.get("action_name") or params.get("toolbar_action_name") or "").strip().lower()
         step = self._profile_augmented_step(app_id, step, action_name=action_name)
@@ -643,18 +651,188 @@ class RobotFrameworkAdapter:
             return normalized
         return self._derived_step_robot_semantic(script, step)
 
-    def _custom_keyword_row(self, step: Dict[str, Any]) -> List[str]:
+    def _custom_keyword_row(self, step: Dict[str, Any], *, indent: int = 1) -> List[str]:
         params = dict(step.get("params") or {})
         args = [f"{key}={self._convert_value(value)}" for key, value in params.items() if value not in (None, "")]
-        return ["", self._keyword_name(str(step.get("use") or "")), *args]
+        return [""] * indent + [self._keyword_name(self._step_use(step)), *args]
 
-    def _native_keyword_row(self, step: Dict[str, Any], semantic: Dict[str, Any]) -> List[str]:
+    def _native_keyword_row(self, step: Dict[str, Any], semantic: Dict[str, Any], *, indent: int = 1) -> List[str]:
         arguments = [self._convert_value(value) for value in list(semantic.get("arguments") or [])]
-        return ["", str(semantic.get("keyword") or "").strip(), *arguments]
+        return [""] * indent + [str(semantic.get("keyword") or "").strip(), *arguments]
+
+    def _step_key(self, step: Dict[str, Any], index: int) -> str:
+        return str(step.get("stepId") or step.get("id") or step.get("key") or f"step:{index}").strip()
+
+    def _step_use(self, step: Dict[str, Any]) -> str:
+        return str(step.get("use") or step.get("action") or "").strip().lower()
+
+    def _step_params(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        return dict(step.get("params") or {}) if isinstance(step.get("params"), dict) else {}
+
+    def _step_body_indices(self, steps: List[Dict[str, Any]], step: Dict[str, Any]) -> List[int]:
+        params = self._step_params(step)
+        keys = [self._step_key(item, index) for index, item in enumerate(steps)]
+        current_index = next((index for index, candidate in enumerate(steps) if candidate is step), -1)
+        current_key = keys[current_index] if current_index >= 0 else ""
+        explicit_keys = [
+            str(item).strip()
+            for item in list(params.get("bodyStepKeys") or params.get("thenStepKeys") or [])
+            if str(item).strip()
+        ]
+        if explicit_keys:
+            return [index for index, key in enumerate(keys) if key in explicit_keys and key != current_key]
+        start_key = str(params.get("loopStartStepKey") or params.get("startStepKey") or "").strip()
+        end_key = str(params.get("loopEndStepKey") or params.get("endStepKey") or "").strip()
+        if not start_key or not end_key or start_key not in keys or end_key not in keys:
+            return []
+        start = keys.index(start_key)
+        end = keys.index(end_key)
+        if start > end:
+            start, end = end, start
+        return [index for index in range(start, end + 1) if keys[index] != current_key]
+
+    def _control_body_skip_indices(self, steps: List[Dict[str, Any]]) -> set[int]:
+        skip: set[int] = set()
+        for step in steps:
+            use = self._step_use(step)
+            if use not in {"loop", "if", "try_catch"}:
+                continue
+            skip.update(self._step_body_indices(steps, step))
+        return skip
+
+    def _append_regular_step_rows(
+        self,
+        lines: List[str],
+        *,
+        script: Dict[str, Any],
+        step: Dict[str, Any],
+        indent: int = 1,
+    ) -> None:
+        approval = step.get("approval") if isinstance(step.get("approval"), dict) else None
+        assessment = step.get("assessment") if isinstance(step.get("assessment"), dict) else {}
+        semantic = self._step_robot_semantic(script, step)
+        step_id = str(step.get("stepId") or "step").strip() or "step"
+        lines.append(
+            self._pipe_row(
+                [""] * indent
+                + [
+                    "Comment",
+                    f"STEP {step_id} · use={step.get('use') or step.get('action')} · intent={step.get('intent') or step.get('use') or step.get('action')}",
+                ]
+            )
+        )
+        lines.append(self._pipe_row([""] * indent + ["Log To Console", f"STEP_ID:{step_id}"]))
+        if assessment:
+            lines.append(
+                self._pipe_row(
+                    [""] * indent
+                    + [
+                        "Comment",
+                        f"STEP CONFIDENCE: {assessment.get('score')} · {assessment.get('status')}",
+                    ]
+                )
+            )
+            if assessment.get("band"):
+                lines.append(self._pipe_row([""] * indent + ["Comment", f"STEP BAND: {assessment.get('band')}"]))
+            for reason in list(assessment.get("reasons") or [])[:3]:
+                lines.append(self._pipe_row([""] * indent + ["Comment", f"STEP REVIEW: {reason}"]))
+        if approval:
+            reason = str(approval.get("reason") or approval.get("mode") or "需要审批")
+            lines.append(self._pipe_row([""] * indent + ["Comment", f"APPROVAL REQUIRED: {reason}"]))
+        if semantic.get("locator"):
+            lines.append(self._pipe_row([""] * indent + ["Comment", f"ROBOT LOCATOR: {semantic['locator']}"]))
+        for note in list(semantic.get("notes") or []):
+            lines.append(self._pipe_row([""] * indent + ["Comment", f"ROBOT NOTE: {note}"]))
+
+        native_library = str(semantic.get("library") or "").strip()
+        native_keyword = str(semantic.get("keyword") or "").strip()
+        if native_library and native_keyword and self._library_available(native_library):
+            lines.append(self._pipe_row([""] * indent + ["Comment", f"ROBOT NATIVE: {native_library} -> {native_keyword}"]))
+            lines.append(self._pipe_row(self._native_keyword_row(step, semantic, indent=indent)))
+        else:
+            if native_library and native_keyword:
+                lines.append(
+                    self._pipe_row(
+                        [""] * indent
+                        + [
+                            "Comment",
+                            f"ROBOT NATIVE UNAVAILABLE: {native_library} -> {native_keyword}，已回退到 v8chat bridge keyword",
+                        ]
+                    )
+                )
+            lines.append(self._pipe_row(self._custom_keyword_row(step, indent=indent)))
+
+    def _append_control_step_rows(
+        self,
+        lines: List[str],
+        *,
+        script: Dict[str, Any],
+        steps: List[Dict[str, Any]],
+        step: Dict[str, Any],
+        indent: int = 1,
+    ) -> bool:
+        use = self._step_use(step)
+        params = self._step_params(step)
+        if use == "comment":
+            text = str(params.get("text") or step.get("intent") or "RPA comment").strip()
+            lines.append(self._pipe_row([""] * indent + ["Comment", text]))
+            return True
+        if use == "if":
+            condition = self._convert_value(params.get("condition") or params.get("expression") or "${TRUE}")
+            lines.append(self._pipe_row([""] * indent + ["IF", condition]))
+            body = self._step_body_indices(steps, step)
+            if body:
+                for index in body:
+                    self._append_step_rows(lines, script=script, steps=steps, step=steps[index], indent=indent + 1)
+            else:
+                lines.append(self._pipe_row([""] * (indent + 1) + ["Comment", "IF body is empty."]))
+            lines.append(self._pipe_row([""] * indent + ["END"]))
+            return True
+        if use == "loop":
+            raw_count = params.get("count") or params.get("times") or 1
+            try:
+                count = max(1, int(raw_count))
+            except Exception:
+                count = 1
+            lines.append(self._pipe_row([""] * indent + ["FOR", "${rpa_loop_index}", "IN RANGE", str(count)]))
+            body = self._step_body_indices(steps, step)
+            if body:
+                for index in body:
+                    self._append_step_rows(lines, script=script, steps=steps, step=steps[index], indent=indent + 1)
+            else:
+                lines.append(self._pipe_row([""] * (indent + 1) + ["Comment", "LOOP body is empty."]))
+            lines.append(self._pipe_row([""] * indent + ["END"]))
+            return True
+        if use == "try_catch":
+            lines.append(self._pipe_row([""] * indent + ["TRY"]))
+            body = self._step_body_indices(steps, step)
+            if body:
+                for index in body:
+                    self._append_step_rows(lines, script=script, steps=steps, step=steps[index], indent=indent + 1)
+            else:
+                lines.append(self._pipe_row([""] * (indent + 1) + ["Comment", "TRY body is empty."]))
+            lines.append(self._pipe_row([""] * indent + ["EXCEPT", "AS", "${rpa_error}"]))
+            lines.append(self._pipe_row([""] * (indent + 1) + ["Log To Console", "RPA_EXCEPTION:${rpa_error}"]))
+            lines.append(self._pipe_row([""] * indent + ["END"]))
+            return True
+        return False
+
+    def _append_step_rows(
+        self,
+        lines: List[str],
+        *,
+        script: Dict[str, Any],
+        steps: List[Dict[str, Any]],
+        step: Dict[str, Any],
+        indent: int = 1,
+    ) -> None:
+        if self._append_control_step_rows(lines, script=script, steps=steps, step=step, indent=indent):
+            return
+        self._append_regular_step_rows(lines, script=script, step=step, indent=indent)
 
     def _default_robot_options(self, script: Dict[str, Any]) -> Dict[str, Any]:
         app_id = str(script.get("appId") or "desktop")
-        step_uses = {str(item.get("use") or "").strip() for item in list(script.get("steps") or []) if isinstance(item, dict)}
+        step_uses = {self._step_use(item) for item in list(script.get("steps") or []) if isinstance(item, dict)}
         has_high_risk = any(
             isinstance(item, dict) and isinstance(item.get("approval"), dict)
             for item in list(script.get("steps") or [])
@@ -786,60 +964,12 @@ class RobotFrameworkAdapter:
         task_setup = str(robot_options.get("taskSetup") or "").strip()
         if task_setup:
             lines.append(self._pipe_row(["", "[Setup]", task_setup]))
-        for step in list(script.get("steps") or []):
-            approval = step.get("approval") if isinstance(step.get("approval"), dict) else None
-            assessment = step.get("assessment") if isinstance(step.get("assessment"), dict) else {}
-            semantic = self._step_robot_semantic(script, step)
-            step_id = str(step.get("stepId") or "step").strip() or "step"
-            lines.append(
-                self._pipe_row(
-                    [
-                        "",
-                        "Comment",
-                        f"STEP {step_id} · use={step.get('use')} · intent={step.get('intent') or step.get('use')}",
-                    ]
-                )
-            )
-            lines.append(self._pipe_row(["", "Log To Console", f"STEP_ID:{step_id}"]))
-            if assessment:
-                lines.append(
-                    self._pipe_row(
-                        [
-                            "",
-                            "Comment",
-                            f"STEP CONFIDENCE: {assessment.get('score')} · {assessment.get('status')}",
-                        ]
-                    )
-                )
-                if assessment.get("band"):
-                    lines.append(self._pipe_row(["", "Comment", f"STEP BAND: {assessment.get('band')}"]))
-                for reason in list(assessment.get("reasons") or [])[:3]:
-                    lines.append(self._pipe_row(["", "Comment", f"STEP REVIEW: {reason}"]))
-            if approval:
-                reason = str(approval.get("reason") or approval.get("mode") or "需要审批")
-                lines.append(self._pipe_row(["", "Comment", f"APPROVAL REQUIRED: {reason}"]))
-            if semantic.get("locator"):
-                lines.append(self._pipe_row(["", "Comment", f"ROBOT LOCATOR: {semantic['locator']}"]))
-            for note in list(semantic.get("notes") or []):
-                lines.append(self._pipe_row(["", "Comment", f"ROBOT NOTE: {note}"]))
-
-            native_library = str(semantic.get("library") or "").strip()
-            native_keyword = str(semantic.get("keyword") or "").strip()
-            if native_library and native_keyword and self._library_available(native_library):
-                lines.append(self._pipe_row(["", "Comment", f"ROBOT NATIVE: {native_library} -> {native_keyword}"]))
-                lines.append(self._pipe_row(self._native_keyword_row(step, semantic)))
-            else:
-                if native_library and native_keyword:
-                    lines.append(
-                        self._pipe_row(
-                            [
-                                "",
-                                "Comment",
-                                f"ROBOT NATIVE UNAVAILABLE: {native_library} -> {native_keyword}，已回退到 v8chat bridge keyword",
-                            ]
-                        )
-                    )
-                lines.append(self._pipe_row(self._custom_keyword_row(step)))
+        steps = [step for step in list(script.get("steps") or []) if isinstance(step, dict)]
+        skip_indices = self._control_body_skip_indices(steps)
+        for index, step in enumerate(steps):
+            if index in skip_indices:
+                continue
+            self._append_step_rows(lines, script=script, steps=steps, step=step)
         task_teardown = str(robot_options.get("taskTeardown") or "").strip()
         if task_teardown:
             lines.append(self._pipe_row(["", "[Teardown]", task_teardown]))
@@ -852,7 +982,7 @@ class RobotFrameworkAdapter:
         for index, step in enumerate(list(script.get("steps") or []), start=1):
             if not isinstance(step, dict):
                 continue
-            use = str(step.get("use") or "").strip()
+            use = self._step_use(step)
             step_uses.append(use)
             semantic = self._step_robot_semantic(script, step)
             native_library = str(semantic.get("library") or "").strip()

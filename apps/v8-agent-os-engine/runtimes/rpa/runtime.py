@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -14,6 +15,7 @@ from typing import Any, Dict, Optional
 from core.audit_logger import audit_logger
 from core.database import db
 from core.realtime_protocol import utc_now_iso
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 from erc.kernel import erc_kernel
 from erc.runtime_context import bind_runtime_context
 from erc.runtime_control import apply_control_signal, consume_stop_signal
@@ -70,6 +72,23 @@ def _native_hotkey_backend_capability() -> Dict[str, Any]:
         "available": False,
         "fallback": "fallback_overlay",
     }
+
+
+def _capture_assistant_log_path(recording_id: str) -> Path:
+    safe_id = _slug(recording_id, fallback="recording")
+    log_dir = V8_AGENT_OS_HOME / "logs" / "rpa_capture_assistant"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{safe_id}-{uuid.uuid4().hex[:8]}.log"
+
+
+def _tail_text_file(path: str | Path | None, *, max_chars: int = 2400) -> str:
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    return text[-max_chars:].strip()
 
 
 def _is_process_running(pid: int) -> bool:
@@ -1558,7 +1577,9 @@ class RPARuntime:
             "--mode",
             str(payload.get("mode") or "capture_only"),
             "--hotkey",
-            str(payload.get("hotkey") or "ctrl+alt+c"),
+            str(payload.get("hotkey") or native_capability.get("hotkey") or "ctrl+alt+c"),
+            "--cancel-hotkey",
+            str(payload.get("cancelHotkey") or payload.get("cancel_hotkey") or native_capability.get("cancelHotkey") or "ctrl+alt+x"),
             "--backend",
             resolved_backend,
         ]
@@ -1571,10 +1592,12 @@ class RPARuntime:
             command.extend(["--target-window-title", str(prepared_target.get("title"))])
         if prepared_target.get("handle") is not None:
             command.extend(["--target-window-handle", str(prepared_target.get("handle"))])
+        log_path = _capture_assistant_log_path(recording_id)
+        log_handle = log_path.open("a", encoding="utf-8", errors="replace")
         popen_kwargs: Dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -1584,17 +1607,57 @@ class RPARuntime:
                 **popen_kwargs,
             )
         except Exception as exc:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
             return {
                 "ok": False,
                 "status": "capture_assistant_unavailable",
                 "reason": str(exc),
                 "recording": recording,
             }
+        finally:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
+        time.sleep(0.2)
+        exit_code = process.poll()
+        if exit_code is not None:
+            diagnostic_tail = _tail_text_file(log_path)
+            assistant = {
+                "state": "failed",
+                "mode": payload.get("mode") or "capture_only",
+                "processId": process.pid,
+                "exitCode": exit_code,
+                "hotkey": payload.get("hotkey") or native_capability.get("hotkey") or "ctrl+alt+c",
+                "cancelHotkey": payload.get("cancelHotkey") or payload.get("cancel_hotkey") or native_capability.get("cancelHotkey") or "ctrl+alt+x",
+                "targetLock": target_lock,
+                "startedAt": utc_now_iso(),
+                "failedAt": utc_now_iso(),
+                "persistent": bool(payload.get("persistent")),
+                "recordAndForward": bool(payload.get("recordAndForward")),
+                "prepared": prepared,
+                "captureBackend": resolved_backend,
+                "nativeHotkeyBackend": native_capability,
+                "logPath": str(log_path),
+                "diagnosticTail": diagnostic_tail,
+            }
+            updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+            return {
+                "ok": False,
+                "status": "capture_assistant_failed",
+                "reason": diagnostic_tail or f"Capture assistant exited immediately with code {exit_code}.",
+                "assistant": assistant,
+                "recording": updated,
+            }
         assistant = {
             "state": "active",
             "mode": payload.get("mode") or "capture_only",
             "processId": process.pid,
-            "hotkey": payload.get("hotkey") or "ctrl+alt+c",
+            "hotkey": payload.get("hotkey") or native_capability.get("hotkey") or "ctrl+alt+c",
+            "cancelHotkey": payload.get("cancelHotkey") or payload.get("cancel_hotkey") or native_capability.get("cancelHotkey") or "ctrl+alt+x",
             "targetLock": target_lock,
             "startedAt": utc_now_iso(),
             "persistent": bool(payload.get("persistent")),
@@ -1602,6 +1665,7 @@ class RPARuntime:
             "prepared": prepared,
             "captureBackend": resolved_backend,
             "nativeHotkeyBackend": native_capability,
+            "logPath": str(log_path),
         }
         updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
         return {
@@ -1619,9 +1683,18 @@ class RPARuntime:
         pid = assistant.get("processId")
         running = _is_process_running(pid) if isinstance(pid, int) else False
         if assistant:
-            assistant["state"] = "active" if running and assistant.get("state") == "active" else assistant.get("state") or ("active" if running else "stopped")
+            previous_state = str(assistant.get("state") or "")
+            terminal_states = {"captured", "cancelled", "failed", "stopped"}
+            if running:
+                assistant["state"] = previous_state if previous_state in terminal_states else "active"
+            else:
+                assistant["state"] = previous_state if previous_state in terminal_states else "stopped"
             assistant["lastPolledAt"] = utc_now_iso()
             assistant["processRunning"] = running
+            if not running and not str(assistant.get("diagnosticTail") or "").strip():
+                diagnostic_tail = _tail_text_file(assistant.get("logPath"))
+                if diagnostic_tail:
+                    assistant["diagnosticTail"] = diagnostic_tail
             recording = self.recording_manager.update_capture_assistant(recording_id, assistant)
         return {
             "ok": True,

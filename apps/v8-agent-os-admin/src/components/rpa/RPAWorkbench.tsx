@@ -1,7 +1,7 @@
 "use client";
 
-import { type DragEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, FileCode2, GitBranch, MousePointerClick, Pause, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Square, Trash2, Video, Wand2 } from "lucide-react";
+import { type DragEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, FileCode2, GitBranch, MousePointerClick, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Video, Wand2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -576,6 +576,64 @@ function firstString(...values: unknown[]) {
   }
   return "";
 }
+function hotkeyKeyLabel(key: string) {
+  const normalized = String(key || "").trim();
+  if (!normalized) return "";
+  const named: Record<string, string> = {
+    " ": "Space",
+    Alt: "Alt",
+    AltGraph: "AltGraph",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+    ArrowUp: "ArrowUp",
+    Backspace: "Backspace",
+    Control: "Ctrl",
+    Delete: "Delete",
+    End: "End",
+    Enter: "Enter",
+    Escape: "Esc",
+    Home: "Home",
+    Insert: "Insert",
+    Meta: "Win",
+    PageDown: "PageDown",
+    PageUp: "PageUp",
+    Shift: "Shift",
+    Tab: "Tab",
+  };
+  if (named[normalized]) return named[normalized];
+  if (/^F([1-9]|1\d|2[0-4])$/i.test(normalized)) return normalized.toUpperCase();
+  if (normalized.length === 1) return normalized.toUpperCase();
+  return normalized;
+}
+function hotkeySequenceFromKeyboardEvent(event: KeyboardEvent<HTMLInputElement>) {
+  const key = hotkeyKeyLabel(event.key);
+  if (!key || key === "Backspace" || key === "Delete") return "";
+  if (key === "Esc") return null;
+  const modifiers: string[] = [];
+  if (event.ctrlKey || key === "Ctrl") modifiers.push("Ctrl");
+  if (event.altKey || key === "Alt" || key === "AltGraph") modifiers.push(key === "AltGraph" ? "AltGraph" : "Alt");
+  if (event.shiftKey || key === "Shift") modifiers.push("Shift");
+  if (event.metaKey || key === "Win") modifiers.push("Win");
+  const isModifierOnly = ["Ctrl", "Alt", "AltGraph", "Shift", "Win"].includes(key);
+  const parts = [...new Set(modifiers)];
+  if (!isModifierOnly && !parts.includes(key)) parts.push(key);
+  return parts.join("+");
+}
+function captureHotkeyInput(event: KeyboardEvent<HTMLInputElement>, setValue: (value: string) => void) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Backspace" || event.key === "Delete") {
+    setValue("");
+    return;
+  }
+  const value = hotkeySequenceFromKeyboardEvent(event);
+  if (value === null) {
+    event.currentTarget.blur();
+    return;
+  }
+  if (value) setValue(value);
+}
 function collectCandidateRecords(value: unknown, out: Record<string, unknown>[] = [], depth = 0) {
   if (depth > 4 || out.length >= 30) return out;
   if (Array.isArray(value)) {
@@ -732,23 +790,10 @@ export function RPAWorkbench() {
   const [outputDir, setOutputDir] = useState("");
   const [timeoutMs, setTimeoutMs] = useState("600000");
   const [latestResult, setLatestResult] = useState<unknown>(null);
-  const [recordings, setRecordings] = useState<RecordingSessionPayload[]>([]);
   const [activeRecording, setActiveRecording] = useState<RecordingSessionPayload | null>(null);
   const [recordingName, setRecordingName] = useState("");
   const [recordingGoal, setRecordingGoal] = useState("");
-  const [recordingTargetMode, setRecordingTargetMode] = useState("agent_browser");
-  const [recordingBrowserKind, setRecordingBrowserKind] = useState("chrome");
-  const [recordingAppId, setRecordingAppId] = useState("desktop");
-  const [recordingAction, setRecordingAction] = useState("click");
-  const [recordingIntent, setRecordingIntent] = useState("");
-  const [recordingSelector, setRecordingSelector] = useState("");
-  const [recordingX, setRecordingX] = useState("");
-  const [recordingY, setRecordingY] = useState("");
-  const [recordingVariableName, setRecordingVariableName] = useState("");
-  const [recordingSensitive, setRecordingSensitive] = useState(false);
-  const [recordingParamsText, setRecordingParamsText] = useState("{}");
   const [desktopLiveSessionId, setDesktopLiveSessionId] = useState("");
-  const [desktopLiveError, setDesktopLiveError] = useState("");
   const [desktopLiveLoading, setDesktopLiveLoading] = useState(false);
   const [latestComputerObservation, setLatestComputerObservation] = useState<Record<string, unknown> | null>(null);
   const [computerSampling, setComputerSampling] = useState(false);
@@ -757,6 +802,8 @@ export function RPAWorkbench() {
   const [browserCapturePolling, setBrowserCapturePolling] = useState(false);
   const [captureAssistantActive, setCaptureAssistantActive] = useState(false);
   const [captureAssistantStage, setCaptureAssistantStage] = useState<"idle" | "creating" | "preparing" | "starting" | "active" | "captured" | "failed">("idle");
+  const [captureHotkey, setCaptureHotkey] = useState("Ctrl+Alt+C");
+  const [captureCancelHotkey, setCaptureCancelHotkey] = useState("Ctrl+Alt+X");
   const [computerApps, setComputerApps] = useState<ComputerUseAppPayload[]>([]);
   const [computerAppsLoading, setComputerAppsLoading] = useState(false);
   const [computerAppsError, setComputerAppsError] = useState("");
@@ -764,8 +811,6 @@ export function RPAWorkbench() {
   const [appSearch, setAppSearch] = useState("");
   const [studioRightPanel, setStudioRightPanel] = useState<"properties" | "variables" | "elements" | "runs" | "diagnostics">("properties");
   const [showLegacyPanel, setShowLegacyPanel] = useState(false);
-  const liveImageRef = useRef<HTMLImageElement | null>(null);
-  const liveDragStartRef = useRef<{ x: number; y: number; mapping: Record<string, unknown> } | null>(null);
   const [draftStepEdits, setDraftStepEdits] = useState<Record<string, string>>({});
   const [draftStepOrder, setDraftStepOrder] = useState<string[]>([]);
   const [draftEditorView, setDraftEditorView] = useState<"steps" | "canvas">("canvas");
@@ -779,6 +824,8 @@ export function RPAWorkbench() {
     step: safeJsonParse<EditableDraftStep | null>(draftStepEdits[key] || "", null)
   })).filter((item): item is { key: string; step: EditableDraftStep } => !!item.step), [draftStepEdits, draftStepOrder]);
   const selectedBuilderStep = useMemo(() => orderedDraftSteps.find(item => item.key === selectedDraftStepKey)?.step || null, [orderedDraftSteps, selectedDraftStepKey]);
+  const selectedBuilderParams = useMemo(() => isPlainRecord(selectedBuilderStep?.params) ? selectedBuilderStep.params : {}, [selectedBuilderStep]);
+  const selectedStepAppId = useMemo(() => firstString(selectedBuilderParams.appId, selectedBuilderParams.app, selectedBuilderParams.applicationId), [selectedBuilderParams]);
   const draftActionOptions = useMemo(() => [
     ["open_app", t("components.rpa.RPAWorkbench.actionOpenApp")],
     ["wait", t("components.rpa.RPAWorkbench.actionWait")],
@@ -815,17 +862,51 @@ export function RPAWorkbench() {
       actions: [["set_variable", t("components.rpa.RPAWorkbench.studioActionSetVariable")], ["file_copy", t("components.rpa.RPAWorkbench.studioActionFileCopy")], ["http_request", t("components.rpa.RPAWorkbench.studioActionHttpRequest")], ["ocr", t("components.rpa.RPAWorkbench.studioActionOcr")], ["llm_call", t("components.rpa.RPAWorkbench.studioActionLlmCall")], ["assert_text", t("components.rpa.RPAWorkbench.studioActionAssertText")]]
     }
   ] as Array<{ key: string; title: string; actions: Array<[string, string]> }>, [t]);
+  const canvasLaunchStep = useMemo(() => {
+    const selectedAction = stepActionName(selectedBuilderStep);
+    if (selectedBuilderStep && actionKind(selectedAction) === "app") {
+      return selectedBuilderStep;
+    }
+    return orderedDraftSteps.find(item => {
+      const action = stepActionName(item.step);
+      if (actionKind(action) !== "app") {
+        return false;
+      }
+      const params = isPlainRecord(item.step.params) ? item.step.params : {};
+      return Boolean(firstString(params.appId, params.app, params.applicationId));
+    })?.step || orderedDraftSteps.find(item => actionKind(stepActionName(item.step)) === "app")?.step || null;
+  }, [orderedDraftSteps, selectedBuilderStep]);
+  const canvasLaunchParams = useMemo(() => isPlainRecord(canvasLaunchStep?.params) ? canvasLaunchStep.params : {}, [canvasLaunchStep]);
+  const canvasTargetAppId = useMemo(() => {
+    const fromStep = firstString(canvasLaunchParams.appId, canvasLaunchParams.app, canvasLaunchParams.applicationId);
+    return fromStep || selectedDraft?.appId || "desktop";
+  }, [canvasLaunchParams, selectedDraft]);
+  const hasBrowserStep = useMemo(() => orderedDraftSteps.some(item => actionKind(stepActionName(item.step)) === "browser"), [orderedDraftSteps]);
+  const canvasTargetMode = useMemo(() => {
+    if (canvasTargetAppId === "agent_browser" || hasBrowserStep) {
+      return "agent_browser";
+    }
+    if (!canvasTargetAppId || canvasTargetAppId === "desktop") {
+      return "desktop_window";
+    }
+    return "launch_app";
+  }, [canvasTargetAppId, hasBrowserStep]);
   const selectedComputerApp = useMemo(() => computerApps.find(app => {
     const appId = String(app.appId || app.id || app.profileId || "");
-    return appId === recordingAppId;
-  }) || null, [computerApps, recordingAppId]);
-  const selectedComputerAppLabel = selectedComputerApp?.displayName || selectedComputerApp?.name || (recordingAppId === "desktop" ? t("components.rpa.RPAWorkbench.studioManualDesktop") : recordingAppId) || "desktop";
+    return appId === canvasTargetAppId;
+  }) || null, [computerApps, canvasTargetAppId]);
+  const selectedStepComputerApp = useMemo(() => computerApps.find(app => {
+    const appId = String(app.appId || app.id || app.profileId || "");
+    return Boolean(selectedStepAppId) && appId === selectedStepAppId;
+  }) || null, [computerApps, selectedStepAppId]);
+  const selectedComputerAppLabel = selectedComputerApp?.displayName || selectedComputerApp?.name || (canvasTargetAppId === "desktop" ? t("components.rpa.RPAWorkbench.studioManualDesktop") : canvasTargetAppId) || "desktop";
+  const selectedStepComputerAppLabel = selectedStepComputerApp?.displayName || selectedStepComputerApp?.name || (selectedStepAppId === "desktop" ? t("components.rpa.RPAWorkbench.studioManualDesktop") : selectedStepAppId) || t("components.rpa.RPAWorkbench.studioAppToLaunchPlaceholder");
   const targetLockLooksLikeAdmin = useMemo(() => /v8 agent os|v8 os|localhost:9528|127\.0\.0\.1:9528|admin/i.test([
-    recordingAppId,
+    canvasTargetAppId,
     selectedComputerApp?.displayName,
     selectedComputerApp?.name,
     selectedComputerApp?.topWindowTitle
-  ].filter(Boolean).join(" ")), [recordingAppId, selectedComputerApp]);
+  ].filter(Boolean).join(" ")), [canvasTargetAppId, selectedComputerApp]);
   const appPickerOptions = useMemo(() => {
     const query = appSearch.trim().toLowerCase();
     const normalize = (value: unknown) => String(value || "").toLowerCase();
@@ -888,7 +969,6 @@ export function RPAWorkbench() {
     ["runs", t("components.rpa.RPAWorkbench.studioPanelRuns")],
     ["diagnostics", t("components.rpa.RPAWorkbench.studioPanelDiagnostics")]
   ] as Array<[typeof studioRightPanel, string]>, [t]);
-  const selectedBuilderParams = useMemo(() => isPlainRecord(selectedBuilderStep?.params) ? selectedBuilderStep.params : {}, [selectedBuilderStep]);
   const selectedBuilderTarget = useMemo(() => isPlainRecord(selectedBuilderStep?.target) ? selectedBuilderStep.target : {}, [selectedBuilderStep]);
   const selectedBuilderSelector = useMemo(() => isPlainRecord(selectedBuilderTarget.selector) ? selectedBuilderTarget.selector : {}, [selectedBuilderTarget]);
   const selectedBuilderCoordinate = useMemo(() => isPlainRecord((selectedBuilderStep as Record<string, unknown> | null)?.coordinate) ? (selectedBuilderStep as Record<string, unknown>).coordinate as Record<string, unknown> : {}, [selectedBuilderStep]);
@@ -908,11 +988,19 @@ export function RPAWorkbench() {
     };
     return t(keyByStage[captureAssistantStage]);
   }, [captureAssistantStage, t]);
+  const displayCaptureHotkey = captureHotkey.trim() || "Ctrl+Alt+C";
+  const displayCaptureCancelHotkey = captureCancelHotkey.trim() || "Ctrl+Alt+X";
   const nativeHotkeyBackend = useMemo(() => {
     const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
     const backend = assistant.nativeHotkeyBackend;
     return isPlainRecord(backend) ? backend : null;
   }, [activeRecording]);
+  const captureAssistantDiagnostic = useMemo(() => {
+    const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
+    const result = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
+    const resultAssistant = isPlainRecord(result.assistant) ? result.assistant as Record<string, unknown> : {};
+    return firstString(result.diagnosticTail, result.reason, result.error, resultAssistant.diagnosticTail, resultAssistant.lastError, assistant.diagnosticTail, assistant.lastError);
+  }, [activeRecording, latestResult]);
   const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
   const selectableElements = useMemo(() => [
     ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
@@ -942,7 +1030,6 @@ export function RPAWorkbench() {
     setStepValidation(null);
     setRecordingName(selectedDraft.name || "");
     setRecordingGoal(selectedDraft.goal || "");
-    setRecordingAppId(selectedDraft.appId || "desktop");
     setStudioDirty(false);
     setDraftVariableRows((selectedDraft.variables || []).map((variable, index) => ({
       id: `${selectedDraft.id}:var:${index}:${variable.name || "var"}`,
@@ -961,15 +1048,13 @@ export function RPAWorkbench() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [availabilityRes, draftsRes, scriptsRes, templatesRes, recordingsRes, approvalsRes, runsRes] = await Promise.all([fetch("/api/rpa/availability", {
+      const [availabilityRes, draftsRes, scriptsRes, templatesRes, approvalsRes, runsRes] = await Promise.all([fetch("/api/rpa/availability", {
         cache: "no-store"
       }), fetch(`/api/rpa/drafts?includeArchived=${showArchivedDrafts ? "true" : "false"}`, {
         cache: "no-store"
       }), fetch("/api/rpa/scripts", {
         cache: "no-store"
       }), fetch(`/api/rpa/templates?includeArchived=${showArchivedTemplates ? "true" : "false"}`, {
-        cache: "no-store"
-      }), fetch("/api/rpa/recordings?limit=12", {
         cache: "no-store"
       }), fetch("/api/approvals?status=pending", {
         cache: "no-store"
@@ -980,18 +1065,15 @@ export function RPAWorkbench() {
       const nextDraftsPayload = draftsRes.ok ? await draftsRes.json() : {};
       const nextScriptsPayload = scriptsRes.ok ? await scriptsRes.json() : {};
       const nextTemplatesPayload = templatesRes.ok ? await templatesRes.json() : {};
-      const nextRecordingsPayload = recordingsRes.ok ? await recordingsRes.json() : {};
       const approvalsData = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
       const runsData = runsRes.ok ? await runsRes.json().catch(() => ({})) : {};
       setAvailability(nextAvailability || {});
       const nextDrafts = Array.isArray(nextDraftsPayload?.drafts) ? nextDraftsPayload.drafts : [];
       const nextScripts = Array.isArray(nextScriptsPayload?.scripts) ? nextScriptsPayload.scripts : [];
       const nextTemplates = Array.isArray(nextTemplatesPayload?.templates) ? nextTemplatesPayload.templates : [];
-      const nextRecordings = Array.isArray(nextRecordingsPayload?.recordings) ? nextRecordingsPayload.recordings : [];
       setDrafts(nextDrafts);
       setScripts(nextScripts);
       setTemplates(nextTemplates);
-      setRecordings(nextRecordings);
       setTemplateSummary(nextTemplatesPayload?.summary || {});
       setApprovals(Array.isArray(approvalsData?.approvals) ? approvalsData.approvals : []);
       setRuns(Array.isArray(runsData?.runs) ? runsData.runs : []);
@@ -1163,7 +1245,6 @@ export function RPAWorkbench() {
   });
   const handlePrepareDesktopLive = async () => {
     setDesktopLiveLoading(true);
-    setDesktopLiveError("");
     try {
       const res = await fetch("/api/desktop-live/session", {
         method: "POST",
@@ -1181,31 +1262,11 @@ export function RPAWorkbench() {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.desktopLiveFailed");
-      setDesktopLiveError(message);
       toast({
         variant: "destructive",
         title: t("components.rpa.RPAWorkbench.desktopLiveFailed"),
         description: message
       });
-    } finally {
-      setDesktopLiveLoading(false);
-    }
-  };
-  const handleReleaseDesktopLive = async () => {
-    const sessionId = desktopLiveSessionId;
-    if (!sessionId) return;
-    setDesktopLiveLoading(true);
-    try {
-      await fetch("/api/desktop-live/release", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          sessionId
-        })
-      });
-      setDesktopLiveSessionId("");
     } finally {
       setDesktopLiveLoading(false);
     }
@@ -1225,7 +1286,7 @@ export function RPAWorkbench() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        appId: recordingAppId.trim() || undefined,
+        appId: canvasTargetAppId === "desktop" ? undefined : canvasTargetAppId,
         windowTitle: firstString(latestComputerObservation?.summary && isPlainRecord(latestComputerObservation.summary) ? latestComputerObservation.summary.windowTitle : undefined)
       })
     }), t("components.rpa.RPAWorkbench.browserCaptureStarted"));
@@ -1243,7 +1304,7 @@ export function RPAWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          appId: recordingAppId.trim() || undefined,
+          appId: canvasTargetAppId === "desktop" ? undefined : canvasTargetAppId,
           maxEvents: 80
         })
       });
@@ -1277,23 +1338,7 @@ export function RPAWorkbench() {
     } finally {
       setBrowserCapturePolling(false);
     }
-  }, [activeRecording?.recordingSessionId, browserCapturePolling, recordingAppId, t, toast]);
-  const handleBrowserCaptureStop = async () => {
-    if (!activeRecording?.recordingSessionId) return;
-    const data = await runAction(`recording:browser-stop:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/browser-capture/stop`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        appId: recordingAppId.trim() || undefined
-      })
-    }), t("components.rpa.RPAWorkbench.browserCaptureStopped"));
-    if (data?.recording) {
-      setActiveRecording(data.recording as RecordingSessionPayload);
-    }
-    setBrowserCaptureActive(false);
-  };
+  }, [activeRecording?.recordingSessionId, browserCapturePolling, canvasTargetAppId, t, toast]);
   useEffect(() => {
     if (!browserCaptureActive || !activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
       return;
@@ -1313,12 +1358,12 @@ export function RPAWorkbench() {
   }, []);
 
   const buildRecordingStartPayload = () => {
-    const targetAppId = recordingAppId.trim() || String(selectedComputerApp?.appId || selectedComputerApp?.id || selectedComputerApp?.profileId || "desktop");
+    const targetAppId = canvasTargetAppId || String(selectedComputerApp?.appId || selectedComputerApp?.id || selectedComputerApp?.profileId || "desktop");
     return {
       name: recordingName.trim() || undefined,
-      goal: recordingGoal.trim() || recordingName.trim() || undefined,
-      targetMode: recordingTargetMode,
-      browserKind: recordingTargetMode === "agent_browser" ? recordingBrowserKind : undefined,
+      goal: recordingGoal.trim() || recordingName.trim() || selectedDraft?.goal || undefined,
+      targetMode: canvasTargetMode,
+      browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
       appId: targetAppId,
       activeApp: selectedComputerApp ? {
         appId: targetAppId,
@@ -1329,10 +1374,10 @@ export function RPAWorkbench() {
       } : undefined,
       targetLock: {
         enabled: true,
-        mode: recordingTargetMode,
+        mode: canvasTargetMode,
         appId: targetAppId,
         label: selectedComputerAppLabel,
-        browserKind: recordingTargetMode === "agent_browser" ? recordingBrowserKind : undefined,
+        browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
         ignoreAdminSurface: true,
         consoleTargetBlocked: targetLockLooksLikeAdmin
       },
@@ -1357,7 +1402,6 @@ export function RPAWorkbench() {
     setStepValidation(null);
     setRecordingName("");
     setRecordingGoal("");
-    setRecordingAppId("desktop");
     setLatestResult(null);
     setStudioDirty(false);
   };
@@ -1387,7 +1431,7 @@ export function RPAWorkbench() {
     return {
       name: options?.saveAs ? `${baseName} Copy` : baseName,
       goal: recordingGoal.trim() || selectedDraft?.goal || recordingName.trim() || undefined,
-      appId: recordingAppId.trim() || selectedDraft?.appId || "desktop",
+      appId: canvasTargetAppId || selectedDraft?.appId || "desktop",
       steps,
       variables,
       objectLibrary: objectLibraryItems,
@@ -1482,8 +1526,8 @@ export function RPAWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          mode: recordingTargetMode,
-          appId: recordingAppId.trim() || "desktop",
+          mode: canvasTargetMode,
+          appId: canvasTargetAppId || "desktop",
           label: selectedComputerAppLabel,
           ignoreAdminSurface: true,
           consoleTargetBlocked: targetLockLooksLikeAdmin,
@@ -1505,26 +1549,31 @@ export function RPAWorkbench() {
           action: "click",
           backend: "auto",
           mode: "capture_only",
-          hotkey: "ctrl+alt+c",
+          hotkey: displayCaptureHotkey,
+          cancelHotkey: displayCaptureCancelHotkey,
           persistent: true,
           recordAndForward,
           targetLock: {
             enabled: true,
-            mode: recordingTargetMode,
-            appId: recordingAppId.trim() || "desktop",
+            mode: canvasTargetMode,
+            appId: canvasTargetAppId || "desktop",
             label: selectedComputerAppLabel,
             ignoreAdminSurface: true,
             consoleTargetBlocked: targetLockLooksLikeAdmin,
           },
         })
       }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"));
-      if (data?.ok !== false) {
-        setCaptureAssistantActive(true);
-        setCaptureAssistantStage("active");
-        window.setTimeout(() => {
-          void refreshRecording(recording.recordingSessionId);
-        }, 1800);
+      if (data?.recording) {
+        setActiveRecording(data.recording as RecordingSessionPayload);
       }
+      if (data?.ok === false) {
+        throw new Error(data?.reason || data?.detail || data?.error || t("components.rpa.RPAWorkbench.studioCaptureAssistantFailed"));
+      }
+      setCaptureAssistantActive(true);
+      setCaptureAssistantStage("active");
+      window.setTimeout(() => {
+        void refreshRecording(recording.recordingSessionId);
+      }, 1800);
     } catch (error) {
       setCaptureAssistantStage("failed");
       toast({
@@ -1553,6 +1602,7 @@ export function RPAWorkbench() {
   };
   const handleCaptureAssistantPoll = useCallback(async (options?: { quiet?: boolean }) => {
     if (!activeRecording?.recordingSessionId) return;
+    const previousPoolCount = Array.isArray(activeRecording.capturePool) ? activeRecording.capturePool.length : 0;
     try {
       const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-assistant/poll`, {
         method: "POST",
@@ -1567,12 +1617,24 @@ export function RPAWorkbench() {
         }
         return;
       }
-      if (data?.recording) {
-        setActiveRecording(data.recording as RecordingSessionPayload);
+      const nextRecording = data?.recording as RecordingSessionPayload | undefined;
+      if (nextRecording) {
+        setActiveRecording(nextRecording);
       }
-      if (typeof data?.active === "boolean") {
-        setCaptureAssistantActive(Boolean(data.active));
-        setCaptureAssistantStage(data.active ? "active" : "captured");
+      const processRunning = typeof data?.processRunning === "boolean" ? Boolean(data.processRunning) : typeof data?.active === "boolean" ? Boolean(data.active) : undefined;
+      const nextPoolCount = Array.isArray(nextRecording?.capturePool) ? nextRecording.capturePool.length : previousPoolCount;
+      const assistantState = firstString((data?.assistant as Record<string, unknown> | undefined)?.state);
+      if (typeof processRunning === "boolean") {
+        setCaptureAssistantActive(processRunning);
+        if (assistantState === "captured" || nextPoolCount > previousPoolCount) {
+          setCaptureAssistantStage("captured");
+        } else if (processRunning) {
+          setCaptureAssistantStage("active");
+        } else if (captureAssistantStage === "active" || captureAssistantStage === "starting") {
+          setCaptureAssistantStage("failed");
+        }
+      } else if (nextPoolCount > previousPoolCount) {
+        setCaptureAssistantStage("captured");
       }
       setLatestResult(data);
     } catch (error) {
@@ -1584,7 +1646,7 @@ export function RPAWorkbench() {
         });
       }
     }
-  }, [activeRecording?.recordingSessionId, t, toast]);
+  }, [activeRecording?.capturePool, activeRecording?.recordingSessionId, captureAssistantStage, t, toast]);
   useEffect(() => {
     if (!captureAssistantActive || !activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
       return;
@@ -1661,86 +1723,6 @@ export function RPAWorkbench() {
       description: captureItemLabel(item)
     });
   };
-  const submitRecordingEvent = async (payload: Record<string, unknown>) => {
-    if (!activeRecording?.recordingSessionId) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
-        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
-      });
-      return null;
-    }
-    const data = await runAction(`recording:event:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/events`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    }), t("components.rpa.RPAWorkbench.recordingEventAdded"));
-    if (data?.recording) {
-      setActiveRecording(data.recording as RecordingSessionPayload);
-    }
-    return data;
-  };
-  const captureComputerObservation = async (options?: {
-    toastResult?: boolean;
-    updateForm?: boolean;
-  }) => {
-    const res = await fetch("/api/computer-use/observe", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        goal: "rpa_recording_observe",
-        depthLimit: 4,
-        elementLimit: 30,
-        includeScreenshot: false
-      })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.detail || data?.error || t("components.rpa.RPAWorkbench.computerSampleFailed"));
-    }
-    const candidates = extractObservationCandidates(data);
-    const summary = summarizeObservation(data, candidates);
-    setLatestComputerObservation({
-      summary,
-      candidates: candidates.slice(0, 5)
-    });
-    if (options?.updateForm !== false) {
-      const selector = candidateSelector(candidates[0]);
-      if (selector) {
-        setRecordingSelector(selector);
-      }
-      if (summary.windowTitle) {
-        let currentParams: Record<string, unknown> = {};
-        try {
-          currentParams = parseJsonObject(recordingParamsText);
-        } catch {
-          currentParams = {};
-        }
-        setRecordingParamsText(JSON.stringify({
-          ...currentParams,
-          observedWindowTitle: summary.windowTitle
-        }, null, 2));
-      }
-    }
-    setLatestResult(data);
-    if (options?.toastResult) {
-      toast({
-        title: t("components.rpa.RPAWorkbench.computerSampled"),
-        description: candidates.length ? t("components.rpa.RPAWorkbench.computerSampleCandidates", {
-          count: candidates.length
-        }) : t("components.rpa.RPAWorkbench.computerSampleNoCandidates")
-      });
-    }
-    return {
-      summary,
-      candidates,
-      raw: data
-    };
-  };
   const handleSampleComputerUse = async () => {
     setComputerSampling(true);
     try {
@@ -1755,8 +1737,8 @@ export function RPAWorkbench() {
         },
         body: JSON.stringify({
           target: {
-            mode: recordingTargetMode,
-            appId: recordingAppId.trim() || "desktop",
+            mode: canvasTargetMode,
+            appId: canvasTargetAppId || "desktop",
             label: selectedComputerAppLabel,
             ignoreAdminSurface: true,
             consoleTargetBlocked: targetLockLooksLikeAdmin,
@@ -1790,22 +1772,6 @@ export function RPAWorkbench() {
         summary,
         candidates: candidates.slice(0, 8)
       });
-      const selector = candidateSelector(candidates[0]);
-      if (selector) {
-        setRecordingSelector(selector);
-      }
-      if (summary.windowTitle) {
-        let currentParams: Record<string, unknown> = {};
-        try {
-          currentParams = parseJsonObject(recordingParamsText);
-        } catch {
-          currentParams = {};
-        }
-        setRecordingParamsText(JSON.stringify({
-          ...currentParams,
-          observedWindowTitle: summary.windowTitle
-        }, null, 2));
-      }
       setLatestResult(data);
       const insertedCount = capturePoolItemsFromResult.length || Number(data?.capturePoolAdded || 0);
       toast({
@@ -1827,257 +1793,6 @@ export function RPAWorkbench() {
     }
   };
 
-  const computeLiveImagePoint = (clientX: number, clientY: number) => {
-    const image = liveImageRef.current;
-    if (!image) return null;
-    const rect = image.getBoundingClientRect();
-    const naturalWidth = image.naturalWidth || Math.round(rect.width);
-    const naturalHeight = image.naturalHeight || Math.round(rect.height);
-    const naturalRatio = naturalWidth / Math.max(1, naturalHeight);
-    const renderedRatio = rect.width / Math.max(1, rect.height);
-    let displayedWidth = rect.width;
-    let displayedHeight = rect.height;
-    let offsetX = 0;
-    let offsetY = 0;
-    if (naturalRatio > renderedRatio) {
-      displayedHeight = rect.width / Math.max(0.0001, naturalRatio);
-      offsetY = (rect.height - displayedHeight) / 2;
-    } else {
-      displayedWidth = rect.height * naturalRatio;
-      offsetX = (rect.width - displayedWidth) / 2;
-    }
-    const localX = clientX - rect.left - offsetX;
-    const localY = clientY - rect.top - offsetY;
-    if (localX < 0 || localY < 0 || localX > displayedWidth || localY > displayedHeight) {
-      return null;
-    }
-    const x = Math.round(localX * naturalWidth / Math.max(1, displayedWidth));
-    const y = Math.round(localY * naturalHeight / Math.max(1, displayedHeight));
-    return {
-      x,
-      y,
-      mapping: {
-        source: "desktop_live_bridge",
-        desktopLiveSessionId,
-        naturalWidth,
-        naturalHeight,
-        renderedWidth: Math.round(rect.width),
-        renderedHeight: Math.round(rect.height),
-        displayedWidth: Math.round(displayedWidth),
-        displayedHeight: Math.round(displayedHeight),
-        letterboxOffsetX: Math.round(offsetX),
-        letterboxOffsetY: Math.round(offsetY),
-        clientX: Math.round(clientX - rect.left),
-        clientY: Math.round(clientY - rect.top),
-        devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : undefined,
-        monitorId: "primary"
-      }
-    };
-  };
-
-  const recordLiveOverlayAction = async (action: string, point: { x: number; y: number; mapping: Record<string, unknown> } | null, extra?: Record<string, unknown>) => {
-    if (!activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
-        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
-      });
-      return;
-    }
-    if (targetLockLooksLikeAdmin) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.studioTargetBlockedTitle"),
-        description: t("components.rpa.RPAWorkbench.studioTargetBlockedDescription")
-      });
-      return;
-    }
-    if (point) {
-      setRecordingX(String(point.x));
-      setRecordingY(String(point.y));
-    }
-    let params: Record<string, unknown> = {};
-    try {
-      params = parseJsonObject(recordingParamsText);
-    } catch {
-      params = {};
-    }
-    params = { ...params, ...(isPlainRecord(extra?.params) ? extra.params : {}) };
-    let observationSummary = isPlainRecord(latestComputerObservation?.summary) ? latestComputerObservation.summary : {};
-    let observationCandidates = Array.isArray(latestComputerObservation?.candidates) ? latestComputerObservation.candidates as ObservationCandidate[] : [];
-    if (!observationCandidates.length) {
-      try {
-        const autoObservation = await captureComputerObservation({
-          updateForm: false
-        });
-        observationSummary = autoObservation.summary;
-        observationCandidates = autoObservation.candidates;
-      } catch {
-        observationSummary = {};
-        observationCandidates = [];
-      }
-    }
-    const selector = recordingSelector.trim();
-    const payload: Record<string, unknown> = {
-      source: "desktop_live_overlay",
-      action,
-      intent: recordingIntent.trim() || t("components.rpa.RPAWorkbench.desktopLiveRecordedAction", {
-        action
-      }),
-      params,
-      target: {
-        window: {
-          appId: recordingAppId.trim() || "desktop",
-          title: firstString(observationSummary.windowTitle)
-        },
-        ...(selector ? {
-          selector: {
-            css: selector,
-            source: "admin_recorder"
-          }
-        } : {})
-      },
-      ...(point ? {
-        coordinate: {
-          x: point.x,
-          y: point.y
-        },
-        viewport: point.mapping,
-        viewportMapping: point.mapping
-      } : {}),
-      ...(selector || observationCandidates.length ? {
-        selectorCandidates: selector ? [{
-          css: selector,
-          source: "admin_recorder"
-        }] : observationCandidates.slice(0, 5)
-      } : {}),
-      ...(extra || {}),
-      metadata: {
-        source: "admin_desktop_live_overlay",
-        fragileCoordinateFallback: !selector,
-        desktopLiveSessionId,
-        computerObservation: observationSummary,
-        recordAndForward,
-        targetLock: {
-          enabled: true,
-          mode: recordingTargetMode,
-          appId: recordingAppId.trim() || "desktop",
-          label: selectedComputerAppLabel,
-          ignoreAdminSurface: true
-        }
-      }
-    };
-    let sample: Record<string, unknown> | null = null;
-    try {
-      const sampleRes = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/desktop-sample`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          event: payload,
-          coordinate: point ? { x: point.x, y: point.y } : {},
-          viewportMapping: point?.mapping || {},
-          forwardAction: recordAndForward
-        })
-      });
-      sample = await sampleRes.json().catch(() => ({}));
-      if (sampleRes.ok && sample) {
-        const sampleRecord = isPlainRecord(sample) ? sample : {};
-        const sampleCandidates = Array.isArray(sampleRecord.selectorCandidates) ? sampleRecord.selectorCandidates : [];
-        if (!selector && sampleCandidates.length) {
-          payload.selectorCandidates = sampleCandidates;
-        }
-        payload.accessibilitySample = sampleRecord.sample;
-        payload.forwardedActionResult = sampleRecord.forwardedActionResult;
-        payload.metadata = {
-          ...(isPlainRecord(payload.metadata) ? payload.metadata : {}),
-          accessibilitySample: sampleRecord.sample,
-          forwardedActionResult: sampleRecord.forwardedActionResult
-        };
-      }
-    } catch (error) {
-      payload.metadata = {
-        ...(isPlainRecord(payload.metadata) ? payload.metadata : {}),
-        desktopSampleError: error instanceof Error ? error.message : String(error)
-      };
-    }
-    await submitRecordingEvent(payload);
-  };
-
-  const handleLivePreviewClick = async (event: MouseEvent<HTMLDivElement>) => {
-    const point = computeLiveImagePoint(event.clientX, event.clientY);
-    if (!point) return;
-    await recordLiveOverlayAction("click", point);
-  };
-
-  const handleLivePreviewDoubleClick = async (event: MouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const point = computeLiveImagePoint(event.clientX, event.clientY);
-    if (!point) return;
-    await recordLiveOverlayAction("double_click", point);
-  };
-
-  const handleLivePreviewContextMenu = async (event: MouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const point = computeLiveImagePoint(event.clientX, event.clientY);
-    if (!point) return;
-    await recordLiveOverlayAction("right_click", point);
-  };
-
-  const handleLivePreviewWheel = async (event: WheelEvent<HTMLDivElement>) => {
-    if (!activeRecording || activeRecording.state !== "recording") return;
-    event.preventDefault();
-    const point = computeLiveImagePoint(event.clientX, event.clientY);
-    await recordLiveOverlayAction("scroll", point, {
-      params: {
-        amount: Math.round(event.deltaY)
-      },
-      mergeGroupId: "desktop-live-scroll"
-    });
-  };
-
-  const handleLivePreviewPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    const point = computeLiveImagePoint(event.clientX, event.clientY);
-    if (!point) return;
-    liveDragStartRef.current = point;
-  };
-
-  const handleLivePreviewPointerUp = async (event: PointerEvent<HTMLDivElement>) => {
-    const start = liveDragStartRef.current;
-    liveDragStartRef.current = null;
-    const end = computeLiveImagePoint(event.clientX, event.clientY);
-    if (!start || !end) return;
-    const distance = Math.hypot(end.x - start.x, end.y - start.y);
-    if (distance < 8) return;
-    await recordLiveOverlayAction("drag", end, {
-      params: {
-        startPoint: [start.x, start.y],
-        endPoint: [end.x, end.y],
-        steps: 12
-      },
-      coordinate: {
-        x: end.x,
-        y: end.y
-      }
-    });
-  };
-
-  const handleLivePreviewKeyDown = async (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!(event.ctrlKey || event.metaKey || event.altKey)) return;
-    event.preventDefault();
-    const parts: string[] = [];
-    if (event.ctrlKey) parts.push("Ctrl");
-    if (event.metaKey) parts.push("Meta");
-    if (event.altKey) parts.push("Alt");
-    if (event.shiftKey) parts.push("Shift");
-    parts.push(event.key);
-    await recordLiveOverlayAction("hotkey", null, {
-      params: {
-        sequence: parts.join("+")
-      }
-    });
-  };
   const handleCompile = async () => {
     const runIds = parseRunIdsInput(compileRunId);
     if (runIds.length === 0) {
@@ -2113,109 +1828,6 @@ export function RPAWorkbench() {
   };
   const handleStartRecording = async () => {
     await startRecordingSession();
-  };
-  const handleRecordingControl = async (action: "pause" | "resume" | "cancel" | "stop") => {
-    if (!activeRecording?.recordingSessionId) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
-        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
-      });
-      return;
-    }
-    const body = action === "stop" ? {
-      compileDraft: true,
-      save: true
-    } : undefined;
-    const data = await runAction(`recording:${action}:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/${action}`, {
-      method: "POST",
-      headers: body ? {
-        "Content-Type": "application/json"
-      } : undefined,
-      body: body ? JSON.stringify(body) : undefined
-    }), t(action === "stop" ? "components.rpa.RPAWorkbench.recordingStopped" : "components.rpa.RPAWorkbench.recordingUpdated"));
-    const nextRecording = (data?.recording || data) as RecordingSessionPayload;
-    if (nextRecording?.recordingSessionId) {
-      setActiveRecording(nextRecording);
-    }
-    if (action === "stop" || action === "cancel") {
-      setCaptureAssistantActive(false);
-    }
-    if (data?.draft?.id) {
-      setSelectedDraftId(data.draft.id);
-    }
-  };
-  const handleOpenAgentBrowser = async () => {
-    await runAction("recording:open-agent-browser", () => fetch("/api/computer-use/agent-browser/open", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        browserKind: recordingBrowserKind,
-        url: "about:blank"
-      })
-    }), t("components.rpa.RPAWorkbench.agentBrowserOpened"));
-  };
-  const handleAppendRecordingEvent = async (overrideAction?: string) => {
-    if (!activeRecording?.recordingSessionId) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
-        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
-      });
-      return;
-    }
-    let params: Record<string, unknown>;
-    try {
-      params = parseJsonObject(recordingParamsText);
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.invalidEventParams"),
-        description: error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")
-      });
-      return;
-    }
-    const selector = recordingSelector.trim();
-    const x = recordingX.trim() ? Number(recordingX) : undefined;
-    const y = recordingY.trim() ? Number(recordingY) : undefined;
-    const action = overrideAction || recordingAction;
-    const payload = {
-      action,
-      intent: recordingIntent.trim() || action,
-      params,
-      target: {
-        window: {
-          appId: recordingAppId.trim() || "desktop"
-        },
-        ...(selector ? {
-          selector: {
-            css: selector,
-            source: "admin_recorder"
-          }
-        } : {})
-      },
-      ...(Number.isFinite(x) && Number.isFinite(y) ? {
-        coordinate: {
-          x,
-          y
-        }
-      } : {}),
-      ...(selector ? {
-        selectorCandidates: [{
-          css: selector,
-          source: "admin_recorder"
-        }]
-      } : {}),
-      sensitiveInput: recordingSensitive,
-      variableName: recordingVariableName.trim() || undefined,
-      metadata: {
-        source: "admin_rpa_workbench",
-        fragileCoordinateFallback: !selector && Number.isFinite(x) && Number.isFinite(y)
-      }
-    };
-    await submitRecordingEvent(payload);
   };
   const parseDraftStepsFromBuilder = () => {
     const steps: EditableDraftStep[] = [];
@@ -2290,7 +1902,7 @@ export function RPAWorkbench() {
   };
   const handleAddDraftStep = (action: string, insertBeforeKey?: string) => {
     const workspaceId = selectedDraft?.id || "unsaved";
-    const step = makeDraftStep(action, selectedDraft?.appId || recordingAppId || "desktop");
+    const step = makeDraftStep(action, canvasTargetAppId || selectedDraft?.appId || "desktop");
     const key = step.stepId || `${workspaceId}:step:new:${Date.now()}`;
     setStudioDirty(true);
     setDraftStepEdits(current => ({
@@ -2828,68 +2440,24 @@ export function RPAWorkbench() {
 
                         <main className="flex min-w-0 flex-col bg-muted/5">
                             <div className="border-b border-border/50 bg-background/80 p-3">
-                                <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(12rem,0.45fr)_auto]">
+                                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
                                     <div className="grid min-w-0 gap-2">
                                         <Label className="text-xs">{t("components.rpa.RPAWorkbench.studioRecordingTarget")}</Label>
-                                        <div className="grid gap-2 md:grid-cols-[10rem_minmax(18rem,1fr)]">
-                                            <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={recordingTargetMode} onChange={event => {
-                                                setRecordingTargetMode(event.target.value);
-                                                setStudioDirty(true);
-                                            }}>
-                                                <option value="agent_browser">{t("components.rpa.RPAWorkbench.targetAgentBrowser")}</option>
-                                                <option value="desktop_window">{t("components.rpa.RPAWorkbench.targetDesktopWindow")}</option>
-                                                <option value="launch_app">{t("components.rpa.RPAWorkbench.targetLaunchApp")}</option>
-                                            </select>
-                                            <div className="relative min-w-0">
-                                                <button type="button" onClick={() => {
-                                                    setAppPickerOpen(current => !current);
-                                                    void loadComputerApps(false, appSearch);
-                                                }} className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-2.5 text-left text-xs transition hover:border-primary/40">
-                                                    <AdminHoverInfo content={selectedComputerAppLabel} panelClassName="w-auto max-w-[28rem] whitespace-normal">
-                                                        <span className="min-w-0 max-w-full truncate">{selectedComputerAppLabel}</span>
-                                                    </AdminHoverInfo>
-                                                    <Search className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                                </button>
-                                                {appPickerOpen ? <div className="absolute left-0 top-10 z-30 w-[min(32rem,calc(100vw-3rem))] min-w-full max-w-[calc(100vw-3rem)] rounded-xl border border-border/70 bg-popover p-2 shadow-xl">
-                                                        <Input className="h-8 text-xs" value={appSearch} onChange={event => setAppSearch(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioSearchApps")} autoFocus />
-                                                        <ScrollArea className="mt-2 max-h-72 pr-2">
-                                                            <div className="space-y-2">
-                                                                {computerAppsError ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{computerAppsError}</div> : null}
-                                                                {groupedAppPickerOptions.map(group => <div key={group.group}>
-                                                                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                                                                            {t(`components.rpa.RPAWorkbench.studioAppGroup.${group.group}`)}
-                                                                        </div>
-                                                                        <div className="grid gap-1">
-                                                                            {group.items.map(item => <button key={item.id} type="button" onClick={() => {
-                                                                                    setRecordingAppId(item.id);
-                                                                                    setAppSearch("");
-                                                                                    setAppPickerOpen(false);
-                                                                                    setStudioDirty(true);
-                                                                                }} className={`rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-muted ${recordingAppId === item.id ? "bg-primary/10 text-primary" : ""}`}>
-                                                                                    <AdminHoverInfo content={item.label} panelClassName="w-auto max-w-[28rem] whitespace-normal">
-                                                                                        <div className="truncate font-medium">{item.label}</div>
-                                                                                    </AdminHoverInfo>
-                                                                                    <div className="truncate text-[11px] text-muted-foreground">{item.subtitle || item.id}</div>
-                                                                                </button>)}
-                                                                        </div>
-                                                                    </div>)}
-                                                                {!appPickerOptions.length && !computerAppsLoading ? <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{computerApps.length ? t("components.rpa.RPAWorkbench.studioNoAppsFound") : t("components.rpa.RPAWorkbench.studioAppListEmptyHint")}</div> : null}
-                                                            </div>
-                                                        </ScrollArea>
-                                                    </div> : null}
+                                        <div className="grid gap-2 md:grid-cols-[minmax(16rem,0.9fr)_minmax(0,1.1fr)]">
+                                            <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-input bg-background px-2.5 text-xs">
+                                                <span className="shrink-0 text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCanvasTargetFromStep")}</span>
+                                                <AdminHoverInfo content={selectedComputerAppLabel} panelClassName="w-auto max-w-[28rem] whitespace-normal">
+                                                    <span className="min-w-0 truncate font-medium">{selectedComputerAppLabel}</span>
+                                                </AdminHoverInfo>
+                                                <Badge variant="outline" className="ml-auto shrink-0 text-[10px]">{canvasTargetMode}</Badge>
+                                            </div>
+                                            <div className="flex h-9 min-w-0 items-center rounded-md border border-border/60 bg-muted/20 px-2.5 text-xs text-muted-foreground">
+                                                {t("components.rpa.RPAWorkbench.studioCanvasTargetHint")}
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="grid gap-2">
-                                        <Label className="text-xs">{t("components.rpa.RPAWorkbench.studioFlowDescription")}</Label>
-                                        <Input className="h-9 text-xs" value={recordingName} onChange={event => {
-                                            setRecordingName(event.target.value);
-                                            setStudioDirty(true);
-                                        }} placeholder={t("components.rpa.RPAWorkbench.flowNamePlaceholder")} />
-                                    </div>
                                     <div className="flex items-end gap-2">
                                         <Button size="sm" variant="outline" onClick={() => {
-                                            setAppPickerOpen(true);
                                             void loadComputerApps(true, appSearch);
                                         }} disabled={computerAppsLoading}>
                                             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${computerAppsLoading ? "animate-spin" : ""}`} />
@@ -2902,7 +2470,7 @@ export function RPAWorkbench() {
                                     </div>
                                 </div>
                                 <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${targetLockLooksLikeAdmin ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border/60 bg-muted/20 text-muted-foreground"}`}>
-                                    {t("components.rpa.RPAWorkbench.studioTargetLockPrefix")}{selectedComputerAppLabel} · {recordingTargetMode}
+                                    {t("components.rpa.RPAWorkbench.studioTargetLockPrefix")}{selectedComputerAppLabel} · {canvasTargetMode}
                                     {targetLockLooksLikeAdmin ? t("components.rpa.RPAWorkbench.studioAdminExcluded") : t("components.rpa.RPAWorkbench.studioTargetLockHint")}
                                     {captureAssistantActive ? <Badge variant="outline" className="ml-2 align-middle text-[10px]">{t("components.rpa.RPAWorkbench.studioCaptureAssistantActive")}</Badge> : null}
                                     {captureAssistantStage !== "idle" && !captureAssistantActive ? <Badge variant="outline" className="ml-2 align-middle text-[10px]">{captureAssistantStageLabel}</Badge> : null}
@@ -2998,7 +2566,49 @@ export function RPAWorkbench() {
                                             {selectedBuilderActionKind === "app" ? <div className="space-y-3">
                                                     <div className="grid gap-2">
                                                         <Label>{t("components.rpa.RPAWorkbench.studioAppToLaunch")}</Label>
-                                                        <Input className="h-9 text-xs" value={String(selectedBuilderParams.appId || selectedComputerAppLabel || "")} onChange={event => updateSelectedStepParam("appId", event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioAppToLaunchPlaceholder")} />
+                                                        <div className="relative min-w-0">
+                                                            <button type="button" onClick={() => {
+                                                                setAppPickerOpen(current => !current);
+                                                                void loadComputerApps(false, appSearch);
+                                                            }} className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-2.5 text-left text-xs transition hover:border-primary/40">
+                                                                <AdminHoverInfo content={selectedStepComputerAppLabel} panelClassName="w-auto max-w-[28rem] whitespace-normal">
+                                                                    <span className="min-w-0 max-w-full truncate">{selectedStepComputerAppLabel}</span>
+                                                                </AdminHoverInfo>
+                                                                <Search className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                            </button>
+                                                            {appPickerOpen ? <div className="absolute right-0 top-10 z-30 w-[min(32rem,calc(100vw-3rem))] min-w-full rounded-xl border border-border/70 bg-popover p-2 shadow-xl">
+                                                                    <Input className="h-8 text-xs" value={appSearch} onChange={event => setAppSearch(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioSearchApps")} autoFocus />
+                                                                    <ScrollArea className="mt-2 max-h-72 pr-2">
+                                                                        <div className="space-y-2">
+                                                                            {computerAppsError ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{computerAppsError}</div> : null}
+                                                                            {groupedAppPickerOptions.map(group => <div key={group.group}>
+                                                                                    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                                                                        {t(`components.rpa.RPAWorkbench.studioAppGroup.${group.group}`)}
+                                                                                    </div>
+                                                                                    <div className="grid gap-1">
+                                                                                        {group.items.map(item => <button key={item.id} type="button" onClick={() => {
+                                                                                                updateSelectedStepParam("appId", item.id);
+                                                                                                setAppSearch("");
+                                                                                                setAppPickerOpen(false);
+                                                                                            }} className={`rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-muted ${selectedStepAppId === item.id ? "bg-primary/10 text-primary" : ""}`}>
+                                                                                                <AdminHoverInfo content={item.label} panelClassName="w-auto max-w-[28rem] whitespace-normal">
+                                                                                                    <div className="truncate font-medium">{item.label}</div>
+                                                                                                </AdminHoverInfo>
+                                                                                                <div className="truncate text-[11px] text-muted-foreground">{item.subtitle || item.id}</div>
+                                                                                            </button>)}
+                                                                                    </div>
+                                                                                </div>)}
+                                                                            {!appPickerOptions.length && !computerAppsLoading ? <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{computerApps.length ? t("components.rpa.RPAWorkbench.studioNoAppsFound") : t("components.rpa.RPAWorkbench.studioAppListEmptyHint")}</div> : null}
+                                                                        </div>
+                                                                    </ScrollArea>
+                                                                </div> : null}
+                                                        </div>
+                                                        <div className="flex gap-2">
+                                                            <Button size="sm" variant="outline" onClick={() => void loadComputerApps(true, appSearch)} disabled={computerAppsLoading}>
+                                                                <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${computerAppsLoading ? "animate-spin" : ""}`} />
+                                                                {t("components.rpa.RPAWorkbench.studioAppList")}
+                                                            </Button>
+                                                        </div>
                                                     </div>
                                                     <div className="grid gap-2">
                                                         <Label>{t("components.rpa.RPAWorkbench.studioLaunchArgs")}</Label>
@@ -3147,10 +2757,48 @@ export function RPAWorkbench() {
                                         {" · "}
                                         {firstString(nativeHotkeyBackend?.state) || t("components.rpa.RPAWorkbench.studioNativeHotkeyFallback")}
                                     </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <label className="grid gap-1 text-[11px] text-muted-foreground">
+                                            {t("components.rpa.RPAWorkbench.studioCaptureHotkeyLabel")}
+                                            <Input
+                                                className="h-8 cursor-pointer select-none text-xs"
+                                                value={captureHotkey}
+                                                onChange={() => undefined}
+                                                onDrop={event => event.preventDefault()}
+                                                onKeyDown={event => captureHotkeyInput(event, setCaptureHotkey)}
+                                                onPaste={event => event.preventDefault()}
+                                                placeholder="Ctrl+Alt+C"
+                                                readOnly
+                                            />
+                                        </label>
+                                        <label className="grid gap-1 text-[11px] text-muted-foreground">
+                                            {t("components.rpa.RPAWorkbench.studioCaptureCancelHotkeyLabel")}
+                                            <Input
+                                                className="h-8 cursor-pointer select-none text-xs"
+                                                value={captureCancelHotkey}
+                                                onChange={() => undefined}
+                                                onDrop={event => event.preventDefault()}
+                                                onKeyDown={event => captureHotkeyInput(event, setCaptureCancelHotkey)}
+                                                onPaste={event => event.preventDefault()}
+                                                placeholder="Ctrl+Alt+X"
+                                                readOnly
+                                            />
+                                        </label>
+                                    </div>
+                                    <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
+                                        {t("components.rpa.RPAWorkbench.studioCaptureHotkeyInputHelp")}
+                                    </div>
+                                    {captureAssistantActive ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
+                                            {t("components.rpa.RPAWorkbench.studioCaptureHotkeyHelp", { hotkey: displayCaptureHotkey, cancelHotkey: displayCaptureCancelHotkey })}
+                                        </div> : null}
+                                    {captureAssistantStage === "failed" ? <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-2.5 text-[11px] text-destructive">
+                                            <div>{t("components.rpa.RPAWorkbench.studioCaptureFailedHelp")}</div>
+                                            {captureAssistantDiagnostic ? <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-background/70 p-2 text-[10px] text-destructive/80">{captureAssistantDiagnostic}</pre> : null}
+                                        </div> : null}
                                     {desktopLiveSessionId ? <div className="overflow-hidden rounded-xl border border-border/60">
                                             <div className="relative h-[210px] w-full overflow-hidden bg-muted/20">
                                                 {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
-                                                <img ref={liveImageRef} src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt="Desktop live" className="h-full w-full select-none object-contain" draggable={false} />
+                                                <img src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt="Desktop live" className="h-full w-full select-none object-contain" draggable={false} />
                                                 <div className="absolute left-2 top-2 rounded-full bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm">
                                                     {t("components.rpa.RPAWorkbench.studioLivePreviewOnly")}
                                                 </div>
@@ -3164,7 +2812,7 @@ export function RPAWorkbench() {
                                             </div>
                                             <Badge variant="outline" className="text-[10px]">{capturePoolItems.length}</Badge>
                                         </div>
-                                        <ScrollArea className="max-h-44 pr-2">
+                                        <ScrollArea className="h-44 pr-2">
                                             <div className="space-y-2">
                                                 {capturePoolItems.map(item => <div key={item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
                                                         <div className="flex items-start justify-between gap-2">
@@ -3193,7 +2841,7 @@ export function RPAWorkbench() {
                                             </div>
                                             <Badge variant="outline" className="text-[10px]">{objectLibraryItems.length}</Badge>
                                         </div>
-                                        <ScrollArea className="max-h-40 pr-2">
+                                        <ScrollArea className="h-40 pr-2">
                                             <div className="space-y-2">
                                                 {objectLibraryItems.map(item => <div key={item.elementId || item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
                                                         <AdminHoverInfo content={captureItemLabel(item)} panelClassName="w-auto max-w-[26rem] whitespace-normal">
@@ -3286,232 +2934,6 @@ export function RPAWorkbench() {
                     </CardContent>
                 </Card>
             </div>
-
-            <Card className="border-border/60">
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-lg">
-                        <Video className="h-5 w-5 text-primary" />
-                        {t("components.rpa.RPAWorkbench.recordingTitle")}
-                    </CardTitle>
-                    <CardDescription>{t("components.rpa.RPAWorkbench.recordingDescription")}</CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-5 xl:grid-cols-[1fr_1.15fr]">
-                    <div className="space-y-4">
-                        <div className="grid gap-3 md:grid-cols-2">
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-name">{t("components.rpa.RPAWorkbench.flowName")}</Label>
-                                <Input id="recording-name" value={recordingName} onChange={event => setRecordingName(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.flowNamePlaceholder")} />
-                            </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-app-id">{t("components.rpa.RPAWorkbench.targetApp")}</Label>
-                                <Input id="recording-app-id" value={recordingAppId} onChange={event => setRecordingAppId(event.target.value)} placeholder="desktop / chrome / wechat" />
-                            </div>
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="recording-goal">{t("components.rpa.RPAWorkbench.flowGoal")}</Label>
-                            <Textarea id="recording-goal" className="min-h-[84px]" value={recordingGoal} onChange={event => setRecordingGoal(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.flowGoalPlaceholder")} />
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-3">
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-target-mode">{t("components.rpa.RPAWorkbench.recordingTarget")}</Label>
-                                <select id="recording-target-mode" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={recordingTargetMode} onChange={event => setRecordingTargetMode(event.target.value)}>
-                                    <option value="agent_browser">{t("components.rpa.RPAWorkbench.targetAgentBrowser")}</option>
-                                    <option value="desktop_window">{t("components.rpa.RPAWorkbench.targetDesktopWindow")}</option>
-                                    <option value="launch_app">{t("components.rpa.RPAWorkbench.targetLaunchApp")}</option>
-                                </select>
-                            </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-browser-kind">{t("components.rpa.RPAWorkbench.browserKind")}</Label>
-                                <select id="recording-browser-kind" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={recordingBrowserKind} onChange={event => setRecordingBrowserKind(event.target.value)}>
-                                    <option value="chrome">Chrome</option>
-                                    <option value="edge">Edge</option>
-                                </select>
-                            </div>
-                            <div className="grid gap-2">
-                                <Label>{t("components.rpa.RPAWorkbench.recordingState")}</Label>
-                                <div className="flex h-10 items-center gap-2 rounded-md border border-border/60 px-3 text-sm">
-                                    <Badge variant={activeRecording?.state === "recording" ? "default" : activeRecording?.state === "failed" ? "destructive" : "secondary"}>{activeRecording?.state || "idle"}</Badge>
-                                    {activeRecording?.stepCount != null ? <span className="text-muted-foreground">{activeRecording.stepCount} steps</span> : null}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            <Button onClick={() => void handleStartRecording()} disabled={!!busyAction || activeRecording?.state === "recording"}>
-                                <Video className="mr-2 h-4 w-4" />
-                                {t("components.rpa.RPAWorkbench.startRecording")}
-                            </Button>
-                            <Button variant="outline" onClick={() => void handleRecordingControl("pause")} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
-                                <Pause className="mr-2 h-4 w-4" />
-                                {t("components.rpa.RPAWorkbench.pauseRecording")}
-                            </Button>
-                            <Button variant="outline" onClick={() => void handleRecordingControl("resume")} disabled={!activeRecording || activeRecording.state !== "paused" || !!busyAction}>
-                                <Play className="mr-2 h-4 w-4" />
-                                {t("components.rpa.RPAWorkbench.resumeRecording")}
-                            </Button>
-                            <Button variant="outline" onClick={() => void handleRecordingControl("stop")} disabled={!activeRecording || !["recording", "paused", "stopped"].includes(activeRecording.state || "") || !!busyAction}>
-                                <Square className="mr-2 h-4 w-4" />
-                                {t("components.rpa.RPAWorkbench.stopAndCompile")}
-                            </Button>
-                            <Button variant="ghost" onClick={() => void handleOpenAgentBrowser()} disabled={!!busyAction}>
-                                {t("components.rpa.RPAWorkbench.openAgentBrowser")}
-                            </Button>
-                        </div>
-                        <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
-                            {activeRecording ? <>
-                                    <div>{t("components.rpa.RPAWorkbench.recordingId")}: <span className="text-foreground">{activeRecording.recordingSessionId}</span></div>
-                                    <div>traceRunId: <span className="text-foreground">{activeRecording.traceRunId}</span></div>
-                                    {activeRecording.createdDraftId ? <div>{t("components.rpa.RPAWorkbench.createdDraft")}: <span className="text-foreground">{activeRecording.createdDraftId}</span></div> : null}
-                                    {activeRecording.compileError ? <div className="text-destructive">{activeRecording.compileError}</div> : null}
-                                </> : <>
-                                    <div>{t("components.rpa.RPAWorkbench.noRecordingYet")}</div>
-                                    <div>{t("components.rpa.RPAWorkbench.recentRecordings")}: <span className="text-foreground">{recordings.length}</span></div>
-                                </>}
-                        </div>
-                    </div>
-                    <div className="space-y-4">
-                        <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-3 text-sm text-muted-foreground">
-                            {t("components.rpa.RPAWorkbench.liveBoundaryNote")}
-                        </div>
-                        <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                    <div className="text-sm font-semibold">{t("components.rpa.RPAWorkbench.desktopLiveOverlay")}</div>
-                                    <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.desktopLiveOverlayDescription")}</div>
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                    <Button size="sm" variant="outline" onClick={() => void handlePrepareDesktopLive()} disabled={desktopLiveLoading}>
-                                        <Video className="mr-2 h-4 w-4" />
-                                        {desktopLiveSessionId ? t("components.rpa.RPAWorkbench.restartLivePreview") : t("components.rpa.RPAWorkbench.startLivePreview")}
-                                    </Button>
-                                    <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={computerSampling}>
-                                        <RefreshCw className="mr-2 h-4 w-4" />
-                                        {t("components.rpa.RPAWorkbench.sampleComputerUse")}
-                                    </Button>
-                                    {recordingTargetMode === "agent_browser" ? <>
-                                            <Button size="sm" variant="outline" onClick={() => void handleBrowserCaptureStart()} disabled={!activeRecording || browserCaptureActive}>
-                                                <MousePointerClick className="mr-2 h-4 w-4" />
-                                                {t("components.rpa.RPAWorkbench.startBrowserCapture")}
-                                            </Button>
-                                            <Button size="sm" variant="outline" onClick={() => void handleBrowserCapturePoll()} disabled={!browserCaptureActive || browserCapturePolling}>
-                                                <RefreshCw className="mr-2 h-4 w-4" />
-                                                {t("components.rpa.RPAWorkbench.pollBrowserCapture")}
-                                            </Button>
-                                            <Button size="sm" variant="ghost" onClick={() => void handleBrowserCaptureStop()} disabled={!browserCaptureActive}>
-                                                {t("components.rpa.RPAWorkbench.stopBrowserCapture")}
-                                            </Button>
-                                        </> : null}
-                                    {desktopLiveSessionId ? <Button size="sm" variant="ghost" onClick={() => void handleReleaseDesktopLive()} disabled={desktopLiveLoading}>
-                                            {t("components.rpa.RPAWorkbench.stopLivePreview")}
-                                        </Button> : null}
-                                </div>
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                                <label className="flex items-center gap-2 rounded-md border border-border/60 bg-background/70 px-3 py-2">
-                                    <input type="checkbox" checked={recordAndForward} onChange={event => setRecordAndForward(event.target.checked)} />
-                                    {t("components.rpa.RPAWorkbench.recordAndForward")}
-                                </label>
-                                <span className="rounded-md border border-border/60 bg-background/70 px-3 py-2">
-                                    {browserCaptureActive ? t("components.rpa.RPAWorkbench.browserCaptureActive") : t("components.rpa.RPAWorkbench.browserCaptureIdle")}
-                                </span>
-                            </div>
-                            {desktopLiveError ? <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopLiveError}</div> : null}
-                            {desktopLiveSessionId ? <div className="mt-3 overflow-hidden rounded-lg border border-border/60 bg-background">
-                                    <div
-                                        role="application"
-                                        tabIndex={0}
-                                        className="relative h-[280px] w-full cursor-crosshair overflow-hidden outline-none focus:ring-2 focus:ring-primary/40"
-                                        onClick={event => void handleLivePreviewClick(event)}
-                                        onDoubleClick={event => void handleLivePreviewDoubleClick(event)}
-                                        onContextMenu={event => void handleLivePreviewContextMenu(event)}
-                                        onWheel={event => void handleLivePreviewWheel(event)}
-                                        onPointerDown={handleLivePreviewPointerDown}
-                                        onPointerUp={event => void handleLivePreviewPointerUp(event)}
-                                        onKeyDown={event => void handleLivePreviewKeyDown(event)}
-                                    >
-                                        {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
-                                        <img ref={liveImageRef} src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt={t("components.rpa.RPAWorkbench.desktopLiveOverlay")} className="h-full w-full select-none object-contain" draggable={false} />
-                                        <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-background/80 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
-                                            {recordAndForward ? t("components.rpa.RPAWorkbench.overlayRecordForwardHint") : t("components.rpa.RPAWorkbench.overlayRecordOnlyHint")}
-                                        </div>
-                                    </div>
-                                </div> : <div className="mt-3 rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
-                                    {t("components.rpa.RPAWorkbench.noLivePreview")}
-                                </div>}
-                            {latestComputerObservation?.summary && isPlainRecord(latestComputerObservation.summary) ? <div className="mt-3 grid gap-2 rounded-lg border border-border/60 bg-background/70 p-3 text-xs text-muted-foreground md:grid-cols-3">
-                                    <div>
-                                        <span className="font-medium text-foreground">{t("components.rpa.RPAWorkbench.observedWindow")}</span>
-                                        <div className="truncate">{firstString(latestComputerObservation.summary.windowTitle) || "n/a"}</div>
-                                    </div>
-                                    <div>
-                                        <span className="font-medium text-foreground">{t("components.rpa.RPAWorkbench.selectorCandidates")}</span>
-                                        <div>{String(latestComputerObservation.summary.candidateCount ?? 0)}</div>
-                                    </div>
-                                    <div>
-                                        <span className="font-medium text-foreground">{t("components.rpa.RPAWorkbench.bestSelector")}</span>
-                                        <div className="truncate">{firstString(latestComputerObservation.summary.bestSelector) || "n/a"}</div>
-                                    </div>
-                                </div> : null}
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-3">
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-action">{t("components.rpa.RPAWorkbench.actionType")}</Label>
-                                <select id="recording-action" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={recordingAction} onChange={event => setRecordingAction(event.target.value)}>
-                                    <option value="click">click</option>
-                                    <option value="type_text">type_text</option>
-                                    <option value="scroll">scroll</option>
-                                    <option value="drag">drag</option>
-                                    <option value="wait_for_element">wait</option>
-                                    <option value="assert_condition">assert</option>
-                                    <option value="launch_app">launch_app</option>
-                                </select>
-                            </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-x">X</Label>
-                                <Input id="recording-x" value={recordingX} onChange={event => setRecordingX(event.target.value)} placeholder="124" />
-                            </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-y">Y</Label>
-                                <Input id="recording-y" value={recordingY} onChange={event => setRecordingY(event.target.value)} placeholder="320" />
-                            </div>
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="recording-intent">{t("components.rpa.RPAWorkbench.stepIntent")}</Label>
-                            <Input id="recording-intent" value={recordingIntent} onChange={event => setRecordingIntent(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.stepIntentPlaceholder")} />
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="recording-selector">{t("components.rpa.RPAWorkbench.selectorOrAnchor")}</Label>
-                            <Input id="recording-selector" value={recordingSelector} onChange={event => setRecordingSelector(event.target.value)} placeholder="button[aria-label='Submit'] / role=button[name=...]" />
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-[1fr_14rem]">
-                            <div className="grid gap-2">
-                                <Label htmlFor="recording-params">{t("components.rpa.RPAWorkbench.eventParams")}</Label>
-                                <Textarea id="recording-params" className="min-h-[120px] font-mono text-xs" value={recordingParamsText} onChange={event => setRecordingParamsText(event.target.value)} />
-                            </div>
-                            <div className="space-y-3">
-                                <div className="grid gap-2">
-                                    <Label htmlFor="recording-variable">{t("components.rpa.RPAWorkbench.variableName")}</Label>
-                                    <Input id="recording-variable" value={recordingVariableName} onChange={event => setRecordingVariableName(event.target.value)} placeholder="user_name" />
-                                </div>
-                                <label className="flex items-center gap-2 rounded-md border border-border/60 p-3 text-sm">
-                                    <input type="checkbox" checked={recordingSensitive} onChange={event => setRecordingSensitive(event.target.checked)} />
-                                    {t("components.rpa.RPAWorkbench.markSensitive")}
-                                </label>
-                            </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            <Button onClick={() => void handleAppendRecordingEvent()} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
-                                {t("components.rpa.RPAWorkbench.addRecordedAction")}
-                            </Button>
-                            <Button variant="outline" onClick={() => void handleAppendRecordingEvent("wait_for_element")} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
-                                {t("components.rpa.RPAWorkbench.insertWait")}
-                            </Button>
-                            <Button variant="outline" onClick={() => void handleAppendRecordingEvent("assert_condition")} disabled={!activeRecording || activeRecording.state !== "recording" || !!busyAction}>
-                                {t("components.rpa.RPAWorkbench.insertAssert")}
-                            </Button>
-                        </div>
-                    </div>
-                </CardContent>
-            </Card>
 
             <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
                 <Card className="border-border/60">
@@ -4255,7 +3677,9 @@ export function RPAWorkbench() {
                         <CardTitle className="text-lg">{tg(t, "3df5bcab")}</CardTitle>
                         <CardDescription>{tg(t, "4300eeee")}</CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-3">
+                    <CardContent>
+                        <ScrollArea className="h-[520px] pr-3">
+                            <div className="space-y-3">
                         {rpaRuns.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "8262eaa3")}</div> : rpaRuns.map(run => {
             const interruptBusy = busyAction === `run:interrupt:${run.id}`;
             const retryBusy = busyAction === `run:retry:${run.id}`;
@@ -4307,6 +3731,8 @@ export function RPAWorkbench() {
                                         </div>
                                     </div>;
           })}
+                            </div>
+                        </ScrollArea>
                     </CardContent>
                 </Card>
             </div>

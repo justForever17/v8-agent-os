@@ -16,10 +16,10 @@ from typing import Any
 import httpx
 import yaml
 
-from runtimes.extensions.skills.loader import SkillLoader
-
 
 _SUPPORTED_NPX_FLAGS = {"-y", "--yes"}
+_SKILL_INSTALL_BOOLEAN_FLAGS = {"-g", "--global", "-y", "--yes", "--copy"}
+_SKILL_INSTALL_VALUE_FLAGS = {"--skill", "-s"}
 _ENGINE_VENV_ROOT = Path(__file__).resolve().parents[1] / ".venv"
 
 
@@ -41,8 +41,12 @@ class SkillInstallValidationError(ValueError):
 @dataclass(slots=True)
 class ParsedSkillInstallCommand:
     raw_command: str
+    normalized_command: str
     source: str
     skill_name: str | None
+    global_install: bool
+    global_flag_added: bool
+    yes: bool
     overwrite: bool
 
 
@@ -96,36 +100,79 @@ def parse_skill_install_command(command: str) -> ParsedSkillInstallCommand:
         raise ValueError("当前仅支持 `skills add` 命令。")
     index += 1
 
-    if index >= len(tokens):
-        raise ValueError("请提供要安装的 Skills 来源。")
-
-    source = tokens[index]
-    index += 1
-
+    source: str | None = None
     skill_name: str | None = None
+    global_install = False
+    yes = any(flag in tokens[1:index] for flag in _SUPPORTED_NPX_FLAGS)
     overwrite = False
 
     while index < len(tokens):
         token = tokens[index]
-        if token == "--skill":
+        if token in _SKILL_INSTALL_VALUE_FLAGS:
             index += 1
             if index >= len(tokens):
-                raise ValueError("`--skill` 后必须紧跟要安装的 Skills 名称。")
+                raise ValueError(f"`{token}` 后必须紧跟要安装的 Skills 名称。")
             skill_name = tokens[index]
+            index += 1
+            continue
+        if token in _SKILL_INSTALL_BOOLEAN_FLAGS:
+            if token in {"-g", "--global"}:
+                global_install = True
+            elif token in {"-y", "--yes"}:
+                yes = True
             index += 1
             continue
         if token == "--overwrite":
             overwrite = True
             index += 1
             continue
-        raise ValueError(f"不支持的安装参数：{token}")
+        if token in {"-p", "--project"}:
+            raise ValueError("Admin Skills 安装器只允许安装到 `~/.agents/skills`，不支持项目级 `--project`。")
+        if token in {"-a", "--agent"}:
+            raise ValueError("Admin Skills 安装器固定写入 `~/.agents/skills`，不支持指定 `--agent`。")
+        if token.startswith("-"):
+            raise ValueError(f"不支持的安装参数：{token}")
+        if source is not None:
+            raise ValueError(f"安装命令只能包含一个 Skills 来源，额外参数：{token}")
+        source = token
+        index += 1
+        continue
+
+    if not source:
+        raise ValueError("请提供要安装的 Skills 来源。")
+    if source.startswith("-"):
+        raise ValueError("请提供合法的 Skills 来源，不能以 `-` 开头。")
+
+    global_flag_added = not global_install
+    normalized_tokens = ["npx"]
+    if yes:
+        normalized_tokens.append("--yes")
+    normalized_tokens.extend(["skills", "add", source, "-g"])
+    if skill_name:
+        normalized_tokens.extend(["--skill", skill_name])
+    if overwrite:
+        normalized_tokens.append("--overwrite")
 
     return ParsedSkillInstallCommand(
         raw_command=stripped,
+        normalized_command=_format_command_tokens(normalized_tokens),
         source=source,
         skill_name=skill_name,
+        global_install=True,
+        global_flag_added=global_flag_added,
+        yes=yes,
         overwrite=overwrite,
     )
+
+
+def _format_command_tokens(tokens: list[str]) -> str:
+    return " ".join(_format_command_token(token) for token in tokens)
+
+
+def _format_command_token(token: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./:@%+=,-]+", token):
+        return token
+    return shlex.quote(token)
 
 
 def _target_root() -> Path:
@@ -395,6 +442,8 @@ def _install_manifests(
     if not installed and conflicts:
         raise ValueError("目标目录中已存在同名 Skill；如需覆盖，请在命令中追加 `--overwrite`。")
 
+    from runtimes.extensions.skills.loader import SkillLoader
+
     SkillLoader.reload_skills()
     return {
         "status": "success",
@@ -415,7 +464,11 @@ def install_skill_from_command(command: str) -> dict[str, Any]:
         if not manifests:
             raise ValueError("来源中没有发现任何合法的 Skill 目录。")
         selected = _select_manifests(manifests, skill_name=parsed.skill_name)
-        return _install_manifests(selected, source=parsed.source, overwrite=parsed.overwrite)
+        result = _install_manifests(selected, source=parsed.source, overwrite=parsed.overwrite)
+        result["normalizedCommand"] = parsed.normalized_command
+        if parsed.global_flag_added:
+            result.setdefault("warnings", []).append("未检测到 `-g/--global`，已自动按全局安装写入 `~/.agents/skills`。")
+        return result
 
 
 def install_skills_from_zip(file_name: str, content: bytes) -> dict[str, Any]:

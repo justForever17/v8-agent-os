@@ -583,31 +583,194 @@ class RuntimeEpisodeRunner:
         )
 
     async def _execute_rpa(self, episode: dict[str, Any]) -> dict[str, Any]:
-        self._heartbeat(str(episode.get("episodeId")), "rpa: prepare")
+        episode_id = str(episode.get("episodeId") or "")
+        self._heartbeat(episode_id, "rpa: route")
         inputs = dict(episode.get("inputs") or {})
         from runtimes.rpa.runtime import rpa_runtime
 
-        if inputs.get("draftId") or inputs.get("scriptId"):
-            script_id = str(inputs.get("draftId") or inputs.get("scriptId"))
-            prepared = rpa_runtime.prepare_draft_run(script_id=script_id, variables=inputs.get("variables") or {})
-            summary = f"RPA draft prepared: {script_id}"
-            refs = [prepared.get("robotFile") or prepared.get("path") or script_id]
-        elif inputs.get("robotFile"):
-            robot_file = str(inputs.get("robotFile"))
-            prepared = rpa_runtime.prepare_existing_run(robot_file=robot_file, variables=inputs.get("variables") or {})
-            summary = f"RPA existing flow prepared: {robot_file}"
-            refs = [prepared.get("robotFile") or robot_file]
-        else:
-            summary = "RPA episode routed; no draft/template selected."
-            refs = []
+        action = str(inputs.get("action") or inputs.get("mode") or inputs.get("executionMode") or "prepare").strip().lower()
+        variables = inputs.get("variables") if isinstance(inputs.get("variables"), dict) else {}
+        timeout_ms = int(inputs.get("timeoutMs") or inputs.get("timeout_ms") or 600000)
+        session_id = str(episode.get("session_id") or episode.get("sessionId") or inputs.get("sessionId") or "").strip() or None
+        run_id = str(episode.get("run_id") or episode.get("runId") or inputs.get("runId") or "").strip() or None
+        user_id = str(inputs.get("userId") or inputs.get("user_id") or "system")
+        project_id = str(inputs.get("projectId") or inputs.get("project_id") or "").strip() or None
+        workspace_id = str(inputs.get("workspaceId") or inputs.get("workspace_id") or "").strip() or None
+        workspace_path = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip() or None
+        cwd = str(inputs.get("cwd") or "").strip() or None
+        output_dir = inputs.get("outputDir") or inputs.get("output_dir")
+        refs: list[str] = []
+        trace_refs: list[str] = []
+        robot_refs: list[str] = []
+        run_refs: list[str] = []
+        verification: dict[str, Any] = {}
+        risk: dict[str, Any] = {}
+        prepared: dict[str, Any] = {}
+        result: dict[str, Any] = {}
+        status = "ready"
+        confidence = "medium"
+
+        def _robot_file_from(payload: dict[str, Any]) -> str:
+            export = payload.get("export") if isinstance(payload.get("export"), dict) else {}
+            return str(payload.get("robotFile") or export.get("path") or payload.get("path") or "").strip()
+
+        try:
+            if inputs.get("traceRunIds") or inputs.get("runIds"):
+                run_ids = [str(item).strip() for item in list(inputs.get("traceRunIds") or inputs.get("runIds") or []) if str(item).strip()]
+                if not run_ids:
+                    raise ValueError("RPA trace compile episode 缺少 traceRunIds/runIds。")
+                self._heartbeat(episode_id, "rpa: compile traces")
+                draft = await self._await_with_heartbeat(
+                    episode_id,
+                    asyncio.to_thread(rpa_runtime.compile_traces_to_draft, run_ids, save=bool(inputs.get("save", True))),
+                    progress="rpa: compiling traces",
+                )
+                draft_id = str(draft.get("id") or "")
+                refs.append(f"rpa_draft:{draft_id}" if draft_id else "rpa_draft")
+                trace_refs.extend([f"trace:{item}" for item in run_ids])
+                summary = f"RPA traces compiled into draft {draft_id or '<unsaved>'}."
+            elif inputs.get("traceRunId") or inputs.get("traceId"):
+                trace_run_id = str(inputs.get("traceRunId") or inputs.get("traceId") or "").strip()
+                self._heartbeat(episode_id, "rpa: compile trace")
+                draft = await self._await_with_heartbeat(
+                    episode_id,
+                    asyncio.to_thread(rpa_runtime.compile_trace_to_draft, trace_run_id, save=bool(inputs.get("save", True))),
+                    progress="rpa: compiling trace",
+                )
+                draft_id = str(draft.get("id") or "")
+                refs.append(f"rpa_draft:{draft_id}" if draft_id else "rpa_draft")
+                trace_refs.append(f"trace:{trace_run_id}")
+                summary = f"RPA trace compiled into draft {draft_id or '<unsaved>'}."
+            elif inputs.get("draftId") or inputs.get("scriptId") or inputs.get("templateId"):
+                script_id = str(inputs.get("draftId") or inputs.get("scriptId") or inputs.get("templateId") or "").strip()
+                if action in {"run", "execute", "run_draft", "execute_draft", "live"} or inputs.get("execute") is True:
+                    self._heartbeat(episode_id, f"rpa: execute draft {script_id}")
+                    result = await self._await_with_heartbeat(
+                        episode_id,
+                        asyncio.to_thread(
+                            rpa_runtime.run_draft,
+                            script_id=script_id,
+                            variables=variables,
+                            output_dir=output_dir,
+                            timeout_ms=timeout_ms,
+                            cwd=cwd,
+                            session_id=session_id,
+                            run_id=run_id,
+                            user_id=user_id,
+                            project_id=project_id,
+                            workspace_id=workspace_id,
+                            workspace_path=workspace_path,
+                            trigger_source="runtime_episode_runner",
+                            non_chat_run=True,
+                        ),
+                        progress=f"rpa: running draft {script_id}",
+                    )
+                    status = "failed" if str(result.get("status") or "").lower() in {"failed", "fallback_failed", "blocked"} else "ready"
+                    prepared = dict(result)
+                    summary = f"RPA draft executed: {script_id} ({result.get('status') or 'completed'})."
+                else:
+                    self._heartbeat(episode_id, f"rpa: prepare draft {script_id}")
+                    prepared = await asyncio.to_thread(
+                        rpa_runtime.prepare_draft_run,
+                        script_id=script_id,
+                        variables=variables,
+                        output_dir=output_dir,
+                    )
+                    summary = f"RPA draft prepared: {script_id}."
+                refs.append(f"rpa_draft:{script_id}")
+                robot_file = _robot_file_from(prepared)
+                if robot_file:
+                    robot_refs.append(robot_file)
+            elif inputs.get("robotFile"):
+                robot_file = str(inputs.get("robotFile") or "").strip()
+                if action in {"run", "execute", "run_existing", "execute_existing", "live"} or inputs.get("execute") is True:
+                    self._heartbeat(episode_id, f"rpa: execute robot {robot_file}")
+                    result = await self._await_with_heartbeat(
+                        episode_id,
+                        asyncio.to_thread(
+                            rpa_runtime.run_existing_flow,
+                            robot_file=robot_file,
+                            variables=variables,
+                            output_dir=output_dir,
+                            timeout_ms=timeout_ms,
+                            cwd=cwd,
+                            session_id=session_id,
+                            run_id=run_id,
+                            user_id=user_id,
+                            project_id=project_id,
+                            workspace_id=workspace_id,
+                            workspace_path=workspace_path,
+                            trigger_source="runtime_episode_runner",
+                            non_chat_run=True,
+                        ),
+                        progress=f"rpa: running robot {robot_file}",
+                    )
+                    status = "failed" if str(result.get("status") or "").lower() in {"failed", "fallback_failed", "blocked"} else "ready"
+                    prepared = dict(result)
+                    summary = f"RPA robot flow executed: {robot_file} ({result.get('status') or 'completed'})."
+                else:
+                    self._heartbeat(episode_id, f"rpa: prepare robot {robot_file}")
+                    prepared = await asyncio.to_thread(
+                        rpa_runtime.prepare_existing_run,
+                        robot_file=robot_file,
+                        variables=variables,
+                        output_dir=output_dir,
+                    )
+                    summary = f"RPA existing flow prepared: {robot_file}."
+                robot_refs.append(robot_file)
+                refs.append(f"robot_file:{robot_file}")
+            else:
+                status = "failed"
+                confidence = "high"
+                summary = "RPA episode has no draft/template/robot file/trace target."
+                risk = {"recoverable": True, "reason": "missing_rpa_target"}
+        except Exception as exc:
+            status = "failed"
+            confidence = "high"
+            summary = f"RPA episode failed: {type(exc).__name__}: {exc}"
+            risk = {"recoverable": True, "errorClass": type(exc).__name__}
+
+        if result.get("runId"):
+            run_refs.append(f"rpa_run:{result.get('runId')}")
+        if result.get("sessionId"):
+            refs.append(f"rpa_session:{result.get('sessionId')}")
+        if result.get("fallback"):
+            refs.append("rpa_fallback:computer_use")
+            risk["fallback"] = True
+        if prepared.get("export") and isinstance(prepared.get("export"), dict):
+            export = dict(prepared.get("export") or {})
+            verification["dryRunPassed"] = export.get("dryRunPassed")
+            if export.get("dryRunError"):
+                verification["dryRunError"] = export.get("dryRunError")
+        if result:
+            verification["executionStatus"] = result.get("status")
+            verification["outcomeFamily"] = result.get("outcomeFamily")
+            if result.get("error"):
+                verification["error"] = _preview(result.get("error"), limit=500)
         return build_handoff_ref(
-            producer_episode_id=str(episode.get("episodeId") or ""),
+            producer_episode_id=episode_id,
             kind="rpa",
             compact_summary=summary,
-            status="ready",
-            confidence="medium",
-            consumer_hint="RPA prepared handoff can be executed by RPA runtime when user selects variables/template.",
-            extra={"traceRefs": refs},
+            status=status,
+            confidence=confidence,
+            raw_ref=robot_refs[0] if robot_refs else None,
+            detail_tool="rpa_runtime",
+            consumer_hint="Use this rpa_trace_bundle to resume the parent episode with prepared robot refs, run refs, or compiled draft refs.",
+            extra={
+                "refs": list(dict.fromkeys(refs + robot_refs + run_refs + trace_refs)),
+                "traceRefs": list(dict.fromkeys(trace_refs)),
+                "robotRefs": list(dict.fromkeys(robot_refs)),
+                "runRefs": list(dict.fromkeys(run_refs)),
+                "variables": variables,
+                "prepared": {
+                    "command": prepared.get("command"),
+                    "robotFile": _robot_file_from(prepared),
+                    "scriptId": ((prepared.get("script") or {}).get("id") if isinstance(prepared.get("script"), dict) else None),
+                },
+                "verification": verification,
+                "risk": risk,
+                **({"errorCode": "rpa_episode_failed", "errorMessage": summary} if status == "failed" else {}),
+            },
         )
 
     async def _execute_delegation(self, episode: dict[str, Any]) -> dict[str, Any]:

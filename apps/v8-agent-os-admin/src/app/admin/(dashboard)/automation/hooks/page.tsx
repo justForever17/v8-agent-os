@@ -7,16 +7,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, } from "@/components/ui/dialog";
-import { RefreshCw, Code, Terminal, Zap, Plus, Pencil, Trash2, BookOpen } from "lucide-react";
+import { RefreshCw, Code, Terminal, Zap, Plus, Pencil, Trash2, BookOpen, Workflow } from "lucide-react";
 import { DocumentationGuideDialog } from "@/components/admin-shell/DocumentationGuideDialog";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { createTranslator } from "@/lib/locale";
 interface HookConfig {
     name: string;
-    type: "command" | "python" | "agent";
+    type: "command" | "python" | "agent" | "rpa";
     target: string;
     events: string[];
     enabled: boolean;
+    payload?: Record<string, unknown>;
     async?: boolean;
     triggerKind?: "nudge" | "wake" | "recovery_wake";
     targetBinding?: Record<string, unknown>;
@@ -37,6 +38,8 @@ function getHookTypeLabel(type: HookConfig["type"]) {
             return "app.admin.dashboard.automation.hooks.page.ke83fbd7a";
         case "agent":
             return "app.admin.dashboard.automation.hooks.page.k7c6312bb";
+        case "rpa":
+            return "app.admin.dashboard.automation.hooks.page.actionType.rpa";
         default:
             return type;
     }
@@ -86,6 +89,7 @@ export default function HooksPage() {
         attachPolicy: "new_session",
     });
     const [eventsInput, setEventsInput] = useState("");
+    const [payloadText, setPayloadText] = useState("{}");
     const [targetBindingText, setTargetBindingText] = useState("{}");
     const [recoveryAnchorText, setRecoveryAnchorText] = useState("{}");
     const [sourceMetadataText, setSourceMetadataText] = useState("{}");
@@ -171,6 +175,7 @@ export default function HooksPage() {
             attachPolicy: "new_session",
         });
         setEventsInput("");
+        setPayloadText("{}");
         setTargetBindingText("{}");
         setRecoveryAnchorText("{}");
         setSourceMetadataText("{}");
@@ -180,6 +185,7 @@ export default function HooksPage() {
         setEditingHookName(hook.name);
         setFormData({ ...hook });
         setEventsInput(hook.events.join(", "));
+        setPayloadText(formatJsonField(hook.payload));
         setTargetBindingText(formatJsonField(hook.targetBinding));
         setRecoveryAnchorText(formatJsonField(hook.recoveryAnchor));
         setSourceMetadataText(formatJsonField(hook.sourceMetadata));
@@ -194,10 +200,12 @@ export default function HooksPage() {
         }
     };
     const handleSaveHook = async () => {
+        let payload: Record<string, unknown> | undefined;
         let targetBinding: Record<string, unknown> | undefined;
         let recoveryAnchor: Record<string, unknown> | undefined;
         let sourceMetadata: Record<string, unknown> | undefined;
         try {
+            payload = parseJsonField("payload", payloadText, locale);
             targetBinding = parseJsonField("targetBinding", targetBindingText, locale);
             recoveryAnchor = parseJsonField("recoveryAnchor", recoveryAnchorText, locale);
             sourceMetadata = parseJsonField("sourceMetadata", sourceMetadataText, locale);
@@ -215,6 +223,7 @@ export default function HooksPage() {
             events: updatedEvents,
             triggerKind: formData.triggerKind || "nudge",
             attachPolicy: formData.attachPolicy || "new_session",
+            payload,
             targetBinding,
             recoveryAnchor,
             sourceMetadata,
@@ -242,6 +251,8 @@ export default function HooksPage() {
                 return <Code className="h-4 w-4"/>;
             case "agent":
                 return <Zap className="h-4 w-4"/>;
+            case "rpa":
+                return <Workflow className="h-4 w-4"/>;
             default:
                 return <Code className="h-4 w-4"/>;
         }
@@ -291,6 +302,7 @@ export default function HooksPage() {
                 <option value="command">{t("app.admin.dashboard.automation.hooks.page.kd64c8b12")}</option>
                 <option value="python">{t("app.admin.dashboard.automation.hooks.page.ke83fbd7a")}</option>
                 <option value="agent">{t("app.admin.dashboard.automation.hooks.page.k7c6312bb")}</option>
+                <option value="rpa">{t("app.admin.dashboard.automation.hooks.page.actionType.rpa")}</option>
               </select>
             </div>
             <div className="grid gap-2">
@@ -322,6 +334,10 @@ export default function HooksPage() {
             <div className="grid gap-2">
               <Label htmlFor="message">{t("app.admin.dashboard.automation.hooks.page.kebf5a38b")}</Label>
               <Textarea id="message" rows={3} value={formData.message || ""} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFormData({ ...formData, message: e.target.value })} placeholder={t("app.admin.dashboard.automation.hooks.page.ka3226001")}/>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="payload">{t("app.admin.dashboard.automation.hooks.page.payload")}</Label>
+              <Textarea id="payload" rows={4} value={payloadText} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPayloadText(e.target.value)} className="font-mono text-xs" placeholder={t("app.admin.dashboard.automation.hooks.page.payloadPlaceholder")}/>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="targetBinding">{t("app.admin.dashboard.automation.hooks.page.kb5a63537")}</Label>

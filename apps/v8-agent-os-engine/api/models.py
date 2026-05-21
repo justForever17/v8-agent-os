@@ -546,6 +546,7 @@ class RPARecordingCaptureAssistantPayload(BaseModel):
     record_and_forward: bool = Field(default=False, alias="recordAndForward")
     engine_base_url: Optional[str] = Field(default=None, alias="engineBaseUrl")
     hotkey: Optional[str] = None
+    cancel_hotkey: Optional[str] = Field(default=None, alias="cancelHotkey")
     mode: str = "capture_only"
     persistent: bool = False
 

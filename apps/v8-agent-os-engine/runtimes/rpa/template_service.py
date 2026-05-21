@@ -892,10 +892,11 @@ class RPATemplateService:
         limit: int = 100,
         app_id: str | None = None,
         status: str | None = None,
+        include_archived: bool = False,
     ) -> list[Dict[str, Any]]:
         normalized_status = self._normalize_status(status) if status not in (None, "") else None
         items: list[Dict[str, Any]] = []
-        for payload in self.script_store.list_templates(limit=max(1, int(limit) * 3), app_id=app_id):
+        for payload in self.script_store.list_templates(limit=max(1, int(limit) * 3), app_id=app_id, include_archived=include_archived):
             decorated = self._decorate_template(payload)
             if normalized_status and decorated.get("status") != normalized_status:
                 continue

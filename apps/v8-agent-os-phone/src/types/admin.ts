@@ -594,6 +594,29 @@ export type RPADraftSummary = {
     status?: string;
     created_at?: string;
     updated_at?: string;
+    archivedAt?: string;
+    metadata?: Record<string, unknown>;
+};
+
+export type RPATemplateSummary = {
+    id?: string;
+    name?: string;
+    appId?: string;
+    status?: string;
+    updatedAt?: string;
+    archivedAt?: string;
+    source?: {
+        draftId?: string;
+        templateStage?: string;
+        templateStatus?: string;
+    };
+    metadata?: Record<string, unknown>;
+    view?: {
+        statusLabel?: string;
+        stageLabel?: string;
+        recommendedDecisionLabel?: string;
+        confidenceLabel?: string;
+    };
 };
 
 export type RPARobotScriptSummary = {

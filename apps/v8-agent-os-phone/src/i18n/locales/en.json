@@ -689,5 +689,13 @@
   "src.lib.admin_client.realtime_stream_failed_with_status": "Failed to connect to the realtime stream ({status})",
   "src.providers.app_session.unable_to_reach_admin": "Unable to reach Admin: {baseUrl}",
   "src.components.chat.mcp_app.title": "MCP App",
-  "src.components.chat.mcp_app.loading": "Loading interactive UI"
+  "src.components.chat.mcp_app.loading": "Loading interactive UI",
+  "src.screens.rpascreen.approved_template": "Approved template",
+  "src.screens.rpascreen.draft_requires_admin_approval": "This draft must be edited and approved as a template in Admin before Phone can run it.",
+  "src.screens.rpascreen.drafts_are_not_runnable_from_phone": "Drafts are status-only here. Edit, mark variables, and approve them in Admin before running from Phone.",
+  "src.screens.rpascreen.template_missing_source_draft": "This template is missing its executable draft source. Check it in Admin.",
+  "src.screens.rpascreen.variables_debug_json_placeholder": "Leave empty, or enter debug JSON variables such as {\"username\":\"demo\"}. Templates will use variable forms later.",
+  "src.screens.rpascreen.rpa_result_status": "Status",
+  "src.screens.rpascreen.rpa_result_received": "RPA result received",
+  "src.screens.rpascreen.execution_started_but_failed": "Some actions were triggered, but the flow did not complete. Check the trace in Admin before retrying."
 }

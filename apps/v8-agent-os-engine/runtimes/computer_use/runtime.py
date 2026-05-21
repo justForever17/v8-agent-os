@@ -8729,6 +8729,7 @@ class ComputerUseRuntime:
         limit: int = 20,
         include_running: bool = True,
         force_refresh: bool = False,
+        include_learned: bool = True,
     ) -> Dict[str, Any]:
         self._ensure_runtime_ready()
         payload = self.app_catalog.list_apps(
@@ -8736,6 +8737,7 @@ class ComputerUseRuntime:
             limit=max(1, min(limit, 100)),
             include_running=include_running,
             force_refresh=force_refresh,
+            include_learned=include_learned,
         )
         return {
             "platform": self.driver.platform,

@@ -1,7 +1,7 @@
 "use client";
 
-import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, FileCode2, Pause, Play, RefreshCw, Save, ShieldAlert, Square, Trash2, Video, Wand2 } from "lucide-react";
+import { type DragEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, FileCode2, GitBranch, MousePointerClick, Pause, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Square, Trash2, Video, Wand2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { ag, tg, ti } from "@/i18n/admin-legacy";
 import { translateCurrentClient } from "@/lib/locale";
 type AvailabilityPayload = {
@@ -61,6 +62,7 @@ type DraftPayload = {
   name?: string;
   appId?: string;
   goal?: string;
+  archivedAt?: string;
   source?: {
     type?: string;
     traceRunId?: string;
@@ -71,7 +73,11 @@ type DraftPayload = {
     name?: string;
     required?: boolean;
     type?: string;
+    defaultValue?: unknown;
+    secretName?: string;
+    sensitive?: boolean;
   }>;
+  objectLibrary?: ObjectLibraryElement[];
   assessment?: {
     score?: number;
     status?: string;
@@ -97,6 +103,9 @@ type DraftPayload = {
     templateTrustConfidence?: number;
     templateRolloutMode?: string;
     templateStatus?: string;
+    archivedAt?: string;
+    archivedBy?: string;
+    archiveReason?: string;
   };
   robot?: {
     tags?: string[];
@@ -151,6 +160,7 @@ type TemplatePayload = {
   name?: string;
   appId?: string;
   status?: string;
+  archivedAt?: string;
   updatedAt?: string;
   source?: {
     draftId?: string;
@@ -159,6 +169,9 @@ type TemplatePayload = {
   };
   metadata?: {
     revision?: number;
+    archivedAt?: string;
+    archivedBy?: string;
+    archiveReason?: string;
     reviewHistory?: Array<{
       decision?: string;
       reviewer?: string;
@@ -245,11 +258,36 @@ type RecordingSessionPayload = {
   browserKind?: string;
   browserProfileId?: string;
   windowHandle?: string | number | null;
+  targetLock?: Record<string, unknown>;
+  captureAssistant?: Record<string, unknown>;
+  capturePool?: CapturePoolItem[];
+  objectLibrary?: ObjectLibraryElement[];
   createdDraftId?: string | null;
   compileError?: string | null;
   stepCount?: number;
   createdAt?: string;
   updatedAt?: string;
+};
+type CapturePoolItem = {
+  tempElementId?: string;
+  elementId?: string;
+  label?: string;
+  name?: string;
+  source?: string;
+  action?: string;
+  selector?: Record<string, unknown>;
+  selectorCandidates?: Array<Record<string, unknown>>;
+  targetWindow?: Record<string, unknown>;
+  coordinate?: Record<string, unknown>;
+  confidence?: number;
+  fragileCoordinateFallback?: boolean;
+  captureMode?: string;
+  capturedAt?: string;
+};
+type ObjectLibraryElement = CapturePoolItem & {
+  elementId?: string;
+  sourceTempElementId?: string;
+  savedAt?: string;
 };
 type ObservationCandidate = {
   css?: string;
@@ -265,6 +303,7 @@ type ObservationCandidate = {
 };
 type EditableDraftStep = {
   stepId?: string;
+  action?: string;
   use?: string;
   intent?: string;
   approval?: {
@@ -281,6 +320,49 @@ type EditableDraftStep = {
     score?: number;
     status?: string;
   };
+};
+type DraftVariableRow = {
+  id: string;
+  name: string;
+  type: string;
+  required: boolean;
+  defaultValue: string;
+  secretName: string;
+  sensitive: boolean;
+};
+type StepValidationResult = {
+  ok?: boolean;
+  mode?: string;
+  summary?: string;
+  checks?: Array<{
+    name?: string;
+    ok?: boolean;
+    message?: string;
+  }>;
+  warnings?: string[];
+  errors?: string[];
+};
+type ComputerUseAppPayload = {
+  appId?: string;
+  id?: string;
+  profileId?: string;
+  displayName?: string;
+  name?: string;
+  isRunning?: boolean;
+  launchable?: boolean;
+  learned?: boolean;
+  sources?: string[];
+  aliases?: string[];
+  processNames?: string[];
+  titlePatterns?: string[];
+  runningWindows?: Array<{
+    title?: string;
+    processName?: string;
+    className?: string;
+  }>;
+  learnedSelectorCount?: number;
+  learnedInteractionCount?: number;
+  topWindowTitle?: string;
 };
 function formatConfidence(score?: number | null) {
   if (typeof score !== "number" || Number.isNaN(score)) {
@@ -353,6 +435,106 @@ function readRunTemplatePolicy(metadata?: Record<string, unknown>) {
 }
 function prettyJson(value: unknown) {
   return JSON.stringify(value, null, 2);
+}
+function safeJsonParse<T>(value: string, fallback: T): T {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+function stableDraftStepKey(draftId: string, step: EditableDraftStep, index: number) {
+  return step.stepId || `${draftId}:step:${index}`;
+}
+function stepActionName(step?: EditableDraftStep | null) {
+  return firstString(step?.action, step?.use) || "step";
+}
+function stepIntentLabel(step?: EditableDraftStep | null) {
+  const params = isPlainRecord(step?.params) ? step.params : {};
+  return firstString(params.intent, step?.intent, params.action_name, params.toolbar_action_name, params.text, stepActionName(step));
+}
+function stepSelectorValue(step?: EditableDraftStep | null) {
+  const target = isPlainRecord(step?.target) ? step?.target : {};
+  const selector = isPlainRecord(target.selector) ? target.selector : {};
+  const params = isPlainRecord(step?.params) ? step?.params : {};
+  return firstString(selector.css, selector.xpath, selector.role, selector.selector, params.selector, params.selector_key);
+}
+function stepTextValue(step?: EditableDraftStep | null) {
+  const params = isPlainRecord(step?.params) ? step?.params : {};
+  return firstString(params.text, params.value);
+}
+function captureItemLabel(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  if (!item) return "";
+  return item.name || item.label || firstString(item.selector?.name, item.selector?.css, item.selector?.xpath, item.targetWindow?.title, item.tempElementId, item.elementId) || "element";
+}
+function captureItemSelectorValue(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  if (!item) return "";
+  const selector = isPlainRecord(item.selector) ? item.selector : {};
+  const candidates = Array.isArray(item.selectorCandidates) ? item.selectorCandidates : [];
+  const best = candidates.find(candidate => isPlainRecord(candidate)) as Record<string, unknown> | undefined;
+  return firstString(selector.css, selector.xpath, selector.role, selector.selector, selector.automationId, selector.name, best?.css, best?.xpath, best?.role, best?.automationId, best?.name);
+}
+function captureItemCoordinateValue(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  if (!item || !isPlainRecord(item.coordinate)) return "";
+  const x = item.coordinate.x;
+  const y = item.coordinate.y;
+  if (x == null || y == null || x === "" || y === "") return "";
+  return `${x}, ${y}`;
+}
+function actionKind(action?: string) {
+  const value = String(action || "").toLowerCase();
+  if (value.includes("browser")) return "browser";
+  if (value.includes("assert")) return "assert";
+  if (value.includes("wait")) return "wait";
+  if (value.includes("loop")) return "loop";
+  if (value === "open_app" || value === "wait_window") return "app";
+  if (value === "type_text" || value.includes("type")) return "type";
+  if (value === "click" || value.includes("click")) return "click";
+  if (value === "hotkey") return "hotkey";
+  if (value === "scroll") return "scroll";
+  if (value.includes("file") || value.includes("http") || value.includes("ocr") || value.includes("llm") || value.includes("variable")) return "data";
+  return "generic";
+}
+function makeDraftStep(action: string, appId?: string): EditableDraftStep {
+  const stepId = `step_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const base: EditableDraftStep = {
+    stepId,
+    action,
+    intent: action,
+    params: {},
+    target: {
+      window: {
+        appId: appId || "desktop",
+      },
+    },
+    metadata: {
+      recordedBy: "human",
+      editedFrom: "admin_step_builder",
+    },
+  };
+  if (action === "open_app") {
+    base.intent = "launch_app";
+    base.params = { appId: appId || "desktop" };
+  } else if (action === "wait") {
+    base.intent = "wait_for_element";
+    base.params = { timeoutMs: 3000 };
+    base.target = { ...base.target, selector: { css: "" } };
+  } else if (action === "click") {
+    base.intent = "click";
+    base.target = { ...base.target, selector: { css: "" } };
+  } else if (action === "type_text") {
+    base.intent = "find_and_type";
+    base.params = { text: "" };
+    base.target = { ...base.target, selector: { css: "" } };
+  } else if (action === "hotkey") {
+    base.params = { sequence: "Ctrl+L" };
+  } else if (action === "scroll") {
+    base.intent = "scroll_list";
+    base.params = { direction: "down", amount: 3 };
+  } else if (action === "screenshot") {
+    base.intent = "capture_screenshot";
+  }
+  return base;
 }
 function probeState(detail?: AvailabilityProbe) {
   if (!detail?.detected) {
@@ -531,6 +713,8 @@ export function RPAWorkbench() {
   const [drafts, setDrafts] = useState<DraftPayload[]>([]);
   const [scripts, setScripts] = useState<ScriptPayload[]>([]);
   const [templates, setTemplates] = useState<TemplatePayload[]>([]);
+  const [showArchivedDrafts, setShowArchivedDrafts] = useState(false);
+  const [showArchivedTemplates, setShowArchivedTemplates] = useState(false);
   const [templateSummary, setTemplateSummary] = useState<TemplateSummaryPayload>({});
   const [templateHistory, setTemplateHistory] = useState<TemplateHistoryRecord[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
@@ -538,6 +722,7 @@ export function RPAWorkbench() {
   const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [selectedDraftId, setSelectedDraftId] = useState<string>("");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [studioDirty, setStudioDirty] = useState(false);
   const [templateNote, setTemplateNote] = useState("");
   const [compileRunId, setCompileRunId] = useState("");
   const [variablesText, setVariablesText] = useState("{}");
@@ -567,21 +752,207 @@ export function RPAWorkbench() {
   const [desktopLiveLoading, setDesktopLiveLoading] = useState(false);
   const [latestComputerObservation, setLatestComputerObservation] = useState<Record<string, unknown> | null>(null);
   const [computerSampling, setComputerSampling] = useState(false);
+  const [recordAndForward, setRecordAndForward] = useState(false);
+  const [browserCaptureActive, setBrowserCaptureActive] = useState(false);
+  const [browserCapturePolling, setBrowserCapturePolling] = useState(false);
+  const [captureAssistantActive, setCaptureAssistantActive] = useState(false);
+  const [captureAssistantStage, setCaptureAssistantStage] = useState<"idle" | "creating" | "preparing" | "starting" | "active" | "captured" | "failed">("idle");
+  const [computerApps, setComputerApps] = useState<ComputerUseAppPayload[]>([]);
+  const [computerAppsLoading, setComputerAppsLoading] = useState(false);
+  const [computerAppsError, setComputerAppsError] = useState("");
+  const [appPickerOpen, setAppPickerOpen] = useState(false);
+  const [appSearch, setAppSearch] = useState("");
+  const [studioRightPanel, setStudioRightPanel] = useState<"properties" | "variables" | "elements" | "runs" | "diagnostics">("properties");
+  const [showLegacyPanel, setShowLegacyPanel] = useState(false);
   const liveImageRef = useRef<HTMLImageElement | null>(null);
+  const liveDragStartRef = useRef<{ x: number; y: number; mapping: Record<string, unknown> } | null>(null);
   const [draftStepEdits, setDraftStepEdits] = useState<Record<string, string>>({});
+  const [draftStepOrder, setDraftStepOrder] = useState<string[]>([]);
+  const [draftEditorView, setDraftEditorView] = useState<"steps" | "canvas">("canvas");
+  const [selectedDraftStepKey, setSelectedDraftStepKey] = useState("");
+  const [draftVariableRows, setDraftVariableRows] = useState<DraftVariableRow[]>([]);
+  const [stepValidation, setStepValidation] = useState<StepValidationResult | null>(null);
   const selectedDraft = useMemo(() => drafts.find(item => item.id === selectedDraftId) || null, [drafts, selectedDraftId]);
   const selectedTemplate = useMemo(() => templates.find(item => item.id === selectedTemplateId) || null, [templates, selectedTemplateId]);
+  const orderedDraftSteps = useMemo(() => draftStepOrder.map(key => ({
+    key,
+    step: safeJsonParse<EditableDraftStep | null>(draftStepEdits[key] || "", null)
+  })).filter((item): item is { key: string; step: EditableDraftStep } => !!item.step), [draftStepEdits, draftStepOrder]);
+  const selectedBuilderStep = useMemo(() => orderedDraftSteps.find(item => item.key === selectedDraftStepKey)?.step || null, [orderedDraftSteps, selectedDraftStepKey]);
+  const draftActionOptions = useMemo(() => [
+    ["open_app", t("components.rpa.RPAWorkbench.actionOpenApp")],
+    ["wait", t("components.rpa.RPAWorkbench.actionWait")],
+    ["click", t("components.rpa.RPAWorkbench.actionClick")],
+    ["type_text", t("components.rpa.RPAWorkbench.actionTypeText")],
+    ["hotkey", t("components.rpa.RPAWorkbench.actionHotkey")],
+    ["scroll", t("components.rpa.RPAWorkbench.actionScroll")],
+    ["screenshot", t("components.rpa.RPAWorkbench.actionScreenshot")]
+  ] as Array<[string, string]>, [t]);
+  const studioActionGroups = useMemo(() => [
+    {
+      key: "app",
+      title: t("components.rpa.RPAWorkbench.studioGroupApp"),
+      actions: [["open_app", t("components.rpa.RPAWorkbench.actionOpenApp")], ["wait_window", t("components.rpa.RPAWorkbench.studioActionWaitWindow")]]
+    },
+    {
+      key: "browser",
+      title: t("components.rpa.RPAWorkbench.studioGroupBrowser"),
+      actions: [["browser_click", t("components.rpa.RPAWorkbench.studioActionBrowserClick")], ["browser_type", t("components.rpa.RPAWorkbench.studioActionBrowserType")], ["browser_assert", t("components.rpa.RPAWorkbench.studioActionBrowserAssert")], ["browser_extract", t("components.rpa.RPAWorkbench.studioActionBrowserExtract")]]
+    },
+    {
+      key: "desktop",
+      title: t("components.rpa.RPAWorkbench.studioGroupDesktop"),
+      actions: [["click", t("components.rpa.RPAWorkbench.actionClick")], ["type_text", t("components.rpa.RPAWorkbench.actionTypeText")], ["hotkey", t("components.rpa.RPAWorkbench.actionHotkey")], ["scroll", t("components.rpa.RPAWorkbench.actionScroll")], ["screenshot", t("components.rpa.RPAWorkbench.actionScreenshot")]]
+    },
+    {
+      key: "flow",
+      title: t("components.rpa.RPAWorkbench.studioGroupFlow"),
+      actions: [["wait", t("components.rpa.RPAWorkbench.actionWait")], ["if", t("components.rpa.RPAWorkbench.studioActionIf")], ["loop", t("components.rpa.RPAWorkbench.studioActionLoop")], ["try_catch", t("components.rpa.RPAWorkbench.studioActionTryCatch")], ["subflow", t("components.rpa.RPAWorkbench.studioActionSubflow")], ["comment", t("components.rpa.RPAWorkbench.studioActionComment")]]
+    },
+    {
+      key: "data",
+      title: t("components.rpa.RPAWorkbench.studioGroupData"),
+      actions: [["set_variable", t("components.rpa.RPAWorkbench.studioActionSetVariable")], ["file_copy", t("components.rpa.RPAWorkbench.studioActionFileCopy")], ["http_request", t("components.rpa.RPAWorkbench.studioActionHttpRequest")], ["ocr", t("components.rpa.RPAWorkbench.studioActionOcr")], ["llm_call", t("components.rpa.RPAWorkbench.studioActionLlmCall")], ["assert_text", t("components.rpa.RPAWorkbench.studioActionAssertText")]]
+    }
+  ] as Array<{ key: string; title: string; actions: Array<[string, string]> }>, [t]);
+  const selectedComputerApp = useMemo(() => computerApps.find(app => {
+    const appId = String(app.appId || app.id || app.profileId || "");
+    return appId === recordingAppId;
+  }) || null, [computerApps, recordingAppId]);
+  const selectedComputerAppLabel = selectedComputerApp?.displayName || selectedComputerApp?.name || (recordingAppId === "desktop" ? t("components.rpa.RPAWorkbench.studioManualDesktop") : recordingAppId) || "desktop";
+  const targetLockLooksLikeAdmin = useMemo(() => /v8 agent os|v8 os|localhost:9528|127\.0\.0\.1:9528|admin/i.test([
+    recordingAppId,
+    selectedComputerApp?.displayName,
+    selectedComputerApp?.name,
+    selectedComputerApp?.topWindowTitle
+  ].filter(Boolean).join(" ")), [recordingAppId, selectedComputerApp]);
+  const appPickerOptions = useMemo(() => {
+    const query = appSearch.trim().toLowerCase();
+    const normalize = (value: unknown) => String(value || "").toLowerCase();
+    const options = [
+      {
+        id: "desktop",
+        label: t("components.rpa.RPAWorkbench.studioManualDesktop"),
+        subtitle: t("components.rpa.RPAWorkbench.studioAppGroupManual"),
+        group: "manual",
+        running: false,
+        launchable: true,
+        searchText: [
+          "desktop",
+          t("components.rpa.RPAWorkbench.studioManualDesktop"),
+          t("components.rpa.RPAWorkbench.studioAppGroupManual"),
+        ].join(" "),
+      },
+      ...computerApps.map(app => {
+        const id = String(app.appId || app.id || app.profileId || "");
+        const sources = Array.isArray(app.sources) ? app.sources : [];
+        const runningWindows = Array.isArray(app.runningWindows) ? app.runningWindows : [];
+        const windowTitle = firstString(app.topWindowTitle, ...runningWindows.map(window => window?.title));
+        const group = app.isRunning ? "running" : app.learned || sources.includes("computer_use_memory") ? "learned" : "launchable";
+        const label = app.displayName || app.name || id;
+        const subtitle = windowTitle || (group === "learned" ? t("components.rpa.RPAWorkbench.studioAppGroupLearned") : app.isRunning ? t("components.rpa.RPAWorkbench.studioAppGroupRunning") : t("components.rpa.RPAWorkbench.studioAppGroupLaunchable"));
+        return {
+          id,
+          label,
+          subtitle,
+          group,
+          running: Boolean(app.isRunning),
+          launchable: Boolean(app.launchable),
+          learned: Boolean(app.learned || sources.includes("computer_use_memory")),
+          searchText: [
+            id,
+            label,
+            subtitle,
+            app.profileId,
+            ...(Array.isArray(app.aliases) ? app.aliases : []),
+            ...(Array.isArray(app.processNames) ? app.processNames : []),
+            ...(Array.isArray(app.titlePatterns) ? app.titlePatterns : []),
+            ...runningWindows.flatMap(window => [window?.title, window?.processName, window?.className]),
+          ].filter(Boolean).join(" "),
+        };
+      }).filter(item => item.id)
+    ];
+    return options.filter(item => !query || normalize(item.searchText).includes(query));
+  }, [appSearch, computerApps, t]);
+  const groupedAppPickerOptions = useMemo(() => {
+    const order = ["running", "launchable", "learned", "manual"];
+    return order.map(group => ({
+      group,
+      items: appPickerOptions.filter(item => item.group === group),
+    })).filter(entry => entry.items.length);
+  }, [appPickerOptions]);
+  const studioPanelOptions = useMemo(() => [
+    ["properties", t("components.rpa.RPAWorkbench.studioPanelProperties")],
+    ["variables", t("components.rpa.RPAWorkbench.studioPanelVariables")],
+    ["elements", t("components.rpa.RPAWorkbench.studioPanelElements")],
+    ["runs", t("components.rpa.RPAWorkbench.studioPanelRuns")],
+    ["diagnostics", t("components.rpa.RPAWorkbench.studioPanelDiagnostics")]
+  ] as Array<[typeof studioRightPanel, string]>, [t]);
+  const selectedBuilderParams = useMemo(() => isPlainRecord(selectedBuilderStep?.params) ? selectedBuilderStep.params : {}, [selectedBuilderStep]);
+  const selectedBuilderTarget = useMemo(() => isPlainRecord(selectedBuilderStep?.target) ? selectedBuilderStep.target : {}, [selectedBuilderStep]);
+  const selectedBuilderSelector = useMemo(() => isPlainRecord(selectedBuilderTarget.selector) ? selectedBuilderTarget.selector : {}, [selectedBuilderTarget]);
+  const selectedBuilderCoordinate = useMemo(() => isPlainRecord((selectedBuilderStep as Record<string, unknown> | null)?.coordinate) ? (selectedBuilderStep as Record<string, unknown>).coordinate as Record<string, unknown> : {}, [selectedBuilderStep]);
+  const selectedBuilderVerification = useMemo(() => isPlainRecord(selectedBuilderStep?.verification) ? selectedBuilderStep.verification : {}, [selectedBuilderStep]);
+  const selectedBuilderActionKind = useMemo(() => actionKind(stepActionName(selectedBuilderStep)), [selectedBuilderStep]);
+  const capturePoolItems = useMemo(() => Array.isArray(activeRecording?.capturePool) ? activeRecording.capturePool : [], [activeRecording]);
+  const captureAssistantBusy = captureAssistantStage === "creating" || captureAssistantStage === "preparing" || captureAssistantStage === "starting";
+  const captureAssistantStageLabel = useMemo(() => {
+    const keyByStage: Record<typeof captureAssistantStage, string> = {
+      idle: "components.rpa.RPAWorkbench.studioStartCaptureAssistant",
+      creating: "components.rpa.RPAWorkbench.studioCaptureStageCreating",
+      preparing: "components.rpa.RPAWorkbench.studioCaptureStagePreparing",
+      starting: "components.rpa.RPAWorkbench.studioCaptureStageStarting",
+      active: "components.rpa.RPAWorkbench.studioCaptureStageActive",
+      captured: "components.rpa.RPAWorkbench.studioCaptureStageCaptured",
+      failed: "components.rpa.RPAWorkbench.studioCaptureStageFailed"
+    };
+    return t(keyByStage[captureAssistantStage]);
+  }, [captureAssistantStage, t]);
+  const nativeHotkeyBackend = useMemo(() => {
+    const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
+    const backend = assistant.nativeHotkeyBackend;
+    return isPlainRecord(backend) ? backend : null;
+  }, [activeRecording]);
+  const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
+  const selectableElements = useMemo(() => [
+    ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
+    ...capturePoolItems.map(item => ({ ...item, sourceBucket: "pool" as const, optionId: item.tempElementId || captureItemLabel(item) }))
+  ], [capturePoolItems, objectLibraryItems]);
+  const selectedLoopStartKey = firstString(selectedBuilderParams.loopStartStepKey, selectedBuilderParams.startStepKey);
+  const selectedLoopEndKey = firstString(selectedBuilderParams.loopEndStepKey, selectedBuilderParams.endStepKey);
+  const selectedLoopStartIndex = selectedLoopStartKey ? orderedDraftSteps.findIndex(item => item.key === selectedLoopStartKey) : -1;
+  const selectedLoopEndIndex = selectedLoopEndKey ? orderedDraftSteps.findIndex(item => item.key === selectedLoopEndKey) : -1;
+  const selectedLoopInvalid = selectedBuilderActionKind === "loop" && selectedLoopStartKey && selectedLoopEndKey && (selectedLoopStartIndex < 0 || selectedLoopEndIndex < 0 || selectedLoopStartIndex >= selectedLoopEndIndex);
+  const isArchivedDraft = useCallback((draft?: DraftPayload | null) => Boolean(draft?.archivedAt || draft?.metadata?.archivedAt), []);
+  const isArchivedTemplate = useCallback((template?: TemplatePayload | null) => Boolean(template?.archivedAt || template?.metadata?.archivedAt), []);
   useEffect(() => {
     if (!selectedDraft) {
-      setDraftStepEdits({});
       return;
     }
     const next: Record<string, string> = {};
+    const order: string[] = [];
     (selectedDraft.steps || []).forEach((step, index) => {
-      const key = step.stepId || `${selectedDraft.id}:step:${index}`;
+      const key = stableDraftStepKey(selectedDraft.id, step, index);
       next[key] = JSON.stringify(step, null, 2);
+      order.push(key);
     });
     setDraftStepEdits(next);
+    setDraftStepOrder(order);
+    setSelectedDraftStepKey(order[0] || "");
+    setStepValidation(null);
+    setRecordingName(selectedDraft.name || "");
+    setRecordingGoal(selectedDraft.goal || "");
+    setRecordingAppId(selectedDraft.appId || "desktop");
+    setStudioDirty(false);
+    setDraftVariableRows((selectedDraft.variables || []).map((variable, index) => ({
+      id: `${selectedDraft.id}:var:${index}:${variable.name || "var"}`,
+      name: variable.name || "",
+      type: variable.type || "text",
+      required: Boolean(variable.required),
+      defaultValue: variable.defaultValue == null ? "" : String(variable.defaultValue),
+      secretName: variable.secretName || "",
+      sensitive: Boolean(variable.sensitive || variable.secretName),
+    })));
   }, [selectedDraft]);
   const isRpaRun = (run: RunRecord) => run.run_type === "rpa" || run.metadata?.runtime === "rpa" || run.metadata?.mode === "draft" || run.metadata?.mode === "existing_robot" || String(run.session_id || "").startsWith("rpa:");
   const isRpaApproval = (approval: ApprovalRecord) => String(approval.approval_kind || "").startsWith("rpa") || !!approval.request?.rpa || String(approval.session_id || "").startsWith("rpa:");
@@ -592,11 +963,11 @@ export function RPAWorkbench() {
     try {
       const [availabilityRes, draftsRes, scriptsRes, templatesRes, recordingsRes, approvalsRes, runsRes] = await Promise.all([fetch("/api/rpa/availability", {
         cache: "no-store"
-      }), fetch("/api/rpa/drafts", {
+      }), fetch(`/api/rpa/drafts?includeArchived=${showArchivedDrafts ? "true" : "false"}`, {
         cache: "no-store"
       }), fetch("/api/rpa/scripts", {
         cache: "no-store"
-      }), fetch("/api/rpa/templates", {
+      }), fetch(`/api/rpa/templates?includeArchived=${showArchivedTemplates ? "true" : "false"}`, {
         cache: "no-store"
       }), fetch("/api/rpa/recordings?limit=12", {
         cache: "no-store"
@@ -624,8 +995,8 @@ export function RPAWorkbench() {
       setTemplateSummary(nextTemplatesPayload?.summary || {});
       setApprovals(Array.isArray(approvalsData?.approvals) ? approvalsData.approvals : []);
       setRuns(Array.isArray(runsData?.runs) ? runsData.runs : []);
-      if (!selectedDraftId && nextDrafts[0]?.id) {
-        setSelectedDraftId(nextDrafts[0].id);
+      if (selectedDraftId && !nextDrafts.some((draft: DraftPayload) => draft.id === selectedDraftId)) {
+        setSelectedDraftId("");
       }
       if (!selectedTemplateId && nextTemplates[0]?.id) {
         setSelectedTemplateId(nextTemplates[0].id);
@@ -640,10 +1011,82 @@ export function RPAWorkbench() {
     } finally {
       setLoading(false);
     }
-  }, [selectedDraftId, selectedTemplateId, toast, t]);
+  }, [selectedDraftId, selectedTemplateId, showArchivedDrafts, showArchivedTemplates, toast, t]);
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+  const loadComputerApps = useCallback(async (force = false, queryOverride = "") => {
+    setComputerAppsLoading(true);
+    setComputerAppsError("");
+    try {
+      const query = queryOverride.trim();
+      const response = await fetch("/api/computer-use/apps", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          limit: 100,
+          query: query || undefined,
+          includeRunning: true,
+          includeLearned: true,
+          forceRefresh: force
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = firstString(payload?.detail, payload?.error, payload?.message) || `HTTP ${response.status}`;
+        setComputerAppsError(message);
+        toast({
+          variant: "destructive",
+          title: t("components.rpa.RPAWorkbench.studioAppListFailed"),
+          description: message
+        });
+        return;
+      }
+      const apps = Array.isArray(payload?.apps)
+        ? payload.apps
+        : Array.isArray(payload?.items)
+          ? payload.items
+          : Array.isArray(payload?.data?.apps)
+            ? payload.data.apps
+            : [];
+      setComputerApps(apps);
+      if (!apps.length) {
+        setComputerAppsError(t("components.rpa.RPAWorkbench.studioAppListEmpty"));
+      }
+    } catch (error) {
+      console.warn("[RPAWorkbench] app list failed:", error);
+      const message = error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError");
+      setComputerAppsError(message);
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioAppListFailed"),
+        description: message
+      });
+    } finally {
+      setComputerAppsLoading(false);
+    }
+  }, [toast, t]);
+  useEffect(() => {
+    void loadComputerApps(false);
+  }, [loadComputerApps]);
+  useEffect(() => {
+    if (!appPickerOpen) return;
+    const timer = window.setTimeout(() => {
+      void loadComputerApps(false, appSearch);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [appPickerOpen, appSearch, loadComputerApps]);
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!studioDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [studioDirty]);
   useEffect(() => {
     return () => {
       const sessionId = desktopLiveSessionId;
@@ -767,6 +1210,457 @@ export function RPAWorkbench() {
       setDesktopLiveLoading(false);
     }
   };
+  const handleBrowserCaptureStart = async () => {
+    if (!activeRecording?.recordingSessionId) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
+        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
+      });
+      return;
+    }
+    const data = await runAction(`recording:browser-start:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/browser-capture/start`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        appId: recordingAppId.trim() || undefined,
+        windowTitle: firstString(latestComputerObservation?.summary && isPlainRecord(latestComputerObservation.summary) ? latestComputerObservation.summary.windowTitle : undefined)
+      })
+    }), t("components.rpa.RPAWorkbench.browserCaptureStarted"));
+    if (data?.ok) {
+      setBrowserCaptureActive(true);
+    }
+  };
+  const handleBrowserCapturePoll = useCallback(async (options?: { quiet?: boolean }) => {
+    if (!activeRecording?.recordingSessionId || browserCapturePolling) return;
+    setBrowserCapturePolling(true);
+    try {
+      const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/browser-capture/poll`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          appId: recordingAppId.trim() || undefined,
+          maxEvents: 80
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!options?.quiet) {
+          throw new Error(data?.detail || data?.error || t("components.rpa.RPAWorkbench.browserCapturePollFailed"));
+        }
+        return;
+      }
+      if (data?.recording) {
+        setActiveRecording(data.recording as RecordingSessionPayload);
+      }
+      if (!options?.quiet && Number(data?.appendedCount || 0) > 0) {
+        toast({
+          title: t("components.rpa.RPAWorkbench.browserCapturePolled"),
+          description: t("components.rpa.RPAWorkbench.browserCaptureEvents", {
+            count: Number(data.appendedCount || 0)
+          })
+        });
+      }
+      setLatestResult(data);
+    } catch (error) {
+      if (!options?.quiet) {
+        toast({
+          variant: "destructive",
+          title: t("components.rpa.RPAWorkbench.browserCapturePollFailed"),
+          description: error instanceof Error ? error.message : String(error)
+        });
+      }
+    } finally {
+      setBrowserCapturePolling(false);
+    }
+  }, [activeRecording?.recordingSessionId, browserCapturePolling, recordingAppId, t, toast]);
+  const handleBrowserCaptureStop = async () => {
+    if (!activeRecording?.recordingSessionId) return;
+    const data = await runAction(`recording:browser-stop:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/browser-capture/stop`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        appId: recordingAppId.trim() || undefined
+      })
+    }), t("components.rpa.RPAWorkbench.browserCaptureStopped"));
+    if (data?.recording) {
+      setActiveRecording(data.recording as RecordingSessionPayload);
+    }
+    setBrowserCaptureActive(false);
+  };
+  useEffect(() => {
+    if (!browserCaptureActive || !activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void handleBrowserCapturePoll({ quiet: true });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeRecording?.recordingSessionId, activeRecording?.state, browserCaptureActive, handleBrowserCapturePoll]);
+  const refreshRecording = useCallback(async (recordingId: string) => {
+    const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(recordingId)}`);
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.recordingSessionId) {
+      setActiveRecording(data as RecordingSessionPayload);
+    }
+    return data;
+  }, []);
+
+  const buildRecordingStartPayload = () => {
+    const targetAppId = recordingAppId.trim() || String(selectedComputerApp?.appId || selectedComputerApp?.id || selectedComputerApp?.profileId || "desktop");
+    return {
+      name: recordingName.trim() || undefined,
+      goal: recordingGoal.trim() || recordingName.trim() || undefined,
+      targetMode: recordingTargetMode,
+      browserKind: recordingTargetMode === "agent_browser" ? recordingBrowserKind : undefined,
+      appId: targetAppId,
+      activeApp: selectedComputerApp ? {
+        appId: targetAppId,
+        displayName: selectedComputerApp.displayName || selectedComputerApp.name,
+        topWindowTitle: selectedComputerApp.topWindowTitle,
+        isRunning: selectedComputerApp.isRunning,
+        launchable: selectedComputerApp.launchable
+      } : undefined,
+      targetLock: {
+        enabled: true,
+        mode: recordingTargetMode,
+        appId: targetAppId,
+        label: selectedComputerAppLabel,
+        browserKind: recordingTargetMode === "agent_browser" ? recordingBrowserKind : undefined,
+        ignoreAdminSurface: true,
+        consoleTargetBlocked: targetLockLooksLikeAdmin
+      },
+      captureOptions: {
+        screenshotAnchors: true,
+        domSelectors: true,
+        windowInfo: true,
+        keyboardInput: true
+      }
+    };
+  };
+
+  const confirmLoseStudioChanges = () => !studioDirty || window.confirm(t("components.rpa.RPAWorkbench.studioUnsavedConfirm"));
+
+  const resetStudioWorkspace = () => {
+    if (!confirmLoseStudioChanges()) return;
+    setSelectedDraftId("");
+    setDraftStepEdits({});
+    setDraftStepOrder([]);
+    setSelectedDraftStepKey("");
+    setDraftVariableRows([]);
+    setStepValidation(null);
+    setRecordingName("");
+    setRecordingGoal("");
+    setRecordingAppId("desktop");
+    setLatestResult(null);
+    setStudioDirty(false);
+  };
+
+  const handleSelectDraft = (draftId: string) => {
+    if (draftId === selectedDraftId) return;
+    if (!confirmLoseStudioChanges()) return;
+    setSelectedDraftId(draftId);
+    setStudioDirty(false);
+  };
+
+  const buildDraftStudioPayload = (options?: { saveAs?: boolean }) => {
+    const steps = parseDraftStepsFromBuilder();
+    const variables = draftVariableRows.map(row => ({
+      name: row.name.trim(),
+      type: row.type,
+      required: row.required,
+      ...(row.defaultValue ? {
+        defaultValue: row.defaultValue
+      } : {}),
+      ...(row.sensitive ? {
+        sensitive: true,
+        secretName: row.secretName.trim() || row.name.trim()
+      } : {})
+    })).filter(row => row.name);
+    const baseName = recordingName.trim() || selectedDraft?.name || t("components.rpa.RPAWorkbench.studioCurrentUnsaved");
+    return {
+      name: options?.saveAs ? `${baseName} Copy` : baseName,
+      goal: recordingGoal.trim() || selectedDraft?.goal || recordingName.trim() || undefined,
+      appId: recordingAppId.trim() || selectedDraft?.appId || "desktop",
+      steps,
+      variables,
+      objectLibrary: objectLibraryItems,
+      metadata: {
+        source: "manual_canvas",
+        editedBy: "admin_ui",
+        editedFrom: "rpa_canvas_studio",
+        targetLock: buildRecordingStartPayload().targetLock,
+      },
+    };
+  };
+
+  const handleCreateDraftFromStudio = async (options?: { saveAs?: boolean }) => {
+    let payload: ReturnType<typeof buildDraftStudioPayload>;
+    try {
+      payload = buildDraftStudioPayload(options);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.invalidDraftStep"),
+        description: error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")
+      });
+      return;
+    }
+    const data = await runAction(options?.saveAs ? "draft:create:save-as" : "draft:create", () => fetch("/api/rpa/drafts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }), options?.saveAs ? t("components.rpa.RPAWorkbench.studioDraftSavedAs") : t("components.rpa.RPAWorkbench.studioDraftCreated"));
+    if (data?.id) {
+      const draft = data as DraftPayload;
+      setDrafts(current => [draft, ...current.filter(item => item.id !== draft.id)]);
+      setSelectedDraftId(draft.id);
+      setStudioDirty(false);
+    }
+  };
+
+  const startRecordingSession = async (options?: { quiet?: boolean }) => {
+    if (targetLockLooksLikeAdmin) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioTargetBlockedTitle"),
+        description: t("components.rpa.RPAWorkbench.studioTargetBlockedDescription")
+      });
+      return null;
+    }
+    const data = await runAction("recording:start", () => fetch("/api/rpa/recordings/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(buildRecordingStartPayload())
+    }), options?.quiet ? t("components.rpa.RPAWorkbench.recordingStartedQuiet") : t("components.rpa.RPAWorkbench.recordingStarted"));
+    if (data?.recordingSessionId) {
+      const recording = data as RecordingSessionPayload;
+      setActiveRecording(recording);
+      setCaptureAssistantActive(false);
+      return recording;
+    }
+    return null;
+  };
+
+  const ensureActiveRecording = async () => {
+    if (activeRecording?.recordingSessionId && activeRecording.state === "recording") {
+      return activeRecording;
+    }
+    return startRecordingSession({ quiet: true });
+  };
+
+  const handleCaptureAssistantStart = async () => {
+    if (targetLockLooksLikeAdmin) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioTargetBlockedTitle"),
+        description: t("components.rpa.RPAWorkbench.studioTargetBlockedDescription")
+      });
+      return;
+    }
+    try {
+      setCaptureAssistantStage("creating");
+      const recording = await ensureActiveRecording();
+      if (!recording?.recordingSessionId) {
+        setCaptureAssistantStage("failed");
+        return;
+      }
+      setCaptureAssistantStage("preparing");
+      const prepared = await runAction(`recording:capture-assistant:prepare:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/capture-assistant/prepare-target`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          mode: recordingTargetMode,
+          appId: recordingAppId.trim() || "desktop",
+          label: selectedComputerAppLabel,
+          ignoreAdminSurface: true,
+          consoleTargetBlocked: targetLockLooksLikeAdmin,
+        })
+      }), t("components.rpa.RPAWorkbench.studioCaptureTargetPrepared"));
+      if (prepared?.recording) {
+        setActiveRecording(prepared.recording as RecordingSessionPayload);
+      }
+      if (prepared?.ok === false) {
+        throw new Error(prepared?.reason || prepared?.detail || prepared?.error || t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"));
+      }
+      setCaptureAssistantStage("starting");
+      const data = await runAction(`recording:capture-assistant:start:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/capture-assistant/start`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          action: "click",
+          backend: "auto",
+          mode: "capture_only",
+          hotkey: "ctrl+alt+c",
+          persistent: true,
+          recordAndForward,
+          targetLock: {
+            enabled: true,
+            mode: recordingTargetMode,
+            appId: recordingAppId.trim() || "desktop",
+            label: selectedComputerAppLabel,
+            ignoreAdminSurface: true,
+            consoleTargetBlocked: targetLockLooksLikeAdmin,
+          },
+        })
+      }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"));
+      if (data?.ok !== false) {
+        setCaptureAssistantActive(true);
+        setCaptureAssistantStage("active");
+        window.setTimeout(() => {
+          void refreshRecording(recording.recordingSessionId);
+        }, 1800);
+      }
+    } catch (error) {
+      setCaptureAssistantStage("failed");
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioCaptureAssistantFailed"),
+        description: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+  const handleCaptureAssistantStop = async () => {
+    if (!activeRecording?.recordingSessionId) return;
+    const data = await runAction(`recording:capture-assistant:stop:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-assistant/stop`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reason: "admin_stop"
+      })
+    }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStopped"));
+    if (data?.recording) {
+      setActiveRecording(data.recording as RecordingSessionPayload);
+    }
+    setCaptureAssistantActive(false);
+    setCaptureAssistantStage("idle");
+  };
+  const handleCaptureAssistantPoll = useCallback(async (options?: { quiet?: boolean }) => {
+    if (!activeRecording?.recordingSessionId) return;
+    try {
+      const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-assistant/poll`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!options?.quiet) {
+          throw new Error(data?.detail || data?.error || t("components.rpa.RPAWorkbench.studioCapturePollFailed"));
+        }
+        return;
+      }
+      if (data?.recording) {
+        setActiveRecording(data.recording as RecordingSessionPayload);
+      }
+      if (typeof data?.active === "boolean") {
+        setCaptureAssistantActive(Boolean(data.active));
+        setCaptureAssistantStage(data.active ? "active" : "captured");
+      }
+      setLatestResult(data);
+    } catch (error) {
+      if (!options?.quiet) {
+        toast({
+          variant: "destructive",
+          title: t("components.rpa.RPAWorkbench.studioCapturePollFailed"),
+          description: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }, [activeRecording?.recordingSessionId, t, toast]);
+  useEffect(() => {
+    if (!captureAssistantActive || !activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void handleCaptureAssistantPoll({ quiet: true });
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [activeRecording?.recordingSessionId, activeRecording?.state, captureAssistantActive, handleCaptureAssistantPoll]);
+  const applyElementToSelectedStep = (item: CapturePoolItem | ObjectLibraryElement) => {
+    if (!selectedBuilderStep) return;
+    const selectorValue = captureItemSelectorValue(item);
+    const selector = isPlainRecord(item.selector) ? item.selector : {};
+    const coordinate = isPlainRecord(item.coordinate) ? item.coordinate : {};
+    updateSelectedDraftStep(step => {
+      const target = isPlainRecord(step.target) ? step.target : {};
+      const metadata = isPlainRecord(step.metadata) ? step.metadata : {};
+      const nextTarget: Record<string, unknown> = {
+        ...target,
+        selector: selectorValue ? {
+          ...(isPlainRecord(target.selector) ? target.selector : {}),
+          css: firstString(selector.css, selector.selector, selectorValue),
+          xpath: firstString(selector.xpath),
+          role: firstString(selector.role),
+          automationId: firstString(selector.automationId),
+          name: firstString(selector.name),
+        } : (target.selector || {}),
+        window: item.targetWindow || target.window,
+      };
+      const nextStep: EditableDraftStep = {
+        ...step,
+        target: nextTarget,
+        metadata: {
+          ...metadata,
+          elementRef: item.elementId || item.tempElementId,
+          elementSource: item.source,
+          captureMode: item.captureMode,
+          fragileCoordinateFallback: Boolean(item.fragileCoordinateFallback),
+        },
+      };
+      if (coordinate.x != null || coordinate.y != null) {
+        (nextStep as Record<string, unknown>).coordinate = coordinate;
+      }
+      return nextStep;
+    });
+    setStudioRightPanel("properties");
+  };
+  const handleSaveCapturePoolItem = async (item: CapturePoolItem) => {
+    if (!activeRecording?.recordingSessionId || !item.tempElementId) return;
+    const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-pool/${encodeURIComponent(item.tempElementId)}/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: captureItemLabel(item)
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioElementSaveFailed"),
+        description: data?.detail || data?.error || t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
+      });
+      return;
+    }
+    if (data?.recording) {
+      setActiveRecording(data.recording as RecordingSessionPayload);
+    }
+    setLatestResult(data);
+    toast({
+      title: t("components.rpa.RPAWorkbench.studioElementSaved"),
+      description: captureItemLabel(item)
+    });
+  };
   const submitRecordingEvent = async (payload: Record<string, unknown>) => {
     if (!activeRecording?.recordingSessionId) {
       toast({
@@ -850,9 +1744,77 @@ export function RPAWorkbench() {
   const handleSampleComputerUse = async () => {
     setComputerSampling(true);
     try {
-      await captureComputerObservation({
-        toastResult: true,
-        updateForm: true
+      const recording = await ensureActiveRecording();
+      if (!recording?.recordingSessionId) {
+        return;
+      }
+      const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/desktop-sample`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          target: {
+            mode: recordingTargetMode,
+            appId: recordingAppId.trim() || "desktop",
+            label: selectedComputerAppLabel,
+            ignoreAdminSurface: true,
+            consoleTargetBlocked: targetLockLooksLikeAdmin,
+          },
+          event: {
+            action: "sample_elements",
+            source: "desktop_accessibility",
+            intent: selectedComputerAppLabel,
+            params: {
+              label: selectedComputerAppLabel
+            }
+          },
+          writeToCapturePool: true,
+          maxPoolItems: 8,
+          forwardAction: false
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.detail || data?.error || t("components.rpa.RPAWorkbench.computerSampleFailed"));
+      }
+      if (data?.recording) {
+        setActiveRecording(data.recording as RecordingSessionPayload);
+      } else {
+        void refreshRecording(recording.recordingSessionId);
+      }
+      const candidates = extractObservationCandidates(data);
+      const capturePoolItemsFromResult = Array.isArray(data?.capturePoolItems) ? data.capturePoolItems : [];
+      const summary = summarizeObservation(data, candidates);
+      setLatestComputerObservation({
+        summary,
+        candidates: candidates.slice(0, 8)
+      });
+      const selector = candidateSelector(candidates[0]);
+      if (selector) {
+        setRecordingSelector(selector);
+      }
+      if (summary.windowTitle) {
+        let currentParams: Record<string, unknown> = {};
+        try {
+          currentParams = parseJsonObject(recordingParamsText);
+        } catch {
+          currentParams = {};
+        }
+        setRecordingParamsText(JSON.stringify({
+          ...currentParams,
+          observedWindowTitle: summary.windowTitle
+        }, null, 2));
+      }
+      setLatestResult(data);
+      const insertedCount = capturePoolItemsFromResult.length || Number(data?.capturePoolAdded || 0);
+      toast({
+        title: insertedCount > 0 ? t("components.rpa.RPAWorkbench.studioCapturePoolAddedTitle") : t("components.rpa.RPAWorkbench.computerSampled"),
+        description: insertedCount > 0 ? t("components.rpa.RPAWorkbench.studioCapturePoolAdded", {
+          count: insertedCount
+        }) : t("components.rpa.RPAWorkbench.studioCapturePoolNoWrite", {
+          reason: data?.reason || t("components.rpa.RPAWorkbench.computerSampleNoCandidates")
+        })
       });
     } catch (error) {
       toast({
@@ -864,7 +1826,56 @@ export function RPAWorkbench() {
       setComputerSampling(false);
     }
   };
-  const handleLivePreviewClick = async (event: MouseEvent<HTMLImageElement>) => {
+
+  const computeLiveImagePoint = (clientX: number, clientY: number) => {
+    const image = liveImageRef.current;
+    if (!image) return null;
+    const rect = image.getBoundingClientRect();
+    const naturalWidth = image.naturalWidth || Math.round(rect.width);
+    const naturalHeight = image.naturalHeight || Math.round(rect.height);
+    const naturalRatio = naturalWidth / Math.max(1, naturalHeight);
+    const renderedRatio = rect.width / Math.max(1, rect.height);
+    let displayedWidth = rect.width;
+    let displayedHeight = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (naturalRatio > renderedRatio) {
+      displayedHeight = rect.width / Math.max(0.0001, naturalRatio);
+      offsetY = (rect.height - displayedHeight) / 2;
+    } else {
+      displayedWidth = rect.height * naturalRatio;
+      offsetX = (rect.width - displayedWidth) / 2;
+    }
+    const localX = clientX - rect.left - offsetX;
+    const localY = clientY - rect.top - offsetY;
+    if (localX < 0 || localY < 0 || localX > displayedWidth || localY > displayedHeight) {
+      return null;
+    }
+    const x = Math.round(localX * naturalWidth / Math.max(1, displayedWidth));
+    const y = Math.round(localY * naturalHeight / Math.max(1, displayedHeight));
+    return {
+      x,
+      y,
+      mapping: {
+        source: "desktop_live_bridge",
+        desktopLiveSessionId,
+        naturalWidth,
+        naturalHeight,
+        renderedWidth: Math.round(rect.width),
+        renderedHeight: Math.round(rect.height),
+        displayedWidth: Math.round(displayedWidth),
+        displayedHeight: Math.round(displayedHeight),
+        letterboxOffsetX: Math.round(offsetX),
+        letterboxOffsetY: Math.round(offsetY),
+        clientX: Math.round(clientX - rect.left),
+        clientY: Math.round(clientY - rect.top),
+        devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : undefined,
+        monitorId: "primary"
+      }
+    };
+  };
+
+  const recordLiveOverlayAction = async (action: string, point: { x: number; y: number; mapping: Record<string, unknown> } | null, extra?: Record<string, unknown>) => {
     if (!activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
       toast({
         variant: "destructive",
@@ -873,22 +1884,25 @@ export function RPAWorkbench() {
       });
       return;
     }
-    const image = event.currentTarget;
-    const rect = image.getBoundingClientRect();
-    const naturalWidth = image.naturalWidth || Math.round(rect.width);
-    const naturalHeight = image.naturalHeight || Math.round(rect.height);
-    const clientX = event.clientX - rect.left;
-    const clientY = event.clientY - rect.top;
-    const x = Math.round(clientX * naturalWidth / Math.max(1, rect.width));
-    const y = Math.round(clientY * naturalHeight / Math.max(1, rect.height));
-    setRecordingX(String(x));
-    setRecordingY(String(y));
+    if (targetLockLooksLikeAdmin) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioTargetBlockedTitle"),
+        description: t("components.rpa.RPAWorkbench.studioTargetBlockedDescription")
+      });
+      return;
+    }
+    if (point) {
+      setRecordingX(String(point.x));
+      setRecordingY(String(point.y));
+    }
     let params: Record<string, unknown> = {};
     try {
       params = parseJsonObject(recordingParamsText);
     } catch {
       params = {};
     }
+    params = { ...params, ...(isPlainRecord(extra?.params) ? extra.params : {}) };
     let observationSummary = isPlainRecord(latestComputerObservation?.summary) ? latestComputerObservation.summary : {};
     let observationCandidates = Array.isArray(latestComputerObservation?.candidates) ? latestComputerObservation.candidates as ObservationCandidate[] : [];
     if (!observationCandidates.length) {
@@ -904,9 +1918,12 @@ export function RPAWorkbench() {
       }
     }
     const selector = recordingSelector.trim();
-    const payload = {
-      action: "click",
-      intent: recordingIntent.trim() || t("components.rpa.RPAWorkbench.desktopLiveRecordedClick"),
+    const payload: Record<string, unknown> = {
+      source: "desktop_live_overlay",
+      action,
+      intent: recordingIntent.trim() || t("components.rpa.RPAWorkbench.desktopLiveRecordedAction", {
+        action
+      }),
       params,
       target: {
         window: {
@@ -920,35 +1937,146 @@ export function RPAWorkbench() {
           }
         } : {})
       },
-      coordinate: {
-        x,
-        y
-      },
-      viewport: {
-        source: "desktop_live_bridge",
-        desktopLiveSessionId,
-        naturalWidth,
-        naturalHeight,
-        renderedWidth: Math.round(rect.width),
-        renderedHeight: Math.round(rect.height),
-        clientX: Math.round(clientX),
-        clientY: Math.round(clientY),
-        devicePixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : undefined
-      },
+      ...(point ? {
+        coordinate: {
+          x: point.x,
+          y: point.y
+        },
+        viewport: point.mapping,
+        viewportMapping: point.mapping
+      } : {}),
       ...(selector || observationCandidates.length ? {
         selectorCandidates: selector ? [{
           css: selector,
           source: "admin_recorder"
         }] : observationCandidates.slice(0, 5)
       } : {}),
+      ...(extra || {}),
       metadata: {
         source: "admin_desktop_live_overlay",
         fragileCoordinateFallback: !selector,
         desktopLiveSessionId,
-        computerObservation: observationSummary
+        computerObservation: observationSummary,
+        recordAndForward,
+        targetLock: {
+          enabled: true,
+          mode: recordingTargetMode,
+          appId: recordingAppId.trim() || "desktop",
+          label: selectedComputerAppLabel,
+          ignoreAdminSurface: true
+        }
       }
     };
+    let sample: Record<string, unknown> | null = null;
+    try {
+      const sampleRes = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/desktop-sample`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          event: payload,
+          coordinate: point ? { x: point.x, y: point.y } : {},
+          viewportMapping: point?.mapping || {},
+          forwardAction: recordAndForward
+        })
+      });
+      sample = await sampleRes.json().catch(() => ({}));
+      if (sampleRes.ok && sample) {
+        const sampleRecord = isPlainRecord(sample) ? sample : {};
+        const sampleCandidates = Array.isArray(sampleRecord.selectorCandidates) ? sampleRecord.selectorCandidates : [];
+        if (!selector && sampleCandidates.length) {
+          payload.selectorCandidates = sampleCandidates;
+        }
+        payload.accessibilitySample = sampleRecord.sample;
+        payload.forwardedActionResult = sampleRecord.forwardedActionResult;
+        payload.metadata = {
+          ...(isPlainRecord(payload.metadata) ? payload.metadata : {}),
+          accessibilitySample: sampleRecord.sample,
+          forwardedActionResult: sampleRecord.forwardedActionResult
+        };
+      }
+    } catch (error) {
+      payload.metadata = {
+        ...(isPlainRecord(payload.metadata) ? payload.metadata : {}),
+        desktopSampleError: error instanceof Error ? error.message : String(error)
+      };
+    }
     await submitRecordingEvent(payload);
+  };
+
+  const handleLivePreviewClick = async (event: MouseEvent<HTMLDivElement>) => {
+    const point = computeLiveImagePoint(event.clientX, event.clientY);
+    if (!point) return;
+    await recordLiveOverlayAction("click", point);
+  };
+
+  const handleLivePreviewDoubleClick = async (event: MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const point = computeLiveImagePoint(event.clientX, event.clientY);
+    if (!point) return;
+    await recordLiveOverlayAction("double_click", point);
+  };
+
+  const handleLivePreviewContextMenu = async (event: MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const point = computeLiveImagePoint(event.clientX, event.clientY);
+    if (!point) return;
+    await recordLiveOverlayAction("right_click", point);
+  };
+
+  const handleLivePreviewWheel = async (event: WheelEvent<HTMLDivElement>) => {
+    if (!activeRecording || activeRecording.state !== "recording") return;
+    event.preventDefault();
+    const point = computeLiveImagePoint(event.clientX, event.clientY);
+    await recordLiveOverlayAction("scroll", point, {
+      params: {
+        amount: Math.round(event.deltaY)
+      },
+      mergeGroupId: "desktop-live-scroll"
+    });
+  };
+
+  const handleLivePreviewPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    const point = computeLiveImagePoint(event.clientX, event.clientY);
+    if (!point) return;
+    liveDragStartRef.current = point;
+  };
+
+  const handleLivePreviewPointerUp = async (event: PointerEvent<HTMLDivElement>) => {
+    const start = liveDragStartRef.current;
+    liveDragStartRef.current = null;
+    const end = computeLiveImagePoint(event.clientX, event.clientY);
+    if (!start || !end) return;
+    const distance = Math.hypot(end.x - start.x, end.y - start.y);
+    if (distance < 8) return;
+    await recordLiveOverlayAction("drag", end, {
+      params: {
+        startPoint: [start.x, start.y],
+        endPoint: [end.x, end.y],
+        steps: 12
+      },
+      coordinate: {
+        x: end.x,
+        y: end.y
+      }
+    });
+  };
+
+  const handleLivePreviewKeyDown = async (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!(event.ctrlKey || event.metaKey || event.altKey)) return;
+    event.preventDefault();
+    const parts: string[] = [];
+    if (event.ctrlKey) parts.push("Ctrl");
+    if (event.metaKey) parts.push("Meta");
+    if (event.altKey) parts.push("Alt");
+    if (event.shiftKey) parts.push("Shift");
+    parts.push(event.key);
+    await recordLiveOverlayAction("hotkey", null, {
+      params: {
+        sequence: parts.join("+")
+      }
+    });
   };
   const handleCompile = async () => {
     const runIds = parseRunIdsInput(compileRunId);
@@ -984,32 +2112,7 @@ export function RPAWorkbench() {
     }
   };
   const handleStartRecording = async () => {
-    const payload = {
-      name: recordingName.trim() || undefined,
-      goal: recordingGoal.trim() || recordingName.trim() || undefined,
-      targetMode: recordingTargetMode,
-      browserKind: recordingTargetMode === "agent_browser" ? recordingBrowserKind : undefined,
-      appId: recordingAppId.trim() || "desktop",
-      captureOptions: {
-        screenshotAnchors: true,
-        domSelectors: true,
-        windowInfo: true,
-        keyboardInput: true
-      }
-    };
-    const data = await runAction("recording:start", () => fetch("/api/rpa/recordings/start", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    }), t("components.rpa.RPAWorkbench.recordingStarted"));
-    if (data?.recordingSessionId) {
-      setActiveRecording(data as RecordingSessionPayload);
-      if (!desktopLiveSessionId) {
-        void handlePrepareDesktopLive();
-      }
-    }
+    await startRecordingSession();
   };
   const handleRecordingControl = async (action: "pause" | "resume" | "cancel" | "stop") => {
     if (!activeRecording?.recordingSessionId) {
@@ -1034,6 +2137,9 @@ export function RPAWorkbench() {
     const nextRecording = (data?.recording || data) as RecordingSessionPayload;
     if (nextRecording?.recordingSessionId) {
       setActiveRecording(nextRecording);
+    }
+    if (action === "stop" || action === "cancel") {
+      setCaptureAssistantActive(false);
     }
     if (data?.draft?.id) {
       setSelectedDraftId(data.draft.id);
@@ -1111,30 +2217,265 @@ export function RPAWorkbench() {
     };
     await submitRecordingEvent(payload);
   };
-  const handlePatchDraftSteps = async () => {
-    if (!selectedDraft) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.ke05762b8"),
-        description: t("components.rpa.RPAWorkbench.k95f5425c")
-      });
-      return;
-    }
+  const parseDraftStepsFromBuilder = () => {
     const steps: EditableDraftStep[] = [];
-    for (const [key, value] of Object.entries(draftStepEdits)) {
+    for (const key of draftStepOrder) {
+      const value = draftStepEdits[key] || "";
       if (!value.trim()) {
         continue;
       }
-      try {
-        steps.push(JSON.parse(value) as EditableDraftStep);
-      } catch (error) {
-        toast({
-          variant: "destructive",
-          title: t("components.rpa.RPAWorkbench.invalidDraftStep"),
-          description: `${key}: ${error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")}`
-        });
-        return;
+      steps.push(JSON.parse(value) as EditableDraftStep);
+    }
+    return steps;
+  };
+  const updateSelectedDraftStep = (updater: (step: EditableDraftStep) => EditableDraftStep) => {
+    if (!selectedDraftStepKey) return;
+    setStudioDirty(true);
+    setDraftStepEdits(current => {
+      const currentStep = safeJsonParse<EditableDraftStep>(current[selectedDraftStepKey] || "{}", {});
+      const nextStep = updater(currentStep);
+      return {
+        ...current,
+        [selectedDraftStepKey]: JSON.stringify(nextStep, null, 2)
+      };
+    });
+    setStepValidation(null);
+  };
+  const updateSelectedStepParam = (key: string, value: unknown) => {
+    updateSelectedDraftStep(step => ({
+      ...step,
+      params: {
+        ...(isPlainRecord(step.params) ? step.params : {}),
+        [key]: value
       }
+    }));
+  };
+  const updateSelectedStepSelector = (selectorKind: string, value: string) => {
+    updateSelectedDraftStep(step => {
+      const target = isPlainRecord(step.target) ? step.target : {};
+      const selector = isPlainRecord(target.selector) ? target.selector : {};
+      const nextSelector = {
+        ...selector,
+        [selectorKind]: value
+      };
+      return {
+        ...step,
+        target: {
+          ...target,
+          selector: nextSelector
+        }
+      };
+    });
+  };
+  const updateSelectedStepCoordinate = (axis: "x" | "y", value: string) => {
+    updateSelectedDraftStep(step => {
+      const coordinate = isPlainRecord((step as Record<string, unknown>).coordinate) ? (step as Record<string, unknown>).coordinate as Record<string, unknown> : {};
+      return {
+        ...step,
+        coordinate: {
+          ...coordinate,
+          [axis]: value === "" ? "" : Number(value)
+        }
+      } as EditableDraftStep;
+    });
+  };
+  const updateSelectedStepVerification = (key: string, value: unknown) => {
+    updateSelectedDraftStep(step => ({
+      ...step,
+      verification: {
+        ...(isPlainRecord(step.verification) ? step.verification : {}),
+        [key]: value
+      }
+    }));
+  };
+  const handleAddDraftStep = (action: string, insertBeforeKey?: string) => {
+    const workspaceId = selectedDraft?.id || "unsaved";
+    const step = makeDraftStep(action, selectedDraft?.appId || recordingAppId || "desktop");
+    const key = step.stepId || `${workspaceId}:step:new:${Date.now()}`;
+    setStudioDirty(true);
+    setDraftStepEdits(current => ({
+      ...current,
+      [key]: JSON.stringify(step, null, 2)
+    }));
+    setDraftStepOrder(current => {
+      const next = [...current];
+      const insertIndex = insertBeforeKey ? next.indexOf(insertBeforeKey) : -1;
+      if (insertIndex >= 0) {
+        next.splice(insertIndex, 0, key);
+        return next;
+      }
+      return [...next, key];
+    });
+    setSelectedDraftStepKey(key);
+    setStepValidation(null);
+  };
+  const handleReorderDraftStep = (sourceKey: string, targetKey: string) => {
+    if (!sourceKey || !targetKey || sourceKey === targetKey) return;
+    setStudioDirty(true);
+    setDraftStepOrder(current => {
+      if (!current.includes(sourceKey) || !current.includes(targetKey)) return current;
+      const next = current.filter(key => key !== sourceKey);
+      const targetIndex = next.indexOf(targetKey);
+      next.splice(targetIndex >= 0 ? targetIndex : next.length, 0, sourceKey);
+      return next;
+    });
+    setSelectedDraftStepKey(sourceKey);
+    setStepValidation(null);
+  };
+  const handleDraftCanvasDrop = (event: DragEvent<HTMLElement>, targetKey?: string) => {
+    event.preventDefault();
+    const action = event.dataTransfer.getData("application/x-v8-rpa-action");
+    if (action) {
+      handleAddDraftStep(action, targetKey);
+      return;
+    }
+    const sourceKey = event.dataTransfer.getData("application/x-v8-rpa-step");
+    if (sourceKey && targetKey) {
+      handleReorderDraftStep(sourceKey, targetKey);
+    }
+  };
+  const draftStepBadges = (step: EditableDraftStep) => {
+    const serialized = JSON.stringify(step);
+    const action = stepActionName(step);
+    const metadata = isPlainRecord(step.metadata) ? step.metadata : {};
+    const coordinate = isPlainRecord((step as Record<string, unknown>).coordinate) ? (step as Record<string, unknown>).coordinate as Record<string, unknown> : {};
+    const verification = isPlainRecord(step.verification) ? step.verification : {};
+    const badges: Array<{ key: string; label: string; tone: string }> = [];
+    if (action === "wait") badges.push({ key: "wait", label: t("components.rpa.RPAWorkbench.waitNode"), tone: "bg-sky-500/10 text-sky-700 dark:text-sky-300" });
+    if (Object.keys(verification).length || action.includes("assert")) badges.push({ key: "assert", label: t("components.rpa.RPAWorkbench.assertNode"), tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" });
+    if (metadata.fragileCoordinateFallback || metadata.coordinateFallback || metadata.fragile_coordinate_fallback || Object.keys(coordinate).length) badges.push({ key: "fragile", label: t("components.rpa.RPAWorkbench.fragileCoordinate"), tone: "bg-amber-500/10 text-amber-700 dark:text-amber-300" });
+    if (serialized.includes("{{")) badges.push({ key: "variable", label: t("components.rpa.RPAWorkbench.hasVariable"), tone: "bg-violet-500/10 text-violet-700 dark:text-violet-300" });
+    if (serialized.includes("${secret:") || metadata.sensitiveInput || metadata.sensitive_input) badges.push({ key: "secret", label: t("components.rpa.RPAWorkbench.hasSecret"), tone: "bg-rose-500/10 text-rose-700 dark:text-rose-300" });
+    return badges;
+  };
+  const handleMoveDraftStep = (stepKey: string, direction: -1 | 1) => {
+    setStudioDirty(true);
+    setDraftStepOrder(current => {
+      const index = current.indexOf(stepKey);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  };
+  const handleDuplicateDraftStep = (stepKey: string) => {
+    const step = safeJsonParse<EditableDraftStep>(draftStepEdits[stepKey] || "{}", {});
+    const duplicated = {
+      ...step,
+      stepId: `step_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      metadata: {
+        ...(isPlainRecord(step.metadata) ? step.metadata : {}),
+        duplicatedFrom: step.stepId || stepKey,
+      },
+    };
+    const nextKey = duplicated.stepId || `${selectedDraft?.id || "unsaved"}:step:copy:${Date.now()}`;
+    setStudioDirty(true);
+    setDraftStepEdits(current => ({
+      ...current,
+      [nextKey]: JSON.stringify(duplicated, null, 2)
+    }));
+    setDraftStepOrder(current => {
+      const index = current.indexOf(stepKey);
+      const next = [...current];
+      next.splice(index >= 0 ? index + 1 : next.length, 0, nextKey);
+      return next;
+    });
+    setSelectedDraftStepKey(nextKey);
+    setStepValidation(null);
+  };
+  const handleValidateSelectedStep = async (mode: "dry_run" | "selector" | "assertion") => {
+    if (!selectedDraft || !selectedBuilderStep) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioSaveDraftFirst"),
+        description: t("components.rpa.RPAWorkbench.studioSaveDraftFirst")
+      });
+      return;
+    }
+    let variables: Record<string, unknown> = {};
+    try {
+      variables = parseJsonObject(variablesText);
+    } catch {
+      variables = {};
+    }
+    const actionKey = `draft:validate:${selectedDraft.id}:${mode}`;
+    setBusyAction(actionKey);
+    try {
+      const res = await fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraft.id)}/validate-step`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          step: selectedBuilderStep,
+          index: draftStepOrder.indexOf(selectedDraftStepKey),
+          mode,
+          variables
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      setLatestResult(data);
+      if (!res.ok) {
+        throw new Error(data?.detail || data?.error || tg(t, "8fdc4112"));
+      }
+      setStepValidation(data as StepValidationResult);
+      toast({
+        title: t("components.rpa.RPAWorkbench.stepValidationFinished"),
+        description: typeof data?.summary === "string" ? data.summary : tg(t, "3d8c4a5f")
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.k2e9cdd7b"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+  const handleAddVariableRow = () => {
+    setStudioDirty(true);
+    setDraftVariableRows(current => [...current, {
+      id: `var_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+      name: "",
+      type: "text",
+      required: false,
+      defaultValue: "",
+      secretName: "",
+      sensitive: false,
+    }]);
+  };
+  const updateVariableRow = (id: string, patch: Partial<DraftVariableRow>) => {
+    setStudioDirty(true);
+    setDraftVariableRows(current => current.map(row => row.id === id ? {
+      ...row,
+      ...patch
+    } : row));
+  };
+  const handleDeleteVariableRow = (id: string) => {
+    setStudioDirty(true);
+    setDraftVariableRows(current => current.filter(row => row.id !== id));
+  };
+  const handleInsertVariableIntoSelectedStep = (name: string) => {
+    if (!name) return;
+    updateSelectedStepParam("text", `{{${name}}}`);
+  };
+  const handlePatchDraftSteps = async () => {
+    if (!selectedDraft) {
+      await handleCreateDraftFromStudio();
+      return;
+    }
+    let payload: ReturnType<typeof buildDraftStudioPayload>;
+    try {
+      payload = buildDraftStudioPayload();
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.invalidDraftStep"),
+        description: error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")
+      });
+      return;
     }
     const data = await runAction(`draft:patch:${selectedDraft.id}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraft.id)}/patch`, {
       method: "POST",
@@ -1142,18 +2483,25 @@ export function RPAWorkbench() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        steps,
+        steps: payload.steps,
+        variables: payload.variables,
+        objectLibrary: payload.objectLibrary,
         metadataPatch: {
+          ...payload.metadata,
           editedBy: "admin_ui",
-          editedFrom: "rpa_draft_editor"
+          editedFrom: "rpa_canvas_studio"
         }
       })
     }), t("components.rpa.RPAWorkbench.draftSaved"));
     if (data?.id) {
+      const draft = data as DraftPayload;
+      setDrafts(current => current.map(item => item.id === draft.id ? draft : item));
       setSelectedDraftId(data.id);
+      setStudioDirty(false);
     }
   };
   const handleDeleteDraftStep = (stepKey: string) => {
+    setStudioDirty(true);
     setDraftStepEdits(current => {
       const next = {
         ...current
@@ -1161,6 +2509,12 @@ export function RPAWorkbench() {
       delete next[stepKey];
       return next;
     });
+    setDraftStepOrder(current => current.filter(item => item !== stepKey));
+    if (selectedDraftStepKey === stepKey) {
+      const nextKey = draftStepOrder.find(item => item !== stepKey) || "";
+      setSelectedDraftStepKey(nextKey);
+    }
+    setStepValidation(null);
   };
   const handleViewSourceTrace = async () => {
     if (!selectedDraftId) {
@@ -1207,6 +2561,60 @@ export function RPAWorkbench() {
       },
       body: JSON.stringify(mode === "export" ? commonPayload() : payload)
     }), mode === "run" ? tg(t, "be524bf1") : tg(t, "e9e44bf1"));
+  };
+  const handleDraftGovernanceAction = async (action: "archive" | "restore" | "delete") => {
+    if (!selectedDraftId) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.ke05762b8"),
+        description: t("components.rpa.RPAWorkbench.k95f5425c")
+      });
+      return;
+    }
+    if (action === "delete" && !window.confirm(t("components.rpa.RPAWorkbench.deleteDraftConfirm"))) {
+      return;
+    }
+    const endpoint = action === "delete" ? `/api/rpa/drafts/${encodeURIComponent(selectedDraftId)}?confirm=true` : `/api/rpa/drafts/${encodeURIComponent(selectedDraftId)}/${action}`;
+    await runAction(`draft:${action}:${selectedDraftId}`, () => fetch(endpoint, {
+      method: action === "delete" ? "DELETE" : "POST",
+      headers: action === "delete" ? undefined : {
+        "Content-Type": "application/json"
+      },
+      body: action === "delete" ? undefined : JSON.stringify({
+        actor: "admin_ui",
+        reason: action === "archive" ? "admin_archive" : undefined
+      })
+    }), action === "archive" ? t("components.rpa.RPAWorkbench.archiveDone") : action === "restore" ? t("components.rpa.RPAWorkbench.restoreDone") : t("components.rpa.RPAWorkbench.deleteDone"));
+    if (action === "delete" || action === "archive" && !showArchivedDrafts) {
+      setSelectedDraftId("");
+    }
+  };
+  const handleApproveDraftAsTemplate = async () => {
+    if (!selectedDraft) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.ke05762b8"),
+        description: t("components.rpa.RPAWorkbench.k95f5425c")
+      });
+      return;
+    }
+    const data = await runAction(`draft:approve-template:${selectedDraft.id}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraft.id)}/approve-template`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        reviewer: "admin_ui",
+        notes: templateNote.trim() || undefined,
+        metadataPatch: {
+          approvedFrom: "admin_step_builder"
+        }
+      })
+    }), t("components.rpa.RPAWorkbench.draftApprovedAsTemplate"));
+    const templateId = typeof data?.templateId === "string" ? data.templateId : typeof data?.template?.id === "string" ? data.template.id : "";
+    if (templateId) {
+      setSelectedTemplateId(templateId);
+    }
   };
   const handleExistingAction = async (mode: "prepare-existing" | "run-existing") => {
     const robotFile = existingRobotFile.trim();
@@ -1303,6 +2711,33 @@ export function RPAWorkbench() {
       body: JSON.stringify(body)
     }), action === "approve" ? tg(t, "b2d6ae9b") : tg(t, "5f612337"));
   };
+  const handleTemplateGovernanceAction = async (action: "archive" | "restore" | "delete") => {
+    if (!selectedTemplateId) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.ka3b5b6f9"),
+        description: t("components.rpa.RPAWorkbench.k899e7048")
+      });
+      return;
+    }
+    if (action === "delete" && !window.confirm(t("components.rpa.RPAWorkbench.deleteTemplateConfirm"))) {
+      return;
+    }
+    const endpoint = action === "delete" ? `/api/rpa/templates/${encodeURIComponent(selectedTemplateId)}?confirm=true` : `/api/rpa/templates/${encodeURIComponent(selectedTemplateId)}/${action}`;
+    await runAction(`template:${action}:${selectedTemplateId}`, () => fetch(endpoint, {
+      method: action === "delete" ? "DELETE" : "POST",
+      headers: action === "delete" ? undefined : {
+        "Content-Type": "application/json"
+      },
+      body: action === "delete" ? undefined : JSON.stringify({
+        actor: "admin_ui",
+        reason: action === "archive" ? templateNote.trim() || "admin_archive" : undefined
+      })
+    }), action === "archive" ? t("components.rpa.RPAWorkbench.archiveDone") : action === "restore" ? t("components.rpa.RPAWorkbench.restoreDone") : t("components.rpa.RPAWorkbench.deleteDone"));
+    if (action === "delete" || action === "archive" && !showArchivedTemplates) {
+      setSelectedTemplateId("");
+    }
+  };
   const handleTemplateRollback = async (revision?: number, historyPath?: string) => {
     if (!selectedTemplateId) {
       return;
@@ -1331,6 +2766,473 @@ export function RPAWorkbench() {
                     {t("app.admin.dashboard.creativeMedia.refresh")}
                 </Button>
             </div>
+
+            <Card className="overflow-hidden border-border/60 bg-background">
+                <CardHeader className="border-b border-border/50 bg-muted/20">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <CardTitle className="text-lg">RPA Studio</CardTitle>
+                            <CardDescription>{t("components.rpa.RPAWorkbench.studioDescription")}</CardDescription>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button variant="outline" size="sm" onClick={resetStudioWorkspace}>
+                                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                                {t("components.rpa.RPAWorkbench.studioNewFlow")}
+                            </Button>
+                            <select className="h-9 min-w-[12rem] rounded-md border border-input bg-background px-2.5 text-xs" value={selectedDraftId} onChange={event => handleSelectDraft(event.target.value)}>
+                                <option value="">{t("components.rpa.RPAWorkbench.studioCurrentUnsaved")}</option>
+                                {drafts.filter(draft => showArchivedDrafts || !isArchivedDraft(draft)).map(draft => <option key={draft.id} value={draft.id}>{draft.name || draft.id}</option>)}
+                            </select>
+                            <select className="h-9 min-w-[12rem] rounded-md border border-input bg-background px-2.5 text-xs" value={selectedTemplateId} onChange={event => setSelectedTemplateId(event.target.value)}>
+                                <option value="">{t("components.rpa.RPAWorkbench.studioSelectTemplate")}</option>
+                                {templates.filter(template => showArchivedTemplates || !isArchivedTemplate(template)).map(template => <option key={template.id} value={template.id}>{template.name || template.id}</option>)}
+                            </select>
+                            <Button variant="outline" onClick={() => setShowLegacyPanel(current => !current)}>
+                                {showLegacyPanel ? t("components.rpa.RPAWorkbench.studioHideLegacy") : t("components.rpa.RPAWorkbench.studioLegacyDiagnostics")}
+                            </Button>
+                            <Button onClick={() => void handlePatchDraftSteps()} disabled={busyAction === `draft:patch:${selectedDraft?.id}` || busyAction === "draft:create"}>
+                                <Save className="mr-2 h-4 w-4" />
+                                {selectedDraft ? t("components.rpa.RPAWorkbench.studioSaveChanges") : t("components.rpa.RPAWorkbench.studioSaveNewDraft")}
+                            </Button>
+                            {selectedDraft ? <Button variant="outline" onClick={() => void handleCreateDraftFromStudio({ saveAs: true })} disabled={!!busyAction}>
+                                    {t("components.rpa.RPAWorkbench.studioSaveAsDraft")}
+                                </Button> : null}
+                            {studioDirty ? <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200">{t("components.rpa.RPAWorkbench.studioDirtyBadge")}</Badge> : null}
+                        </div>
+                    </div>
+                </CardHeader>
+                <CardContent className="p-0">
+                    <div className="grid min-h-[660px] xl:grid-cols-[minmax(200px,0.17fr)_minmax(0,1fr)_minmax(300px,0.24fr)] 2xl:grid-cols-[220px_minmax(0,1fr)_320px]">
+                        <aside className="border-r border-border/50 bg-muted/10 p-3">
+                            <div className="mb-3">
+                                <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioActionLibraryTitle")}</div>
+                                <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioActionLibraryDescription")}</div>
+                            </div>
+                            <ScrollArea className="h-[560px] pr-2">
+                                <div className="space-y-3">
+                                    {studioActionGroups.map(group => <div key={group.key} className="space-y-1.5">
+                                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{group.title}</div>
+                                            <div className="grid gap-1.5">
+                                                {group.actions.map(([action, label]) => <button key={`${group.key}:${action}`} type="button" draggable onDragStart={event => {
+                                                        event.dataTransfer.setData("application/x-v8-rpa-action", action);
+                                                        event.dataTransfer.effectAllowed = "copy";
+                                                    }} onClick={() => handleAddDraftStep(action)} className="flex min-h-9 cursor-grab items-center justify-between rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-left text-xs shadow-none transition hover:border-primary/50 hover:bg-primary/5">
+                                                        <span className="truncate">{label}</span>
+                                                        <Plus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                    </button>)}
+                                            </div>
+                                        </div>)}
+                                </div>
+                            </ScrollArea>
+                        </aside>
+
+                        <main className="flex min-w-0 flex-col bg-muted/5">
+                            <div className="border-b border-border/50 bg-background/80 p-3">
+                                <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(12rem,0.45fr)_auto]">
+                                    <div className="grid min-w-0 gap-2">
+                                        <Label className="text-xs">{t("components.rpa.RPAWorkbench.studioRecordingTarget")}</Label>
+                                        <div className="grid gap-2 md:grid-cols-[10rem_minmax(18rem,1fr)]">
+                                            <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={recordingTargetMode} onChange={event => {
+                                                setRecordingTargetMode(event.target.value);
+                                                setStudioDirty(true);
+                                            }}>
+                                                <option value="agent_browser">{t("components.rpa.RPAWorkbench.targetAgentBrowser")}</option>
+                                                <option value="desktop_window">{t("components.rpa.RPAWorkbench.targetDesktopWindow")}</option>
+                                                <option value="launch_app">{t("components.rpa.RPAWorkbench.targetLaunchApp")}</option>
+                                            </select>
+                                            <div className="relative min-w-0">
+                                                <button type="button" onClick={() => {
+                                                    setAppPickerOpen(current => !current);
+                                                    void loadComputerApps(false, appSearch);
+                                                }} className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-2.5 text-left text-xs transition hover:border-primary/40">
+                                                    <AdminHoverInfo content={selectedComputerAppLabel} panelClassName="w-auto max-w-[28rem] whitespace-normal">
+                                                        <span className="min-w-0 max-w-full truncate">{selectedComputerAppLabel}</span>
+                                                    </AdminHoverInfo>
+                                                    <Search className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                </button>
+                                                {appPickerOpen ? <div className="absolute left-0 top-10 z-30 w-[min(32rem,calc(100vw-3rem))] min-w-full max-w-[calc(100vw-3rem)] rounded-xl border border-border/70 bg-popover p-2 shadow-xl">
+                                                        <Input className="h-8 text-xs" value={appSearch} onChange={event => setAppSearch(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioSearchApps")} autoFocus />
+                                                        <ScrollArea className="mt-2 max-h-72 pr-2">
+                                                            <div className="space-y-2">
+                                                                {computerAppsError ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{computerAppsError}</div> : null}
+                                                                {groupedAppPickerOptions.map(group => <div key={group.group}>
+                                                                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                                                            {t(`components.rpa.RPAWorkbench.studioAppGroup.${group.group}`)}
+                                                                        </div>
+                                                                        <div className="grid gap-1">
+                                                                            {group.items.map(item => <button key={item.id} type="button" onClick={() => {
+                                                                                    setRecordingAppId(item.id);
+                                                                                    setAppSearch("");
+                                                                                    setAppPickerOpen(false);
+                                                                                    setStudioDirty(true);
+                                                                                }} className={`rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-muted ${recordingAppId === item.id ? "bg-primary/10 text-primary" : ""}`}>
+                                                                                    <AdminHoverInfo content={item.label} panelClassName="w-auto max-w-[28rem] whitespace-normal">
+                                                                                        <div className="truncate font-medium">{item.label}</div>
+                                                                                    </AdminHoverInfo>
+                                                                                    <div className="truncate text-[11px] text-muted-foreground">{item.subtitle || item.id}</div>
+                                                                                </button>)}
+                                                                        </div>
+                                                                    </div>)}
+                                                                {!appPickerOptions.length && !computerAppsLoading ? <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{computerApps.length ? t("components.rpa.RPAWorkbench.studioNoAppsFound") : t("components.rpa.RPAWorkbench.studioAppListEmptyHint")}</div> : null}
+                                                            </div>
+                                                        </ScrollArea>
+                                                    </div> : null}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label className="text-xs">{t("components.rpa.RPAWorkbench.studioFlowDescription")}</Label>
+                                        <Input className="h-9 text-xs" value={recordingName} onChange={event => {
+                                            setRecordingName(event.target.value);
+                                            setStudioDirty(true);
+                                        }} placeholder={t("components.rpa.RPAWorkbench.flowNamePlaceholder")} />
+                                    </div>
+                                    <div className="flex items-end gap-2">
+                                        <Button size="sm" variant="outline" onClick={() => {
+                                            setAppPickerOpen(true);
+                                            void loadComputerApps(true, appSearch);
+                                        }} disabled={computerAppsLoading}>
+                                            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${computerAppsLoading ? "animate-spin" : ""}`} />
+                                            {t("components.rpa.RPAWorkbench.studioAppList")}
+                                        </Button>
+                                        <Button size="sm" onClick={() => void handleStartRecording()} disabled={!!busyAction || activeRecording?.state === "recording" || targetLockLooksLikeAdmin}>
+                                            <Video className="mr-1.5 h-3.5 w-3.5" />
+                                            {t("components.rpa.RPAWorkbench.studioStartRecording")}
+                                        </Button>
+                                    </div>
+                                </div>
+                                <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${targetLockLooksLikeAdmin ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border/60 bg-muted/20 text-muted-foreground"}`}>
+                                    {t("components.rpa.RPAWorkbench.studioTargetLockPrefix")}{selectedComputerAppLabel} · {recordingTargetMode}
+                                    {targetLockLooksLikeAdmin ? t("components.rpa.RPAWorkbench.studioAdminExcluded") : t("components.rpa.RPAWorkbench.studioTargetLockHint")}
+                                    {captureAssistantActive ? <Badge variant="outline" className="ml-2 align-middle text-[10px]">{t("components.rpa.RPAWorkbench.studioCaptureAssistantActive")}</Badge> : null}
+                                    {captureAssistantStage !== "idle" && !captureAssistantActive ? <Badge variant="outline" className="ml-2 align-middle text-[10px]">{captureAssistantStageLabel}</Badge> : null}
+                                </div>
+                            </div>
+
+                            <div className="flex-1 overflow-hidden p-4">
+                                <div className="relative h-[500px] overflow-auto rounded-2xl border border-dashed border-border/70 bg-[radial-gradient(circle_at_1px_1px,hsl(var(--muted-foreground)/0.12)_1px,transparent_0)] bg-[length:18px_18px] p-5" onDragOver={event => event.preventDefault()} onDrop={event => handleDraftCanvasDrop(event)}>
+                                    {orderedDraftSteps.length > 1 ? <svg className="pointer-events-none absolute left-1/2 top-24 h-[calc(100%-12rem)] w-1 -translate-x-1/2 text-primary/30" aria-hidden="true">
+                                            <line x1="2" y1="0" x2="2" y2="100%" stroke="currentColor" strokeWidth="2" strokeDasharray="8 10" />
+                                        </svg> : null}
+                                    <div className="relative z-10 mx-auto flex max-w-xl flex-col gap-3">
+                                        <div className="mx-auto rounded-full border border-border/60 bg-background px-3 py-1.5 text-[11px] font-semibold text-muted-foreground shadow-sm">Start</div>
+                                        {orderedDraftSteps.map((item, index) => {
+                                            const badges = draftStepBadges(item.step);
+                                            return <div key={item.key} draggable onDragStart={event => {
+                                                event.dataTransfer.setData("application/x-v8-rpa-step", item.key);
+                                                event.dataTransfer.effectAllowed = "move";
+                                            }} onDragOver={event => event.preventDefault()} onDrop={event => handleDraftCanvasDrop(event, item.key)}>
+                                                <button type="button" onClick={() => {
+                                                    setSelectedDraftStepKey(item.key);
+                                                    setStepValidation(null);
+                                                    setStudioRightPanel("properties");
+                                                }} className={`w-full rounded-xl border bg-background/95 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md ${selectedDraftStepKey === item.key ? "border-primary ring-2 ring-primary/15" : "border-border/70"}`}>
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="flex min-w-0 gap-3">
+                                                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{index + 1}</div>
+                                                            <div className="min-w-0">
+                                                                <div className="truncate text-xs font-semibold">{stepIntentLabel(item.step)}</div>
+                                                                <div className="mt-1 truncate text-xs text-muted-foreground">{stepActionName(item.step)}{stepSelectorValue(item.step) ? ` · ${stepSelectorValue(item.step)}` : ""}</div>
+                                                            </div>
+                                                        </div>
+                                                        <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                                    </div>
+                                                    {badges.length ? <div className="mt-2 flex flex-wrap gap-1">
+                                                            {badges.map(badge => <span key={`${item.key}:${badge.key}`} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.tone}`}>{badge.label}</span>)}
+                                                        </div> : null}
+                                                </button>
+                                            </div>;
+                                        })}
+                                        {orderedDraftSteps.length === 0 ? <div className="flex h-[360px] items-center justify-center rounded-2xl border border-dashed bg-background/80 text-center text-sm text-muted-foreground">
+                                                <div>
+                                                    <GitBranch className="mx-auto mb-3 h-8 w-8 text-primary/50" />
+                                                    {t("components.rpa.RPAWorkbench.studioCanvasEmpty")}
+                                                </div>
+                                            </div> : null}
+                                        <div className="mx-auto rounded-full border border-border/60 bg-background px-3 py-1.5 text-[11px] font-semibold text-muted-foreground shadow-sm">End</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="border-t border-border/50 bg-background/90 p-3">
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                    <Badge variant="outline">{orderedDraftSteps.length} steps</Badge>
+                                    <Badge variant={activeRecording?.state === "recording" ? "default" : "secondary"}>{activeRecording?.state || "idle"}</Badge>
+                                    {desktopLiveSessionId ? <Badge variant="outline">desktop live</Badge> : null}
+                                    {browserCaptureActive ? <Badge variant="outline">browser capture</Badge> : null}
+                                    {latestResult ? <span className="truncate">{t("components.rpa.RPAWorkbench.studioRecentResult")}{firstString((latestResult as Record<string, unknown>)?.status) || firstString((latestResult as Record<string, unknown>)?.message) || t("components.rpa.RPAWorkbench.studioResultUpdated")}</span> : <span>{t("components.rpa.RPAWorkbench.studioRunLogPlaceholder")}</span>}
+                                </div>
+                            </div>
+                        </main>
+
+                        <aside className="border-l border-border/50 bg-background p-3">
+                            <div className="mb-3 flex flex-wrap gap-1 rounded-xl border border-border/60 bg-muted/20 p-1">
+                                {studioPanelOptions.map(([key, label]) => <button key={key} type="button" onClick={() => setStudioRightPanel(key)} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${studioRightPanel === key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+                                        {label}
+                                    </button>)}
+                            </div>
+                            {studioRightPanel === "properties" ? <div className="space-y-4">
+                                    <div>
+                                        <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioStepProperties")}</div>
+                                        <div className="text-xs text-muted-foreground">{selectedDraftStepKey || t("components.rpa.RPAWorkbench.studioNoStepSelected")}</div>
+                                    </div>
+                                    {selectedBuilderStep ? <>
+                                            <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                                                {t(`components.rpa.RPAWorkbench.studioNextStep.${selectedBuilderActionKind}`)}
+                                            </div>
+                                            <div className="grid gap-2">
+                                                <Label>{t("components.rpa.RPAWorkbench.studioActionType")}</Label>
+                                                <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={stepActionName(selectedBuilderStep)} onChange={event => updateSelectedDraftStep(step => {
+                                                    const nextStep = { ...step, action: event.target.value };
+                                                    delete nextStep.use;
+                                                    return nextStep;
+                                                })}>
+                                                    {studioActionGroups.flatMap(group => group.actions).map(([action, label]) => <option key={action} value={action}>{label}</option>)}
+                                                </select>
+                                            </div>
+                                            <div className="grid gap-2">
+                                                <Label>{t("components.rpa.RPAWorkbench.studioStepIntent")}</Label>
+                                                <Input className="h-9 text-xs" value={selectedBuilderStep.intent || ""} onChange={event => updateSelectedDraftStep(step => ({ ...step, intent: event.target.value }))} />
+                                            </div>
+
+                                            {selectedBuilderActionKind === "app" ? <div className="space-y-3">
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioAppToLaunch")}</Label>
+                                                        <Input className="h-9 text-xs" value={String(selectedBuilderParams.appId || selectedComputerAppLabel || "")} onChange={event => updateSelectedStepParam("appId", event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioAppToLaunchPlaceholder")} />
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioLaunchArgs")}</Label>
+                                                        <Input className="h-9 text-xs" value={String(selectedBuilderParams.args || "")} onChange={event => updateSelectedStepParam("args", event.target.value)} placeholder="--profile default" />
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioTimeoutMs")}</Label>
+                                                        <Input className="h-9 text-xs" value={String(selectedBuilderParams.timeoutMs || "")} onChange={event => updateSelectedStepParam("timeoutMs", Number(event.target.value || 0))} placeholder="5000" />
+                                                    </div>
+                                                </div> : null}
+
+                                            {["click", "type", "wait", "assert", "browser"].includes(selectedBuilderActionKind) ? <div className="space-y-3">
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioElementTarget")}</Label>
+                                                        <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value="" onChange={event => {
+                                                            const item = selectableElements.find(candidate => candidate.optionId === event.target.value);
+                                                            if (item) applyElementToSelectedStep(item);
+                                                        }}>
+                                                            <option value="">{selectableElements.length ? t("components.rpa.RPAWorkbench.studioChooseElement") : t("components.rpa.RPAWorkbench.studioNoSelectableElements")}</option>
+                                                            {selectableElements.map(item => <option key={`${item.sourceBucket}:${item.optionId}`} value={item.optionId}>{item.sourceBucket === "library" ? "★ " : ""}{captureItemLabel(item)}</option>)}
+                                                        </select>
+                                                        <div className="truncate rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground">
+                                                            {stepSelectorValue(selectedBuilderStep) || captureItemCoordinateValue({ coordinate: selectedBuilderCoordinate }) || t("components.rpa.RPAWorkbench.studioNoElementBound")}
+                                                        </div>
+                                                    </div>
+                                                    {selectedBuilderActionKind === "type" ? <div className="grid gap-2">
+                                                            <Label>{t("components.rpa.RPAWorkbench.inputTextOrVariable")}</Label>
+                                                            <Textarea className="min-h-[76px] text-xs" value={String(selectedBuilderParams.text || selectedBuilderParams.value || "")} onChange={event => updateSelectedStepParam("text", event.target.value)} placeholder="${customerName} / text" />
+                                                        </div> : null}
+                                                    {selectedBuilderActionKind === "wait" ? <div className="grid gap-2">
+                                                            <Label>{t("components.rpa.RPAWorkbench.studioTimeoutMs")}</Label>
+                                                            <Input className="h-9 text-xs" value={String(selectedBuilderParams.timeoutMs || "")} onChange={event => updateSelectedStepParam("timeoutMs", Number(event.target.value || 0))} placeholder="3000" />
+                                                        </div> : null}
+                                                    {selectedBuilderActionKind === "assert" ? <div className="grid gap-2">
+                                                            <Label>{t("components.rpa.RPAWorkbench.assertionExpected")}</Label>
+                                                            <Textarea className="min-h-[72px] text-xs" value={String(selectedBuilderVerification.expectedText || selectedBuilderVerification.expected || "")} onChange={event => updateSelectedStepVerification("expectedText", event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioExpectedTextPlaceholder")} />
+                                                        </div> : null}
+                                                    <details className="rounded-xl border border-border/60 p-3 text-xs">
+                                                        <summary className="cursor-pointer font-medium">{t("components.rpa.RPAWorkbench.studioAdvancedTarget")}</summary>
+                                                        <div className="mt-3 space-y-3">
+                                                            <div className="grid gap-2">
+                                                                <Label>{t("components.rpa.RPAWorkbench.selectorOrAnchor")}</Label>
+                                                                <Input className="h-9 text-xs" value={String(selectedBuilderSelector.css || selectedBuilderSelector.xpath || selectedBuilderSelector.role || selectedBuilderSelector.automationId || "")} onChange={event => updateSelectedStepSelector("css", event.target.value)} placeholder="CSS / XPath / Role / automationId" />
+                                                            </div>
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <div className="grid gap-2">
+                                                                    <Label>X</Label>
+                                                                    <Input className="h-9 text-xs" value={selectedBuilderCoordinate.x == null ? "" : String(selectedBuilderCoordinate.x)} onChange={event => updateSelectedStepCoordinate("x", event.target.value)} />
+                                                                </div>
+                                                                <div className="grid gap-2">
+                                                                    <Label>Y</Label>
+                                                                    <Input className="h-9 text-xs" value={selectedBuilderCoordinate.y == null ? "" : String(selectedBuilderCoordinate.y)} onChange={event => updateSelectedStepCoordinate("y", event.target.value)} />
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </details>
+                                                </div> : null}
+
+                                            {selectedBuilderActionKind === "loop" ? <div className="space-y-3">
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioLoopStart")}</Label>
+                                                        <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={selectedLoopStartKey} onChange={event => updateSelectedStepParam("loopStartStepKey", event.target.value)}>
+                                                            <option value="">{t("components.rpa.RPAWorkbench.studioSelectLoopNode")}</option>
+                                                            {orderedDraftSteps.filter(item => item.key !== selectedDraftStepKey).map((item, index) => <option key={item.key} value={item.key}>{index + 1}. {stepIntentLabel(item.step)}</option>)}
+                                                        </select>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioLoopEnd")}</Label>
+                                                        <select className="h-9 rounded-md border border-input bg-background px-2.5 text-xs" value={selectedLoopEndKey} onChange={event => updateSelectedStepParam("loopEndStepKey", event.target.value)}>
+                                                            <option value="">{t("components.rpa.RPAWorkbench.studioSelectLoopNode")}</option>
+                                                            {orderedDraftSteps.filter(item => item.key !== selectedDraftStepKey).map((item, index) => <option key={item.key} value={item.key}>{index + 1}. {stepIntentLabel(item.step)}</option>)}
+                                                        </select>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.studioLoopCount")}</Label>
+                                                        <Input className="h-9 text-xs" value={String(selectedBuilderParams.count || "")} onChange={event => updateSelectedStepParam("count", Number(event.target.value || 0))} placeholder="3" />
+                                                    </div>
+                                                    {selectedLoopInvalid ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">{t("components.rpa.RPAWorkbench.studioLoopInvalid")}</div> : null}
+                                                </div> : null}
+
+                                            {["hotkey", "scroll", "data", "generic"].includes(selectedBuilderActionKind) ? <div className="grid gap-2">
+                                                    <Label>{t("components.rpa.RPAWorkbench.studioInputParams")}</Label>
+                                                    <Textarea className="min-h-[84px] text-xs" value={String(selectedBuilderParams.text || selectedBuilderParams.value || selectedBuilderParams.sequence || selectedBuilderParams.direction || "")} onChange={event => updateSelectedStepParam(selectedBuilderActionKind === "hotkey" ? "sequence" : "text", event.target.value)} placeholder={t("components.rpa.RPAWorkbench.studioInputParamsPlaceholder")} />
+                                                </div> : null}
+
+                                            <div className="flex flex-wrap gap-2">
+                                                <Button size="sm" variant="outline" onClick={() => void handleValidateSelectedStep("selector")}>{t("components.rpa.RPAWorkbench.studioValidateSelector")}</Button>
+                                                <Button size="sm" variant="outline" onClick={() => void handleValidateSelectedStep("assertion")}>{t("components.rpa.RPAWorkbench.studioValidateAssertion")}</Button>
+                                                <Button size="sm" variant="ghost" onClick={() => handleDuplicateDraftStep(selectedDraftStepKey)}><Copy className="mr-1 h-4 w-4" />{t("components.rpa.RPAWorkbench.studioDuplicate")}</Button>
+                                                <Button size="sm" variant="ghost" onClick={() => handleDeleteDraftStep(selectedDraftStepKey)}><Trash2 className="mr-1 h-4 w-4" />{t("components.rpa.RPAWorkbench.studioDelete")}</Button>
+                                            </div>
+                                        </> : <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioSelectNodeHint")}</div>}
+                                </div> : null}
+                            {studioRightPanel === "variables" ? <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <div className="text-sm font-semibold">{t("components.rpa.RPAWorkbench.studioVariablesTitle")}</div>
+                                            <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioVariablesDescription")}</div>
+                                        </div>
+                                        <Button size="sm" variant="outline" onClick={handleAddVariableRow}><Plus className="mr-1 h-4 w-4" />{t("components.rpa.RPAWorkbench.studioVariable")}</Button>
+                                    </div>
+                                    <ScrollArea className="h-[520px] pr-3">
+                                        <div className="space-y-3">
+                                            {draftVariableRows.map(row => <div key={row.id} className="rounded-xl border border-border/60 p-3">
+                                                    <Input className="mb-2" value={row.name} onChange={event => updateVariableRow(row.id, { name: event.target.value })} placeholder="variableName" />
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <select className="h-9 rounded-md border border-input bg-background px-2 text-xs" value={row.type} onChange={event => updateVariableRow(row.id, { type: event.target.value })}>
+                                                            <option value="text">string</option>
+                                                            <option value="number">number</option>
+                                                            <option value="boolean">boolean</option>
+                                                            <option value="list">list</option>
+                                                            <option value="dict">dict</option>
+                                                        </select>
+                                                        <Input value={row.secretName} onChange={event => updateVariableRow(row.id, { secretName: event.target.value, sensitive: Boolean(event.target.value) })} placeholder="secret name" />
+                                                    </div>
+                                                    <Button className="mt-2" size="sm" variant="ghost" onClick={() => handleInsertVariableIntoSelectedStep(row.name)} disabled={!row.name || !selectedBuilderStep}>{t("components.rpa.RPAWorkbench.studioInsertIntoStep")}</Button>
+                                                </div>)}
+                                            {!draftVariableRows.length ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioNoVariables")}</div> : null}
+                                        </div>
+                                    </ScrollArea>
+                                </div> : null}
+                            {studioRightPanel === "elements" ? <div className="space-y-3">
+                                    <div>
+                                        <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioElementsTitle")}</div>
+                                        <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioElementsDescription")}</div>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <Button size="sm" variant="outline" onClick={() => void handleCaptureAssistantStart()} disabled={targetLockLooksLikeAdmin || !!busyAction || captureAssistantBusy}>
+                                            <Crosshair className="mr-1.5 h-3.5 w-3.5" />
+                                            {captureAssistantBusy ? captureAssistantStageLabel : t("components.rpa.RPAWorkbench.studioStartCaptureAssistant")}
+                                        </Button>
+                                        <Button size="sm" variant="ghost" onClick={() => void handleCaptureAssistantStop()} disabled={!captureAssistantActive}>
+                                            {t("components.rpa.RPAWorkbench.studioStopCaptureAssistant")}
+                                        </Button>
+                                        <Button size="sm" variant="outline" onClick={() => void handlePrepareDesktopLive()} disabled={desktopLiveLoading}>{desktopLiveSessionId ? t("components.rpa.RPAWorkbench.studioRestartPreview") : t("components.rpa.RPAWorkbench.studioStartPreview")}</Button>
+                                        <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={computerSampling}>{t("components.rpa.RPAWorkbench.studioSampleElements")}</Button>
+                                        <Button size="sm" variant="outline" onClick={() => void handleBrowserCaptureStart()} disabled={!activeRecording || browserCaptureActive}>{t("components.rpa.RPAWorkbench.studioBrowserCapture")}</Button>
+                                    </div>
+                                    <label className="flex items-center gap-2 rounded-xl border border-border/60 p-2.5 text-xs">
+                                        <input type="checkbox" checked={recordAndForward} onChange={event => setRecordAndForward(event.target.checked)} />
+                                        {t("components.rpa.RPAWorkbench.studioRecordAndForwardTargetDebug")}
+                                    </label>
+                                    <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
+                                        {t("components.rpa.RPAWorkbench.studioNativeHotkeyBackend")}：
+                                        {firstString(nativeHotkeyBackend?.backend) || "fallback_overlay"}
+                                        {" · "}
+                                        {firstString(nativeHotkeyBackend?.state) || t("components.rpa.RPAWorkbench.studioNativeHotkeyFallback")}
+                                    </div>
+                                    {desktopLiveSessionId ? <div className="overflow-hidden rounded-xl border border-border/60">
+                                            <div className="relative h-[210px] w-full overflow-hidden bg-muted/20">
+                                                {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
+                                                <img ref={liveImageRef} src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt="Desktop live" className="h-full w-full select-none object-contain" draggable={false} />
+                                                <div className="absolute left-2 top-2 rounded-full bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm">
+                                                    {t("components.rpa.RPAWorkbench.studioLivePreviewOnly")}
+                                                </div>
+                                            </div>
+                                        </div> : <div className="rounded-xl border border-dashed p-5 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioLiveEmpty")}</div>}
+                                    <div className="grid gap-3">
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioCapturePoolTitle")}</div>
+                                                <div className="text-[11px] text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolDescription")}</div>
+                                            </div>
+                                            <Badge variant="outline" className="text-[10px]">{capturePoolItems.length}</Badge>
+                                        </div>
+                                        <ScrollArea className="max-h-44 pr-2">
+                                            <div className="space-y-2">
+                                                {capturePoolItems.map(item => <div key={item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <div className="min-w-0">
+                                                                <AdminHoverInfo content={captureItemLabel(item)} panelClassName="w-auto max-w-[26rem] whitespace-normal">
+                                                                    <div className="truncate font-medium">{captureItemLabel(item)}</div>
+                                                                </AdminHoverInfo>
+                                                                <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{captureItemSelectorValue(item) || captureItemCoordinateValue(item) || item.source}</div>
+                                                            </div>
+                                                            {item.fragileCoordinateFallback ? <Badge variant="outline" className="shrink-0 text-[10px]">{t("components.rpa.RPAWorkbench.fragileCoordinate")}</Badge> : null}
+                                                        </div>
+                                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => applyElementToSelectedStep(item)} disabled={!selectedBuilderStep}>{t("components.rpa.RPAWorkbench.studioUseElement")}</Button>
+                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => void handleSaveCapturePoolItem(item)}>{t("components.rpa.RPAWorkbench.studioSaveElement")}</Button>
+                                                        </div>
+                                                    </div>)}
+                                                {!capturePoolItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolEmpty")}</div> : null}
+                                            </div>
+                                        </ScrollArea>
+                                    </div>
+                                    <div className="grid gap-3">
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioObjectLibraryTitle")}</div>
+                                                <div className="text-[11px] text-muted-foreground">{t("components.rpa.RPAWorkbench.studioObjectLibraryDescription")}</div>
+                                            </div>
+                                            <Badge variant="outline" className="text-[10px]">{objectLibraryItems.length}</Badge>
+                                        </div>
+                                        <ScrollArea className="max-h-40 pr-2">
+                                            <div className="space-y-2">
+                                                {objectLibraryItems.map(item => <div key={item.elementId || item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
+                                                        <AdminHoverInfo content={captureItemLabel(item)} panelClassName="w-auto max-w-[26rem] whitespace-normal">
+                                                            <div className="truncate font-medium">{captureItemLabel(item)}</div>
+                                                        </AdminHoverInfo>
+                                                        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{captureItemSelectorValue(item) || captureItemCoordinateValue(item) || item.source}</div>
+                                                        <Button size="sm" variant="outline" className="mt-2 h-7 px-2 text-[11px]" onClick={() => applyElementToSelectedStep(item)} disabled={!selectedBuilderStep}>{t("components.rpa.RPAWorkbench.studioUseElement")}</Button>
+                                                    </div>)}
+                                                {!objectLibraryItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioObjectLibraryEmpty")}</div> : null}
+                                            </div>
+                                        </ScrollArea>
+                                    </div>
+                                    {stepValidation ? <pre className="max-h-48 overflow-auto rounded-xl bg-muted/30 p-3 text-xs">{prettyJson(stepValidation)}</pre> : null}
+                                </div> : null}
+                            {studioRightPanel === "runs" ? <div className="space-y-3">
+                                    <div className="text-sm font-semibold">{t("components.rpa.RPAWorkbench.studioRunsTitle")}</div>
+                                    <Button className="w-full" onClick={() => selectedDraftId ? void handleDraftAction("run") : undefined} disabled={!selectedDraftId || isArchivedDraft(selectedDraft) || !!busyAction}>{t("components.rpa.RPAWorkbench.studioDebugRunDraft")}</Button>
+                                    <Button className="w-full" variant="outline" onClick={() => selectedDraftId ? void handleApproveDraftAsTemplate() : undefined} disabled={!selectedDraftId || !selectedDraft || isArchivedDraft(selectedDraft) || !!busyAction}>{t("components.rpa.RPAWorkbench.studioApproveDraftTemplate")}</Button>
+                                    <ScrollArea className="h-[470px] pr-3">
+                                        <div className="space-y-2">
+                                            {rpaRuns.map(run => <div key={run.id} className="rounded-xl border border-border/60 p-3 text-xs">
+                                                    <div className="font-medium">{run.status || "queued"}</div>
+                                                    <div className="mt-1 break-all text-muted-foreground">{run.id}</div>
+                                                </div>)}
+                                            {!rpaRuns.length ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioNoRpaRuns")}</div> : null}
+                                        </div>
+                                    </ScrollArea>
+                                </div> : null}
+                            {studioRightPanel === "diagnostics" ? <div className="space-y-3">
+                                    <div className="text-sm font-semibold">{t("components.rpa.RPAWorkbench.studioDiagnosticsTitle")}</div>
+                                    <pre className="max-h-[540px] overflow-auto rounded-xl bg-muted/30 p-3 text-xs">{latestResult ? prettyJson(latestResult) : t("components.rpa.RPAWorkbench.studioNoDiagnostics")}</pre>
+                                    <Button variant="outline" onClick={() => setShowLegacyPanel(current => !current)}>{showLegacyPanel ? t("components.rpa.RPAWorkbench.studioHideLegacy") : t("components.rpa.RPAWorkbench.studioOpenLegacy")}</Button>
+                                </div> : null}
+                        </aside>
+                    </div>
+                </CardContent>
+            </Card>
+
+            {showLegacyPanel ? <>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <Card className="border-border/60">
@@ -1485,15 +3387,53 @@ export function RPAWorkbench() {
                                         <RefreshCw className="mr-2 h-4 w-4" />
                                         {t("components.rpa.RPAWorkbench.sampleComputerUse")}
                                     </Button>
+                                    {recordingTargetMode === "agent_browser" ? <>
+                                            <Button size="sm" variant="outline" onClick={() => void handleBrowserCaptureStart()} disabled={!activeRecording || browserCaptureActive}>
+                                                <MousePointerClick className="mr-2 h-4 w-4" />
+                                                {t("components.rpa.RPAWorkbench.startBrowserCapture")}
+                                            </Button>
+                                            <Button size="sm" variant="outline" onClick={() => void handleBrowserCapturePoll()} disabled={!browserCaptureActive || browserCapturePolling}>
+                                                <RefreshCw className="mr-2 h-4 w-4" />
+                                                {t("components.rpa.RPAWorkbench.pollBrowserCapture")}
+                                            </Button>
+                                            <Button size="sm" variant="ghost" onClick={() => void handleBrowserCaptureStop()} disabled={!browserCaptureActive}>
+                                                {t("components.rpa.RPAWorkbench.stopBrowserCapture")}
+                                            </Button>
+                                        </> : null}
                                     {desktopLiveSessionId ? <Button size="sm" variant="ghost" onClick={() => void handleReleaseDesktopLive()} disabled={desktopLiveLoading}>
                                             {t("components.rpa.RPAWorkbench.stopLivePreview")}
                                         </Button> : null}
                                 </div>
                             </div>
+                            <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                <label className="flex items-center gap-2 rounded-md border border-border/60 bg-background/70 px-3 py-2">
+                                    <input type="checkbox" checked={recordAndForward} onChange={event => setRecordAndForward(event.target.checked)} />
+                                    {t("components.rpa.RPAWorkbench.recordAndForward")}
+                                </label>
+                                <span className="rounded-md border border-border/60 bg-background/70 px-3 py-2">
+                                    {browserCaptureActive ? t("components.rpa.RPAWorkbench.browserCaptureActive") : t("components.rpa.RPAWorkbench.browserCaptureIdle")}
+                                </span>
+                            </div>
                             {desktopLiveError ? <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopLiveError}</div> : null}
                             {desktopLiveSessionId ? <div className="mt-3 overflow-hidden rounded-lg border border-border/60 bg-background">
-                                    {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
-                                    <img ref={liveImageRef} src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt={t("components.rpa.RPAWorkbench.desktopLiveOverlay")} className="h-[280px] w-full cursor-crosshair object-contain" onClick={event => void handleLivePreviewClick(event)} />
+                                    <div
+                                        role="application"
+                                        tabIndex={0}
+                                        className="relative h-[280px] w-full cursor-crosshair overflow-hidden outline-none focus:ring-2 focus:ring-primary/40"
+                                        onClick={event => void handleLivePreviewClick(event)}
+                                        onDoubleClick={event => void handleLivePreviewDoubleClick(event)}
+                                        onContextMenu={event => void handleLivePreviewContextMenu(event)}
+                                        onWheel={event => void handleLivePreviewWheel(event)}
+                                        onPointerDown={handleLivePreviewPointerDown}
+                                        onPointerUp={event => void handleLivePreviewPointerUp(event)}
+                                        onKeyDown={event => void handleLivePreviewKeyDown(event)}
+                                    >
+                                        {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
+                                        <img ref={liveImageRef} src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt={t("components.rpa.RPAWorkbench.desktopLiveOverlay")} className="h-full w-full select-none object-contain" draggable={false} />
+                                        <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-background/80 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+                                            {recordAndForward ? t("components.rpa.RPAWorkbench.overlayRecordForwardHint") : t("components.rpa.RPAWorkbench.overlayRecordOnlyHint")}
+                                        </div>
+                                    </div>
                                 </div> : <div className="mt-3 rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
                                     {t("components.rpa.RPAWorkbench.noLivePreview")}
                                 </div>}
@@ -1619,14 +3559,22 @@ export function RPAWorkbench() {
             <div className="grid gap-6 xl:grid-cols-[1.15fr_1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{tg(t, "17269e32")}</CardTitle>
-                        <CardDescription>{tg(t, "f068e67b")}</CardDescription>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                                <CardTitle className="text-lg">{tg(t, "17269e32")}</CardTitle>
+                                <CardDescription>{tg(t, "f068e67b")}</CardDescription>
+                            </div>
+                            <Button variant={showArchivedDrafts ? "secondary" : "outline"} size="sm" onClick={() => setShowArchivedDrafts(value => !value)}>
+                                {t("components.rpa.RPAWorkbench.includeArchived")}
+                            </Button>
+                        </div>
                     </CardHeader>
                     <CardContent>
                         <ScrollArea className="h-[420px] pr-4">
                             <div className="space-y-3">
                                 {drafts.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "ffb6da59")}</div> : drafts.map(draft => {
                 const selected = draft.id === selectedDraftId;
+                const archived = isArchivedDraft(draft);
                 const highRisk = (draft.steps || []).some(item => item.approval?.mode);
                 const assessment = draft.assessment;
                 const reviewRequired = String(assessment?.status || "").includes("review");
@@ -1645,6 +3593,7 @@ export function RPAWorkbench() {
                                                         {assessment?.status ? <Badge variant={reviewRequired ? "destructive" : "secondary"}>
                                                                 {assessment.status}{assessment.band ? ` · ${assessment.band}` : ""}
                                                             </Badge> : null}
+                                                        {archived ? <Badge variant="outline">{t("components.rpa.RPAWorkbench.archived")}</Badge> : null}
                                                     </div>
                                                 </div>
                                                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -1683,9 +3632,51 @@ export function RPAWorkbench() {
                         <CardDescription>{selectedDraft ? `${selectedDraft.name || selectedDraft.id}` : tg(t, "9b331209")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="grid gap-2">
-                            <Label htmlFor="draft-vars">{tg(t, "c0e67c85")}</Label>
-                            <Textarea id="draft-vars" className="min-h-[180px] font-mono text-xs" value={variablesText} onChange={event => setVariablesText(event.target.value)} />
+                        <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+                            <div className="grid gap-2">
+                                <Label htmlFor="draft-vars">{t("components.rpa.RPAWorkbench.runtimeVariablesJson")}</Label>
+                                <Textarea id="draft-vars" className="min-h-[150px] font-mono text-xs" value={variablesText} onChange={event => setVariablesText(event.target.value)} />
+                                <p className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.runtimeVariablesJsonHint")}</p>
+                            </div>
+                            <div className="rounded-xl border border-border/60 bg-background p-3">
+                                <div className="mb-3 flex items-center justify-between gap-2">
+                                    <div>
+                                        <div className="text-sm font-medium">{t("components.rpa.RPAWorkbench.variableSchema")}</div>
+                                        <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.variableSchemaHint")}</div>
+                                    </div>
+                                    <Button size="sm" variant="outline" onClick={handleAddVariableRow}>
+                                        <Plus className="mr-2 h-4 w-4" />
+                                        {t("components.rpa.RPAWorkbench.addVariable")}
+                                    </Button>
+                                </div>
+                                <ScrollArea className="h-[150px] pr-3">
+                                    <div className="space-y-2">
+                                        {draftVariableRows.map(row => <div key={row.id} className="grid gap-2 rounded-lg border border-border/50 p-2 md:grid-cols-[1fr_7rem_5rem_1fr_auto]">
+                                                <Input value={row.name} onChange={event => updateVariableRow(row.id, { name: event.target.value })} placeholder="customer_name" className="h-8" />
+                                                <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={row.type} onChange={event => updateVariableRow(row.id, { type: event.target.value })}>
+                                                    <option value="text">{t("components.rpa.RPAWorkbench.varTypeText")}</option>
+                                                    <option value="number">{t("components.rpa.RPAWorkbench.varTypeNumber")}</option>
+                                                    <option value="boolean">{t("components.rpa.RPAWorkbench.varTypeBoolean")}</option>
+                                                    <option value="secret">{t("components.rpa.RPAWorkbench.varTypeSecret")}</option>
+                                                </select>
+                                                <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                                                    <input type="checkbox" checked={row.required} onChange={event => updateVariableRow(row.id, { required: event.target.checked })} />
+                                                    {t("components.rpa.RPAWorkbench.required")}
+                                                </label>
+                                                <Input value={row.sensitive ? row.secretName : row.defaultValue} onChange={event => updateVariableRow(row.id, row.sensitive ? { secretName: event.target.value } : { defaultValue: event.target.value })} placeholder={row.sensitive ? "secret:github_token" : t("components.rpa.RPAWorkbench.defaultValue")} className="h-8" />
+                                                <div className="flex items-center gap-1">
+                                                    <Button type="button" variant={row.sensitive ? "secondary" : "ghost"} size="sm" onClick={() => updateVariableRow(row.id, { sensitive: !row.sensitive, type: !row.sensitive ? "secret" : "text" })}>
+                                                        {t("components.rpa.RPAWorkbench.secret")}
+                                                    </Button>
+                                                    <Button type="button" variant="ghost" size="sm" onClick={() => handleDeleteVariableRow(row.id)}>
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </div>
+                                            </div>)}
+                                        {draftVariableRows.length === 0 ? <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.noVariables")}</div> : null}
+                                    </div>
+                                </ScrollArea>
+                            </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="ghost" onClick={() => void handleViewSourceTrace()} disabled={!selectedDraftId || busyAction === `draft:source:${selectedDraftId}`}>
@@ -1697,9 +3688,22 @@ export function RPAWorkbench() {
                             <Button variant="outline" onClick={() => void handleDraftAction("prepare")} disabled={!selectedDraftId || busyAction === "draft:prepare"}>
                                 {tg(t, "c6611470")}
                             </Button>
-                            <Button onClick={() => void handleDraftAction("run")} disabled={!selectedDraftId || busyAction === "draft:run"}>
+                            <Button onClick={() => void handleDraftAction("run")} disabled={!selectedDraftId || isArchivedDraft(selectedDraft) || busyAction === "draft:run"}>
                                 <Play className="mr-2 h-4 w-4" />
                                 {tg(t, "8b377b85")}
+                            </Button>
+                            {isArchivedDraft(selectedDraft) ? <Button variant="outline" onClick={() => void handleDraftGovernanceAction("restore")} disabled={!selectedDraftId || busyAction === `draft:restore:${selectedDraftId}`}>
+                                    {t("components.rpa.RPAWorkbench.restore")}
+                                </Button> : <Button variant="outline" onClick={() => void handleDraftGovernanceAction("archive")} disabled={!selectedDraftId || busyAction === `draft:archive:${selectedDraftId}`}>
+                                    {t("components.rpa.RPAWorkbench.archive")}
+                                </Button>}
+                            <Button variant="destructive" onClick={() => void handleDraftGovernanceAction("delete")} disabled={!selectedDraftId || busyAction === `draft:delete:${selectedDraftId}`}>
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                {t("components.rpa.RPAWorkbench.hardDelete")}
+                            </Button>
+                            <Button variant="default" onClick={() => void handleApproveDraftAsTemplate()} disabled={!selectedDraftId || !selectedDraft || isArchivedDraft(selectedDraft) || busyAction === `draft:approve-template:${selectedDraftId}`}>
+                                <CheckCircle2 className="mr-2 h-4 w-4" />
+                                {t("components.rpa.RPAWorkbench.approveDraftAsTemplate")}
                             </Button>
                         </div>
                         {selectedDraft ? <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
@@ -1741,40 +3745,250 @@ export function RPAWorkbench() {
                                         {issue}
                                     </div>)}
                             </div> : null}
-                        {selectedDraft ? <div className="rounded-xl border border-border/60 p-3">
+                        {selectedDraft ? <div className="rounded-xl border border-border/60 bg-background p-3">
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                                     <div>
                                         <div className="text-sm font-medium">{t("components.rpa.RPAWorkbench.draftStepEditor")}</div>
                                         <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.draftStepEditorDescription")}</div>
                                     </div>
-                                    <Button size="sm" onClick={() => void handlePatchDraftSteps()} disabled={busyAction === `draft:patch:${selectedDraft.id}`}>
-                                        <Save className="mr-2 h-4 w-4" />
-                                        {t("components.rpa.RPAWorkbench.saveDraftSteps")}
-                                    </Button>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <div className="inline-flex rounded-lg border border-border/60 bg-muted/20 p-1">
+                                            <Button type="button" size="sm" variant={draftEditorView === "steps" ? "secondary" : "ghost"} onClick={() => setDraftEditorView("steps")}>
+                                                {t("components.rpa.RPAWorkbench.editorViewSteps")}
+                                            </Button>
+                                            <Button type="button" size="sm" variant={draftEditorView === "canvas" ? "secondary" : "ghost"} onClick={() => setDraftEditorView("canvas")}>
+                                                <GitBranch className="mr-2 h-4 w-4" />
+                                                {t("components.rpa.RPAWorkbench.editorViewCanvas")}
+                                            </Button>
+                                        </div>
+                                        <Button size="sm" onClick={() => void handlePatchDraftSteps()} disabled={busyAction === `draft:patch:${selectedDraft.id}`}>
+                                            <Save className="mr-2 h-4 w-4" />
+                                            {t("components.rpa.RPAWorkbench.saveDraftSteps")}
+                                        </Button>
+                                    </div>
                                 </div>
-                                <ScrollArea className="h-[360px] pr-4">
-                                    <div className="space-y-3">
-                                        {(selectedDraft.steps || []).map((step, index) => {
-                  const stepKey = step.stepId || `${selectedDraft.id}:step:${index}`;
-                  return <div key={stepKey} className="rounded-lg border border-border/60 p-3">
-                                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                                                    <div className="text-xs font-medium text-muted-foreground">
-                                                        {index + 1}. {step.stepId || step.use || "step"}
+                                <div className="grid gap-4 xl:grid-cols-[13rem_1fr_1.15fr]">
+                                    <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                                        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("components.rpa.RPAWorkbench.actionLibrary")}</div>
+                                        <div className="grid gap-2">
+                                            {draftActionOptions.map(([action, label]) => <Button key={action} type="button" variant="outline" size="sm" className="justify-start" draggable onDragStart={event => {
+                                                    event.dataTransfer.setData("application/x-v8-rpa-action", action);
+                                                    event.dataTransfer.effectAllowed = "copy";
+                                                }} onClick={() => handleAddDraftStep(action)}>
+                                                    <Plus className="mr-2 h-4 w-4" />
+                                                    {label}
+                                                </Button>)}
+                                        </div>
+                                    </div>
+                                    <div className="rounded-xl border border-border/50 p-3">
+                                        {draftEditorView === "steps" ? <>
+                                                <div className="mb-2 flex items-center justify-between gap-2">
+                                                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("components.rpa.RPAWorkbench.stepList")}</div>
+                                                    <Badge variant="outline">{orderedDraftSteps.length}</Badge>
+                                                </div>
+                                                <ScrollArea className="h-[430px] pr-3">
+                                                    <div className="space-y-2">
+                                                        {orderedDraftSteps.map((item, index) => <div key={item.key} role="button" tabIndex={0} onClick={() => {
+                                                                setSelectedDraftStepKey(item.key);
+                                                                setStepValidation(null);
+                                                            }} onKeyDown={event => {
+                                                                if (event.key !== "Enter" && event.key !== " ") return;
+                                                                event.preventDefault();
+                                                                setSelectedDraftStepKey(item.key);
+                                                                setStepValidation(null);
+                                                            }} className={`w-full cursor-pointer rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-primary/30 ${selectedDraftStepKey === item.key ? "border-primary bg-primary/5" : "border-border/60 hover:border-primary/40 hover:bg-muted/30"}`}>
+                                                                <div className="flex items-start justify-between gap-2">
+                                                                    <div className="min-w-0">
+                                                                        <div className="truncate text-sm font-medium">{index + 1}. {stepIntentLabel(item.step)}</div>
+                                                                        <div className="mt-1 truncate text-xs text-muted-foreground">{stepActionName(item.step)}{stepSelectorValue(item.step) ? ` · ${stepSelectorValue(item.step)}` : ""}</div>
+                                                                    </div>
+                                                                    <div className="flex shrink-0 items-center gap-1">
+                                                                        <Button type="button" variant="ghost" size="sm" onClick={event => {
+                                                                            event.stopPropagation();
+                                                                            handleMoveDraftStep(item.key, -1);
+                                                                        }} disabled={index === 0}>
+                                                                            <ArrowUp className="h-4 w-4" />
+                                                                        </Button>
+                                                                        <Button type="button" variant="ghost" size="sm" onClick={event => {
+                                                                            event.stopPropagation();
+                                                                            handleMoveDraftStep(item.key, 1);
+                                                                        }} disabled={index === orderedDraftSteps.length - 1}>
+                                                                            <ArrowDown className="h-4 w-4" />
+                                                                        </Button>
+                                                                    </div>
+                                                                </div>
+                                                            </div>)}
+                                                        {orderedDraftSteps.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.noDraftSteps")}</div> : null}
                                                     </div>
-                                                    <Button variant="ghost" size="sm" onClick={() => handleDeleteDraftStep(stepKey)}>
-                                                        <Trash2 className="mr-2 h-4 w-4" />
-                                                        {t("components.rpa.RPAWorkbench.deleteNoiseStep")}
+                                                </ScrollArea>
+                                            </> : <>
+                                                <div className="mb-2 flex items-center justify-between gap-2">
+                                                    <div>
+                                                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("components.rpa.RPAWorkbench.canvasFlowView")}</div>
+                                                        <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.canvasFlowDescription")}</div>
+                                                    </div>
+                                                    <Badge variant="outline">{orderedDraftSteps.length}</Badge>
+                                                </div>
+                                                <div className="relative h-[430px] overflow-auto rounded-xl border border-dashed border-border/70 bg-muted/10 p-4" onDragOver={event => event.preventDefault()} onDrop={event => handleDraftCanvasDrop(event)}>
+                                                    {orderedDraftSteps.length > 1 ? <svg className="pointer-events-none absolute left-1/2 top-16 h-[calc(100%-8rem)] w-1 -translate-x-1/2 text-primary/30" aria-hidden="true">
+                                                            <line x1="2" y1="0" x2="2" y2="100%" stroke="currentColor" strokeWidth="2" strokeDasharray="6 8" />
+                                                        </svg> : null}
+                                                    <div className="relative z-10 mx-auto flex max-w-xl flex-col gap-4">
+                                                        {orderedDraftSteps.map((item, index) => {
+                                                            const badges = draftStepBadges(item.step);
+                                                            return <div key={item.key} draggable onDragStart={event => {
+                                                                event.dataTransfer.setData("application/x-v8-rpa-step", item.key);
+                                                                event.dataTransfer.effectAllowed = "move";
+                                                            }} onDragOver={event => event.preventDefault()} onDrop={event => handleDraftCanvasDrop(event, item.key)} className="relative">
+                                                                    <button type="button" onClick={() => {
+                                                                        setSelectedDraftStepKey(item.key);
+                                                                        setStepValidation(null);
+                                                                    }} className={`w-full rounded-2xl border bg-background/95 p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md ${selectedDraftStepKey === item.key ? "border-primary ring-2 ring-primary/15" : "border-border/70"}`}>
+                                                                        <div className="flex items-start justify-between gap-3">
+                                                                            <div className="flex min-w-0 gap-3">
+                                                                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{index + 1}</div>
+                                                                                <div className="min-w-0">
+                                                                                    <div className="truncate text-sm font-semibold">{stepIntentLabel(item.step)}</div>
+                                                                                    <div className="mt-1 truncate text-xs text-muted-foreground">{stepActionName(item.step)}{stepSelectorValue(item.step) ? ` · ${stepSelectorValue(item.step)}` : ""}</div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                                                        </div>
+                                                                        {badges.length ? <div className="mt-3 flex flex-wrap gap-1">
+                                                                                {badges.map(badge => <span key={`${item.key}:${badge.key}`} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.tone}`}>{badge.label}</span>)}
+                                                                            </div> : null}
+                                                                    </button>
+                                                                </div>;
+                                                        })}
+                                                        {orderedDraftSteps.length === 0 ? <div className="flex h-[360px] items-center justify-center rounded-xl border border-dashed bg-background/70 text-center text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.dropActionHere")}</div> : null}
+                                                    </div>
+                                                </div>
+                                            </>}
+                                    </div>
+                                    <div className="rounded-xl border border-border/50 p-3">
+                                        {selectedBuilderStep ? <div className="space-y-3">
+                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                    <div>
+                                                        <div className="text-sm font-medium">{t("components.rpa.RPAWorkbench.stepProperties")}</div>
+                                                        <div className="text-xs text-muted-foreground">{selectedBuilderStep.stepId || selectedDraftStepKey}</div>
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        <Button type="button" variant="ghost" size="sm" onClick={() => handleDuplicateDraftStep(selectedDraftStepKey)}>
+                                                            <Copy className="mr-1 h-4 w-4" />
+                                                            {t("components.rpa.RPAWorkbench.duplicateStep")}
+                                                        </Button>
+                                                        <Button type="button" variant="ghost" size="sm" onClick={() => handleDeleteDraftStep(selectedDraftStepKey)}>
+                                                            <Trash2 className="mr-1 h-4 w-4" />
+                                                            {t("components.rpa.RPAWorkbench.deleteNoiseStep")}
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-2">
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.actionType")}</Label>
+                                                        <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={stepActionName(selectedBuilderStep)} onChange={event => updateSelectedDraftStep(step => {
+                                                            const nextStep = {
+                                                                ...step,
+                                                                action: event.target.value
+                                                            };
+                                                            delete nextStep.use;
+                                                            return nextStep;
+                                                        })}>
+                                                            <option value="open_app">{t("components.rpa.RPAWorkbench.actionOpenApp")}</option>
+                                                            <option value="wait">{t("components.rpa.RPAWorkbench.actionWait")}</option>
+                                                            <option value="click">{t("components.rpa.RPAWorkbench.actionClick")}</option>
+                                                            <option value="type_text">{t("components.rpa.RPAWorkbench.actionTypeText")}</option>
+                                                            <option value="hotkey">{t("components.rpa.RPAWorkbench.actionHotkey")}</option>
+                                                            <option value="scroll">{t("components.rpa.RPAWorkbench.actionScroll")}</option>
+                                                            <option value="screenshot">{t("components.rpa.RPAWorkbench.actionScreenshot")}</option>
+                                                        </select>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.stepIntent")}</Label>
+                                                        <Input value={selectedBuilderStep.intent || ""} onChange={event => updateSelectedDraftStep(step => ({ ...step, intent: event.target.value }))} />
+                                                    </div>
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-[8rem_1fr]">
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.selectorKind")}</Label>
+                                                        <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={selectedBuilderSelector.xpath ? "xpath" : selectedBuilderSelector.role ? "role" : "css"} onChange={event => updateSelectedStepSelector(event.target.value, stepSelectorValue(selectedBuilderStep))}>
+                                                            <option value="css">CSS</option>
+                                                            <option value="xpath">XPath</option>
+                                                            <option value="role">Role</option>
+                                                        </select>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.selectorOrAnchor")}</Label>
+                                                        <Input value={stepSelectorValue(selectedBuilderStep)} onChange={event => updateSelectedStepSelector(selectedBuilderSelector.xpath ? "xpath" : selectedBuilderSelector.role ? "role" : "css", event.target.value)} placeholder="button[aria-label='Submit'] / //button[text()='Submit']" />
+                                                    </div>
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-3">
+                                                    <div className="grid gap-2">
+                                                        <Label>X</Label>
+                                                        <Input value={selectedBuilderCoordinate.x == null ? "" : String(selectedBuilderCoordinate.x)} onChange={event => updateSelectedStepCoordinate("x", event.target.value)} />
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>Y</Label>
+                                                        <Input value={selectedBuilderCoordinate.y == null ? "" : String(selectedBuilderCoordinate.y)} onChange={event => updateSelectedStepCoordinate("y", event.target.value)} />
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.waitMs")}</Label>
+                                                        <Input value={selectedBuilderParams.timeoutMs == null ? "" : String(selectedBuilderParams.timeoutMs)} onChange={event => updateSelectedStepParam("timeoutMs", Number(event.target.value || 0))} />
+                                                    </div>
+                                                </div>
+                                                <div className="grid gap-2">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.inputTextOrVariable")}</Label>
+                                                        <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value="" onChange={event => {
+                                                            handleInsertVariableIntoSelectedStep(event.target.value);
+                                                            event.currentTarget.value = "";
+                                                        }}>
+                                                            <option value="">{t("components.rpa.RPAWorkbench.insertVariable")}</option>
+                                                            {draftVariableRows.filter(row => row.name.trim()).map(row => <option key={row.id} value={row.name.trim()}>{row.name.trim()}</option>)}
+                                                        </select>
+                                                    </div>
+                                                    <Textarea className="min-h-[80px]" value={stepTextValue(selectedBuilderStep)} onChange={event => updateSelectedStepParam("text", event.target.value)} placeholder="{{customer_name}} / ${secret:github_token}" />
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-2">
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.assertionType")}</Label>
+                                                        <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={firstString(selectedBuilderVerification.type)} onChange={event => updateSelectedStepVerification("type", event.target.value)}>
+                                                            <option value="">{t("components.rpa.RPAWorkbench.noAssertion")}</option>
+                                                            <option value="text_exists">{t("components.rpa.RPAWorkbench.assertTextExists")}</option>
+                                                            <option value="element_visible">{t("components.rpa.RPAWorkbench.assertElementVisible")}</option>
+                                                            <option value="url_matches">{t("components.rpa.RPAWorkbench.assertUrlMatches")}</option>
+                                                            <option value="window_exists">{t("components.rpa.RPAWorkbench.assertWindowExists")}</option>
+                                                        </select>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label>{t("components.rpa.RPAWorkbench.assertionExpected")}</Label>
+                                                        <Input value={firstString(selectedBuilderVerification.expected, selectedBuilderVerification.text)} onChange={event => updateSelectedStepVerification("expected", event.target.value)} />
+                                                    </div>
+                                                </div>
+                                                <div className="flex flex-wrap gap-2">
+                                                    <Button type="button" variant="outline" onClick={() => void handleValidateSelectedStep("dry_run")} disabled={busyAction === `draft:validate:${selectedDraft.id}:dry_run`}>
+                                                        <MousePointerClick className="mr-2 h-4 w-4" />
+                                                        {t("components.rpa.RPAWorkbench.stepDryRun")}
+                                                    </Button>
+                                                    <Button type="button" variant="outline" onClick={() => void handleValidateSelectedStep("selector")} disabled={busyAction === `draft:validate:${selectedDraft.id}:selector`}>
+                                                        {t("components.rpa.RPAWorkbench.validateSelector")}
+                                                    </Button>
+                                                    <Button type="button" variant="outline" onClick={() => void handleValidateSelectedStep("assertion")} disabled={busyAction === `draft:validate:${selectedDraft.id}:assertion`}>
+                                                        {t("components.rpa.RPAWorkbench.validateAssertion")}
                                                     </Button>
                                                 </div>
-                                                <Textarea className="min-h-[180px] font-mono text-xs" value={draftStepEdits[stepKey] || ""} onChange={event => setDraftStepEdits(current => ({
-                        ...current,
-                        [stepKey]: event.target.value
-                      }))} />
-                                            </div>;
-                })}
-                                        {(selectedDraft.steps || []).length === 0 ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.noDraftSteps")}</div> : null}
+                                                {stepValidation ? <div className={`rounded-xl border p-3 text-xs ${stepValidation.ok ? "border-emerald-500/30 bg-emerald-500/10" : "border-destructive/30 bg-destructive/10"}`}>
+                                                        <div className="font-medium">{stepValidation.summary || (stepValidation.ok ? t("components.rpa.RPAWorkbench.validationPassed") : t("components.rpa.RPAWorkbench.validationFailed"))}</div>
+                                                        <div className="mt-2 space-y-1">
+                                                            {(stepValidation.checks || []).map((check, index) => <div key={`${check.name || "check"}:${index}`} className={check.ok ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}>
+                                                                    {check.ok ? "✓" : "!"} {check.message || check.name}
+                                                                </div>)}
+                                                            {(stepValidation.warnings || []).map((warning, index) => <div key={`warning:${index}`} className="text-amber-700 dark:text-amber-300">! {warning}</div>)}
+                                                        </div>
+                                                    </div> : null}
+                                            </div> : <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.selectStepToEdit")}</div>}
                                     </div>
-                                </ScrollArea>
+                                </div>
                             </div> : null}
                     </CardContent>
                 </Card>
@@ -1832,8 +4046,15 @@ export function RPAWorkbench() {
             <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
-                        <CardTitle className="text-lg">{tg(t, "34369e72")}</CardTitle>
-                        <CardDescription>{tg(t, "d420bf42")}</CardDescription>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                                <CardTitle className="text-lg">{tg(t, "34369e72")}</CardTitle>
+                                <CardDescription>{tg(t, "d420bf42")}</CardDescription>
+                            </div>
+                            <Button variant={showArchivedTemplates ? "secondary" : "outline"} size="sm" onClick={() => setShowArchivedTemplates(value => !value)}>
+                                {t("components.rpa.RPAWorkbench.includeArchived")}
+                            </Button>
+                        </div>
                     </CardHeader>
                     <CardContent>
                         <div className="mb-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -1847,6 +4068,7 @@ export function RPAWorkbench() {
                             <div className="space-y-3">
                                 {templates.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "41f86afb")}</div> : templates.map(template => {
                 const selected = template.id === selectedTemplateId;
+                const archived = isArchivedTemplate(template);
                 return <button key={template.id} type="button" onClick={() => setSelectedTemplateId(template.id)} className={`w-full rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border/60 hover:border-primary/40 hover:bg-muted/30"}`}>
 
                                                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1860,6 +4082,7 @@ export function RPAWorkbench() {
                                                         <Badge variant={template.view?.executionPath === "computer_use_first" ? "destructive" : "outline"}>
                                                             {template.view?.executionPathLabel || template.view?.rolloutModeLabel || t("components.plugin.host.PluginHostWorkbench.k54745147")}
                                                         </Badge>
+                                                        {archived ? <Badge variant="outline">{t("components.rpa.RPAWorkbench.archived")}</Badge> : null}
                                                     </div>
                                                 </div>
                                                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -1925,6 +4148,15 @@ export function RPAWorkbench() {
                                     </Button>
                                     <Button onClick={() => void handleTemplateAction("approve")} disabled={busyAction === `template:approve:${selectedTemplate.id}`}>
                                         {tg(t, "10a18390")}
+                                    </Button>
+                                    {isArchivedTemplate(selectedTemplate) ? <Button variant="outline" onClick={() => void handleTemplateGovernanceAction("restore")} disabled={busyAction === `template:restore:${selectedTemplate.id}`}>
+                                            {t("components.rpa.RPAWorkbench.restore")}
+                                        </Button> : <Button variant="outline" onClick={() => void handleTemplateGovernanceAction("archive")} disabled={busyAction === `template:archive:${selectedTemplate.id}`}>
+                                            {t("components.rpa.RPAWorkbench.archive")}
+                                        </Button>}
+                                    <Button variant="destructive" onClick={() => void handleTemplateGovernanceAction("delete")} disabled={busyAction === `template:delete:${selectedTemplate.id}`}>
+                                        <Trash2 className="mr-2 h-4 w-4" />
+                                        {t("components.rpa.RPAWorkbench.hardDelete")}
                                     </Button>
                                 </div>
                                 <div className="space-y-3">
@@ -2078,5 +4310,6 @@ export function RPAWorkbench() {
                     </CardContent>
                 </Card>
             </div>
+            </> : null}
         </div>;
 }

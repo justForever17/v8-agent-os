@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import signal
+import subprocess
+import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.audit_logger import audit_logger
 from core.database import db
+from core.realtime_protocol import utc_now_iso
 from erc.kernel import erc_kernel
 from erc.runtime_context import bind_runtime_context
 from erc.runtime_control import apply_control_signal, consume_stop_signal
@@ -39,6 +45,76 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_jsonable(item) for item in value]
     return str(value)
+
+
+def _native_hotkey_backend_capability() -> Dict[str, Any]:
+    if sys.platform.startswith("win"):
+        return {
+            "backend": "windows_register_hotkey",
+            "state": "ready",
+            "available": True,
+            "hotkey": "ctrl+alt+c",
+            "cancelHotkey": "ctrl+alt+x",
+            "fallback": "fallback_overlay",
+        }
+    if sys.platform == "darwin":
+        return {
+            "backend": "mac_ax",
+            "state": "requires_accessibility_permission",
+            "available": False,
+            "fallback": "fallback_overlay",
+        }
+    return {
+        "backend": "linux_portal",
+        "state": "requires_portal_or_display_backend",
+        "available": False,
+        "fallback": "fallback_overlay",
+    }
+
+
+def _is_process_running(pid: int) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            output = (result.stdout or "").strip()
+            return result.returncode == 0 and str(pid) in output and "INFO:" not in output.upper()
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _terminate_process(pid: int) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except OSError:
+        return False
 
 
 def _render_template_value(value: Any, variables: Dict[str, Any]) -> Any:
@@ -116,8 +192,8 @@ class RPARuntime:
         self.recording_manager = RPARecordingManager(trace_store_instance=self.compiler.trace_store)
         ensure_system_rpa_seed_templates(self.script_store)
 
-    def list_drafts(self, *, limit: int = 100) -> list[Dict[str, Any]]:
-        return self.script_store.list_drafts(limit=limit)
+    def list_drafts(self, *, limit: int = 100, include_archived: bool = False) -> list[Dict[str, Any]]:
+        return self.script_store.list_drafts(limit=limit, include_archived=include_archived)
 
     def list_robot_scripts(self, *, limit: int = 100) -> list[Dict[str, Any]]:
         return self.script_store.list_robot_scripts(limit=limit)
@@ -146,11 +222,58 @@ class RPARuntime:
     def get_draft(self, script_id: str) -> Optional[Dict[str, Any]]:
         return self.script_store.get_draft(script_id)
 
+    def create_draft(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(payload.get("name") or payload.get("goal") or "Untitled RPA flow").strip() or "Untitled RPA flow"
+        goal = str(payload.get("goal") or name).strip() or name
+        app_id = str(payload.get("appId") or payload.get("app_id") or "desktop").strip() or "desktop"
+        steps = list(payload.get("steps") or [])
+        variables = list(payload.get("variables") or [])
+        object_library = list(payload.get("objectLibrary") or payload.get("object_library") or [])
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "source": metadata.get("source") or "manual_canvas",
+                "createdBy": metadata.get("createdBy") or "admin_rpa_studio",
+                "createdFrom": metadata.get("createdFrom") or "manual_canvas",
+                "savedAt": utc_now_iso(),
+            }
+        )
+        script_id = str(payload.get("id") or f"draft_{_slug(name, fallback='manual-canvas')[:48]}_{uuid.uuid4().hex[:8]}")
+        draft = {
+            "id": script_id,
+            "name": name,
+            "goal": goal,
+            "appId": app_id,
+            "steps": steps,
+            "variables": variables,
+            "objectLibrary": object_library,
+            "source": {
+                "kind": "manual_canvas",
+                "createdBy": "admin_rpa_studio",
+            },
+            "metadata": metadata,
+        }
+        saved = self.script_store.save_draft(draft)
+        self._log_audit(
+            action=f"Create RPA draft: {script_id}",
+            status="SUCCESS",
+            details=json.dumps(
+                {
+                    "scriptId": script_id,
+                    "appId": app_id,
+                    "stepCount": len(steps),
+                    "source": metadata.get("source"),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return saved
+
     def patch_draft(self, script_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
         draft = self.get_draft(script_id)
         if not draft:
             raise ValueError(f"未找到 draft: {script_id}")
-        allowed_top_level = {"name", "goal", "appId", "steps", "variables"}
+        allowed_top_level = {"name", "goal", "appId", "steps", "variables", "objectLibrary"}
         for key in allowed_top_level:
             if key in patch:
                 draft[key] = patch[key]
@@ -166,6 +289,740 @@ class RPARuntime:
             details=json.dumps({"scriptId": script_id, "patchedKeys": sorted(set(patch.keys()) & (allowed_top_level | {"metadataPatch"}))}, ensure_ascii=False),
         )
         return saved
+
+    def validate_draft_step(
+        self,
+        script_id: str,
+        *,
+        step: Dict[str, Any],
+        index: int | None = None,
+        mode: str = "dry_run",
+        variables: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        draft = self.get_draft(script_id)
+        if not draft:
+            raise ValueError(f"未找到 draft: {script_id}")
+        normalized_step = dict(step or {})
+        normalized_mode = str(mode or "dry_run").strip().lower()
+        params = dict(normalized_step.get("params") or {})
+        target = dict(normalized_step.get("target") or {})
+        selector = dict(target.get("selector") or {})
+        target_window = dict(target.get("window") or {})
+        coordinate = dict(normalized_step.get("coordinate") or {})
+        verification = normalized_step.get("verification") if isinstance(normalized_step.get("verification"), dict) else {}
+        use = str(normalized_step.get("use") or normalized_step.get("action") or "").strip().lower()
+        checks: list[Dict[str, Any]] = []
+        warnings: list[str] = []
+        errors: list[str] = []
+
+        def add_check(name: str, ok: bool, message: str, **extra: Any) -> None:
+            payload = {"name": name, "ok": bool(ok), "message": message}
+            payload.update(extra)
+            checks.append(payload)
+            if not ok:
+                errors.append(message)
+
+        add_check("step_action", bool(use), "步骤动作已填写。" if use else "步骤动作不能为空。", use=use or None)
+
+        selector_value = str(
+            selector.get("css")
+            or selector.get("xpath")
+            or selector.get("role")
+            or selector.get("selector")
+            or params.get("selector")
+            or ""
+        ).strip()
+        has_coordinate = coordinate.get("x") not in (None, "") and coordinate.get("y") not in (None, "")
+        needs_target = use in {
+            "click",
+            "desktop_click",
+            "browser_click",
+            "double_click",
+            "type_text",
+            "find_and_type",
+            "wait_for_element",
+            "assert_element",
+        }
+        if needs_target:
+            target_ok = bool(selector_value or has_coordinate)
+            add_check(
+                "target",
+                target_ok,
+                "目标定位可用。" if target_ok else "该步骤需要 selector、XPath、role 或坐标目标。",
+                selector=selector_value or None,
+                coordinateFallback=bool(has_coordinate and not selector_value),
+            )
+            if has_coordinate and not selector_value:
+                warnings.append("当前步骤使用纯坐标 fallback，建议补充 DOM selector、XPath、UIA 元素或截图锚点。")
+
+        if selector_value:
+            selector_kind = "css"
+            if selector_value.startswith(("/", ".//")):
+                selector_kind = "xpath"
+            elif selector_value.startswith("role:"):
+                selector_kind = "role"
+            elif selector_value.startswith(("elementId:", "automationId:", "name:")):
+                selector_kind = "accessibility"
+            add_check(
+                "selector",
+                True,
+                f"{selector_kind} selector 格式已识别。",
+                selectorKind=selector_kind,
+                selector=selector_value,
+            )
+            if normalized_mode in {"selector", "dry_run"}:
+                try:
+                    live_selector = self._validate_live_selector(
+                        selector_value=selector_value,
+                        selector_kind=selector_kind,
+                        target_window=target_window,
+                        params=params,
+                    )
+                    if live_selector.get("checked"):
+                        add_check(
+                            "live_selector",
+                            bool(live_selector.get("found")),
+                            "实时目标已命中。" if live_selector.get("found") else "实时目标没有命中。",
+                            details=live_selector,
+                        )
+                    else:
+                        warnings.append(str(live_selector.get("reason") or "当前没有可用的实时 selector 验证后端。"))
+                except Exception as exc:
+                    warnings.append(f"实时 selector 验证失败：{exc}")
+
+        text_value = params.get("text") or params.get("value") or normalized_step.get("text")
+        variable_refs = re.findall(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", json.dumps(normalized_step, ensure_ascii=False))
+        available_variables = set((variables or {}).keys())
+        if use in {"type_text", "find_and_type"}:
+            add_check(
+                "input_text",
+                text_value not in (None, "") or bool(variable_refs),
+                "输入内容或变量占位符已填写。" if text_value not in (None, "") or variable_refs else "输入步骤需要 text/value 或变量占位符。",
+            )
+        missing_variables = sorted({item for item in variable_refs if item not in available_variables})
+        if missing_variables:
+            warnings.append(f"变量尚未在本次验证输入中提供：{', '.join(missing_variables)}")
+
+        if normalized_mode in {"assertion", "verify_assertion"} or str(verification.get("type") or "").strip():
+            assertion_type = str(verification.get("type") or params.get("assertion") or "").strip()
+            expected = verification.get("expected") or verification.get("text") or params.get("expected")
+            add_check(
+                "assertion",
+                bool(assertion_type and expected not in (None, "")),
+                "断言条件已填写。" if assertion_type and expected not in (None, "") else "断言需要 type 与 expected/text。",
+                assertionType=assertion_type or None,
+            )
+            if assertion_type and expected not in (None, ""):
+                try:
+                    live_assertion = self._validate_live_assertion(
+                        assertion_type=assertion_type,
+                        expected=expected,
+                        selector_value=selector_value,
+                        target_window=target_window,
+                        params=params,
+                    )
+                    if live_assertion.get("checked"):
+                        add_check(
+                            "live_assertion",
+                            bool(live_assertion.get("passed")),
+                            "实时断言已通过。" if live_assertion.get("passed") else "实时断言未通过。",
+                            details=live_assertion,
+                        )
+                    else:
+                        warnings.append(str(live_assertion.get("reason") or "当前没有可用的实时断言验证后端。"))
+                except Exception as exc:
+                    warnings.append(f"实时断言验证失败：{exc}")
+
+        normalized_step.setdefault("metadata", {})
+        if isinstance(normalized_step["metadata"], dict):
+            normalized_step["metadata"]["lastValidatedAt"] = utc_now_iso()
+            normalized_step["metadata"]["lastValidationMode"] = normalized_mode
+            normalized_step["metadata"]["lastValidationOk"] = not errors
+
+        return {
+            "ok": not errors,
+            "mode": normalized_mode,
+            "scriptId": script_id,
+            "index": index,
+            "checks": checks,
+            "warnings": warnings,
+            "errors": errors,
+            "normalizedStep": _jsonable(normalized_step),
+            "summary": "步骤可作为草稿保存。" if not errors else "步骤仍需补齐后再保存或试跑。",
+        }
+
+    def _validate_live_selector(
+        self,
+        *,
+        selector_value: str,
+        selector_kind: str,
+        target_window: Dict[str, Any],
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        app_id = str(target_window.get("appId") or target_window.get("app_id") or params.get("appId") or params.get("app_id") or "").strip()
+        window_title = str(target_window.get("title") or target_window.get("windowTitle") or params.get("windowTitle") or "").strip()
+        target_url = str(target_window.get("url") or params.get("targetUrl") or params.get("browserTargetUrl") or "").strip()
+
+        if selector_kind in {"css", "xpath"}:
+            from runtimes.computer_use.runtime import computer_use_runtime
+
+            decision = computer_use_runtime._browser_lane_decision(
+                action_type="observe",
+                action_payload={"app_id": app_id or None, "window_title": window_title or None, "browser_target_url": target_url or None},
+                app_id=app_id or None,
+            )
+            if not bool(getattr(decision, "available", False)):
+                return {"checked": False, "reason": "Agent Browser / browser lane 当前不可用。"}
+            provider = computer_use_runtime.browser_automation
+            provider._ensure_proxy(target_port=decision.target_port)
+            targets = provider._list_targets()
+            if not targets:
+                return {"checked": False, "reason": "Agent Browser 没有可验证的打开页面。"}
+            target_id = self._select_browser_target_id(targets, window_title=window_title, target_url=target_url)
+            if not target_id:
+                return {"checked": False, "reason": "未找到匹配的浏览器 tab。"}
+            expression = self._browser_selector_probe_script(selector_value=selector_value, selector_kind=selector_kind)
+            evaluated = provider._evaluate(target_id=target_id, expression=expression)
+            value = dict(evaluated.get("value") or {})
+            return {
+                "checked": True,
+                "backend": "agent_browser_dom",
+                "targetId": target_id,
+                "found": bool(value.get("found")),
+                "tag": value.get("tag"),
+                "textPreview": value.get("textPreview"),
+                "visible": value.get("visible"),
+            }
+
+        if selector_kind == "accessibility" or selector_value.startswith(("role:", "name:", "automationId:", "elementId:")):
+            from runtimes.computer_use.runtime import computer_use_runtime
+
+            query: Dict[str, Any] = {"limit": 5}
+            if selector_value.startswith("role:"):
+                query["control_type"] = selector_value.split(":", 1)[1].strip()
+            elif selector_value.startswith("automationId:"):
+                query["automation_id"] = selector_value.split(":", 1)[1].strip()
+            elif selector_value.startswith("elementId:"):
+                query["element_id"] = selector_value.split(":", 1)[1].strip()
+            elif selector_value.startswith("name:"):
+                query["name_contains"] = selector_value.split(":", 1)[1].strip()
+            if window_title:
+                query["window_title"] = window_title
+            result = computer_use_runtime.find_elements(**query)
+            count = int(result.get("count") or len(result.get("elements") or []))
+            return {
+                "checked": True,
+                "backend": "desktop_accessibility",
+                "found": count > 0,
+                "count": count,
+                "elements": list(result.get("elements") or [])[:3],
+            }
+
+        return {"checked": False, "reason": "该 selector 类型目前只做静态格式验证。"}
+
+    def _validate_live_assertion(
+        self,
+        *,
+        assertion_type: str,
+        expected: Any,
+        selector_value: str,
+        target_window: Dict[str, Any],
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        expected_text = str(expected or "")
+        normalized_type = str(assertion_type or "").strip().lower()
+        if normalized_type in {"text_exists", "url_matches", "element_visible"}:
+            from runtimes.computer_use.runtime import computer_use_runtime
+
+            decision = computer_use_runtime._browser_lane_decision(
+                action_type="observe",
+                action_payload={"window_title": target_window.get("title") or target_window.get("windowTitle")},
+                app_id=str(target_window.get("appId") or target_window.get("app_id") or params.get("appId") or "").strip() or None,
+            )
+            if not bool(getattr(decision, "available", False)):
+                return {"checked": False, "reason": "Agent Browser / browser lane 当前不可用。"}
+            provider = computer_use_runtime.browser_automation
+            provider._ensure_proxy(target_port=decision.target_port)
+            targets = provider._list_targets()
+            if not targets:
+                return {"checked": False, "reason": "Agent Browser 没有可验证的打开页面。"}
+            target_id = self._select_browser_target_id(
+                targets,
+                window_title=str(target_window.get("title") or target_window.get("windowTitle") or "").strip(),
+                target_url=str(target_window.get("url") or params.get("targetUrl") or params.get("browserTargetUrl") or "").strip(),
+            )
+            if not target_id:
+                return {"checked": False, "reason": "未找到匹配的浏览器 tab。"}
+            expression = self._browser_assertion_probe_script(
+                assertion_type=normalized_type,
+                expected=expected_text,
+                selector_value=selector_value,
+            )
+            evaluated = provider._evaluate(target_id=target_id, expression=expression)
+            value = dict(evaluated.get("value") or {})
+            return {
+                "checked": True,
+                "backend": "agent_browser_dom",
+                "targetId": target_id,
+                "passed": bool(value.get("passed")),
+                "actualPreview": value.get("actualPreview"),
+            }
+
+        if normalized_type == "window_exists":
+            from runtimes.computer_use.runtime import computer_use_runtime
+
+            result = computer_use_runtime.list_windows(title_filter=expected_text, limit=5)
+            items = list(result.get("windows") or result.get("items") or [])
+            return {
+                "checked": True,
+                "backend": "desktop_window",
+                "passed": bool(items),
+                "matches": items[:3],
+            }
+
+        return {"checked": False, "reason": "该断言类型目前只做静态格式验证。"}
+
+    @staticmethod
+    def _select_browser_target_id(
+        targets: list[Dict[str, Any]],
+        *,
+        window_title: str | None = None,
+        target_url: str | None = None,
+    ) -> str | None:
+        title_hint = str(window_title or "").strip().lower()
+        url_hint = str(target_url or "").strip().lower()
+        if url_hint:
+            for item in targets:
+                url = str(item.get("url") or "").strip().lower()
+                if url and (url == url_hint or url_hint in url):
+                    return str(item.get("targetId") or item.get("id") or "").strip() or None
+        if title_hint:
+            for item in targets:
+                title = str(item.get("title") or "").strip().lower()
+                if title_hint in title:
+                    return str(item.get("targetId") or item.get("id") or "").strip() or None
+        for item in targets:
+            url = str(item.get("url") or "").strip().lower()
+            if url.startswith(("http://", "https://", "file://")):
+                return str(item.get("targetId") or item.get("id") or "").strip() or None
+        if targets:
+            return str(targets[0].get("targetId") or targets[0].get("id") or "").strip() or None
+        return None
+
+    @staticmethod
+    def _browser_selector_probe_script(*, selector_value: str, selector_kind: str) -> str:
+        selector_json = json.dumps(selector_value, ensure_ascii=False)
+        kind_json = json.dumps(selector_kind, ensure_ascii=False)
+        return (
+            "(() => {\n"
+            f"  const selector = {selector_json};\n"
+            f"  const kind = {kind_json};\n"
+            "  let target = null;\n"
+            "  if (kind === 'xpath') {\n"
+            "    target = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;\n"
+            "  } else {\n"
+            "    target = document.querySelector(selector);\n"
+            "  }\n"
+            "  if (!target) return { found: false };\n"
+            "  const rect = target.getBoundingClientRect();\n"
+            "  const style = window.getComputedStyle(target);\n"
+            "  const visible = !!(rect.width || rect.height) && style.visibility !== 'hidden' && style.display !== 'none';\n"
+            "  return { found: true, tag: target.tagName, visible, textPreview: String(target.textContent || target.value || '').slice(0, 160) };\n"
+            "})()"
+        )
+
+    @staticmethod
+    def _browser_assertion_probe_script(*, assertion_type: str, expected: str, selector_value: str) -> str:
+        assertion_json = json.dumps(assertion_type, ensure_ascii=False)
+        expected_json = json.dumps(expected, ensure_ascii=False)
+        selector_json = json.dumps(selector_value, ensure_ascii=False)
+        return (
+            "(() => {\n"
+            f"  const assertionType = {assertion_json};\n"
+            f"  const expected = {expected_json};\n"
+            f"  const selector = {selector_json};\n"
+            "  const normalize = (value) => String(value || '').toLowerCase();\n"
+            "  if (assertionType === 'url_matches') {\n"
+            "    const actual = location.href;\n"
+            "    return { passed: actual.includes(expected), actualPreview: actual };\n"
+            "  }\n"
+            "  if (assertionType === 'element_visible') {\n"
+            "    const target = selector ? document.querySelector(selector) : null;\n"
+            "    if (!target) return { passed: false, actualPreview: 'element_not_found' };\n"
+            "    const rect = target.getBoundingClientRect();\n"
+            "    const style = window.getComputedStyle(target);\n"
+            "    const visible = !!(rect.width || rect.height) && style.visibility !== 'hidden' && style.display !== 'none';\n"
+            "    return { passed: visible, actualPreview: target.tagName };\n"
+            "  }\n"
+            "  const text = document.body ? document.body.innerText || document.body.textContent || '' : '';\n"
+            "  return { passed: normalize(text).includes(normalize(expected)), actualPreview: String(text).slice(0, 200) };\n"
+            "})()"
+        )
+
+    def _resolve_browser_capture_target(self, payload: Dict[str, Any]) -> tuple[str | None, str | None]:
+        explicit_target = str(payload.get("targetId") or payload.get("target_id") or "").strip()
+        if explicit_target:
+            return explicit_target, None
+        app_id = str(payload.get("appId") or payload.get("app_id") or "").strip()
+        window_title = str(payload.get("windowTitle") or payload.get("window_title") or "").strip()
+        target_url = str(payload.get("targetUrl") or payload.get("target_url") or "").strip()
+        decision = computer_use_runtime._browser_lane_decision(
+            action_type="observe",
+            action_payload={"app_id": app_id or None, "window_title": window_title or None, "browser_target_url": target_url or None},
+            app_id=app_id or None,
+        )
+        if not bool(getattr(decision, "available", False)):
+            return None, "Agent Browser / browser lane 当前不可用。"
+        provider = computer_use_runtime.browser_automation
+        provider._ensure_proxy(target_port=decision.target_port)
+        targets = provider._list_targets()
+        if not targets:
+            return None, "Agent Browser 没有打开页面。"
+        target_id = self._select_browser_target_id(targets, window_title=window_title, target_url=target_url)
+        return target_id, None if target_id else "未找到匹配的浏览器 tab。"
+
+    def _forward_recording_action(
+        self,
+        *,
+        recording: Dict[str, Any],
+        event: Dict[str, Any],
+        coordinate: Dict[str, Any],
+        params: Dict[str, Any],
+        target: Dict[str, Any],
+        window_title: str | None,
+        window_handle: Any,
+    ) -> Dict[str, Any]:
+        action = str(event.get("action") or "").strip().lower()
+        payload: Dict[str, Any] = {
+            "session_id": str(recording.get("sessionId") or f"rpa:recording:{recording.get('recordingSessionId')}"),
+            "user_id": "admin_rpa_recorder",
+            "goal": f"rpa_recording_forward:{action or 'action'}",
+            "window_title": window_title,
+            "window_handle": window_handle,
+            "prefer_sendinput_click": True,
+        }
+        selector = dict((target or {}).get("selector") or {})
+        for source_key, target_key in {
+            "elementId": "element_id",
+            "name": "name",
+            "nameContains": "name_contains",
+            "automationId": "automation_id",
+            "controlType": "control_type",
+            "className": "class_name",
+        }.items():
+            value = selector.get(source_key) or target.get(source_key)
+            if value not in (None, "", [], {}):
+                payload[target_key] = value
+        viewport_mapping = dict(event.get("viewportMapping") or event.get("viewport") or {})
+        if coordinate:
+            try:
+                width = float(viewport_mapping.get("naturalWidth") or viewport_mapping.get("screenWidth") or 0)
+                height = float(viewport_mapping.get("naturalHeight") or viewport_mapping.get("screenHeight") or 0)
+                x = float(coordinate.get("x"))
+                y = float(coordinate.get("y"))
+                if width > 0 and height > 0:
+                    payload["point"] = [max(0.0, min(1.0, x / width)), max(0.0, min(1.0, y / height))]
+                    payload["spatial_anchor"] = {
+                        "screenRelativePoint": payload["point"],
+                        "displayBounds": [0, 0, int(width), int(height)],
+                        "source": "rpa_desktop_live_overlay",
+                    }
+                else:
+                    payload["point"] = [x, y]
+            except Exception:
+                pass
+        try:
+            if action in {"click", "double_click"}:
+                payload["double"] = action == "double_click"
+                return {"ok": True, "action": action, "result": _jsonable(computer_use_runtime.click(**payload))}
+            if action == "right_click":
+                return {"ok": True, "action": action, "result": _jsonable(computer_use_runtime.right_click(**payload))}
+            if action == "type_text":
+                payload["text"] = str(params.get("text") or event.get("text") or "")
+                payload["clear_first"] = bool(params.get("clearFirst") or params.get("clear_first"))
+                payload["press_enter"] = bool(params.get("pressEnter") or params.get("press_enter"))
+                return {"ok": True, "action": action, "result": _jsonable(computer_use_runtime.type_text(**payload))}
+            if action == "scroll":
+                payload["amount"] = int(params.get("amount") or params.get("deltaY") or event.get("deltaY") or 0)
+                return {"ok": True, "action": action, "result": _jsonable(computer_use_runtime.scroll(**payload))}
+            if action == "hotkey":
+                payload["sequence"] = str(params.get("sequence") or event.get("sequence") or "")
+                if not payload["sequence"]:
+                    return {"ok": False, "action": action, "error": "missing_hotkey_sequence"}
+                return {"ok": True, "action": action, "result": _jsonable(computer_use_runtime.hotkey(**payload))}
+            if action == "drag":
+                start_point = params.get("startPoint") or params.get("start_point")
+                end_point = params.get("endPoint") or params.get("end_point")
+                if start_point:
+                    payload["start_point"] = start_point
+                if end_point:
+                    payload["end_point"] = end_point
+                return {"ok": True, "action": action, "result": _jsonable(computer_use_runtime.drag(**payload))}
+            return {"ok": False, "action": action, "error": "unsupported_forward_action"}
+        except Exception as exc:
+            return {"ok": False, "action": action, "error": str(exc)}
+
+    @staticmethod
+    def _browser_recorder_install_script() -> str:
+        return r"""
+(() => {
+  if (window.__v8RpaRecorder && window.__v8RpaRecorder.installed) {
+    window.__v8RpaRecorder.enabled = true;
+    return { installed: true, reused: true };
+  }
+  const recorder = window.__v8RpaRecorder = { installed: true, enabled: true, events: [] };
+  const safeText = (value, max = 160) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const isSensitive = (el) => {
+    const text = `${el.type || ''} ${el.name || ''} ${el.id || ''} ${el.autocomplete || ''}`.toLowerCase();
+    return /password|passwd|token|secret|apikey|api-key|credential/.test(text);
+  };
+  const cssEscape = (value) => {
+    if (window.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+  };
+  const cssPath = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) return `#${cssEscape(el.id)}`;
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && parts.length < 5) {
+      let part = node.tagName.toLowerCase();
+      if (node.getAttribute('data-testid')) part += `[data-testid="${node.getAttribute('data-testid')}"]`;
+      else if (node.getAttribute('name')) part += `[name="${node.getAttribute('name')}"]`;
+      else {
+        let index = 1;
+        let sib = node;
+        while ((sib = sib.previousElementSibling)) {
+          if (sib.tagName === node.tagName) index += 1;
+        }
+        part += `:nth-of-type(${index})`;
+      }
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(' > ');
+  };
+  const xpath = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && parts.length < 8) {
+      let index = 1;
+      let sib = node;
+      while ((sib = sib.previousElementSibling)) {
+        if (sib.tagName === node.tagName) index += 1;
+      }
+      parts.unshift(`${node.tagName.toLowerCase()}[${index}]`);
+      node = node.parentElement;
+    }
+    return '/' + parts.join('/');
+  };
+  const roleCandidate = (el) => {
+    const role = el.getAttribute && (el.getAttribute('role') || el.getAttribute('aria-role'));
+    const label = el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'));
+    const text = safeText(label || el.innerText || el.textContent || el.value, 80);
+    if (!role && !text) return null;
+    return { kind: 'role', role: role || el.tagName.toLowerCase(), name: text };
+  };
+  const selectors = (el) => {
+    const result = [];
+    const css = cssPath(el);
+    const xp = xpath(el);
+    if (css) result.push({ kind: 'css', css });
+    if (xp) result.push({ kind: 'xpath', xpath: xp });
+    const role = roleCandidate(el);
+    if (role) result.push(role);
+    return result;
+  };
+  const baseEvent = (type, nativeEvent) => {
+    const el = nativeEvent.target && nativeEvent.target.nodeType === 1 ? nativeEvent.target : document.activeElement;
+    const rect = el && el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+    return {
+      source: 'agent_browser_dom',
+      action: type,
+      url: location.href,
+      title: document.title,
+      selectorCandidates: selectors(el),
+      target: {
+        selector: selectors(el)[0] || {},
+        window: { title: document.title, url: location.href }
+      },
+      coordinate: { x: Math.round((nativeEvent.clientX || rect.left + rect.width / 2)), y: Math.round((nativeEvent.clientY || rect.top + rect.height / 2)) },
+      viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 },
+      params: {},
+      metadata: {
+        tag: el ? el.tagName : '',
+        id: el && el.id || '',
+        name: el && el.getAttribute && el.getAttribute('name') || '',
+        textPreview: safeText(el && (el.innerText || el.textContent || el.value), 120),
+        rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+      },
+      mergeGroupId: ''
+    };
+  };
+  const push = (event) => {
+    if (!recorder.enabled) return;
+    recorder.events.push({ ...event, eventId: `dom_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`, recordedAt: new Date().toISOString() });
+    if (recorder.events.length > 300) recorder.events.splice(0, recorder.events.length - 300);
+  };
+  document.addEventListener('click', (ev) => push(baseEvent('click', ev)), true);
+  document.addEventListener('dblclick', (ev) => push(baseEvent('double_click', ev)), true);
+  document.addEventListener('contextmenu', (ev) => push(baseEvent('right_click', ev)), true);
+  document.addEventListener('input', (ev) => {
+    const item = baseEvent('type_text', ev);
+    const sensitive = isSensitive(ev.target);
+    item.sensitiveInput = sensitive;
+    item.params.text = sensitive ? '' : String(ev.target && ev.target.value || '');
+    item.mergeGroupId = `input:${item.selectorCandidates[0]?.css || item.selectorCandidates[0]?.xpath || item.metadata.name || item.metadata.id || 'active'}`;
+    push(item);
+  }, true);
+  document.addEventListener('change', (ev) => {
+    const item = baseEvent('type_text', ev);
+    const sensitive = isSensitive(ev.target);
+    item.sensitiveInput = sensitive;
+    item.params.text = sensitive ? '' : String(ev.target && ev.target.value || '');
+    item.mergeGroupId = `input:${item.selectorCandidates[0]?.css || item.selectorCandidates[0]?.xpath || item.metadata.name || item.metadata.id || 'active'}`;
+    push(item);
+  }, true);
+  document.addEventListener('wheel', (ev) => {
+    const item = baseEvent('scroll', ev);
+    item.params.amount = Math.round(ev.deltaY || 0);
+    item.mergeGroupId = `scroll:${item.selectorCandidates[0]?.css || 'viewport'}`;
+    push(item);
+  }, true);
+  document.addEventListener('keydown', (ev) => {
+    if (!(ev.ctrlKey || ev.metaKey || ev.altKey)) return;
+    const item = baseEvent('hotkey', ev);
+    const parts = [];
+    if (ev.ctrlKey) parts.push('Ctrl');
+    if (ev.metaKey) parts.push('Meta');
+    if (ev.altKey) parts.push('Alt');
+    if (ev.shiftKey) parts.push('Shift');
+    parts.push(ev.key);
+    item.params.sequence = parts.join('+');
+    push(item);
+  }, true);
+  document.addEventListener('submit', (ev) => push(baseEvent('submit', ev)), true);
+  return { installed: true, reused: false };
+})()
+"""
+
+    @staticmethod
+    def _browser_recorder_drain_script(*, stop: bool = False) -> str:
+        stop_literal = "true" if stop else "false"
+        return (
+            "(() => {\n"
+            "  const recorder = window.__v8RpaRecorder;\n"
+            "  if (!recorder) return { installed: false, events: [] };\n"
+            "  const events = Array.isArray(recorder.events) ? recorder.events.splice(0, recorder.events.length) : [];\n"
+            f"  if ({stop_literal}) recorder.enabled = false;\n"
+            f"  return {{ installed: true, enabled: recorder.enabled, stopped: {stop_literal}, events }};\n"
+            "})()"
+        )
+
+    @staticmethod
+    def _coalesce_browser_events(events: list[Any]) -> list[Dict[str, Any]]:
+        coalesced: list[Dict[str, Any]] = []
+        for item in events:
+            if not isinstance(item, dict):
+                continue
+            current = dict(item)
+            merge_id = str(current.get("mergeGroupId") or "").strip()
+            action = str(current.get("action") or "").strip()
+            if merge_id and coalesced and str(coalesced[-1].get("mergeGroupId") or "") == merge_id and action in {"type_text", "scroll"}:
+                if action == "scroll":
+                    prev_params = dict(coalesced[-1].get("params") or {})
+                    cur_params = dict(current.get("params") or {})
+                    prev_params["amount"] = int(prev_params.get("amount") or 0) + int(cur_params.get("amount") or 0)
+                    coalesced[-1]["params"] = prev_params
+                    coalesced[-1]["recordedAt"] = current.get("recordedAt") or coalesced[-1].get("recordedAt")
+                else:
+                    coalesced[-1] = current
+                continue
+            coalesced.append(current)
+        return coalesced
+
+    @staticmethod
+    def _browser_event_to_recording_event(raw_event: Dict[str, Any], *, target_id: str) -> Dict[str, Any]:
+        event = dict(raw_event)
+        metadata = dict(event.get("metadata") or {})
+        metadata.update(
+            {
+                "source": "agent_browser_dom",
+                "browserTargetId": target_id,
+                "fragileCoordinateFallback": not bool(event.get("selectorCandidates")),
+            }
+        )
+        event["metadata"] = metadata
+        event["source"] = "agent_browser_dom"
+        if event.get("action") == "submit":
+            event["action"] = "click"
+            event.setdefault("intent", "submit_form")
+        return event
+
+    def approve_draft_as_template(
+        self,
+        script_id: str,
+        *,
+        reviewer: str = "admin_ui",
+        notes: str | None = None,
+        metadata_patch: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        draft = self.get_draft(script_id)
+        if not draft:
+            raise ValueError(f"未找到 draft: {script_id}")
+        if metadata_patch:
+            draft_metadata = dict(draft.get("metadata") or {})
+            draft_metadata.update(dict(metadata_patch or {}))
+            draft["metadata"] = draft_metadata
+            draft = self.script_store.save_draft(draft)
+        synced_draft = self.template_service.sync_candidate_for_script(draft, save=True)
+        template_id = str(
+            (synced_draft.get("source") or {}).get("templateId")
+            or (synced_draft.get("metadata") or {}).get("templateCandidateId")
+            or ""
+        ).strip()
+        if not template_id:
+            raise ValueError(f"Draft '{script_id}' 未能生成模板候选。")
+        template = self.approve_template(template_id, reviewer=reviewer, notes=notes)
+        self._log_audit(
+            action=f"Approve RPA draft as template: {script_id}",
+            status="SUCCESS",
+            details=json.dumps({"scriptId": script_id, "templateId": template_id, "reviewer": reviewer}, ensure_ascii=False),
+        )
+        return {
+            "draft": synced_draft,
+            "template": template,
+            "templateId": template_id,
+            "status": "approved",
+        }
+
+    def archive_draft(self, script_id: str, *, actor: str = "system", reason: str | None = None) -> Dict[str, Any]:
+        payload = self.script_store.archive_draft(script_id, actor=actor, reason=reason)
+        self._log_audit(
+            action=f"Archive RPA draft: {script_id}",
+            status="SUCCESS",
+            details=json.dumps({"scriptId": script_id, "actor": actor}, ensure_ascii=False),
+        )
+        return payload
+
+    def restore_draft(self, script_id: str, *, actor: str = "system") -> Dict[str, Any]:
+        payload = self.script_store.restore_draft(script_id, actor=actor)
+        self._log_audit(
+            action=f"Restore RPA draft: {script_id}",
+            status="SUCCESS",
+            details=json.dumps({"scriptId": script_id, "actor": actor}, ensure_ascii=False),
+        )
+        return payload
+
+    def delete_draft(self, script_id: str, *, confirm: bool = False) -> Dict[str, Any]:
+        payload = self.script_store.delete_draft(script_id, confirm=confirm)
+        self._log_audit(
+            action=f"Hard delete RPA draft: {script_id}",
+            status="SUCCESS",
+            details=json.dumps({"scriptId": script_id}, ensure_ascii=False),
+        )
+        return payload
 
     def list_recordings(self, *, limit: int = 20) -> list[Dict[str, Any]]:
         return self.recording_manager.list(limit=limit)
@@ -201,6 +1058,605 @@ class RPARuntime:
     def append_recording_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         return self.recording_manager.append_event(recording_id, event)
 
+    def capture_assistant_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        normalized_event = dict(event or {})
+        normalized_event["source"] = normalized_event.get("source") or "rpa_capture_assistant"
+        metadata = dict(normalized_event.get("metadata") or {})
+        metadata.update(
+            {
+                "captureAssistant": True,
+                "recordingSource": "host_capture_assistant",
+            }
+        )
+        normalized_event["metadata"] = metadata
+        sample = self.sample_recording_desktop(
+            recording_id,
+            {
+                "event": normalized_event,
+                "coordinate": normalized_event.get("coordinate"),
+                "target": normalized_event.get("target"),
+                "params": normalized_event.get("params"),
+                "forwardAction": False,
+            },
+        )
+        selector_candidates = list(sample.get("selectorCandidates") or [])
+        temp_element_id = str(normalized_event.get("tempElementId") or f"temp_el_{hashlib.sha1(json.dumps(normalized_event, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]}")
+        normalized_event["tempElementId"] = temp_element_id
+        normalized_event["captureMode"] = metadata.get("captureMode") or metadata.get("capture_mode") or normalized_event.get("captureMode") or "capture_only"
+        active_window = sample.get("activeWindow")
+        if active_window:
+            target = dict(normalized_event.get("target") or {})
+            target.setdefault("window", active_window)
+            normalized_event["target"] = target
+        if selector_candidates:
+            normalized_event["selectorCandidates"] = selector_candidates
+            normalized_event["fragileCoordinateFallback"] = False
+        else:
+            normalized_event["fragileCoordinateFallback"] = True
+        normalized_event["accessibilitySample"] = {
+            key: value
+            for key, value in {
+                "backend": sample.get("backend"),
+                "activeWindow": sample.get("activeWindow"),
+                "error": (sample.get("sample") or {}).get("error") if isinstance(sample.get("sample"), dict) else None,
+            }.items()
+            if value not in (None, "", [], {})
+        }
+        appended = self.recording_manager.append_event(recording_id, normalized_event)
+        pool_item = self._capture_pool_item_from_event(
+            recording_id=recording_id,
+            event=normalized_event,
+            sample=sample,
+            selector_candidates=selector_candidates,
+            temp_element_id=temp_element_id,
+        )
+        pool_recording = self.recording_manager.add_capture_pool_item(recording_id, pool_item)
+        assistant = dict((appended.get("recording") or recording).get("captureAssistant") or {})
+        if assistant:
+            assistant.update(
+                {
+                    "state": "captured",
+                    "lastCapturedAt": utc_now_iso(),
+                    "lastSelectorCount": len(selector_candidates),
+                }
+            )
+            appended["recording"] = self.recording_manager.update_capture_assistant(recording_id, assistant)
+        else:
+            appended["recording"] = pool_recording
+        return {
+            "ok": True,
+            "status": "captured",
+            "recordingId": recording_id,
+            "tempElementId": temp_element_id,
+            "selectorCandidates": selector_candidates,
+            "capturePoolItem": pool_item,
+            "sample": sample,
+            "recording": appended.get("recording"),
+            "step": appended.get("step"),
+        }
+
+    def _capture_pool_item_from_event(
+        self,
+        *,
+        recording_id: str,
+        event: Dict[str, Any],
+        sample: Dict[str, Any],
+        selector_candidates: list[Dict[str, Any]],
+        temp_element_id: str,
+    ) -> Dict[str, Any]:
+        coordinate = dict(event.get("coordinate") or {})
+        target = dict(event.get("target") or {})
+        window = dict(target.get("window") or sample.get("activeWindow") or {})
+        params = dict(event.get("params") or {})
+        label = (
+            str(params.get("label") or params.get("text") or "").strip()
+            or str(window.get("title") or "").strip()
+            or f"{event.get('action') or 'capture'}@{coordinate.get('x', '?')},{coordinate.get('y', '?')}"
+        )
+        best_selector = selector_candidates[0] if selector_candidates else {}
+        return {
+            "tempElementId": temp_element_id,
+            "label": label[:160],
+            "source": event.get("source") or "rpa_capture_assistant",
+            "action": event.get("action"),
+            "targetWindow": window,
+            "selectorCandidates": selector_candidates,
+            "selector": best_selector,
+            "coordinate": coordinate,
+            "confidence": best_selector.get("confidence") if isinstance(best_selector, dict) else None,
+            "screenshotAnchorRefs": list(event.get("screenshotAnchorRefs") or []),
+            "fragileCoordinateFallback": bool(event.get("fragileCoordinateFallback")),
+            "captureMode": event.get("captureMode"),
+            "recordingId": recording_id,
+            "capturedAt": utc_now_iso(),
+        }
+
+    def sample_recording_desktop(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        event = dict(payload.get("event") or {})
+        coordinate = dict(event.get("coordinate") or payload.get("coordinate") or {})
+        target = dict(event.get("target") or payload.get("target") or {})
+        params = dict(event.get("params") or payload.get("params") or {})
+        window = dict(target.get("window") or {})
+        window_title = str(
+            window.get("title")
+            or event.get("windowTitle")
+            or (recording.get("activeApp") or {}).get("windowTitle")
+            or ""
+        ).strip() or None
+        window_handle = (
+            window.get("handle")
+            or event.get("windowHandle")
+            or recording.get("windowHandle")
+        )
+        observation: Dict[str, Any] | None = None
+        windows: list[Dict[str, Any]] = []
+        elements: list[Dict[str, Any]] = []
+        selector_candidates: list[Dict[str, Any]] = []
+        backend = "desktop_accessibility"
+        sample_error: str | None = None
+        try:
+            observation = computer_use_runtime.observe(
+                session_id=str(recording.get("sessionId") or f"rpa:recording:{recording_id}"),
+                user_id="admin_rpa_recorder",
+                goal="rpa_recording_desktop_sample",
+                window_title=window_title,
+                window_handle=window_handle,
+                depth_limit=4,
+                element_limit=30,
+                include_screenshot=False,
+            )
+        except Exception as exc:
+            sample_error = str(exc)
+        try:
+            window_result = computer_use_runtime.list_windows(title_filter=window_title, limit=5)
+            windows = list(window_result.get("windows") or window_result.get("items") or [])[:5]
+        except Exception:
+            windows = []
+        try:
+            element_result = computer_use_runtime.find_elements(
+                window_title=window_title,
+                window_handle=window_handle,
+                limit=8,
+                depth_limit=6,
+            )
+            elements = list(element_result.get("elements") or [])[:8]
+        except Exception:
+            elements = []
+        for item in elements[:8]:
+            if not isinstance(item, dict):
+                continue
+            candidate = {
+                key: value
+                for key, value in {
+                    "kind": "accessibility",
+                    "elementId": item.get("elementId") or item.get("id"),
+                    "name": item.get("name"),
+                    "automationId": item.get("automationId") or item.get("automation_id"),
+                    "controlType": item.get("controlType") or item.get("role"),
+                    "className": item.get("className"),
+                    "bounds": item.get("bounds"),
+                }.items()
+                if value not in (None, "", [], {})
+            }
+            if candidate:
+                selector_candidates.append(candidate)
+        capture_pool_items: list[Dict[str, Any]] = []
+        capture_pool_recording: Dict[str, Any] | None = None
+        if bool(payload.get("writeToCapturePool") or payload.get("write_to_capture_pool")):
+            try:
+                max_pool_items = int(payload.get("maxPoolItems") or payload.get("max_pool_items") or 8)
+            except Exception:
+                max_pool_items = 8
+            max_pool_items = max(1, min(max_pool_items, 20))
+            pool_candidates = selector_candidates[:max_pool_items]
+            if not pool_candidates and coordinate:
+                pool_candidates = [{}]
+            for index, candidate in enumerate(pool_candidates):
+                candidate_payload = candidate if isinstance(candidate, dict) else {}
+                event_for_pool = dict(event)
+                event_for_pool.setdefault("source", "desktop_accessibility")
+                event_for_pool.setdefault("action", "sample_elements")
+                event_for_pool["selectorCandidates"] = [candidate_payload] if candidate_payload else []
+                event_for_pool["fragileCoordinateFallback"] = not bool(candidate_payload)
+                event_for_pool["coordinate"] = coordinate
+                event_for_pool["target"] = target
+                event_for_pool["captureMode"] = event_for_pool.get("captureMode") or "sample_to_pool"
+                stable_key = {
+                    "recordingId": recording_id,
+                    "candidate": candidate_payload,
+                    "coordinate": coordinate,
+                    "index": index,
+                }
+                temp_element_id = str(event_for_pool.get("tempElementId") or f"temp_el_{hashlib.sha1(json.dumps(stable_key, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]}")
+                event_for_pool["tempElementId"] = temp_element_id
+                pool_item = self._capture_pool_item_from_event(
+                    recording_id=recording_id,
+                    event=event_for_pool,
+                    sample={
+                        "activeWindow": windows[0] if windows else None,
+                        "backend": backend,
+                    },
+                    selector_candidates=[candidate_payload] if candidate_payload else [],
+                    temp_element_id=temp_element_id,
+                )
+                candidate_label = str(
+                    candidate_payload.get("name")
+                    or candidate_payload.get("automationId")
+                    or candidate_payload.get("elementId")
+                    or candidate_payload.get("controlType")
+                    or ""
+                ).strip()
+                if candidate_label:
+                    pool_item["label"] = candidate_label[:160]
+                capture_pool_recording = self.recording_manager.add_capture_pool_item(recording_id, pool_item)
+                capture_pool_items.append(pool_item)
+        forwarded_result: Dict[str, Any] | None = None
+        if bool(payload.get("forwardAction")):
+            forwarded_result = self._forward_recording_action(
+                recording=recording,
+                event=event,
+                coordinate=coordinate,
+                params=params,
+                target=target,
+                window_title=window_title,
+                window_handle=window_handle,
+            )
+        return {
+            "ok": True,
+            "recordingId": recording_id,
+            "backend": backend,
+            "sample": {
+                "observation": _jsonable(observation) if observation else None,
+                "windows": _jsonable(windows),
+                "elements": _jsonable(elements),
+                "error": sample_error,
+            },
+            "selectorCandidates": selector_candidates,
+            "activeWindow": windows[0] if windows else None,
+            "forwardedActionResult": forwarded_result,
+            "capturePoolItems": capture_pool_items,
+            "capturePoolAdded": len(capture_pool_items),
+            "recording": capture_pool_recording,
+        }
+
+    def prepare_capture_target(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        target_lock = dict(payload.get("targetLock") or recording.get("targetLock") or {})
+        app_id = str(target_lock.get("appId") or recording.get("appId") or "").strip()
+        label = str(target_lock.get("label") or app_id or "desktop").strip()
+        window = dict(target_lock.get("window") or {})
+        if bool(target_lock.get("consoleTargetBlocked")):
+            return {
+                "ok": False,
+                "status": "target_blocked",
+                "reason": "V8 Admin console window is excluded from RPA capture.",
+                "recording": recording,
+            }
+        if not app_id or app_id == "desktop":
+            assistant = dict(recording.get("captureAssistant") or {})
+            assistant.update(
+                {
+                    "prepareStatus": "manual_desktop",
+                    "preparedAt": utc_now_iso(),
+                    "targetLock": target_lock,
+                }
+            )
+            updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+            return {
+                "ok": True,
+                "status": "manual_desktop",
+                "targetStable": False,
+                "reason": "No concrete app target selected; capture will use desktop coordinate fallback.",
+                "recording": updated,
+            }
+        focused: Dict[str, Any] | None = None
+        focus_error: str | None = None
+        try:
+            focused = computer_use_runtime.focus_window(
+                app_id=app_id,
+                app_name=label,
+                window_title=str(window.get("title") or target_lock.get("windowTitle") or "") or None,
+                window_handle=window.get("handle") if isinstance(window.get("handle"), int) else None,
+                user_id="admin_rpa_recorder",
+                session_id=f"rpa:recording:{recording_id}",
+                goal="rpa_prepare_capture_target",
+                invocation_metadata={"triggerSource": "rpa_capture_assistant"},
+                post_action_settle_timeout_ms=2400,
+            )
+        except Exception as exc:
+            focus_error = str(exc)
+        if not focused or str(focused.get("status") or "").lower() not in {"completed", "ok", "success"}:
+            try:
+                focused = computer_use_runtime.open_app(
+                    app_id=app_id,
+                    app_name=label,
+                    user_id="admin_rpa_recorder",
+                    session_id=f"rpa:recording:{recording_id}",
+                    goal="rpa_prepare_capture_target_open",
+                    invocation_metadata={"triggerSource": "rpa_capture_assistant"},
+                    wait_timeout_ms=4500,
+                )
+            except Exception as exc:
+                focus_error = str(exc)
+        target_window = dict((focused or {}).get("target") or {}) if isinstance(focused, dict) else {}
+        assistant = dict(recording.get("captureAssistant") or {})
+        assistant.update(
+            {
+                "prepareStatus": "prepared" if target_window else "prepare_degraded",
+                "targetLock": target_lock,
+                "preparedAt": utc_now_iso(),
+                "preparedTarget": target_window,
+                "prepareError": focus_error,
+            }
+        )
+        updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+        return {
+            "ok": bool(target_window),
+            "status": "target_prepared" if target_window else "target_prepare_degraded",
+            "targetStable": bool(target_window),
+            "targetWindow": target_window,
+            "focusResult": _jsonable(focused),
+            "reason": focus_error,
+            "recording": updated,
+        }
+
+    def start_browser_capture(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        target_id, reason = self._resolve_browser_capture_target(payload)
+        if not target_id:
+            return {
+                "ok": False,
+                "status": "browser_capture_unavailable",
+                "reason": reason or "Agent Browser 没有可注入的当前 tab。",
+            }
+        provider = computer_use_runtime.browser_automation
+        evaluated = provider._evaluate(target_id=target_id, expression=self._browser_recorder_install_script())
+        return {
+            "ok": True,
+            "status": "recording",
+            "recordingId": recording_id,
+            "targetId": target_id,
+            "injected": bool((evaluated.get("value") or {}).get("installed", True)) if isinstance(evaluated, dict) else True,
+        }
+
+    def poll_browser_capture(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        target_id, reason = self._resolve_browser_capture_target(payload)
+        if not target_id:
+            return {
+                "ok": False,
+                "status": "browser_capture_unavailable",
+                "reason": reason or "Agent Browser 没有可轮询的当前 tab。",
+                "events": [],
+            }
+        provider = computer_use_runtime.browser_automation
+        evaluated = provider._evaluate(target_id=target_id, expression=self._browser_recorder_drain_script())
+        value = dict((evaluated or {}).get("value") or {})
+        raw_events = list(value.get("events") or [])
+        max_events = max(1, min(int(payload.get("maxEvents") or 50), 200))
+        appended: list[Dict[str, Any]] = []
+        for raw_event in self._coalesce_browser_events(raw_events[:max_events]):
+            event = self._browser_event_to_recording_event(raw_event, target_id=target_id)
+            appended.append(self.recording_manager.append_event(recording_id, event))
+        return {
+            "ok": True,
+            "status": "recording",
+            "recordingId": recording_id,
+            "targetId": target_id,
+            "events": raw_events[:max_events],
+            "appendedCount": len(appended),
+            "recording": appended[-1].get("recording") if appended else self.recording_manager.get(recording_id),
+        }
+
+    def stop_browser_capture(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.recording_manager.get(recording_id):
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        target_id, reason = self._resolve_browser_capture_target(payload)
+        if not target_id:
+            return {
+                "ok": False,
+                "status": "browser_capture_unavailable",
+                "reason": reason or "Agent Browser 没有可停止的当前 tab。",
+            }
+        provider = computer_use_runtime.browser_automation
+        evaluated = provider._evaluate(target_id=target_id, expression=self._browser_recorder_drain_script(stop=True))
+        raw_events = list((evaluated.get("value") or {}).get("events") or []) if isinstance(evaluated, dict) else []
+        appended: list[Dict[str, Any]] = []
+        for raw_event in self._coalesce_browser_events(raw_events):
+            event = self._browser_event_to_recording_event(raw_event, target_id=target_id)
+            appended.append(self.recording_manager.append_event(recording_id, event))
+        return {
+            "ok": True,
+            "status": "stopped",
+            "targetId": target_id,
+            "remainingEvents": raw_events,
+            "appendedCount": len(appended),
+            "recording": appended[-1].get("recording") if appended else self.recording_manager.get(recording_id),
+        }
+
+    def capture_assistant_status(self) -> Dict[str, Any]:
+        backend = _native_hotkey_backend_capability()
+        return {
+            "ok": True,
+            "status": "ready" if backend.get("available") else "degraded",
+            "platform": sys.platform,
+            "nativeHotkeyBackend": backend,
+            "defaultBackend": "native_hotkey" if backend.get("available") else "fallback_overlay",
+            "serviceMode": "on_demand_process",
+        }
+
+    def start_capture_assistant_service(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        # The first native implementation is intentionally on-demand: Admin asks for a
+        # per-recording capture worker, and that worker owns its hotkey until stopped.
+        # This keeps global hooks scoped and recoverable while still exposing service capability.
+        status = self.capture_assistant_status()
+        status.update(
+            {
+                "requested": dict(payload or {}),
+                "serviceStarted": True,
+                "serviceMode": "on_demand_process",
+            }
+        )
+        return status
+
+    def start_capture_assistant(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        target_lock = dict(payload.get("targetLock") or recording.get("targetLock") or {})
+        if bool(target_lock.get("consoleTargetBlocked")):
+            return {
+                "ok": False,
+                "status": "target_blocked",
+                "reason": "V8 Admin console window is excluded from RPA capture.",
+                "recording": recording,
+            }
+        prepared = self.prepare_capture_target(recording_id, payload)
+        recording = prepared.get("recording") or recording
+        script_path = Path(__file__).resolve().parents[2] / "scripts" / "rpa_capture_assistant.py"
+        if not script_path.exists():
+            return {
+                "ok": False,
+                "status": "capture_assistant_unavailable",
+                "reason": f"Capture assistant script not found: {script_path}",
+                "recording": recording,
+            }
+        engine_base_url = str(
+            payload.get("engineBaseUrl")
+            or os.environ.get("V8_ENGINE_BASE_URL")
+            or os.environ.get("V8_ENGINE_URL")
+            or "http://127.0.0.1:9530"
+        ).rstrip("/")
+        requested_backend = str(payload.get("backend") or payload.get("captureBackend") or "auto").strip().lower() or "auto"
+        native_capability = _native_hotkey_backend_capability()
+        resolved_backend = requested_backend
+        if requested_backend == "auto":
+            resolved_backend = "native_hotkey" if bool(native_capability.get("available")) else "fallback_overlay"
+        command = [
+            sys.executable,
+            str(script_path),
+            "--recording-id",
+            recording_id,
+            "--engine-url",
+            engine_base_url,
+            "--action",
+            str(payload.get("action") or "click"),
+            "--target-label",
+            str(target_lock.get("label") or recording.get("appId") or "desktop"),
+            "--mode",
+            str(payload.get("mode") or "capture_only"),
+            "--hotkey",
+            str(payload.get("hotkey") or "ctrl+alt+c"),
+            "--backend",
+            resolved_backend,
+        ]
+        if bool(payload.get("persistent")):
+            command.append("--persistent")
+        if bool(payload.get("recordAndForward")):
+            command.append("--record-and-forward")
+        prepared_target = dict((prepared.get("targetWindow") or {}) if isinstance(prepared, dict) else {})
+        if prepared_target.get("title"):
+            command.extend(["--target-window-title", str(prepared_target.get("title"))])
+        if prepared_target.get("handle") is not None:
+            command.extend(["--target-window-handle", str(prepared_target.get("handle"))])
+        popen_kwargs: Dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            process = subprocess.Popen(  # noqa: S603 - launched from Admin-only RPA capture control.
+                command,
+                **popen_kwargs,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "capture_assistant_unavailable",
+                "reason": str(exc),
+                "recording": recording,
+            }
+        assistant = {
+            "state": "active",
+            "mode": payload.get("mode") or "capture_only",
+            "processId": process.pid,
+            "hotkey": payload.get("hotkey") or "ctrl+alt+c",
+            "targetLock": target_lock,
+            "startedAt": utc_now_iso(),
+            "persistent": bool(payload.get("persistent")),
+            "recordAndForward": bool(payload.get("recordAndForward")),
+            "prepared": prepared,
+            "captureBackend": resolved_backend,
+            "nativeHotkeyBackend": native_capability,
+        }
+        updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+        return {
+            "ok": True,
+            "status": "capture_assistant_started",
+            "assistant": assistant,
+            "recording": updated,
+        }
+
+    def poll_capture_assistant(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        assistant = dict(recording.get("captureAssistant") or {})
+        pid = assistant.get("processId")
+        running = _is_process_running(pid) if isinstance(pid, int) else False
+        if assistant:
+            assistant["state"] = "active" if running and assistant.get("state") == "active" else assistant.get("state") or ("active" if running else "stopped")
+            assistant["lastPolledAt"] = utc_now_iso()
+            assistant["processRunning"] = running
+            recording = self.recording_manager.update_capture_assistant(recording_id, assistant)
+        return {
+            "ok": True,
+            "status": "active" if running else str(assistant.get("state") or "stopped"),
+            "processRunning": running,
+            "assistant": assistant,
+            "recording": recording,
+        }
+
+    def save_capture_pool_item(self, recording_id: str, temp_element_id: str, *, name: str | None = None) -> Dict[str, Any]:
+        return self.recording_manager.save_capture_pool_item(recording_id, temp_element_id, name=name)
+
+    def stop_capture_assistant(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        recording = self.recording_manager.get(recording_id)
+        if not recording:
+            raise ValueError(f"Recording session '{recording_id}' not found.")
+        assistant = dict(recording.get("captureAssistant") or {})
+        pid = assistant.get("processId")
+        terminated = _terminate_process(pid) if isinstance(pid, int) else False
+        assistant.update(
+            {
+                "state": "stopped",
+                "stoppedAt": utc_now_iso(),
+                "terminated": terminated,
+                "reason": payload.get("reason") or "admin_stop",
+            }
+        )
+        updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+        return {
+            "ok": True,
+            "status": "capture_assistant_stopped",
+            "assistant": assistant,
+            "recording": updated,
+        }
+
     def stop_recording(self, recording_id: str, *, compile_draft: bool = True, save: bool = True) -> Dict[str, Any]:
         recording = self.recording_manager.stop(recording_id)
         draft = None
@@ -232,14 +1688,48 @@ class RPARuntime:
             "compileError": compile_error,
         }
 
-    def list_templates(self, *, limit: int = 100, app_id: str | None = None, status: str | None = None) -> list[Dict[str, Any]]:
-        return self.template_service.list_templates(limit=limit, app_id=app_id, status=status)
+    def list_templates(
+        self,
+        *,
+        limit: int = 100,
+        app_id: str | None = None,
+        status: str | None = None,
+        include_archived: bool = False,
+    ) -> list[Dict[str, Any]]:
+        return self.template_service.list_templates(limit=limit, app_id=app_id, status=status, include_archived=include_archived)
 
     def get_template(self, template_id: str) -> Optional[Dict[str, Any]]:
         return self.template_service.get_template(template_id)
 
     def list_template_history(self, template_id: str, *, limit: int = 50) -> list[Dict[str, Any]]:
         return self.template_service.list_template_history(template_id, limit=limit)
+
+    def archive_template(self, template_id: str, *, actor: str = "system", reason: str | None = None) -> Dict[str, Any]:
+        payload = self.script_store.archive_template(template_id, actor=actor, reason=reason)
+        self._log_audit(
+            action=f"Archive RPA template: {template_id}",
+            status="SUCCESS",
+            details=json.dumps({"templateId": template_id, "actor": actor}, ensure_ascii=False),
+        )
+        return self.template_service.get_template(template_id) or payload
+
+    def restore_template(self, template_id: str, *, actor: str = "system") -> Dict[str, Any]:
+        payload = self.script_store.restore_template(template_id, actor=actor)
+        self._log_audit(
+            action=f"Restore RPA template: {template_id}",
+            status="SUCCESS",
+            details=json.dumps({"templateId": template_id, "actor": actor}, ensure_ascii=False),
+        )
+        return self.template_service.get_template(template_id) or payload
+
+    def delete_template(self, template_id: str, *, confirm: bool = False, actor: str = "system") -> Dict[str, Any]:
+        payload = self.script_store.delete_template(template_id, confirm=confirm, actor=actor)
+        self._log_audit(
+            action=f"Hard delete RPA template: {template_id}",
+            status="SUCCESS",
+            details=json.dumps({"templateId": template_id, "actor": actor}, ensure_ascii=False),
+        )
+        return payload
 
     def recommend_execution_route(
         self,
@@ -661,15 +2151,30 @@ class RPARuntime:
         title: str,
         run_id: str | None = None,
     ):
+        is_manual_rpa = bool(metadata.get("nonChatRun")) or str(trigger_source or "").strip() in {
+            "rpa_phone",
+            "rpa_admin",
+            "phone_rpa",
+            "admin_rpa",
+        }
+        session_metadata = {
+            "runtime": "rpa",
+            "trigger_source": trigger_source,
+            "mode": metadata.get("mode"),
+        }
+        if is_manual_rpa:
+            session_metadata.update(
+                {
+                    "hiddenFromHistory": True,
+                    "manualRpaRun": True,
+                    "nonChatRun": True,
+                }
+            )
         db.create_or_update_session(
             session_id=session_id,
             title=title,
             user_id=user_id,
-            metadata={
-                "runtime": "rpa",
-                "trigger_source": trigger_source,
-                "mode": metadata.get("mode"),
-            },
+            metadata=session_metadata,
         )
         run_handle = erc_kernel.submit_run(
             session_id=session_id,
@@ -1573,6 +3078,7 @@ class RPARuntime:
         workspace_id: str | None = None,
         workspace_path: str | None = None,
         trigger_source: str | None = "manual",
+        non_chat_run: bool = False,
     ) -> Dict[str, Any]:
         effective_session_id = self._resolve_session_id(
             script_id=(prepared.get("script") or {}).get("id"),
@@ -1586,6 +3092,9 @@ class RPARuntime:
             trigger_source=trigger_source,
             cwd=cwd,
         )
+        if non_chat_run:
+            metadata["nonChatRun"] = True
+            metadata["manualRpaRun"] = True
         run_handle = self._begin_run(
             session_id=effective_session_id,
             user_id=user_id,
@@ -2316,6 +3825,7 @@ class RPARuntime:
         workspace_id: str | None = None,
         workspace_path: str | None = None,
         trigger_source: str | None = "manual",
+        non_chat_run: bool = False,
     ) -> Dict[str, Any]:
         prepared = self.prepare_draft_run(script_id=script_id, variables=variables, output_dir=output_dir)
         subject = str(((prepared.get("script") or {}).get("name")) or script_id)
@@ -2334,6 +3844,7 @@ class RPARuntime:
             workspace_id=workspace_id,
             workspace_path=workspace_path,
             trigger_source=trigger_source,
+            non_chat_run=non_chat_run,
         )
 
     def run_existing_flow(
@@ -2351,6 +3862,7 @@ class RPARuntime:
         workspace_id: str | None = None,
         workspace_path: str | None = None,
         trigger_source: str | None = "manual",
+        non_chat_run: bool = False,
     ) -> Dict[str, Any]:
         prepared = self.prepare_existing_run(
             robot_file=robot_file,
@@ -2373,6 +3885,7 @@ class RPARuntime:
             workspace_id=workspace_id,
             workspace_path=workspace_path,
             trigger_source=trigger_source,
+            non_chat_run=non_chat_run,
         )
 
 

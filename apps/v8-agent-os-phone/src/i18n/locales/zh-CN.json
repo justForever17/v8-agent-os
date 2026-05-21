@@ -689,5 +689,13 @@
   "src.lib.admin_client.realtime_stream_failed_with_status": "连接实时流失败（{status}）",
   "src.providers.app_session.unable_to_reach_admin": "无法连接 Admin：{baseUrl}",
   "src.components.chat.mcp_app.title": "MCP App",
-  "src.components.chat.mcp_app.loading": "正在加载交互界面"
+  "src.components.chat.mcp_app.loading": "正在加载交互界面",
+  "src.screens.rpascreen.approved_template": "已批准模板",
+  "src.screens.rpascreen.draft_requires_admin_approval": "这个草稿需要先在 Admin 中编辑并批准为模板，手机端不会直接裸跑草稿。",
+  "src.screens.rpascreen.drafts_are_not_runnable_from_phone": "草稿只用于查看状态；请在 Admin 编辑、标变量并批准后，再从手机端执行模板。",
+  "src.screens.rpascreen.template_missing_source_draft": "这个模板缺少可执行的草稿来源，请回到 Admin 检查模板。",
+  "src.screens.rpascreen.variables_debug_json_placeholder": "可留空；调试变量可填 JSON，例如 {\"username\":\"demo\"}。后续模板会按变量表单执行。",
+  "src.screens.rpascreen.rpa_result_status": "状态",
+  "src.screens.rpascreen.rpa_result_received": "已收到 RPA 返回结果",
+  "src.screens.rpascreen.execution_started_but_failed": "已触发部分动作，但流程未完整完成，请在 Admin 查看 trace 后修正。"
 }

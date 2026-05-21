@@ -188,8 +188,11 @@ class ComputerUseAppCatalog:
         limit: int = 20,
         include_running: bool = True,
         force_refresh: bool = False,
+        include_learned: bool = True,
     ) -> Dict[str, Any]:
         entries = self._entries(include_running=include_running, force_refresh=force_refresh)
+        if include_learned:
+            entries = self._with_learned_app_marks(entries)
         ranked: List[tuple[int, Dict[str, Any]]] = []
         for entry in entries.values():
             score = self._match_score(entry, query)
@@ -217,6 +220,47 @@ class ComputerUseAppCatalog:
             "apps": [payload for _score, payload in ranked[: max(1, min(int(limit), 100))]],
             "summary": self._summary(entries),
         }
+
+    def _with_learned_app_marks(self, entries: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        payload = storage.get_computer_use_memory()
+        apps_payload = payload.get("apps") or {}
+        learned = dict(apps_payload) if isinstance(apps_payload, dict) else {}
+        if not learned:
+            return entries
+        merged = copy.deepcopy(entries)
+        for app_id, profile in learned.items():
+            if not isinstance(profile, dict):
+                continue
+            app_key = str(app_id or "").strip()
+            if not app_key:
+                continue
+            existing = dict(merged.get(app_key) or {})
+            selectors_payload = profile.get("selectors") or {}
+            selectors_count = len(selectors_payload) if isinstance(selectors_payload, (dict, list)) else 0
+            windows = list(profile.get("windows") or [])
+            interactions = list(profile.get("interactions") or [])
+            learned_titles = []
+            for window in windows:
+                if isinstance(window, dict) and window.get("title"):
+                    learned_titles.append(str(window.get("title")))
+            learned_entry = {
+                "appId": app_key,
+                "profileId": existing.get("profileId") or app_key,
+                "displayName": existing.get("displayName") or app_key,
+                "aliases": _unique([*list(existing.get("aliases") or []), app_key, *learned_titles]),
+                "titlePatterns": _unique([*list(existing.get("titlePatterns") or []), *learned_titles]),
+                "sources": _unique([*list(existing.get("sources") or []), "computer_use_memory"]),
+                "learned": True,
+                "learnedSelectorCount": selectors_count,
+                "learnedInteractionCount": len(interactions),
+                "learnedWindowCount": len(windows),
+            }
+            self._merge(merged, learned_entry)
+            merged[app_key]["learned"] = True
+            merged[app_key]["learnedSelectorCount"] = selectors_count
+            merged[app_key]["learnedInteractionCount"] = len(interactions)
+            merged[app_key]["learnedWindowCount"] = len(windows)
+        return merged
 
     def resolve_app(
         self,

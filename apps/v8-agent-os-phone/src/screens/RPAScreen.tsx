@@ -20,16 +20,17 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getRpaAvailability, listRpaDrafts, listRpaScripts, runExistingRobotFlow, runRpaCompile, runRpaDraft } from "@/src/lib/phone-api";
+import { getRpaAvailability, listRpaDrafts, listRpaScripts, listRpaTemplates, runExistingRobotFlow, runRpaCompile, runRpaDraft } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
-import type { RPAAvailability, RPADraftSummary, RPARobotScriptSummary } from "@/src/types/admin";
+import type { RPAAvailability, RPADraftSummary, RPARobotScriptSummary, RPATemplateSummary } from "@/src/types/admin";
 
 type RPAFlowOption = {
     key: string;
-    kind: "draft" | "script";
+    kind: "template" | "script";
     id: string;
+    sourceDraftId?: string;
     label: string;
     meta?: string;
 };
@@ -43,12 +44,13 @@ export default function RPAScreen() {
     const [availability, setAvailability] = useState<RPAAvailability | null>(null);
     const [drafts, setDrafts] = useState<RPADraftSummary[]>([]);
     const [scripts, setScripts] = useState<RPARobotScriptSummary[]>([]);
+    const [templates, setTemplates] = useState<RPATemplateSummary[]>([]);
     const [compileRunIds, setCompileRunIds] = useState("");
     const [selectedFlowKey, setSelectedFlowKey] = useState("");
     const [flowPickerOpen, setFlowPickerOpen] = useState(false);
     const [variablesText, setVariablesText] = useState("");
     const [latestResult, setLatestResult] = useState<Record<string, unknown> | null>(null);
-    const [busyAction, setBusyAction] = useState<"" | "compile" | "run-existing" | "run-draft">("");
+    const [busyAction, setBusyAction] = useState<"" | "compile" | "run-existing">("");
 
     const actions: PhoneTopbarAction[] = [
         { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
@@ -60,13 +62,15 @@ export default function RPAScreen() {
     const load = useCallback(async () => {
         setRefreshing(true);
         try {
-            const [nextAvailability, nextDrafts, nextScripts] = await Promise.all([
+            const [nextAvailability, nextDrafts, nextTemplates, nextScripts] = await Promise.all([
                 getRpaAvailability(authorizedFetch),
                 listRpaDrafts(authorizedFetch, 8),
+                listRpaTemplates(authorizedFetch, 50, "approved"),
                 listRpaScripts(authorizedFetch, 50),
             ]);
             setAvailability(nextAvailability);
             setDrafts(nextDrafts);
+            setTemplates(nextTemplates);
             setScripts(nextScripts);
         } catch (error) {
             Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_load_the_rpa_user_entry_state"));
@@ -76,18 +80,20 @@ export default function RPAScreen() {
     }, [authorizedFetch, t]);
 
     const flowOptions = useMemo<RPAFlowOption[]>(() => {
-        const draftOptions: RPAFlowOption[] = [];
-        for (const draft of drafts) {
-            const id = String(draft.script_id || draft.id || "").trim();
+        const templateOptions: RPAFlowOption[] = [];
+        for (const template of templates) {
+            const id = String(template.id || "").trim();
             if (!id) {
                 continue;
             }
-            draftOptions.push({
-                key: `draft:${id}`,
-                kind: "draft",
+            const sourceDraftId = String(template.source?.draftId || "").trim();
+            templateOptions.push({
+                key: `template:${id}`,
+                kind: "template",
                 id,
-                label: draft.title || id,
-                meta: `${t("src.screens.rpascreen.draft_flow")} · ${draft.status || "draft"}`,
+                sourceDraftId,
+                label: template.name || id,
+                meta: `${t("src.screens.rpascreen.approved_template")} · ${template.view?.statusLabel || template.status || "approved"}`,
             });
         }
         const scriptOptions: RPAFlowOption[] = [];
@@ -104,8 +110,8 @@ export default function RPAScreen() {
                 meta: t("src.screens.rpascreen.robot_script"),
             });
         }
-        return [...draftOptions, ...scriptOptions];
-    }, [drafts, scripts, t]);
+        return [...templateOptions, ...scriptOptions];
+    }, [scripts, templates, t]);
 
     const selectedFlow = useMemo(
         () => flowOptions.find((item) => item.key === selectedFlowKey) || null,
@@ -163,8 +169,12 @@ export default function RPAScreen() {
         }
         setBusyAction("run-existing");
         try {
-            const payload = selectedFlow.kind === "draft"
-                ? await runRpaDraft(authorizedFetch, selectedFlow.id, variables)
+            if (selectedFlow.kind === "template" && !selectedFlow.sourceDraftId) {
+                Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.template_missing_source_draft"));
+                return;
+            }
+            const payload = selectedFlow.kind === "template"
+                ? await runRpaDraft(authorizedFetch, selectedFlow.sourceDraftId || selectedFlow.id, variables)
                 : await runExistingRobotFlow(authorizedFetch, selectedFlow.id, variables);
             setLatestResult(payload);
             await load();
@@ -175,24 +185,26 @@ export default function RPAScreen() {
         }
     }, [authorizedFetch, load, parseVariables, selectedFlow, t]);
 
-    const handleRunDraft = useCallback(async (draft: RPADraftSummary) => {
-        const robotFile = String(draft.script_id || draft.id || "").trim();
-        if (!robotFile) {
-            Alert.alert(t("src.screens.rpascreen.unable_to_execute"), t("src.screens.rpascreen.enter_an_existing_robot_file_path_or_script_id"));
-            return;
-        }
-        setSelectedFlowKey(`draft:${robotFile}`);
-        setBusyAction("run-draft");
-        try {
-            const payload = await runRpaDraft(authorizedFetch, robotFile, {});
-            setLatestResult(payload);
-            await load();
-        } catch (error) {
-            Alert.alert(t("src.screens.rpascreen.execution_failed"), error instanceof Error ? error.message : t("src.screens.rpascreen.unable_to_execute_the_rpa_draft"));
-        } finally {
-            setBusyAction("");
-        }
-    }, [authorizedFetch, load, t]);
+    const handleSelectDraft = useCallback((draft: RPADraftSummary) => {
+        const name = String(draft.title || draft.script_id || draft.id || t("src.screens.rpascreen.untitled_draft"));
+        Alert.alert(name, t("src.screens.rpascreen.draft_requires_admin_approval"));
+    }, [t]);
+
+    const describeLatestResult = useCallback((payload: Record<string, unknown>) => {
+        const statusText = String(payload.status || payload.outcome || payload.outcomeFamily || payload.result || "");
+        const runId = String(payload.runId || payload.run_id || payload.id || "");
+        const sessionId = String(payload.sessionId || payload.session_id || "");
+        const errorText = String(payload.error || payload.detail || payload.message || "");
+        const sideEffect = Boolean(payload.startedApp || payload.launchedApp || payload.appStarted || payload.fallbackStarted);
+        const lines = [
+            statusText ? `${t("src.screens.rpascreen.rpa_result_status")}: ${statusText}` : t("src.screens.rpascreen.rpa_result_received"),
+            runId ? `run: ${runId}` : "",
+            sessionId ? `session: ${sessionId}` : "",
+            sideEffect ? t("src.screens.rpascreen.execution_started_but_failed") : "",
+            errorText ? `${t("src.screens.rpascreen.execution_failed")}: ${errorText}` : "",
+        ].filter(Boolean);
+        return lines.join("\n");
+    }, [t]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -267,28 +279,20 @@ export default function RPAScreen() {
                                 >
                                     <Pressable
                                         style={styles.draftBody}
-                                        onPress={() => {
-                                            const id = String(draft.script_id || draft.id || "").trim();
-                                            if (id) {
-                                                setSelectedFlowKey(`draft:${id}`);
-                                            }
-                                        }}
+                                        onPress={() => handleSelectDraft(draft)}
                                     >
                                         <Text style={styles.draftTitle}>{draft.title || draft.script_id || draft.id || t("src.screens.rpascreen.untitled_draft")}</Text>
                                         <Text style={styles.draftMeta}>
                                             {draft.status || "draft"} · {draft.updated_at || draft.created_at || t("src.screens.rpascreen.unknown_time")}
                                         </Text>
                                     </Pressable>
-                                    <Pressable
-                                        style={({ pressed }) => [styles.draftRunButton, pressed && styles.pressed]}
-                                        disabled={busyAction !== ""}
-                                        onPress={() => void handleRunDraft(draft)}
-                                    >
-                                        <MaterialCommunityIcons name="play" size={16} color={colors.primaryDeep} />
-                                    </Pressable>
+                                    <View style={styles.draftLockedBadge}>
+                                        <MaterialCommunityIcons name="lock-outline" size={15} color={colors.textMuted} />
+                                    </View>
                                 </View>
                             ))
                         )}
+                        <Text style={styles.emptyBody}>{t("src.screens.rpascreen.drafts_are_not_runnable_from_phone")}</Text>
                     </GlassCard>
 
                     <GlassCard style={styles.compactCard}>
@@ -350,7 +354,7 @@ export default function RPAScreen() {
                         <TextInput
                             value={variablesText}
                             onChangeText={setVariablesText}
-                            placeholder={t("src.screens.rpascreen.variables_optional_json_placeholder")}
+                            placeholder={t("src.screens.rpascreen.variables_debug_json_placeholder")}
                             placeholderTextColor={colors.textSoft}
                             multiline
                             textAlignVertical="top"
@@ -366,7 +370,7 @@ export default function RPAScreen() {
                     <GlassCard style={styles.compactCard}>
                         <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.latest_result")}</Text>
                         {latestResult ? (
-                            <Text style={styles.resultText}>{JSON.stringify(latestResult, null, 2)}</Text>
+                            <Text style={styles.resultText}>{describeLatestResult(latestResult)}</Text>
                         ) : (
                             <Text style={styles.emptyBody}>{t("src.screens.rpascreen.the_latest_compile_or_execution_result_appears_here_so_you_can_continue_from_phone")}</Text>
                         )}
@@ -542,15 +546,15 @@ const styles = StyleSheet.create({
         color: colors.textMuted,
         fontSize: 12,
     },
-    draftRunButton: {
+    draftLockedBadge: {
         width: 34,
         height: 34,
         borderRadius: 17,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(124,58,237,0.10)",
+        backgroundColor: "rgba(148,163,184,0.10)",
         borderWidth: 1,
-        borderColor: "rgba(124,58,237,0.16)",
+        borderColor: "rgba(148,163,184,0.16)",
     },
     pressed: {
         opacity: 0.72,

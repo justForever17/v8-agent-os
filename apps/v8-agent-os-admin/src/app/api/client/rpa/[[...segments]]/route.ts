@@ -11,7 +11,7 @@ function buildTarget(req: NextRequest, segments?: string[]) {
     return `${ENGINE_URL}/rpa${suffix ? `/${suffix}` : ""}${search ? `?${search}` : ""}`;
 }
 
-async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST") {
+async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST" | "DELETE") {
     const userEmail = await resolveClientUserEmail(req);
     if (!userEmail) {
         return unauthorizedClientJson();
@@ -44,4 +44,8 @@ export async function GET(req: NextRequest, context: { params: Promise<{ segment
 
 export async function POST(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }) {
     return proxy(req, context, "POST");
+}
+
+export async function DELETE(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }) {
+    return proxy(req, context, "DELETE");
 }

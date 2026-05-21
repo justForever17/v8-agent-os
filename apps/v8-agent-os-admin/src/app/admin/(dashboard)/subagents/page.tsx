@@ -1581,7 +1581,7 @@ export default function SubagentsPage() {
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
-                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip")} />
+                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip", { value: recursiveMaxChildren })} />
                                 <span className="text-xs text-slate-500">1-50</span>
                             </div>
                             <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />

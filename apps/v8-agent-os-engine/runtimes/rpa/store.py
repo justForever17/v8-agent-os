@@ -406,6 +406,47 @@ class RPAScriptStore:
         except Exception:
             return None
 
+    def archive_draft(self, script_id: str, *, actor: str = "system", reason: str | None = None) -> Dict[str, Any]:
+        payload = self.get_draft(script_id)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Draft '{script_id}' not found")
+        stamp = utc_now_iso()
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "archivedAt": stamp,
+                "archivedBy": str(actor or "system"),
+                "archiveReason": str(reason or "").strip() or None,
+            }
+        )
+        payload["metadata"] = metadata
+        payload["archivedAt"] = stamp
+        payload["updatedAt"] = stamp
+        return self.save_draft(payload)
+
+    def restore_draft(self, script_id: str, *, actor: str = "system") -> Dict[str, Any]:
+        payload = self.get_draft(script_id)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Draft '{script_id}' not found")
+        metadata = dict(payload.get("metadata") or {})
+        for key in ("archivedAt", "archivedBy", "archiveReason"):
+            metadata.pop(key, None)
+            payload.pop(key, None)
+        metadata["restoredAt"] = utc_now_iso()
+        metadata["restoredBy"] = str(actor or "system")
+        payload["metadata"] = metadata
+        return self.save_draft(payload)
+
+    def delete_draft(self, script_id: str, *, confirm: bool = False) -> Dict[str, Any]:
+        if not confirm:
+            raise ValueError("Draft hard delete requires confirm=true")
+        path = self._draft_path(script_id)
+        if not path.exists():
+            raise ValueError(f"Draft '{script_id}' not found")
+        payload = self.get_draft(script_id) or {"id": script_id}
+        path.unlink()
+        return {"deleted": True, "draftId": script_id, "previous": payload}
+
     def _append_template_history(
         self,
         *,
@@ -468,12 +509,78 @@ class RPAScriptStore:
         except Exception:
             return None
 
-    def list_drafts(self, *, limit: int = 100) -> list[Dict[str, Any]]:
+    def archive_template(self, template_id: str, *, actor: str = "system", reason: str | None = None) -> Dict[str, Any]:
+        payload = self.get_template(template_id)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Template '{template_id}' not found")
+        self._append_template_history(
+            template_id=template_id,
+            template=payload,
+            event="archive",
+            actor=actor,
+            reason=reason or "archive_template",
+        )
+        stamp = utc_now_iso()
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "archivedAt": stamp,
+                "archivedBy": str(actor or "system"),
+                "archiveReason": str(reason or "").strip() or None,
+            }
+        )
+        payload["metadata"] = metadata
+        payload["archivedAt"] = stamp
+        payload["updatedAt"] = stamp
+        return self.save_template(payload, history_reason="archive_template", history_actor=actor, write_history=False)
+
+    def restore_template(self, template_id: str, *, actor: str = "system") -> Dict[str, Any]:
+        payload = self.get_template(template_id)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Template '{template_id}' not found")
+        self._append_template_history(
+            template_id=template_id,
+            template=payload,
+            event="restore",
+            actor=actor,
+            reason="restore_template",
+        )
+        metadata = dict(payload.get("metadata") or {})
+        for key in ("archivedAt", "archivedBy", "archiveReason"):
+            metadata.pop(key, None)
+            payload.pop(key, None)
+        metadata["restoredAt"] = utc_now_iso()
+        metadata["restoredBy"] = str(actor or "system")
+        payload["metadata"] = metadata
+        return self.save_template(payload, history_reason="restore_template", history_actor=actor, write_history=False)
+
+    def delete_template(self, template_id: str, *, confirm: bool = False, actor: str = "system") -> Dict[str, Any]:
+        if not confirm:
+            raise ValueError("Template hard delete requires confirm=true")
+        path = self._template_path(template_id)
+        if not path.exists():
+            raise ValueError(f"Template '{template_id}' not found")
+        payload = self.get_template(template_id) or {"id": template_id}
+        if isinstance(payload, dict):
+            self._append_template_history(
+                template_id=template_id,
+                template=payload,
+                event="hard_delete",
+                actor=actor,
+                reason="delete_template",
+            )
+        path.unlink()
+        return {"deleted": True, "templateId": template_id}
+
+    def list_drafts(self, *, limit: int = 100, include_archived: bool = False) -> list[Dict[str, Any]]:
         drafts: list[Dict[str, Any]] = []
         for path in sorted(self.draft_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 payload.setdefault("path", str(path))
+                metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+                if not include_archived and (payload.get("archivedAt") or metadata.get("archivedAt")):
+                    continue
                 drafts.append(payload)
             except Exception:
                 continue
@@ -481,7 +588,7 @@ class RPAScriptStore:
                 break
         return drafts
 
-    def list_templates(self, *, limit: int = 100, app_id: str | None = None) -> list[Dict[str, Any]]:
+    def list_templates(self, *, limit: int = 100, app_id: str | None = None, include_archived: bool = False) -> list[Dict[str, Any]]:
         templates: list[Dict[str, Any]] = []
         normalized_app_id = str(app_id or "").strip().lower()
         for path in sorted(self.template_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
@@ -491,6 +598,9 @@ class RPAScriptStore:
                 continue
             current_app_id = str(payload.get("appId") or "").strip().lower()
             if normalized_app_id and current_app_id != normalized_app_id:
+                continue
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            if not include_archived and (payload.get("archivedAt") or metadata.get("archivedAt")):
                 continue
             payload.setdefault("path", str(path))
             templates.append(payload)

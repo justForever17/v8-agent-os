@@ -1,12 +1,17 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from starlette.concurrency import run_in_threadpool
 
 from .models import (
     RPACompileTracePayload,
+    RPADraftCreatePayload,
     RPADraftPatchPayload,
     RPADraftPreparePayload,
     RPADraftRunPayload,
+    RPADraftStepValidationPayload,
     RPAExistingFlowPayload,
+    RPARecordingBrowserCapturePayload,
+    RPARecordingCaptureAssistantPayload,
+    RPARecordingDesktopSamplePayload,
     RPARecordingEventPayload,
     RPARecordingStartPayload,
     RPARecordingStopPayload,
@@ -34,9 +39,19 @@ async def get_rpa_availability():
 
 
 @router.get("/rpa/drafts")
-async def list_rpa_drafts(limit: int = 100):
+async def list_rpa_drafts(limit: int = 100, includeArchived: bool = False):
     try:
-        return {"drafts": _rpa_runtime().list_drafts(limit=max(1, min(limit, 200)))}
+        return {"drafts": _rpa_runtime().list_drafts(limit=max(1, min(limit, 200)), include_archived=includeArchived)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/drafts")
+async def create_rpa_draft(payload: RPADraftCreatePayload):
+    try:
+        return _rpa_runtime().create_draft(payload.model_dump(by_alias=True, exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -82,6 +97,73 @@ async def patch_rpa_draft(script_id: str, payload: RPADraftPatchPayload):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/rpa/drafts/{script_id}/validate-step")
+async def validate_rpa_draft_step(script_id: str, payload: RPADraftStepValidationPayload):
+    try:
+        return _rpa_runtime().validate_draft_step(
+            script_id,
+            step=dict(payload.step or {}),
+            index=payload.index,
+            mode=payload.mode,
+            variables=dict(payload.variables or {}),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/drafts/{script_id}/approve-template")
+async def approve_rpa_draft_as_template(script_id: str, payload: RPATemplateDecisionPayload):
+    try:
+        return _rpa_runtime().approve_draft_as_template(
+            script_id,
+            reviewer=payload.reviewer or "admin_ui",
+            notes=payload.notes,
+            metadata_patch=dict(payload.metadata_patch or {}),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/drafts/{script_id}/archive")
+async def archive_rpa_draft(script_id: str, payload: dict | None = Body(default=None)):
+    try:
+        data = payload or {}
+        return _rpa_runtime().archive_draft(
+            script_id,
+            actor=str(data.get("actor") or "admin_ui"),
+            reason=data.get("reason"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/drafts/{script_id}/restore")
+async def restore_rpa_draft(script_id: str, payload: dict | None = None):
+    try:
+        data = payload or {}
+        return _rpa_runtime().restore_draft(script_id, actor=str(data.get("actor") or "admin_ui"))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/rpa/drafts/{script_id}")
+async def delete_rpa_draft(script_id: str, confirm: bool = False):
+    try:
+        return _rpa_runtime().delete_draft(script_id, confirm=confirm)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/rpa/recordings")
 async def list_rpa_recordings(limit: int = 20):
     try:
@@ -117,6 +199,154 @@ async def append_rpa_recording_event(recording_id: str, payload: RPARecordingEve
         return _rpa_runtime().append_recording_event(recording_id, payload.model_dump(by_alias=True, exclude_none=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/desktop-sample")
+async def sample_rpa_recording_desktop(recording_id: str, payload: RPARecordingDesktopSamplePayload):
+    try:
+        return _rpa_runtime().sample_recording_desktop(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/browser-capture/start")
+async def start_rpa_browser_capture(recording_id: str, payload: RPARecordingBrowserCapturePayload):
+    try:
+        return _rpa_runtime().start_browser_capture(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/browser-capture/poll")
+async def poll_rpa_browser_capture(recording_id: str, payload: RPARecordingBrowserCapturePayload):
+    try:
+        return _rpa_runtime().poll_browser_capture(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/browser-capture/stop")
+async def stop_rpa_browser_capture(recording_id: str, payload: RPARecordingBrowserCapturePayload):
+    try:
+        return _rpa_runtime().stop_browser_capture(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rpa/capture-assistant/status")
+async def get_rpa_capture_assistant_status():
+    try:
+        return _rpa_runtime().capture_assistant_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/capture-assistant/start-service")
+async def start_rpa_capture_assistant_service(payload: dict | None = Body(default=None)):
+    try:
+        return _rpa_runtime().start_capture_assistant_service(dict(payload or {}))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-assistant/start")
+async def start_rpa_capture_assistant(recording_id: str, payload: RPARecordingCaptureAssistantPayload):
+    try:
+        return _rpa_runtime().start_capture_assistant(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-assistant/prepare-target")
+async def prepare_rpa_capture_assistant_target(recording_id: str, payload: RPARecordingCaptureAssistantPayload):
+    try:
+        return _rpa_runtime().prepare_capture_target(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-assistant/poll")
+async def poll_rpa_capture_assistant(recording_id: str, payload: RPARecordingCaptureAssistantPayload):
+    try:
+        return _rpa_runtime().poll_capture_assistant(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-assistant/capture")
+async def capture_rpa_capture_assistant_event(recording_id: str, payload: RPARecordingEventPayload):
+    try:
+        return _rpa_runtime().capture_assistant_event(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-pool/{temp_element_id}/save")
+async def save_rpa_capture_pool_item(recording_id: str, temp_element_id: str, payload: dict | None = Body(default=None)):
+    try:
+        data = dict(payload or {})
+        return _rpa_runtime().save_capture_pool_item(
+            recording_id,
+            temp_element_id,
+            name=data.get("name"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-assistant/stop")
+async def stop_rpa_capture_assistant(recording_id: str, payload: RPARecordingCaptureAssistantPayload):
+    try:
+        return _rpa_runtime().stop_capture_assistant(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -167,13 +397,14 @@ async def stop_rpa_recording(recording_id: str, payload: RPARecordingStopPayload
 
 
 @router.get("/rpa/templates")
-async def list_rpa_templates(limit: int = 100, app_id: str | None = None, status: str | None = None):
+async def list_rpa_templates(limit: int = 100, app_id: str | None = None, status: str | None = None, includeArchived: bool = False):
     try:
         runtime = _rpa_runtime()
         templates = runtime.list_templates(
             limit=max(1, min(limit, 200)),
             app_id=app_id,
             status=status,
+            include_archived=includeArchived,
         )
         return {
             "templates": templates,
@@ -232,6 +463,44 @@ async def review_rpa_template(template_id: str, payload: RPATemplateReviewPayloa
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/templates/{template_id}/archive")
+async def archive_rpa_template(template_id: str, payload: dict | None = Body(default=None)):
+    try:
+        data = payload or {}
+        template = _rpa_runtime().archive_template(
+            template_id,
+            actor=str(data.get("actor") or "admin_ui"),
+            reason=data.get("reason"),
+        )
+        return {"template": template, "summary": _rpa_runtime().template_service.summarize_templates([template])}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/templates/{template_id}/restore")
+async def restore_rpa_template(template_id: str, payload: dict | None = None):
+    try:
+        data = payload or {}
+        template = _rpa_runtime().restore_template(template_id, actor=str(data.get("actor") or "admin_ui"))
+        return {"template": template, "summary": _rpa_runtime().template_service.summarize_templates([template])}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/rpa/templates/{template_id}")
+async def delete_rpa_template(template_id: str, confirm: bool = False):
+    try:
+        return _rpa_runtime().delete_template(template_id, confirm=confirm, actor="admin_ui")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -347,6 +616,7 @@ async def run_rpa_draft(script_id: str, payload: RPADraftRunPayload):
             workspace_id=payload.workspace_id,
             workspace_path=payload.workspace_path,
             trigger_source=payload.trigger_source or "manual",
+            non_chat_run=payload.non_chat_run,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -369,6 +639,7 @@ async def run_existing_rpa_flow(payload: RPAExistingFlowPayload):
             workspace_id=payload.workspace_id,
             workspace_path=payload.workspace_path,
             trigger_source=payload.trigger_source or "manual",
+            non_chat_run=payload.non_chat_run,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

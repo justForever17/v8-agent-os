@@ -323,6 +323,7 @@ class ComputerUseAppQueryPayload(ComputerUseSessionPayload):
     limit: int = 20
     include_running: bool = Field(default=True, alias="includeRunning")
     force_refresh: bool = Field(default=False, alias="forceRefresh")
+    include_learned: bool = Field(default=True, alias="includeLearned")
 
 
 class ComputerUseAgentBrowserOpenPayload(BaseModel):
@@ -413,6 +414,7 @@ class RPARuntimeBasePayload(BaseModel):
     workspace_id: Optional[str] = Field(default=None, alias="workspaceId")
     workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
     trigger_source: Optional[str] = Field(default="manual", alias="triggerSource")
+    non_chat_run: bool = Field(default=False, alias="nonChatRun")
     cwd: Optional[str] = None
     output_dir: Optional[str] = Field(default=None, alias="outputDir")
 
@@ -439,6 +441,27 @@ class RPADraftPatchPayload(BaseModel):
     steps: Optional[List[Dict[str, Any]]] = None
     variables: Optional[List[Dict[str, Any]]] = None
     metadata_patch: Dict[str, Any] = Field(default_factory=dict, alias="metadataPatch")
+
+
+class RPADraftCreatePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    app_id: Optional[str] = Field(default=None, alias="appId")
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
+    variables: List[Dict[str, Any]] = Field(default_factory=list)
+    object_library: List[Dict[str, Any]] = Field(default_factory=list, alias="objectLibrary")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RPADraftStepValidationPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    step: Dict[str, Any] = Field(default_factory=dict)
+    index: Optional[int] = None
+    mode: str = "dry_run"
+    variables: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RPADraftRunPayload(RPADraftPreparePayload):
@@ -489,6 +512,42 @@ class RPARecordingEventPayload(BaseModel):
     verification: Dict[str, Any] = Field(default_factory=dict)
     artifacts: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RPARecordingDesktopSamplePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    event: Dict[str, Any] = Field(default_factory=dict)
+    coordinate: Dict[str, Any] = Field(default_factory=dict)
+    target: Dict[str, Any] = Field(default_factory=dict)
+    params: Dict[str, Any] = Field(default_factory=dict)
+    viewport_mapping: Dict[str, Any] = Field(default_factory=dict, alias="viewportMapping")
+    forward_action: bool = Field(default=False, alias="forwardAction")
+
+
+class RPARecordingBrowserCapturePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    target_id: Optional[str] = Field(default=None, alias="targetId")
+    target_url: Optional[str] = Field(default=None, alias="targetUrl")
+    window_title: Optional[str] = Field(default=None, alias="windowTitle")
+    app_id: Optional[str] = Field(default=None, alias="appId")
+    max_events: int = Field(default=50, alias="maxEvents")
+
+
+class RPARecordingCaptureAssistantPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    action: str = "click"
+    backend: Optional[str] = None
+    target: Dict[str, Any] = Field(default_factory=dict)
+    params: Dict[str, Any] = Field(default_factory=dict)
+    target_lock: Dict[str, Any] = Field(default_factory=dict, alias="targetLock")
+    record_and_forward: bool = Field(default=False, alias="recordAndForward")
+    engine_base_url: Optional[str] = Field(default=None, alias="engineBaseUrl")
+    hotkey: Optional[str] = None
+    mode: str = "capture_only"
+    persistent: bool = False
 
 
 class RPARecordingStopPayload(BaseModel):

@@ -97,6 +97,7 @@ async def list_computer_use_apps(payload: ComputerUseAppQueryPayload):
             limit=max(1, min(payload.limit, 100)),
             include_running=payload.include_running,
             force_refresh=payload.force_refresh,
+            include_learned=payload.include_learned,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

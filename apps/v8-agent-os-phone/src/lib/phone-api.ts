@@ -28,6 +28,7 @@ import type {
     RPAAvailability,
     RPADraftSummary,
     RPARobotScriptSummary,
+    RPATemplateSummary,
     SkillReferenceSummary,
     SubagentFamilySummary,
     AdminProcessRef,
@@ -819,6 +820,16 @@ export async function listRpaDrafts(authorizedFetch: AuthorizedFetch, limit = 8)
     return normalizeArray<RPADraftSummary>(payload.drafts);
 }
 
+export async function listRpaTemplates(authorizedFetch: AuthorizedFetch, limit = 50, status = "approved") {
+    const payload = await authorizedJson<{ templates?: RPATemplateSummary[] }>(
+        authorizedFetch,
+        `/api/client/rpa/templates?limit=${encodeURIComponent(String(limit))}&status=${encodeURIComponent(status)}`,
+        translateCurrent("src.lib.phone_api.rpa_2"),
+        { cache: "no-store" },
+    );
+    return normalizeArray<RPATemplateSummary>(payload.templates);
+}
+
 export async function listRpaScripts(authorizedFetch: AuthorizedFetch, limit = 50) {
     const payload = await authorizedJson<{ scripts?: RPARobotScriptSummary[] }>(
         authorizedFetch,
@@ -853,7 +864,7 @@ export async function runRpaDraft(
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ variables }),
+            body: JSON.stringify({ variables, triggerSource: "rpa_phone", nonChatRun: true }),
         },
     );
 }
@@ -870,7 +881,7 @@ export async function runExistingRobotFlow(
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ robotFile, variables }),
+            body: JSON.stringify({ robotFile, variables, triggerSource: "rpa_phone", nonChatRun: true }),
         },
     );
 }

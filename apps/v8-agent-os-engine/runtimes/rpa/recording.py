@@ -108,6 +108,7 @@ class RPARecordingManager:
             "browserProfileId": _safe_string(payload.get("browserProfileId")),
             "windowHandle": payload.get("windowHandle"),
             "activeApp": _coerce_dict(payload.get("activeApp")),
+            "targetLock": _coerce_dict(payload.get("targetLock")),
             "captureOptions": _coerce_dict(payload.get("captureOptions")),
             "createdAt": now,
             "updatedAt": now,
@@ -134,7 +135,58 @@ class RPARecordingManager:
     def cancel(self, recording_id: str) -> Dict[str, Any]:
         session = self._require_session(recording_id)
         session["state"] = "cancelled"
+        session["capturePool"] = []
+        session["capturePoolClearedAt"] = utc_now_iso()
         return self._public_session(self._write_session(session))
+
+    def update_capture_assistant(self, recording_id: str, assistant: Dict[str, Any]) -> Dict[str, Any]:
+        session = self._require_session(recording_id)
+        session["captureAssistant"] = _coerce_dict(assistant)
+        return self._public_session(self._write_session(session))
+
+    def add_capture_pool_item(self, recording_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
+        session = self._require_session(recording_id)
+        pool = _coerce_list(session.get("capturePool"))
+        temp_id = _safe_string(item.get("tempElementId"), f"temp_el_{uuid.uuid4().hex[:10]}")
+        normalized = {
+            **dict(item or {}),
+            "tempElementId": temp_id,
+            "capturedAt": item.get("capturedAt") or utc_now_iso(),
+        }
+        pool = [existing for existing in pool if not (isinstance(existing, dict) and existing.get("tempElementId") == temp_id)]
+        pool.append(normalized)
+        session["capturePool"] = pool[-50:]
+        return self._public_session(self._write_session(session))
+
+    def save_capture_pool_item(
+        self,
+        recording_id: str,
+        temp_element_id: str,
+        *,
+        name: str | None = None,
+    ) -> Dict[str, Any]:
+        session = self._require_session(recording_id)
+        pool = [item for item in _coerce_list(session.get("capturePool")) if isinstance(item, dict)]
+        match = next((item for item in pool if item.get("tempElementId") == temp_element_id), None)
+        if not match:
+            raise ValueError(f"Capture pool item '{temp_element_id}' not found.")
+        library = [item for item in _coerce_list(session.get("objectLibrary")) if isinstance(item, dict)]
+        element_id = _safe_string(match.get("elementId"), f"el_{uuid.uuid4().hex[:10]}")
+        label = _safe_string(name, _safe_string(match.get("label"), element_id))
+        saved = {
+            **dict(match),
+            "elementId": element_id,
+            "name": label,
+            "savedAt": utc_now_iso(),
+            "sourceTempElementId": temp_element_id,
+        }
+        library = [item for item in library if item.get("elementId") != element_id]
+        library.append(saved)
+        session["objectLibrary"] = library[-200:]
+        return {
+            "recording": self._public_session(self._write_session(session)),
+            "element": saved,
+        }
 
     def append_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         session = self._require_session(recording_id)
@@ -184,6 +236,8 @@ class RPARecordingManager:
         session = self._require_session(recording_id)
         if session.get("state") not in {"draft_ready", "failed"}:
             session["state"] = "stopped"
+        session["capturePool"] = []
+        session["capturePoolClearedAt"] = utc_now_iso()
         return self._public_session(self._write_session(session))
 
     def mark_compiling(self, recording_id: str) -> Dict[str, Any]:
@@ -262,10 +316,15 @@ class RPARecordingManager:
         }
         spatial_anchor = _coerce_dict(target_payload.get("spatialAnchor"))
         if coordinate:
+            window_relative_coordinate = _coerce_dict(
+                event.get("windowRelativeCoordinate")
+                or target_payload.get("windowRelativeCoordinate")
+            )
             spatial_anchor = {
                 **spatial_anchor,
                 "x": coordinate.get("x"),
                 "y": coordinate.get("y"),
+                **({"windowRelativeCoordinate": window_relative_coordinate} if window_relative_coordinate else {}),
                 "viewport": _coerce_dict(event.get("viewport")),
                 "screen": _coerce_dict(event.get("screen")),
                 "monitorId": event.get("monitorId"),
@@ -277,16 +336,29 @@ class RPARecordingManager:
             {
                 "recordedBy": "human",
                 "recordingSessionId": session.get("recordingSessionId"),
+                "source": event.get("source") or metadata.get("source") or "admin_rpa_recorder",
                 "sourceEventIds": [event.get("eventId")],
                 "selectorCandidates": selector_candidates[:5],
-                "coordinateFallback": bool(coordinate and not selector),
+                "coordinateFallback": bool(event.get("fragileCoordinateFallback") or coordinate and not selector),
+                "fragileCoordinateFallback": bool(event.get("fragileCoordinateFallback") or coordinate and not selector),
                 "sensitiveInput": sensitive,
                 "targetMode": session.get("targetMode"),
                 "browserKind": session.get("browserKind"),
                 "browserProfileId": session.get("browserProfileId"),
                 "viewport": _coerce_dict(event.get("viewport")),
+                "viewportMapping": _coerce_dict(event.get("viewportMapping")),
                 "screen": _coerce_dict(event.get("screen")),
                 "computerObservation": _coerce_dict(event.get("computerObservation") or metadata.get("computerObservation")),
+                "accessibilitySample": _coerce_dict(event.get("accessibilitySample") or metadata.get("accessibilitySample")),
+                "forwardedActionResult": _coerce_dict(event.get("forwardedActionResult") or metadata.get("forwardedActionResult")),
+                "mergeGroupId": event.get("mergeGroupId") or metadata.get("mergeGroupId"),
+                "captureBackend": event.get("captureBackend") or metadata.get("captureBackend"),
+                "nativeHotkey": _coerce_dict(event.get("nativeHotkey") or metadata.get("nativeHotkey")),
+                "targetWindow": _coerce_dict(event.get("targetWindow") or metadata.get("targetWindow")),
+                "hoverSample": _coerce_dict(event.get("hoverSample") or metadata.get("hoverSample")),
+                "coordinateFallback": bool(event.get("coordinateFallback") or metadata.get("coordinateFallback") or event.get("fragileCoordinateFallback") or coordinate and not selector),
+                "screenshotAnchor": _coerce_dict(event.get("screenshotAnchor") or metadata.get("screenshotAnchor")),
+                "windowRelativeCoordinate": _coerce_dict(event.get("windowRelativeCoordinate") or metadata.get("windowRelativeCoordinate")),
             }
         )
 

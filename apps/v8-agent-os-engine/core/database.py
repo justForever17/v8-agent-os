@@ -1123,6 +1123,7 @@ class DatabaseManager:
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_class ON memory_workflow_candidates (workflow_class)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_source_runtime ON memory_workflow_candidates (source_runtime)')
                 self._backfill_internal_computer_use_probe_sessions(conn)
+                self._backfill_manual_rpa_sessions(conn)
             except Exception as e:
                 print(f"[Database] Migration note: {e}")
             
@@ -1172,6 +1173,44 @@ class DatabaseManager:
             }
             if updated_metadata == metadata:
                 continue
+            cursor.execute(
+                "UPDATE sessions SET metadata = ? WHERE id = ?",
+                (json.dumps(updated_metadata, ensure_ascii=False), row["id"]),
+            )
+
+    def _backfill_manual_rpa_sessions(self, conn: sqlite3.Connection) -> None:
+        """Hide legacy manual RPA run sessions from normal chat history.
+
+        Manual RPA runs have their own RPA ledger/trace surface. If no
+        Supervisor/chat user message created them, they should not appear as
+        conversations in Phone/Web history.
+        """
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, metadata
+            FROM sessions
+            WHERE id LIKE 'rpa:draft:%'
+               OR id LIKE 'rpa:file:%'
+            """
+        )
+        for row in cursor.fetchall():
+            metadata: dict[str, Any] = {}
+            raw_metadata = row["metadata"]
+            if raw_metadata:
+                try:
+                    metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else dict(raw_metadata)
+                except Exception:
+                    metadata = {}
+            if metadata.get("hiddenFromHistory") is True:
+                continue
+            updated_metadata = {
+                **metadata,
+                "runtime": metadata.get("runtime") or "rpa",
+                "hiddenFromHistory": True,
+                "manualRpaRun": True,
+                "nonChatRun": True,
+            }
             cursor.execute(
                 "UPDATE sessions SET metadata = ? WHERE id = ?",
                 (json.dumps(updated_metadata, ensure_ascii=False), row["id"]),

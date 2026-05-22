@@ -5,6 +5,7 @@ import ctypes
 import json
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -139,14 +140,17 @@ def _base_payload(args: argparse.Namespace, *, backend: str) -> dict[str, Any]:
             "source": "host_capture_assistant",
             "captureAssistant": True,
             "captureBackend": backend,
+            "nativeInspectorSessionId": args.native_inspector_session_id or None,
             "captureMode": args.mode,
             "targetLabel": args.target_label,
             "targetWindowTitle": args.target_window_title or None,
             "targetWindowHandle": args.target_window_handle or None,
+            "targetWindowProcessId": args.target_window_process_id or None,
             "recordAndForward": bool(args.record_and_forward),
             "persistent": bool(args.persistent),
             "hotkey": args.hotkey,
             "cancelHotkey": args.cancel_hotkey,
+            "highlightOverlay": bool(getattr(args, "highlight_overlay", False)),
             "capturedAt": _utc_now(),
         },
     }
@@ -214,39 +218,135 @@ def _windows_screen() -> dict[str, Any]:
     }
 
 
-def _build_windows_payload(args: argparse.Namespace, *, x: int, y: int, backend: str) -> dict[str, Any]:
+def _rect_to_bounds(rect: Any) -> dict[str, int]:
+    left = int(getattr(rect, "left", getattr(rect, "Left", 0)) or 0)
+    top = int(getattr(rect, "top", getattr(rect, "Top", 0)) or 0)
+    right = int(getattr(rect, "right", getattr(rect, "Right", left)) or left)
+    bottom = int(getattr(rect, "bottom", getattr(rect, "Bottom", top)) or top)
+    return {
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": max(0, right - left),
+        "height": max(0, bottom - top),
+    }
+
+
+def _is_admin_surface(window: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(window.get(key) or "")
+        for key in ("title", "className")
+    ).lower()
+    return any(marker in text for marker in ("v8 agent os", "v8 os", "localhost:9528", "127.0.0.1:9528", "desktop live"))
+
+
+def _windows_uia_sample(x: int, y: int) -> dict[str, Any]:
+    try:
+        from pywinauto import Desktop  # type: ignore
+
+        element = Desktop(backend="uia").from_point(x, y)
+        info = getattr(element, "element_info", None)
+        rect = getattr(info, "rectangle", None)
+        bounds = _rect_to_bounds(rect) if rect is not None else {}
+        name = str(getattr(info, "name", "") or "")
+        automation_id = str(getattr(info, "automation_id", "") or "")
+        control_type = str(getattr(info, "control_type", "") or "")
+        class_name = str(getattr(info, "class_name", "") or "")
+        candidates = []
+        if automation_id or name or control_type or class_name:
+            candidates.append(
+                {
+                    "kind": "uia",
+                    "automationId": automation_id or None,
+                    "name": name or None,
+                    "controlType": control_type or None,
+                    "className": class_name or None,
+                    "selector": " | ".join(part for part in [control_type, automation_id, name] if part),
+                }
+            )
+        return {
+            "ok": bool(candidates),
+            "backend": "uia",
+            "name": name,
+            "automationId": automation_id,
+            "controlType": control_type,
+            "className": class_name,
+            "bounds": bounds,
+            "confidence": 0.82 if candidates else 0.45,
+            "selectorCandidates": candidates,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "backend": "win32",
+            "error": str(exc),
+            "confidence": 0.35,
+            "selectorCandidates": [],
+        }
+
+
+def _windows_hover_sample(args: argparse.Namespace, x: int, y: int) -> dict[str, Any]:
     window = _windows_window_info(x, y)
     bounds = dict(window.get("bounds") or {})
     rel_x = int(x - int(bounds.get("left") or 0))
     rel_y = int(y - int(bounds.get("top") or 0))
+    uia = _windows_uia_sample(x, y)
+    highlight_bounds = dict(uia.get("bounds") or {}) if uia.get("ok") and uia.get("bounds") else bounds
+    if not highlight_bounds.get("width") or not highlight_bounds.get("height"):
+        highlight_bounds = {"left": x - 24, "top": y - 24, "right": x + 24, "bottom": y + 24, "width": 48, "height": 48}
+    return {
+        "x": int(x),
+        "y": int(y),
+        "windowRelativeCoordinate": {"x": rel_x, "y": rel_y},
+        "windowTitle": window.get("title"),
+        "className": window.get("className"),
+        "targetLabel": args.target_label,
+        "targetWindow": window,
+        "element": uia,
+        "selectorCandidates": list(uia.get("selectorCandidates") or []),
+        "highlightBounds": highlight_bounds,
+        "ignored": _is_admin_surface(window) and bool(getattr(args, "ignore_admin_surface", True)),
+    }
+
+
+def _build_windows_payload(args: argparse.Namespace, *, x: int, y: int, backend: str, hover_sample: dict[str, Any] | None = None) -> dict[str, Any]:
+    hover = hover_sample or _windows_hover_sample(args, x, y)
+    window = dict(hover.get("targetWindow") or _windows_window_info(x, y))
+    bounds = dict(window.get("bounds") or {})
+    rel_x = int(x - int(bounds.get("left") or 0))
+    rel_y = int(y - int(bounds.get("top") or 0))
+    selector_candidates = list(hover.get("selectorCandidates") or [])
+    has_selector = bool(selector_candidates)
+    element = dict(hover.get("element") or {})
+    highlight_bounds = dict(hover.get("highlightBounds") or element.get("bounds") or bounds)
     payload = _base_payload(args, backend=backend)
+    payload["fragileCoordinateFallback"] = not has_selector
+    payload["coordinateFallback"] = not has_selector
     payload.update(
         {
+            "nativeInspectorSessionId": args.native_inspector_session_id or None,
             "coordinate": {"x": int(x), "y": int(y)},
             "windowRelativeCoordinate": {"x": rel_x, "y": rel_y},
             "screen": _windows_screen(),
             "targetWindow": window,
+            "highlightBounds": highlight_bounds,
+            "selectorCandidates": selector_candidates,
             "target": {
                 "window": {
                     **window,
                     **({"requestedTitle": args.target_window_title} if args.target_window_title else {}),
                     **({"requestedHandle": args.target_window_handle} if args.target_window_handle else {}),
                 },
-                "spatialAnchor": {
+                **({"selector": selector_candidates[0]} if has_selector else {}),
+                **({"spatialAnchor": {
                     "windowRelativeCoordinate": {"x": rel_x, "y": rel_y},
                     "windowBounds": bounds,
                     "fallback": True,
                     "source": "windows_register_hotkey",
-                },
+                }} if not has_selector else {}),
             },
-            "hoverSample": {
-                "x": int(x),
-                "y": int(y),
-                "windowRelativeCoordinate": {"x": rel_x, "y": rel_y},
-                "targetLabel": args.target_label,
-                "windowTitle": window.get("title"),
-                "className": window.get("className"),
-            },
+            "hoverSample": hover,
             "nativeHotkey": {
                 "backend": "windows_register_hotkey",
                 "hotkey": args.hotkey,
@@ -266,6 +366,10 @@ def _build_windows_payload(args: argparse.Namespace, *, x: int, y: int, backend:
             "windowRelativeCoordinate": {"x": rel_x, "y": rel_y},
             "nativeHotkey": payload["nativeHotkey"],
             "screenshotAnchor": payload["screenshotAnchor"],
+            "nativeInspectorSessionId": args.native_inspector_session_id or None,
+            "highlightBounds": highlight_bounds,
+            "selectorCandidates": selector_candidates,
+            "hoverSample": hover,
         }
     )
     payload["metadata"] = metadata
@@ -286,6 +390,143 @@ def _run_windows_native(args: argparse.Namespace) -> int:
     if not cancel_registered:
         print(json.dumps({"ok": False, "warning": f"RegisterHotKey {normalized_cancel_hotkey} failed; Admin stop remains available."}, ensure_ascii=False), file=sys.stderr, flush=True)
     print(json.dumps({"ok": True, "backend": "windows_register_hotkey", "hotkey": args.hotkey, "cancelHotkey": args.cancel_hotkey}, ensure_ascii=False), flush=True)
+
+    if bool(getattr(args, "highlight_overlay", False)):
+        try:
+            import tkinter as tk
+        except Exception as exc:  # pragma: no cover - host dependent.
+            print(json.dumps({"ok": False, "backend": "windows_register_hotkey", "warning": f"tkinter_unavailable: {exc}"}, ensure_ascii=False), file=sys.stderr, flush=True)
+        else:
+            user32.UnregisterHotKey(None, capture_id)
+            if cancel_registered:
+                user32.UnregisterHotKey(None, cancel_id)
+            posted_state = {"posted": False}
+            state: dict[str, Any] = {"capture": False, "cancel": False, "lastHover": None, "lastPoint": None, "error": ""}
+            stop_event = threading.Event()
+            ready_event = threading.Event()
+
+            def message_loop() -> None:
+                thread_cancel_registered = False
+                if not user32.RegisterHotKey(None, capture_id, capture_mods, capture_vk):
+                    state["error"] = f"RegisterHotKey {normalized_hotkey} failed; the hotkey may be occupied by another app."
+                    ready_event.set()
+                    return
+                thread_cancel_registered = bool(user32.RegisterHotKey(None, cancel_id, cancel_mods, cancel_vk))
+                state["cancelRegistered"] = thread_cancel_registered
+                ready_event.set()
+                try:
+                    msg = wintypes.MSG()
+                    while not stop_event.is_set() and user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                        if msg.message != WM_HOTKEY:
+                            continue
+                        if thread_cancel_registered and int(msg.wParam) == cancel_id:
+                            state["cancel"] = True
+                            break
+                        if int(msg.wParam) == capture_id:
+                            state["capture"] = True
+                finally:
+                    user32.UnregisterHotKey(None, capture_id)
+                    if thread_cancel_registered:
+                        user32.UnregisterHotKey(None, cancel_id)
+
+            thread = threading.Thread(target=message_loop, name="v8-rpa-native-inspector-hotkey", daemon=True)
+            thread.start()
+            ready_event.wait(timeout=1.5)
+            if state.get("error"):
+                raise RuntimeError(str(state["error"]))
+
+            root = tk.Tk()
+            root.title("V8 RPA Native Inspector")
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            transparent = "#ff00ff"
+            try:
+                root.attributes("-transparentcolor", transparent)
+            except Exception:
+                try:
+                    root.attributes("-alpha", 0.18)
+                except Exception:
+                    pass
+            screen = _windows_screen()
+            screen_w = int(screen.get("width") or root.winfo_screenwidth())
+            screen_h = int(screen.get("height") or root.winfo_screenheight())
+            root.geometry(f"{screen_w}x{screen_h}+0+0")
+            root.configure(bg=transparent)
+            canvas = tk.Canvas(root, width=screen_w, height=screen_h, highlightthickness=0, bg=transparent)
+            canvas.place(x=0, y=0)
+            rect_id = canvas.create_rectangle(0, 0, 0, 0, outline="#22d3ee", width=3)
+            label_id = canvas.create_text(16, 16, text="", fill="#ffffff", anchor="nw", font=("Segoe UI", 10, "bold"))
+            label_bg_id = canvas.create_rectangle(10, 10, 420, 44, fill="#111827", outline="#111827")
+            canvas.tag_raise(label_bg_id)
+            canvas.tag_raise(label_id)
+            try:
+                hwnd = int(root.winfo_id())
+                ex_style = int(user32.GetWindowLongW(wintypes.HWND(hwnd), -20))
+                user32.SetWindowLongW(wintypes.HWND(hwnd), -20, ex_style | 0x00080000 | 0x00000020 | 0x00000008 | 0x00000080 | 0x08000000)
+            except Exception:
+                pass
+
+            interval = max(34, int(1000 / max(2, min(30, float(getattr(args, "hover_sample_hz", 12) or 12)))))
+
+            def close() -> None:
+                stop_event.set()
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+
+            def post_capture(hover: dict[str, Any], x: int, y: int) -> None:
+                if hover.get("ignored"):
+                    canvas.itemconfig(label_id, text="V8 Admin / Desktop Live ignored. Move to target app, then press capture again.")
+                    return
+                payload = _build_windows_payload(args, x=x, y=y, backend="windows_register_hotkey", hover_sample=hover)
+                try:
+                    _post_event(args.engine_url, args.recording_id, payload)
+                    posted_state["posted"] = True
+                    canvas.itemconfig(label_id, text=f"Captured: {hover.get('windowTitle') or args.target_label}")
+                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+                if not args.persistent:
+                    close()
+
+            def tick() -> None:
+                if state.get("cancel"):
+                    close()
+                    return
+                x, y = _windows_cursor_position()
+                hover = _windows_hover_sample(args, x, y)
+                state["lastHover"] = hover
+                state["lastPoint"] = {"x": x, "y": y}
+                bounds = dict(hover.get("highlightBounds") or {})
+                outline = "#fb7185" if hover.get("ignored") else ("#22c55e" if hover.get("selectorCandidates") else "#f59e0b")
+                canvas.itemconfig(rect_id, outline=outline)
+                canvas.coords(
+                    rect_id,
+                    int(bounds.get("left") or x - 24),
+                    int(bounds.get("top") or y - 24),
+                    int(bounds.get("right") or x + 24),
+                    int(bounds.get("bottom") or y + 24),
+                )
+                element = dict(hover.get("element") or {})
+                label = element.get("name") or hover.get("windowTitle") or args.target_label
+                kind = element.get("controlType") or element.get("backend") or ("coordinate fallback" if not hover.get("selectorCandidates") else "element")
+                status = "ignored admin surface" if hover.get("ignored") else f"{kind} · {args.hotkey} capture · {args.cancel_hotkey} cancel"
+                canvas.itemconfig(label_id, text=f"{label}\n{status}")
+                bbox = canvas.bbox(label_id) or (10, 10, 420, 44)
+                canvas.coords(label_bg_id, bbox[0] - 8, bbox[1] - 6, bbox[2] + 8, bbox[3] + 6)
+                canvas.tag_raise(label_bg_id)
+                canvas.tag_raise(label_id)
+                if state.get("capture"):
+                    state["capture"] = False
+                    post_capture(hover, x, y)
+                root.after(interval, tick)
+
+            root.bind("<Escape>", lambda _event=None: close())
+            root.after(50, tick)
+            root.mainloop()
+            stop_event.set()
+            return 0 if posted_state["posted"] else 1
+
     posted = False
     try:
         msg = wintypes.MSG()
@@ -297,7 +538,11 @@ def _run_windows_native(args: argparse.Namespace) -> int:
             if int(msg.wParam) != capture_id:
                 continue
             x, y = _windows_cursor_position()
-            payload = _build_windows_payload(args, x=x, y=y, backend="windows_register_hotkey")
+            hover = _windows_hover_sample(args, x, y)
+            if hover.get("ignored"):
+                print(json.dumps({"ok": False, "ignored": "admin_surface", "window": hover.get("targetWindow")}, ensure_ascii=False), file=sys.stderr, flush=True)
+                continue
+            payload = _build_windows_payload(args, x=x, y=y, backend="windows_register_hotkey", hover_sample=hover)
             try:
                 _post_event(args.engine_url, args.recording_id, payload)
                 posted = True
@@ -420,6 +665,13 @@ def main() -> int:
     parser.add_argument("--record-and-forward", action="store_true")
     parser.add_argument("--target-window-title", default="")
     parser.add_argument("--target-window-handle", default="")
+    parser.add_argument("--target-window-process-id", default="")
+    parser.add_argument("--native-inspector-session-id", default="")
+    parser.add_argument("--hover-sample-hz", type=float, default=12.0)
+    parser.add_argument("--highlight-overlay", dest="highlight_overlay", action="store_true", default=True)
+    parser.add_argument("--no-highlight-overlay", dest="highlight_overlay", action="store_false")
+    parser.add_argument("--ignore-admin-surface", dest="ignore_admin_surface", action="store_true", default=True)
+    parser.add_argument("--allow-admin-surface", dest="ignore_admin_surface", action="store_false")
     args = parser.parse_args()
 
     backend = str(args.backend or "auto").strip().lower()
@@ -431,6 +683,12 @@ def main() -> int:
                 print(json.dumps({"ok": False, "backend": "windows_register_hotkey", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
                 return 2
             print(json.dumps({"ok": False, "backend": "windows_register_hotkey", "fallback": "fallback_overlay", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+    if backend in {"native_hotkey", "mac_ax"} and sys.platform == "darwin":
+        print(json.dumps({"ok": False, "backend": "mac_ax", "error": "requires_accessibility_permission"}, ensure_ascii=False), file=sys.stderr)
+        return 2
+    if backend in {"native_hotkey", "linux_portal", "x11_atspi"} and sys.platform.startswith("linux"):
+        print(json.dumps({"ok": False, "backend": "linux_portal", "error": "wayland_portal_limited_or_atspi_unavailable"}, ensure_ascii=False), file=sys.stderr)
+        return 2
     return _run_overlay(args)
 
 

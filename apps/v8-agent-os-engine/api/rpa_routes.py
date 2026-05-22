@@ -263,6 +263,22 @@ async def get_rpa_capture_assistant_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/rpa/native-inspector/status")
+async def get_rpa_native_inspector_status():
+    try:
+        return _rpa_runtime().native_inspector_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/native-inspector/config")
+async def save_rpa_native_inspector_config(payload: dict | None = Body(default=None)):
+    try:
+        return _rpa_runtime().save_native_inspector_config(dict(payload or {}))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/rpa/capture-assistant/start-service")
 async def start_rpa_capture_assistant_service(payload: dict | None = Body(default=None)):
     try:
@@ -271,10 +287,31 @@ async def start_rpa_capture_assistant_service(payload: dict | None = Body(defaul
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/rpa/native-inspector/start-service")
+async def start_rpa_native_inspector_service(payload: dict | None = Body(default=None)):
+    try:
+        return _rpa_runtime().start_native_inspector_service(dict(payload or {}))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/rpa/recordings/{recording_id}/capture-assistant/start")
 async def start_rpa_capture_assistant(recording_id: str, payload: RPARecordingCaptureAssistantPayload):
     try:
         return _rpa_runtime().start_capture_assistant(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/native-inspector/start")
+async def start_rpa_native_inspector(recording_id: str, payload: RPARecordingCaptureAssistantPayload):
+    try:
+        return _rpa_runtime().start_native_inspector(
             recording_id,
             payload.model_dump(by_alias=True, exclude_none=True),
         )
@@ -310,6 +347,16 @@ async def poll_rpa_capture_assistant(recording_id: str, payload: RPARecordingCap
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/rpa/recordings/{recording_id}/native-inspector/poll")
+async def poll_rpa_native_inspector(recording_id: str, payload: dict | None = Body(default=None)):
+    try:
+        return _rpa_runtime().poll_native_inspector(recording_id, dict(payload or {}))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/rpa/recordings/{recording_id}/capture-assistant/capture")
 async def capture_rpa_capture_assistant_event(recording_id: str, payload: RPARecordingEventPayload):
     try:
@@ -332,6 +379,16 @@ async def save_rpa_capture_pool_item(recording_id: str, temp_element_id: str, pa
             temp_element_id,
             name=data.get("name"),
         )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/native-inspector/stop")
+async def stop_rpa_native_inspector(recording_id: str, payload: dict | None = Body(default=None)):
+    try:
+        return _rpa_runtime().stop_native_inspector(recording_id, dict(payload or {}))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

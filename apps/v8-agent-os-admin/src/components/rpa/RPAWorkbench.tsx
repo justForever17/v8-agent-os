@@ -634,6 +634,10 @@ function captureHotkeyInput(event: KeyboardEvent<HTMLInputElement>, setValue: (v
   }
   if (value) setValue(value);
 }
+
+const RPA_CAPTURE_HOTKEY_STORAGE_KEY = "v8.rpa.captureHotkey";
+const RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY = "v8.rpa.captureCancelHotkey";
+
 function collectCandidateRecords(value: unknown, out: Record<string, unknown>[] = [], depth = 0) {
   if (depth > 4 || out.length >= 30) return out;
   if (Array.isArray(value)) {
@@ -804,6 +808,9 @@ export function RPAWorkbench() {
   const [captureAssistantStage, setCaptureAssistantStage] = useState<"idle" | "creating" | "preparing" | "starting" | "active" | "captured" | "failed">("idle");
   const [captureHotkey, setCaptureHotkey] = useState("Ctrl+Alt+C");
   const [captureCancelHotkey, setCaptureCancelHotkey] = useState("Ctrl+Alt+X");
+  const [captureHotkeyStorageReady, setCaptureHotkeyStorageReady] = useState(false);
+  const [nativeInspectorStatus, setNativeInspectorStatus] = useState<Record<string, unknown> | null>(null);
+  const [nativeInspectorStatusLoaded, setNativeInspectorStatusLoaded] = useState(false);
   const [computerApps, setComputerApps] = useState<ComputerUseAppPayload[]>([]);
   const [computerAppsLoading, setComputerAppsLoading] = useState(false);
   const [computerAppsError, setComputerAppsError] = useState("");
@@ -907,6 +914,15 @@ export function RPAWorkbench() {
     selectedComputerApp?.name,
     selectedComputerApp?.topWindowTitle
   ].filter(Boolean).join(" ")), [canvasTargetAppId, selectedComputerApp]);
+  const canvasCaptureTargetLock = useMemo(() => ({
+    enabled: true,
+    mode: canvasTargetMode,
+    appId: canvasTargetAppId || "desktop",
+    label: selectedComputerAppLabel,
+    browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
+    ignoreAdminSurface: true,
+    consoleTargetBlocked: targetLockLooksLikeAdmin
+  }), [canvasTargetAppId, canvasTargetMode, selectedComputerAppLabel, targetLockLooksLikeAdmin]);
   const appPickerOptions = useMemo(() => {
     const query = appSearch.trim().toLowerCase();
     const normalize = (value: unknown) => String(value || "").toLowerCase();
@@ -990,11 +1006,85 @@ export function RPAWorkbench() {
   }, [captureAssistantStage, t]);
   const displayCaptureHotkey = captureHotkey.trim() || "Ctrl+Alt+C";
   const displayCaptureCancelHotkey = captureCancelHotkey.trim() || "Ctrl+Alt+X";
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const savedHotkey = window.localStorage.getItem(RPA_CAPTURE_HOTKEY_STORAGE_KEY);
+    const savedCancelHotkey = window.localStorage.getItem(RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY);
+    if (savedHotkey) setCaptureHotkey(savedHotkey);
+    if (savedCancelHotkey) setCaptureCancelHotkey(savedCancelHotkey);
+    setCaptureHotkeyStorageReady(true);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const loadStatus = async () => {
+      try {
+        const res = await fetch("/api/rpa/native-inspector/status", { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        setNativeInspectorStatus(data);
+        if (typeof window !== "undefined") {
+          const config = isPlainRecord(data?.nativeInspector) && isPlainRecord((data.nativeInspector as Record<string, unknown>).config)
+            ? (data.nativeInspector as Record<string, unknown>).config as Record<string, unknown>
+            : {};
+          if (!window.localStorage.getItem(RPA_CAPTURE_HOTKEY_STORAGE_KEY)) {
+            const nextHotkey = firstString(config.hotkey, (data.nativeHotkeyBackend as Record<string, unknown> | undefined)?.hotkey);
+            if (nextHotkey) setCaptureHotkey(nextHotkey);
+          }
+          if (!window.localStorage.getItem(RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY)) {
+            const nextCancel = firstString(config.cancelHotkey, (data.nativeHotkeyBackend as Record<string, unknown> | undefined)?.cancelHotkey);
+            if (nextCancel) setCaptureCancelHotkey(nextCancel);
+          }
+        }
+      } catch {
+        // Native inspector status is advisory; the capture button will still surface endpoint errors.
+      } finally {
+        if (!cancelled) setNativeInspectorStatusLoaded(true);
+      }
+    };
+    void loadStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined" || !captureHotkeyStorageReady) return;
+    window.localStorage.setItem(RPA_CAPTURE_HOTKEY_STORAGE_KEY, displayCaptureHotkey);
+  }, [captureHotkeyStorageReady, displayCaptureHotkey]);
+  useEffect(() => {
+    if (typeof window === "undefined" || !captureHotkeyStorageReady) return;
+    window.localStorage.setItem(RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY, displayCaptureCancelHotkey);
+  }, [captureHotkeyStorageReady, displayCaptureCancelHotkey]);
+  useEffect(() => {
+    if (!captureHotkeyStorageReady || !nativeInspectorStatusLoaded) return;
+    const timer = window.setTimeout(() => {
+      void fetch("/api/rpa/native-inspector/config", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          backend: "auto",
+          hotkey: displayCaptureHotkey,
+          cancelHotkey: displayCaptureCancelHotkey,
+          highlightOverlay: true,
+          hoverSampleHz: 12,
+        })
+      }).then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          setNativeInspectorStatus(current => ({ ...(current || {}), ...data }));
+        }
+      }).catch(() => undefined);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [captureHotkeyStorageReady, displayCaptureCancelHotkey, displayCaptureHotkey, nativeInspectorStatusLoaded]);
   const nativeHotkeyBackend = useMemo(() => {
     const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
     const backend = assistant.nativeHotkeyBackend;
-    return isPlainRecord(backend) ? backend : null;
-  }, [activeRecording]);
+    if (isPlainRecord(backend)) return backend;
+    const statusBackend = nativeInspectorStatus && isPlainRecord(nativeInspectorStatus.nativeHotkeyBackend) ? nativeInspectorStatus.nativeHotkeyBackend : null;
+    return isPlainRecord(statusBackend) ? statusBackend : null;
+  }, [activeRecording, nativeInspectorStatus]);
   const captureAssistantDiagnostic = useMemo(() => {
     const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
     const result = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
@@ -1373,13 +1463,8 @@ export function RPAWorkbench() {
         launchable: selectedComputerApp.launchable
       } : undefined,
       targetLock: {
-        enabled: true,
-        mode: canvasTargetMode,
+        ...canvasCaptureTargetLock,
         appId: targetAppId,
-        label: selectedComputerAppLabel,
-        browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
-        ignoreAdminSurface: true,
-        consoleTargetBlocked: targetLockLooksLikeAdmin
       },
       captureOptions: {
         screenshotAnchors: true,
@@ -1531,6 +1616,7 @@ export function RPAWorkbench() {
           label: selectedComputerAppLabel,
           ignoreAdminSurface: true,
           consoleTargetBlocked: targetLockLooksLikeAdmin,
+          targetLock: canvasCaptureTargetLock,
         })
       }), t("components.rpa.RPAWorkbench.studioCaptureTargetPrepared"));
       if (prepared?.recording) {
@@ -1540,7 +1626,7 @@ export function RPAWorkbench() {
         throw new Error(prepared?.reason || prepared?.detail || prepared?.error || t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"));
       }
       setCaptureAssistantStage("starting");
-      const data = await runAction(`recording:capture-assistant:start:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/capture-assistant/start`, {
+      const data = await runAction(`recording:native-inspector:start:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/native-inspector/start`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -1552,15 +1638,11 @@ export function RPAWorkbench() {
           hotkey: displayCaptureHotkey,
           cancelHotkey: displayCaptureCancelHotkey,
           persistent: true,
+          highlightOverlay: true,
           recordAndForward,
-          targetLock: {
-            enabled: true,
-            mode: canvasTargetMode,
-            appId: canvasTargetAppId || "desktop",
-            label: selectedComputerAppLabel,
-            ignoreAdminSurface: true,
-            consoleTargetBlocked: targetLockLooksLikeAdmin,
-          },
+          targetLock: canvasCaptureTargetLock,
+          reusePreparedTarget: true,
+          preparedTarget: prepared?.targetWindow,
         })
       }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"));
       if (data?.recording) {
@@ -1585,7 +1667,7 @@ export function RPAWorkbench() {
   };
   const handleCaptureAssistantStop = async () => {
     if (!activeRecording?.recordingSessionId) return;
-    const data = await runAction(`recording:capture-assistant:stop:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-assistant/stop`, {
+    const data = await runAction(`recording:native-inspector:stop:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/native-inspector/stop`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -1604,7 +1686,7 @@ export function RPAWorkbench() {
     if (!activeRecording?.recordingSessionId) return;
     const previousPoolCount = Array.isArray(activeRecording.capturePool) ? activeRecording.capturePool.length : 0;
     try {
-      const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-assistant/poll`, {
+      const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/native-inspector/poll`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"

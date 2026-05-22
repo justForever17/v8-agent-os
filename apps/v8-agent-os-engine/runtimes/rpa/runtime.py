@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from core.audit_logger import audit_logger
 from core.database import db
 from core.realtime_protocol import utc_now_iso
+from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 from erc.kernel import erc_kernel
 from erc.runtime_context import bind_runtime_context
@@ -49,14 +50,53 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _native_hotkey_backend_capability() -> Dict[str, Any]:
+_DEFAULT_NATIVE_INSPECTOR_CONFIG: Dict[str, Any] = {
+    "enabled": True,
+    "backend": "auto",
+    "hotkey": "Ctrl+Alt+C",
+    "cancelHotkey": "Ctrl+Alt+X",
+    "relockHotkey": "Ctrl+Alt+R",
+    "hoverSampleHz": 12,
+    "highlightOverlay": True,
+    "ignoreAdminSurface": True,
+}
+
+
+def _native_inspector_config_from_disk() -> Dict[str, Any]:
+    try:
+        raw_config = storage.read_json("config.json")
+    except Exception:
+        raw_config = {}
+    rpa_config = raw_config.get("rpa") if isinstance(raw_config, dict) else {}
+    native_config = rpa_config.get("nativeInspector") if isinstance(rpa_config, dict) else {}
+    merged = dict(_DEFAULT_NATIVE_INSPECTOR_CONFIG)
+    if isinstance(native_config, dict):
+        merged.update({key: value for key, value in native_config.items() if value is not None})
+    merged["hotkey"] = str(merged.get("hotkey") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["hotkey"])
+    merged["cancelHotkey"] = str(merged.get("cancelHotkey") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["cancelHotkey"])
+    merged["relockHotkey"] = str(merged.get("relockHotkey") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["relockHotkey"])
+    try:
+        merged["hoverSampleHz"] = max(2, min(30, int(float(merged.get("hoverSampleHz") or 12))))
+    except Exception:
+        merged["hoverSampleHz"] = 12
+    merged["highlightOverlay"] = bool(merged.get("highlightOverlay", True))
+    merged["ignoreAdminSurface"] = bool(merged.get("ignoreAdminSurface", True))
+    return merged
+
+
+def _native_hotkey_backend_capability(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    native_config = dict(config or _native_inspector_config_from_disk())
     if sys.platform.startswith("win"):
         return {
             "backend": "windows_register_hotkey",
             "state": "ready",
             "available": True,
-            "hotkey": "ctrl+alt+c",
-            "cancelHotkey": "ctrl+alt+x",
+            "nativeInspector": True,
+            "hotkey": native_config.get("hotkey") or "Ctrl+Alt+C",
+            "cancelHotkey": native_config.get("cancelHotkey") or "Ctrl+Alt+X",
+            "relockHotkey": native_config.get("relockHotkey") or "Ctrl+Alt+R",
+            "hoverSampleHz": native_config.get("hoverSampleHz") or 12,
+            "highlightOverlay": bool(native_config.get("highlightOverlay", True)),
             "fallback": "fallback_overlay",
         }
     if sys.platform == "darwin":
@@ -64,12 +104,18 @@ def _native_hotkey_backend_capability() -> Dict[str, Any]:
             "backend": "mac_ax",
             "state": "requires_accessibility_permission",
             "available": False,
+            "nativeInspector": True,
+            "hotkey": native_config.get("hotkey") or "Ctrl+Alt+C",
+            "cancelHotkey": native_config.get("cancelHotkey") or "Ctrl+Alt+X",
             "fallback": "fallback_overlay",
         }
     return {
         "backend": "linux_portal",
         "state": "requires_portal_or_display_backend",
         "available": False,
+        "nativeInspector": True,
+        "hotkey": native_config.get("hotkey") or "Ctrl+Alt+C",
+        "cancelHotkey": native_config.get("cancelHotkey") or "Ctrl+Alt+X",
         "fallback": "fallback_overlay",
     }
 
@@ -1348,10 +1394,46 @@ class RPARuntime:
         recording = self.recording_manager.get(recording_id)
         if not recording:
             raise ValueError(f"Recording session '{recording_id}' not found.")
-        target_lock = dict(payload.get("targetLock") or recording.get("targetLock") or {})
+        target_lock = dict(recording.get("targetLock") or {})
+        target_lock.update(dict(payload.get("targetLock") or {}))
+        top_level_app_id = str(
+            payload.get("appId")
+            or payload.get("app")
+            or payload.get("applicationId")
+            or ""
+        ).strip()
+        if top_level_app_id:
+            target_lock["appId"] = top_level_app_id
+        top_level_label = str(payload.get("label") or payload.get("appName") or "").strip()
+        if top_level_label:
+            target_lock["label"] = top_level_label
+        top_level_mode = str(payload.get("mode") or payload.get("targetMode") or "").strip()
+        if top_level_mode:
+            target_lock["mode"] = top_level_mode
+        if "consoleTargetBlocked" in payload:
+            target_lock["consoleTargetBlocked"] = bool(payload.get("consoleTargetBlocked"))
+        if "ignoreAdminSurface" in payload:
+            target_lock["ignoreAdminSurface"] = bool(payload.get("ignoreAdminSurface"))
+        window = dict(target_lock.get("window") or {})
+        if not window:
+            top_window_title = str(payload.get("windowTitle") or "").strip()
+            top_window_handle = payload.get("windowHandle")
+            if top_window_title:
+                window["title"] = top_window_title
+            if isinstance(top_window_handle, int):
+                window["handle"] = top_window_handle
+            elif isinstance(top_window_handle, str) and top_window_handle.strip().isdigit():
+                window["handle"] = int(top_window_handle.strip())
+            if window:
+                target_lock["window"] = window
         app_id = str(target_lock.get("appId") or recording.get("appId") or "").strip()
         label = str(target_lock.get("label") or app_id or "desktop").strip()
         window = dict(target_lock.get("window") or {})
+        try:
+            prepare_wait_ms = int(payload.get("waitTimeoutMs") or payload.get("wait_timeout_ms") or 15000)
+        except Exception:
+            prepare_wait_ms = 15000
+        prepare_wait_ms = max(4500, min(prepare_wait_ms, 30000))
         if bool(target_lock.get("consoleTargetBlocked")):
             return {
                 "ok": False,
@@ -1388,7 +1470,7 @@ class RPARuntime:
                 session_id=f"rpa:recording:{recording_id}",
                 goal="rpa_prepare_capture_target",
                 invocation_metadata={"triggerSource": "rpa_capture_assistant"},
-                post_action_settle_timeout_ms=2400,
+                post_action_settle_timeout_ms=max(5000, min(prepare_wait_ms, 15000)),
             )
         except Exception as exc:
             focus_error = str(exc)
@@ -1401,7 +1483,7 @@ class RPARuntime:
                     session_id=f"rpa:recording:{recording_id}",
                     goal="rpa_prepare_capture_target_open",
                     invocation_metadata={"triggerSource": "rpa_capture_assistant"},
-                    wait_timeout_ms=4500,
+                    wait_timeout_ms=prepare_wait_ms,
                 )
             except Exception as exc:
                 focus_error = str(exc)
@@ -1506,29 +1588,72 @@ class RPARuntime:
         }
 
     def capture_assistant_status(self) -> Dict[str, Any]:
-        backend = _native_hotkey_backend_capability()
+        inspector_config = _native_inspector_config_from_disk()
+        backend = _native_hotkey_backend_capability(inspector_config)
         return {
             "ok": True,
             "status": "ready" if backend.get("available") else "degraded",
             "platform": sys.platform,
             "nativeHotkeyBackend": backend,
+            "nativeInspector": {
+                "enabled": bool(inspector_config.get("enabled", True)),
+                "config": inspector_config,
+                "backend": backend,
+            },
             "defaultBackend": "native_hotkey" if backend.get("available") else "fallback_overlay",
-            "serviceMode": "on_demand_process",
+            "serviceMode": "native_inspector_worker",
         }
 
     def start_capture_assistant_service(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        # The first native implementation is intentionally on-demand: Admin asks for a
-        # per-recording capture worker, and that worker owns its hotkey until stopped.
-        # This keeps global hooks scoped and recoverable while still exposing service capability.
         status = self.capture_assistant_status()
         status.update(
             {
                 "requested": dict(payload or {}),
                 "serviceStarted": True,
-                "serviceMode": "on_demand_process",
+                "serviceMode": "native_inspector_worker",
             }
         )
         return status
+
+    def save_native_inspector_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        existing_config = storage.read_json("config.json")
+        rpa_config = dict(existing_config.get("rpa") or {})
+        current = _native_inspector_config_from_disk()
+        allowed_keys = {
+            "enabled",
+            "backend",
+            "hotkey",
+            "cancelHotkey",
+            "relockHotkey",
+            "hoverSampleHz",
+            "highlightOverlay",
+            "ignoreAdminSurface",
+        }
+        updated = dict(current)
+        for key in allowed_keys:
+            if key in payload:
+                updated[key] = payload.get(key)
+        try:
+            updated["hoverSampleHz"] = max(2, min(30, int(float(updated.get("hoverSampleHz") or 12))))
+        except Exception:
+            updated["hoverSampleHz"] = 12
+        updated["highlightOverlay"] = bool(updated.get("highlightOverlay", True))
+        updated["ignoreAdminSurface"] = bool(updated.get("ignoreAdminSurface", True))
+        rpa_config["nativeInspector"] = updated
+        existing_config["rpa"] = rpa_config
+        storage.write_json("config.json", existing_config)
+        return {
+            "ok": True,
+            "saved": True,
+            "nativeInspector": updated,
+            "nativeHotkeyBackend": _native_hotkey_backend_capability(updated),
+        }
+
+    def native_inspector_status(self) -> Dict[str, Any]:
+        return self.capture_assistant_status()
+
+    def start_native_inspector_service(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self.start_capture_assistant_service(payload)
 
     def start_capture_assistant(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         recording = self.recording_manager.get(recording_id)
@@ -1542,8 +1667,43 @@ class RPARuntime:
                 "reason": "V8 Admin console window is excluded from RPA capture.",
                 "recording": recording,
             }
-        prepared = self.prepare_capture_target(recording_id, payload)
+        assistant_state = dict(recording.get("captureAssistant") or {})
+        prepared_target_from_payload = dict(payload.get("preparedTarget") or {}) if isinstance(payload.get("preparedTarget"), dict) else {}
+        prepared_target_from_recording = dict(assistant_state.get("preparedTarget") or {}) if isinstance(assistant_state.get("preparedTarget"), dict) else {}
+        if bool(payload.get("reusePreparedTarget")) and (prepared_target_from_payload or prepared_target_from_recording):
+            prepared_target = prepared_target_from_payload or prepared_target_from_recording
+            prepared = {
+                "ok": True,
+                "status": "target_prepared",
+                "targetStable": True,
+                "targetWindow": prepared_target,
+                "recording": recording,
+                "reusedPreparedTarget": True,
+            }
+        else:
+            prepared = self.prepare_capture_target(recording_id, payload)
         recording = prepared.get("recording") or recording
+        if isinstance(prepared, dict) and prepared.get("ok") is False:
+            status = str(prepared.get("status") or "")
+            if status not in {"manual_desktop"}:
+                assistant = dict(recording.get("captureAssistant") or {})
+                assistant.update(
+                    {
+                        "state": "failed",
+                        "prepareStatus": status or "target_prepare_failed",
+                        "targetLock": target_lock,
+                        "failedAt": utc_now_iso(),
+                        "prepared": prepared,
+                    }
+                )
+                updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+                return {
+                    "ok": False,
+                    "status": "target_prepare_failed",
+                    "reason": prepared.get("reason") or prepared.get("detail") or "Recording target could not be brought to foreground.",
+                    "prepared": prepared,
+                    "recording": updated,
+                }
         script_path = Path(__file__).resolve().parents[2] / "scripts" / "rpa_capture_assistant.py"
         if not script_path.exists():
             return {
@@ -1558,11 +1718,17 @@ class RPARuntime:
             or os.environ.get("V8_ENGINE_URL")
             or "http://127.0.0.1:9530"
         ).rstrip("/")
+        inspector_config = _native_inspector_config_from_disk()
         requested_backend = str(payload.get("backend") or payload.get("captureBackend") or "auto").strip().lower() or "auto"
-        native_capability = _native_hotkey_backend_capability()
+        native_capability = _native_hotkey_backend_capability(inspector_config)
         resolved_backend = requested_backend
         if requested_backend == "auto":
             resolved_backend = "native_hotkey" if bool(native_capability.get("available")) else "fallback_overlay"
+        native_inspector_session_id = str(payload.get("nativeInspectorSessionId") or f"native_inspector_{uuid.uuid4().hex[:12]}")
+        hotkey = str(payload.get("hotkey") or inspector_config.get("hotkey") or native_capability.get("hotkey") or "Ctrl+Alt+C")
+        cancel_hotkey = str(payload.get("cancelHotkey") or payload.get("cancel_hotkey") or inspector_config.get("cancelHotkey") or native_capability.get("cancelHotkey") or "Ctrl+Alt+X")
+        hover_sample_hz = inspector_config.get("hoverSampleHz") or native_capability.get("hoverSampleHz") or 12
+        highlight_overlay = bool(payload.get("highlightOverlay", inspector_config.get("highlightOverlay", True)))
         command = [
             sys.executable,
             str(script_path),
@@ -1577,21 +1743,31 @@ class RPARuntime:
             "--mode",
             str(payload.get("mode") or "capture_only"),
             "--hotkey",
-            str(payload.get("hotkey") or native_capability.get("hotkey") or "ctrl+alt+c"),
+            hotkey,
             "--cancel-hotkey",
-            str(payload.get("cancelHotkey") or payload.get("cancel_hotkey") or native_capability.get("cancelHotkey") or "ctrl+alt+x"),
+            cancel_hotkey,
             "--backend",
             resolved_backend,
+            "--native-inspector-session-id",
+            native_inspector_session_id,
+            "--hover-sample-hz",
+            str(hover_sample_hz),
         ]
         if bool(payload.get("persistent")):
             command.append("--persistent")
         if bool(payload.get("recordAndForward")):
             command.append("--record-and-forward")
+        if highlight_overlay:
+            command.append("--highlight-overlay")
+        else:
+            command.append("--no-highlight-overlay")
         prepared_target = dict((prepared.get("targetWindow") or {}) if isinstance(prepared, dict) else {})
         if prepared_target.get("title"):
             command.extend(["--target-window-title", str(prepared_target.get("title"))])
         if prepared_target.get("handle") is not None:
             command.extend(["--target-window-handle", str(prepared_target.get("handle"))])
+        if prepared_target.get("processId") is not None:
+            command.extend(["--target-window-process-id", str(prepared_target.get("processId"))])
         log_path = _capture_assistant_log_path(recording_id)
         log_handle = log_path.open("a", encoding="utf-8", errors="replace")
         popen_kwargs: Dict[str, Any] = {
@@ -1628,11 +1804,12 @@ class RPARuntime:
             diagnostic_tail = _tail_text_file(log_path)
             assistant = {
                 "state": "failed",
+                "nativeInspectorSessionId": native_inspector_session_id,
                 "mode": payload.get("mode") or "capture_only",
                 "processId": process.pid,
                 "exitCode": exit_code,
-                "hotkey": payload.get("hotkey") or native_capability.get("hotkey") or "ctrl+alt+c",
-                "cancelHotkey": payload.get("cancelHotkey") or payload.get("cancel_hotkey") or native_capability.get("cancelHotkey") or "ctrl+alt+x",
+                "hotkey": hotkey,
+                "cancelHotkey": cancel_hotkey,
                 "targetLock": target_lock,
                 "startedAt": utc_now_iso(),
                 "failedAt": utc_now_iso(),
@@ -1640,6 +1817,10 @@ class RPARuntime:
                 "recordAndForward": bool(payload.get("recordAndForward")),
                 "prepared": prepared,
                 "captureBackend": resolved_backend,
+                "serviceMode": "native_inspector_worker",
+                "nativeInspectorConfig": inspector_config,
+                "hoverSampleHz": hover_sample_hz,
+                "highlightOverlay": highlight_overlay,
                 "nativeHotkeyBackend": native_capability,
                 "logPath": str(log_path),
                 "diagnosticTail": diagnostic_tail,
@@ -1654,16 +1835,21 @@ class RPARuntime:
             }
         assistant = {
             "state": "active",
+            "nativeInspectorSessionId": native_inspector_session_id,
             "mode": payload.get("mode") or "capture_only",
             "processId": process.pid,
-            "hotkey": payload.get("hotkey") or native_capability.get("hotkey") or "ctrl+alt+c",
-            "cancelHotkey": payload.get("cancelHotkey") or payload.get("cancel_hotkey") or native_capability.get("cancelHotkey") or "ctrl+alt+x",
+            "hotkey": hotkey,
+            "cancelHotkey": cancel_hotkey,
             "targetLock": target_lock,
             "startedAt": utc_now_iso(),
             "persistent": bool(payload.get("persistent")),
             "recordAndForward": bool(payload.get("recordAndForward")),
             "prepared": prepared,
             "captureBackend": resolved_backend,
+            "serviceMode": "native_inspector_worker",
+            "nativeInspectorConfig": inspector_config,
+            "hoverSampleHz": hover_sample_hz,
+            "highlightOverlay": highlight_overlay,
             "nativeHotkeyBackend": native_capability,
             "logPath": str(log_path),
         }
@@ -1729,6 +1915,19 @@ class RPARuntime:
             "assistant": assistant,
             "recording": updated,
         }
+
+    def start_native_inspector(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        next_payload = dict(payload or {})
+        next_payload.setdefault("backend", "auto")
+        next_payload.setdefault("persistent", True)
+        next_payload.setdefault("mode", "capture_only")
+        return self.start_capture_assistant(recording_id, next_payload)
+
+    def poll_native_inspector(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.poll_capture_assistant(recording_id, payload or {})
+
+    def stop_native_inspector(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.stop_capture_assistant(recording_id, payload or {})
 
     def stop_recording(self, recording_id: str, *, compile_draft: bool = True, save: bool = True) -> Dict[str, Any]:
         recording = self.recording_manager.stop(recording_id)

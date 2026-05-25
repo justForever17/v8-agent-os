@@ -536,7 +536,7 @@ function friendlyRpaRunTitle(run: RunRecord, t: (key: string) => string) {
     t("components.rpa.RPAWorkbench.runDefaultTitle"),
   );
 }
-function friendlyRpaRunDetail(run: RunRecord, t: (key: string, params?: Record<string, unknown>) => string) {
+function friendlyRpaRunDetail(run: RunRecord, t: (key: string, params?: Record<string, string | number>) => string) {
   const metadata = run.metadata || {};
   return firstString(
     metadata.executionState,
@@ -3126,12 +3126,12 @@ export function RPAWorkbench() {
                                         <div className="space-y-2">
                                             {rpaRuns.map(run => <div key={run.id} className="rounded-xl border border-border/60 p-3 text-xs">
                                                     <div className="flex items-center justify-between gap-2">
-                                                        <div className="min-w-0 truncate font-medium">{friendlyRpaRunTitle(run)}</div>
+                                                        <div className="min-w-0 truncate font-medium">{friendlyRpaRunTitle(run, t)}</div>
                                                         <Badge variant={String(run.status || "").toLowerCase() === "failed" ? "destructive" : "outline"} className="shrink-0 text-[10px]">
-                                                            {friendlyRpaRunStatus(run.status)}
+                                                            {t(friendlyRpaRunStatusKey(run.status))}
                                                         </Badge>
                                                     </div>
-                                                    {friendlyRpaRunDetail(run) ? <div className="mt-1 truncate text-muted-foreground">{friendlyRpaRunDetail(run)}</div> : null}
+                                                    {friendlyRpaRunDetail(run, t) ? <div className="mt-1 truncate text-muted-foreground">{friendlyRpaRunDetail(run, t)}</div> : null}
                                                 </div>)}
                                             {!rpaRuns.length ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioNoRpaRuns")}</div> : null}
                                         </div>

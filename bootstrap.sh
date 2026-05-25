@@ -248,6 +248,19 @@ desktop_preflight() {
   fi
 }
 
+ensure_rpa_native_inspector() {
+  if [ "$PROFILE" != "desktop" ] || [ "$PLATFORM" != "windows" ]; then
+    return
+  fi
+  local ensure_script="$ENGINE_DIR/scripts/ensure_rpa_native_inspector.py"
+  if [ ! -f "$ensure_script" ]; then
+    printf "RPA Native Inspector install script not found: %s\n" "$ensure_script" >&2
+    exit 1
+  fi
+  step "Preparing RPA Native Inspector"
+  "$ENGINE_DIR/.venv/bin/python" "$ensure_script"
+}
+
 mkdir -p "$WORKSPACE_DIR" "$LOG_DIR"
 
 step "Checking prerequisites"
@@ -294,6 +307,7 @@ while IFS= read -r requirement_file; do
   [ -f "$requirement_file" ] || continue
   "$ENGINE_DIR/.venv/bin/python" -m pip install -r "$requirement_file"
 done < <(requirements_for_profile "$ENGINE_DIR")
+ensure_rpa_native_inspector
 BOOTSTRAP_MANAGED="${V8_AGENT_OS_BOOTSTRAP_MANAGED:-1}"
 if [ "$BOOTSTRAP_MANAGED" = "0" ]; then
   sync_runtime_registry "$ENGINE_DIR" "$ENGINE_DIR/.venv/bin/python" "$PROFILE" "$PLATFORM" "False"

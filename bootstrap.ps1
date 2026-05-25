@@ -199,6 +199,18 @@ function Invoke-DesktopPreflight {
     }
 }
 
+function Ensure-RpaNativeInspector([string]$EngineDir, [string]$PythonExe) {
+    if ($ProfileMode -ne "desktop" -or $PlatformMode -ne "windows") {
+        return
+    }
+    $EnsureScript = Join-Path $EngineDir "scripts\ensure_rpa_native_inspector.py"
+    if (-not (Test-Path $EnsureScript)) {
+        throw "RPA Native Inspector install script not found: $EnsureScript"
+    }
+    Write-Step "Preparing RPA Native Inspector"
+    & $PythonExe $EnsureScript | Out-Host
+}
+
 function Start-Detached([string]$WorkingDir, [string]$FilePath, [string[]]$ArgumentList, [string]$LogName, [hashtable]$Environment = @{}) {
     $StdOut = Join-Path $LogDir "$LogName.stdout.log"
     $StdErr = Join-Path $LogDir "$LogName.stderr.log"
@@ -275,6 +287,7 @@ foreach ($RequirementFile in Get-RequirementsForProfile $EngineDir) {
         & $PythonExe -m pip install -r $RequirementFile | Out-Host
     }
 }
+Ensure-RpaNativeInspector $EngineDir $PythonExe
 $BootstrapManagedMode = $env:V8_AGENT_OS_BOOTSTRAP_MANAGED -ne "0"
 Sync-RuntimeRegistry $EngineDir $PythonExe $ProfileMode $PlatformMode $BootstrapManagedMode
 

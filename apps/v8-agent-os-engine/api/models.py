@@ -468,6 +468,13 @@ class RPADraftRunPayload(RPADraftPreparePayload):
     model_config = ConfigDict(populate_by_name=True)
 
     timeout_ms: int = Field(default=600000, alias="timeoutMs")
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    app_id: Optional[str] = Field(default=None, alias="appId")
+    steps: Optional[List[Dict[str, Any]]] = None
+    draft_variables: Optional[List[Dict[str, Any]]] = Field(default=None, alias="draftVariables")
+    object_library: Optional[List[Dict[str, Any]]] = Field(default=None, alias="objectLibrary")
+    metadata_patch: Dict[str, Any] = Field(default_factory=dict, alias="metadataPatch")
 
 
 class RPAExistingFlowPayload(RPARuntimeBasePayload):
@@ -491,6 +498,10 @@ class RPARecordingStartPayload(BaseModel):
     app_id: Optional[str] = Field(default=None, alias="appId")
     window_handle: Optional[Any] = Field(default=None, alias="windowHandle")
     active_app: Dict[str, Any] = Field(default_factory=dict, alias="activeApp")
+    target_lock: Dict[str, Any] = Field(default_factory=dict, alias="targetLock")
+    step_id: Optional[str] = Field(default=None, alias="stepId")
+    selected_step_key: Optional[str] = Field(default=None, alias="selectedStepKey")
+    workflow_snapshot: Dict[str, Any] = Field(default_factory=dict, alias="workflowSnapshot")
     capture_options: Dict[str, Any] = Field(default_factory=dict, alias="captureOptions")
 
 

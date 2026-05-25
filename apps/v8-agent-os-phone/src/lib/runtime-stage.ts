@@ -15,6 +15,7 @@ import {
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     isEffectiveContextGovernancePayload,
+    isRuntimeEpisodeGraphActivity,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
@@ -85,9 +86,7 @@ export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
 
 export const VISIBLE_PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "chat",
-    "planner_lane",
     "engineering",
-    "engineering_lane",
     "extensions",
     "automation",
     "memory",
@@ -441,6 +440,12 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(
     return buildAuthoritativeRuntimeTimelineEntryFromEvent(raw, { locale });
 }
 
+function isPhoneRuntimeEpisodeGraphActivity(activity: PhoneRuntimeStageActivity): boolean {
+    return isRuntimeEpisodeGraphActivity({
+        topic: activity.topic || ("topic" in activity.node ? String(activity.node.topic || "") : ""),
+    });
+}
+
 export function buildPhoneRuntimeStageModel(
     messages: ChatMessage[],
     options?: {
@@ -603,7 +608,10 @@ export function buildPhoneRuntimeStageModel(
 
     activities.sort((left, right) => right.timestamp - left.timestamp);
     const realActivities = activities.filter((activity) => !activity.synthetic);
-    const rawActiveRuntimeId = normalizePhoneRuntimeId(options?.ownerRuntime) ?? realActivities[0]?.runtimeId ?? null;
+    const normalizedOwnerRuntime = normalizePhoneRuntimeId(options?.ownerRuntime);
+    const rawActiveRuntimeId = normalizedOwnerRuntime === "subagent_swarm"
+        ? "chat"
+        : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
     const firstVisibleRuntimeWithActivity = realActivities.find((activity) => VISIBLE_PHONE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
     const activeRuntimeId = rawActiveRuntimeId && VISIBLE_PHONE_RUNTIME_ORDER.includes(rawActiveRuntimeId)
         ? rawActiveRuntimeId
@@ -618,7 +626,9 @@ export function buildPhoneRuntimeStageModel(
 
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getPhoneRuntimeDescriptor(runtimeId, options?.locale);
-        const runtimeActivities = activities.filter((activity) => activity.runtimeId === runtimeId);
+        const runtimeActivities = runtimeId === "chat"
+            ? activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm" || isPhoneRuntimeEpisodeGraphActivity(activity))
+            : activities.filter((activity) => activity.runtimeId === runtimeId);
         const lastActivity = runtimeActivities[0];
 
         let status: PhoneRuntimeCardStatus = "idle";

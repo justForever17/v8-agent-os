@@ -213,6 +213,38 @@ function sortHistoryItems(items: AuthoritativeSessionHistoryRecord[]) {
   });
 }
 
+function shouldHideHistoryRecord(item: AuthoritativeSessionHistoryRecord): boolean {
+  const metadata = item.parsedMetadata || {};
+  if (
+    metadata.hiddenFromHistory === true ||
+    metadata.nonChatRun === true ||
+    metadata.manualRpaRun === true ||
+    metadata.internalProbe === true ||
+    metadata.governanceOnly === true
+  ) {
+    return true;
+  }
+
+  const runtimeOwner = String(item.ownerRuntime || item.runtimeOwner || "").trim().toLowerCase();
+  if (runtimeOwner === "memory") {
+    return true;
+  }
+
+  const id = String(item.id || "").trim().toLowerCase();
+  if (
+    id.startsWith("hook:on_chat_end:memory:") ||
+    id.startsWith("memory:summary:") ||
+    id.startsWith("memory:") ||
+    id.startsWith("computer_use:") ||
+    id.startsWith("computer-use:") ||
+    id.startsWith("rpa:")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): AuthoritativeSessionHistoryRecord {
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const parsedMetadata = parseMetadata(record.metadata as AuthoritativeSessionHistoryRecord["metadata"]);
@@ -276,9 +308,7 @@ export function normalizeAuthoritativeSessionHistoryList(raw: unknown[]): Author
       .map((item) => normalizeAuthoritativeSessionHistoryRecord(item))
       .filter((item) => {
         if (!item.id) return false;
-        if (item.parsedMetadata?.hiddenFromHistory === true) return false;
-        if (item.ownerRuntime === "memory" || item.runtimeOwner === "memory") return false;
-        if (item.id.startsWith("hook:on_chat_end:memory:") || item.id.startsWith("memory:summary:")) return false;
+        if (shouldHideHistoryRecord(item)) return false;
         return true;
       }),
   );

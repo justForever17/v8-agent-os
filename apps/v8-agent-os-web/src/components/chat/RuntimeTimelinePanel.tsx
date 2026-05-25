@@ -186,7 +186,7 @@ function isWebRuntimeEpisodeActivity(activity: RuntimeStageActivity): boolean {
     });
 }
 
-type SwarmNodeStatus = "active" | "completed" | "failed" | "pending";
+type SwarmNodeStatus = "active" | "completed" | "failed" | "pending" | "attempted";
 
 type SwarmGraphNode = {
     id: string;
@@ -204,6 +204,7 @@ function normalizeSwarmStatus(value: string): SwarmNodeStatus | null {
     if (!normalized) return null;
     if (/(fail|error|reject|blocked|cancel)/.test(normalized)) return "failed";
     if (/(complete|finish|done|success|succeeded)/.test(normalized)) return "completed";
+    if (/(attempt|revealed|missing|no_task|no-task|no_tasks|no-tasks|unconfirmed)/.test(normalized)) return "attempted";
     if (/(start|dispatch|run|active|progress|pending|queued)/.test(normalized)) return "active";
     return null;
 }
@@ -316,12 +317,14 @@ function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) 
         completed: "bg-emerald-500 text-emerald-700 dark:text-emerald-300",
         failed: "bg-rose-500 text-rose-700 dark:text-rose-300",
         pending: "bg-stone-400 text-stone-500 dark:text-stone-300",
+        attempted: "bg-amber-500 text-amber-700 dark:text-amber-300",
     };
     const statusLabel: Record<SwarmNodeStatus, string> = {
         active: "运行",
         completed: "完成",
         failed: "失败",
         pending: "等待",
+        attempted: "未确认",
     };
 
     if (visibleNodes.length <= 1) {
@@ -392,19 +395,21 @@ function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageActivity[
         completed: "bg-emerald-500 text-emerald-700 dark:text-emerald-300",
         failed: "bg-rose-500 text-rose-700 dark:text-rose-300",
         pending: "bg-stone-400 text-stone-500 dark:text-stone-300",
+        attempted: "bg-amber-500 text-amber-700 dark:text-amber-300",
     };
     const statusLabel: Record<SwarmNodeStatus, string> = {
         active: "运行",
         completed: "完成",
         failed: "失败",
         pending: "等待",
+        attempted: "未确认",
     };
 
     if (visibleNodes.length <= 1) return null;
 
     return (
         <div className="space-y-3 rounded-[22px] border border-stone-200/80 bg-white/86 p-3.5 shadow-[0_12px_32px_rgba(15,23,42,0.05)] dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="text-[13px] font-semibold tracking-tight text-foreground">Runtime 路由拓扑</div>
+            <div className="text-[13px] font-semibold tracking-tight text-foreground">执行地图</div>
             <div className="space-y-2.5">
                 {visibleNodes.map((node) => {
                     const activeLine = Boolean(node.parentId && activeIds.has(node.id));
@@ -752,7 +757,10 @@ export function RuntimeTimelinePanel({
     const activities = runtimeId
         ? model.activities.filter((activity) => activity.runtimeId === runtimeId)
         : [];
-    const episodeActivities = activities.filter(isWebRuntimeEpisodeActivity);
+    const globalEpisodeActivities = model.activities.filter(isWebRuntimeEpisodeActivity);
+    const swarmActivities = model.activities.filter((activity) => activity.runtimeId === "subagent_swarm");
+    const isChatRuntime = runtimeId === "chat";
+    const hasChatExecutionMap = globalEpisodeActivities.length > 0 || swarmActivities.length > 0;
     const isSubagentRuntime = runtimeId === "subagent_swarm";
     return (
         <AnimatePresence>
@@ -837,18 +845,27 @@ export function RuntimeTimelinePanel({
                                     />
                                 )}
 
-                                {!isSubagentRuntime && activities.length > 0 && (
+                                {!isChatRuntime && !isSubagentRuntime && activities.length > 0 && (
                                     <div className={cn("hidden md:block", (contextGovernance || (contextGovernanceHistory || []).length > 0) ? "mt-4" : "")}>
                                         <BroadcastRail activities={activities.slice(0, 8)} />
                                     </div>
                                 )}
 
-                                <div className={cn("space-y-3", activities.length > 0 ? "md:mt-4" : "")}>
-                                    {isSubagentRuntime ? (
+                                <div className={cn("space-y-3", activities.length > 0 || (isChatRuntime && globalEpisodeActivities.length > 0) ? "md:mt-4" : "")}>
+                                    {isChatRuntime ? (
+                                        <>
+                                            {globalEpisodeActivities.length > 0 && <RuntimeEpisodeBoard activities={globalEpisodeActivities} />}
+                                            {swarmActivities.length > 0 && <SwarmNodeBoard activities={swarmActivities} />}
+                                            {!hasChatExecutionMap && (
+                                                <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
+                                                    当前还没有可展示的执行地图节点。
+                                                </div>
+                                            )}
+                                        </>
+                                    ) : isSubagentRuntime ? (
                                         <SwarmNodeBoard activities={activities} />
                                     ) : activities.length > 0 ? (
                                         <>
-                                            {episodeActivities.length > 0 && <RuntimeEpisodeBoard activities={episodeActivities} />}
                                             {activities.map((activity, index) => {
                                                 const shouldGroup = runtimeId === "planner_lane" || runtimeId === "engineering_lane";
                                                 const currentGroupId = !shouldGroup

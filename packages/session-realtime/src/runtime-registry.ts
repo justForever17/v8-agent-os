@@ -175,7 +175,7 @@ export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
 ];
 
 export const VISIBLE_SESSION_RUNTIME_ORDER: SessionRuntimeId[] = SESSION_RUNTIME_ORDER.filter(
-  (runtimeId) => runtimeId !== "plugin_host_channel" && runtimeId !== "desktop_live",
+  (runtimeId) => runtimeId !== "planner_lane" && runtimeId !== "subagent_swarm" && runtimeId !== "plugin_host_channel" && runtimeId !== "desktop_live",
 );
 
 export function isHistoryOnlyRuntimeId(runtimeId: SessionRuntimeId) {

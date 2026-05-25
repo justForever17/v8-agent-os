@@ -925,16 +925,357 @@ def _runtime_timeline_entry(
     }
 
 
+RUNTIME_EPISODE_ACTOR_LABELS = {
+    "research": "Research Runtime",
+    "engineering": "Engineering Runtime",
+    "creative_media": "Creative Media Runtime",
+    "computer_use": "Computer Use Runtime",
+    "rpa": "RPA Runtime",
+    "subagent_swarm": "Agent Swarm",
+    "planner_lane": "规划编排",
+    "chat": "Supervisor",
+}
+
+
+def _runtime_record(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _runtime_nested_record(payload: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+    for key in keys:
+        nested = _runtime_record(payload.get(key))
+        if nested:
+            return nested
+    return {}
+
+
+def _runtime_kind_from_hint(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    if not normalized:
+        return ""
+    if "research" in normalized or "evidence" in normalized or "source_matrix" in normalized:
+        return "research"
+    if "engineering" in normalized or "project_coding" in normalized or "patch" in normalized or "verification" in normalized:
+        return "engineering"
+    if "creative" in normalized or "asset" in normalized or "media" in normalized or "recipe" in normalized:
+        return "creative_media"
+    if "computer_use" in normalized or "computer" in normalized or "observation" in normalized or "desktop" in normalized:
+        return "computer_use"
+    if "rpa" in normalized or "trace" in normalized:
+        return "rpa"
+    if "delegation" in normalized or "subagent" in normalized or "child" in normalized:
+        return "subagent_swarm"
+    if "planner" in normalized or "capability" in normalized:
+        return "planner_lane"
+    return normalized
+
+
+def _runtime_kind_from_payload(payload: Dict[str, Any], *, topic: str = "") -> str:
+    episode = _runtime_nested_record(payload, "episode")
+    need = _runtime_nested_record(payload, "need")
+    handoff = _runtime_nested_record(payload, "handoffRef", "handoff")
+    child = _runtime_nested_record(payload, "childDelegation", "child_delegation")
+    tool = _runtime_nested_record(payload, "tool")
+    for record in (payload, episode, need, handoff, child, tool):
+        hint = _read_string(
+            record,
+            [
+                "runtimeId",
+                "runtime_id",
+                "ownerRuntimeId",
+                "owner_runtime_id",
+                "runtimeKind",
+                "runtime_kind",
+                "runtime",
+                "kind",
+                "family",
+            ],
+        )
+        runtime_id = _runtime_kind_from_hint(hint)
+        if runtime_id:
+            return runtime_id
+    if topic.startswith("research.") or topic.startswith("research_broker."):
+        return "research"
+    if topic.startswith("delegation.") or topic.startswith("delegation_broker.") or topic.startswith("subagent.task."):
+        return "subagent_swarm"
+    return "planner_lane"
+
+
+def _runtime_actor_label(runtime_id: str) -> str:
+    return RUNTIME_EPISODE_ACTOR_LABELS.get(runtime_id, runtime_id or "Runtime")
+
+
+def _runtime_status_from_topic(topic: str, record: Dict[str, Any]) -> str:
+    explicit = _read_string(record, ["dispatchStatus", "dispatch_status", "status", "state", "phase"])
+    normalized = str(explicit or topic).lower()
+    if any(token in normalized for token in ("fail", "error", "reject", "blocked", "cancel", "stalled")):
+        return "failed"
+    if any(token in normalized for token in ("complete", "finish", "done", "success", "succeeded", "merged", "ready")):
+        return "completed"
+    if any(token in normalized for token in ("attempt", "revealed", "missing", "no_task", "no_tasks", "unconfirmed")):
+        return "attempted"
+    if any(token in normalized for token in ("waiting", "queued", "leased", "active", "running", "started", "dispatch", "routed", "detected")):
+        return "active"
+    return explicit or "progress"
+
+
+def _truthy_context_field(payload: Dict[str, Any], keys: List[str]) -> bool:
+    return any(bool(payload.get(key)) for key in keys)
+
+
+def _positive_context_field(payload: Dict[str, Any], keys: List[str]) -> bool:
+    for key in keys:
+        try:
+            if int(payload.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _context_governance_is_effective(payload: Dict[str, Any]) -> bool:
+    durable_flush = _runtime_record(payload.get("durable_flush"))
+    durable_reason = str(durable_flush.get("reason") or durable_flush.get("status") or "").strip().lower()
+    recall_audit = _runtime_record(payload.get("recall_audit"))
+    skip_reasons = {"", "compaction_not_needed", "none", "prepared", "context_prepared", "skipped", "unchanged"}
+    if bool(payload.get("compaction_applied")):
+        return True
+    if _positive_context_field(payload, ["estimated_saved_tokens"]):
+        return True
+    if _truthy_context_field(
+        payload,
+        [
+            "approval_required",
+            "pendingApproval",
+            "requiresApproval",
+            "approvalRequested",
+            "approval_request",
+            "truncation_risk",
+            "truncated",
+            "context_truncated",
+            "budget_exceeded",
+            "overflow",
+        ],
+    ):
+        return True
+    if _positive_context_field(payload, ["truncated_tokens", "overflow_tokens", "tokens_over_budget"]):
+        return True
+    if durable_reason not in skip_reasons and re.search(r"compact|flush|truncate|approval|recall|inject|budget|overflow", durable_reason):
+        return True
+    return bool(recall_audit.get("injection_allowed"))
+
+
+def _context_governance_summary(payload: Dict[str, Any]) -> str:
+    parts: list[str] = []
+    saved_tokens = int(payload.get("estimated_saved_tokens") or 0)
+    block_count = int(payload.get("block_count") or 0)
+    recall_audit = _runtime_record(payload.get("recall_audit"))
+    if bool(payload.get("compaction_applied")) or saved_tokens > 0:
+        parts.append(f"压缩节省约 {saved_tokens} tokens" if saved_tokens > 0 else "已执行上下文压缩")
+    if recall_audit.get("injection_allowed"):
+        parts.append(f"召回注入 {block_count} 个 context block" if block_count > 0 else "已注入召回上下文")
+    if _truthy_context_field(payload, ["approval_required", "pendingApproval", "requiresApproval", "approvalRequested", "approval_request"]):
+        parts.append("需要审批")
+    if _truthy_context_field(payload, ["truncation_risk", "truncated", "context_truncated", "budget_exceeded", "overflow"]):
+        parts.append("存在截断/预算风险")
+    resolved_scope = str(payload.get("resolved_scope") or "").strip()
+    if resolved_scope:
+        parts.append(f"scope={resolved_scope}")
+    return "上下文治理：" + "，".join(parts) if parts else "上下文治理已更新"
+
+
+def _runtime_episode_metadata(payload: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = dict(payload)
+    for source_key, target_key in [
+        ("episodeId", "episodeId"),
+        ("episode_id", "episodeId"),
+        ("needId", "episodeId"),
+        ("need_id", "episodeId"),
+        ("kind", "episodeKind"),
+        ("runtimeKind", "episodeKind"),
+        ("runtime_kind", "episodeKind"),
+        ("parentEpisodeId", "parentEpisodeId"),
+        ("parent_episode_id", "parentEpisodeId"),
+        ("rootEpisodeId", "rootEpisodeId"),
+        ("root_episode_id", "rootEpisodeId"),
+        ("producerEpisodeId", "producerEpisodeId"),
+        ("producer_episode_id", "producerEpisodeId"),
+        ("evidenceBundleId", "evidenceBundleId"),
+        ("evidence_bundle_id", "evidenceBundleId"),
+        ("dispatchStatus", "dispatchStatus"),
+        ("dispatch_status", "dispatchStatus"),
+    ]:
+        value = record.get(source_key)
+        if value not in (None, ""):
+            metadata[target_key] = value
+    handoff_refs = record.get("handoffRefs") or record.get("handoff_refs") or payload.get("handoffRefs") or payload.get("handoff_refs")
+    if handoff_refs:
+        metadata["handoffRefs"] = handoff_refs
+    producer_episode_id = metadata.get("producerEpisodeId")
+    if producer_episode_id and not metadata.get("episodeId"):
+        metadata["episodeId"] = producer_episode_id
+    if record.get("missingTasks") or record.get("missing_tasks") or record.get("missingResult") or record.get("missing_result"):
+        metadata["missingResult"] = True
+    return metadata
+
+
+def _runtime_episode_id(record: Dict[str, Any], event: Dict[str, Any]) -> str:
+    return _read_string(
+        record,
+        [
+            "episodeId",
+            "episode_id",
+            "needId",
+            "need_id",
+            "delegationId",
+            "delegation_id",
+            "taskBriefId",
+            "task_brief_id",
+            "invocationId",
+            "invocation_id",
+            "handoffRefId",
+            "handoff_ref_id",
+            "handoffId",
+            "handoff_id",
+            "artifactId",
+            "artifact_id",
+        ],
+    ) or str(event.get("event_id") or event.get("seq") or "").strip()
+
+
+def _runtime_tool_name(payload: Dict[str, Any]) -> str:
+    tool = _runtime_nested_record(payload, "tool")
+    return _read_string(payload, ["toolName", "tool_name", "name"]) or _read_string(tool, ["toolName", "tool_name", "name"])
+
+
+def _runtime_tool_call_id(payload: Dict[str, Any]) -> str:
+    tool = _runtime_nested_record(payload, "tool")
+    return _read_string(
+        payload,
+        ["toolInvocationId", "tool_invocation_id", "toolCallId", "tool_call_id", "id"],
+    ) or _read_string(tool, ["toolInvocationId", "tool_invocation_id", "toolCallId", "tool_call_id", "id"])
+
+
+def _runtime_id_for_tool_name(tool_name: str) -> str:
+    normalized = str(tool_name or "").strip().lower()
+    if normalized == "research_broker":
+        return "research"
+    if normalized in {"delegation_broker", "parallel_delegate_task"}:
+        return "subagent_swarm"
+    return "chat"
+
+
+def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    record: Dict[str, Any] = payload
+    kind = "progress"
+    summary = ""
+    runtime_id = ""
+
+    if topic.startswith("capability.need."):
+        record = _runtime_nested_record(payload, "need") or payload
+        runtime_id = _runtime_kind_from_payload({**payload, **record}, topic=topic)
+        need_reason = _read_string(record, ["reason", "summary", "message"])
+        summary = need_reason or f"检测到 {runtime_id} 能力需求"
+        kind = "progress"
+    elif topic.startswith("runtime.episode."):
+        record = _runtime_nested_record(payload, "episode") or payload
+        runtime_id = _runtime_kind_from_payload({**payload, **record}, topic=topic)
+        state = _read_string(record, ["state", "status", "phase"]) or topic.rsplit(".", 1)[-1]
+        reason = _read_string(record, ["reason", "summary", "message"])
+        summary = reason or f"{_runtime_actor_label(runtime_id)} episode {state}"
+        kind = "progress"
+    elif topic.startswith("handoff.ref."):
+        record = _runtime_nested_record(payload, "handoffRef", "handoff") or payload
+        runtime_id = _runtime_kind_from_payload({**payload, **record}, topic=topic)
+        summary = _read_string(record, ["compactSummary", "compact_summary", "summary", "message"]) or "已创建 handoff 结果"
+        kind = "handoff"
+    elif topic.startswith("delegation.child."):
+        record = _runtime_nested_record(payload, "childDelegation", "child_delegation") or payload
+        runtime_id = "subagent_swarm"
+        reason = _read_string(record, ["reason", "summary", "message"])
+        summary = reason or "子代理请求孙 agent / child delegation"
+        kind = "progress"
+    elif topic.startswith("research.") or topic.startswith("research_broker."):
+        runtime_id = "research"
+        summary = _read_string(payload, ["summary", "message", "question"]) or "Research Runtime 已更新"
+        kind = "tool" if "broker" in topic or topic.endswith(".result") else "progress"
+    elif topic.startswith("delegation_broker.") or topic.startswith("delegation.") or topic.startswith("subagent.task."):
+        runtime_id = "subagent_swarm"
+        summary = _read_string(payload, ["summary", "message", "reason"]) or "Agent Swarm 调度已更新"
+        kind = "tool" if "broker" in topic or topic.startswith("subagent.task.") else "progress"
+    else:
+        tool_name = _runtime_tool_name(payload)
+        if tool_name == "research_broker":
+            runtime_id = "research"
+            summary = _read_string(payload, ["summary", "message"]) or "Research broker 已调用"
+            kind = "tool"
+        elif tool_name == "delegation_broker":
+            runtime_id = "subagent_swarm"
+            if topic == "tool.started":
+                summary = _read_string(payload, ["summary", "message"]) or "Delegation broker 已启动"
+                record = {**payload, "dispatchStatus": "dispatch_attempted"}
+            else:
+                tasks = payload.get("tasks")
+                dispatch_status = _read_string(payload, ["dispatchStatus", "dispatch_status", "status", "state"])
+                missing_tasks = not isinstance(tasks, list) or len(tasks) == 0
+                summary = _read_string(payload, ["summary", "message"]) or ("尝试派发子代理，但未确认实际任务" if missing_tasks else "Delegation broker 已调用")
+                record = {
+                    **payload,
+                    "dispatchStatus": dispatch_status or ("missing_tasks" if missing_tasks else "dispatch_attempted"),
+                    "missingResult": missing_tasks,
+                }
+            kind = "tool"
+        else:
+            return None
+
+    runtime_id = runtime_id or _runtime_kind_from_payload(payload, topic=topic)
+    status = _runtime_status_from_topic(topic, record)
+    metadata = _runtime_episode_metadata(payload, record)
+    if _runtime_episode_id(record, event):
+        metadata.setdefault("episodeId", _runtime_episode_id(record, event))
+    return _runtime_timeline_entry(
+        event,
+        runtime_id=runtime_id,
+        kind=kind,
+        summary=_truncate_runtime_summary(summary, 140),
+        status=status,
+        actor_label=_runtime_actor_label(runtime_id),
+        metadata=metadata,
+    )
+
+
 def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     projected: List[Dict[str, Any]] = []
     seen: set[tuple[int, str]] = set()
+    tool_starts: Dict[str, Dict[str, Any]] = {}
+    tool_results: set[str] = set()
+    terminal_event_by_run: Dict[str, Dict[str, Any]] = {}
 
     for event in events:
         topic = str(event.get("topic") or "")
-        payload = event.get("payload") or {}
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if topic == "tool.started":
+            tool_id = _runtime_tool_call_id(payload)
+            if tool_id:
+                tool_starts[tool_id] = event
+        elif topic == "tool.finished":
+            tool_id = _runtime_tool_call_id(payload)
+            if tool_id:
+                tool_results.add(tool_id)
+        elif topic in {"run.completed", "run.failed", "run.cancelled"}:
+            run_id = str(event.get("run_id") or "").strip()
+            if run_id:
+                terminal_event_by_run[run_id] = event
+
+    for event in events:
+        topic = str(event.get("topic") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         entry: Optional[Dict[str, Any]] = None
 
-        if topic == "extension.route.selected":
+        orchestration_entry = _runtime_orchestration_entry(event, topic, payload if isinstance(payload, dict) else {})
+        if orchestration_entry:
+            entry = orchestration_entry
+        elif topic == "extension.route.selected":
             skill_count = len(list(payload.get("skillCandidates") or []))
             mcp_count = len(list(payload.get("mcpToolCandidates") or []))
             entry = _runtime_timeline_entry(
@@ -1262,35 +1603,27 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 actor_label="Safety Guardian",
             )
         elif topic == "context.prepared":
-            governance_payload = normalize_context_audit(payload if isinstance(payload, dict) else {})
-            runtime_id = str(governance_payload.get("runtime_kind") or "chat").strip() or "chat"
-            saved_tokens = governance_payload.get("estimated_saved_tokens")
-            block_count = int(governance_payload.get("block_count") or 0)
-            resolved_scope = str(governance_payload.get("resolved_scope") or "").strip()
-            summary_parts: list[str] = []
-            if saved_tokens is not None:
-                summary_parts.append(f"节省 {saved_tokens} tokens")
-            if block_count > 0:
-                summary_parts.append(f"注入 {block_count} 个 context block")
-            if resolved_scope:
-                summary_parts.append(f"scope={resolved_scope}")
-            summary = "上下文治理已更新"
-            if summary_parts:
-                summary = "上下文治理已更新：" + "，".join(summary_parts)
-            entry = _runtime_timeline_entry(
-                event,
-                runtime_id=runtime_id,
-                kind="governance",
-                summary=summary,
-                status="prepared",
-                actor_label="上下文治理",
-                metadata={
-                    **governance_payload,
-                    "eventTs": str(event.get("event_ts") or event.get("ts") or "").strip(),
-                    "runId": str(event.get("run_id") or "").strip(),
-                    "eventSource": dict(event.get("source") or {}),
-                },
-            )
+            raw_governance_payload = payload if isinstance(payload, dict) else {}
+            governance_payload = {
+                **raw_governance_payload,
+                **normalize_context_audit(raw_governance_payload),
+            }
+            if _context_governance_is_effective(governance_payload):
+                runtime_id = str(governance_payload.get("runtime_kind") or "context_governance").strip() or "context_governance"
+                entry = _runtime_timeline_entry(
+                    event,
+                    runtime_id=runtime_id,
+                    kind="governance",
+                    summary=_context_governance_summary(governance_payload),
+                    status="prepared",
+                    actor_label="上下文治理",
+                    metadata={
+                        **governance_payload,
+                        "eventTs": str(event.get("event_ts") or event.get("ts") or "").strip(),
+                        "runId": str(event.get("run_id") or "").strip(),
+                        "eventSource": dict(event.get("source") or {}),
+                    },
+                )
         elif topic == "run.liveness.blocked":
             entry = _runtime_timeline_entry(
                 event,
@@ -1370,6 +1703,39 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
             continue
         seen.add(dedupe_key)
         projected.append(entry)
+
+    for tool_id, start_event in tool_starts.items():
+        if tool_id in tool_results:
+            continue
+        start_payload = start_event.get("payload") if isinstance(start_event.get("payload"), dict) else {}
+        tool_name = _runtime_tool_name(start_payload) or "unknown_tool"
+        run_id = str(start_event.get("run_id") or "").strip()
+        terminal_event = terminal_event_by_run.get(run_id) or start_event
+        runtime_id = _runtime_id_for_tool_name(tool_name)
+        summary = f"工具 {tool_name} 未收到结果"
+        if tool_name == "delegation_broker":
+            summary = "尝试派发子代理，但未收到工具结果，未确认实际派发"
+        elif tool_name == "research_broker":
+            summary = "Research broker 未收到工具结果，证据包未确认"
+        diagnostic = _runtime_timeline_entry(
+            terminal_event,
+            runtime_id=runtime_id,
+            kind="governance",
+            summary=summary,
+            status="missing_result",
+            actor_label=_runtime_actor_label(runtime_id),
+            metadata={
+                "toolInvocationId": tool_id,
+                "toolName": tool_name,
+                "missingResult": True,
+                "dispatchStatus": "missing_result" if tool_name == "delegation_broker" else None,
+                "startedSeq": int(start_event.get("seq") or 0),
+                "terminalSeq": int(terminal_event.get("seq") or 0),
+            },
+        )
+        diagnostic["id"] = f"{diagnostic.get('id')}:missing_tool:{tool_id}"
+        diagnostic["topic"] = "tool.missing_result"
+        projected.append(diagnostic)
 
     projected.sort(key=lambda item: int(item.get("seq") or 0))
     return projected

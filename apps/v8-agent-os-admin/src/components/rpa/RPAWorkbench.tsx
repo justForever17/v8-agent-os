@@ -1,7 +1,7 @@
 "use client";
 
-import { type DragEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, FileCode2, GitBranch, MousePointerClick, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Video, Wand2 } from "lucide-react";
+import { type DragEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, FileCode2, GitBranch, MousePointerClick, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Wand2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -271,6 +271,11 @@ type RecordingSessionPayload = {
 type CapturePoolItem = {
   tempElementId?: string;
   elementId?: string;
+  sourceStepId?: string;
+  stepId?: string;
+  targetStepId?: string;
+  targetMatch?: boolean;
+  filteredReason?: string;
   label?: string;
   name?: string;
   source?: string;
@@ -283,6 +288,21 @@ type CapturePoolItem = {
   fragileCoordinateFallback?: boolean;
   captureMode?: string;
   capturedAt?: string;
+};
+type CaptureAssistantStage = "idle" | "creating" | "preparing" | "selecting" | "starting" | "armed" | "active" | "captured" | "coordinate" | "failed";
+type StepCaptureContext = {
+  stepKey: string;
+  stepId: string;
+  targetStep: EditableDraftStep;
+  launchStep?: EditableDraftStep | null;
+  mode: string;
+  appId: string;
+  label: string;
+  targetLock: Record<string, unknown>;
+  workflowSnapshot: Record<string, unknown>;
+  launchStepSnapshot?: Record<string, unknown> | null;
+  targetStepSnapshot: Record<string, unknown>;
+  targetWindow?: Record<string, unknown>;
 };
 type ObjectLibraryElement = CapturePoolItem & {
   elementId?: string;
@@ -481,6 +501,52 @@ function captureItemCoordinateValue(item?: CapturePoolItem | ObjectLibraryElemen
   if (x == null || y == null || x === "" || y === "") return "";
   return `${x}, ${y}`;
 }
+function captureTargetCandidateLabel(candidate?: Record<string, unknown> | null) {
+  if (!candidate) return "window";
+  return firstString(candidate.title, candidate.windowTitle, candidate.name, candidate.displayName, candidate.processName, candidate.handle) || "window";
+}
+function captureTargetCandidateSubtitle(candidate?: Record<string, unknown> | null) {
+  if (!candidate) return "";
+  return firstString(candidate.processName, candidate.className, candidate.appId, candidate.handle);
+}
+function friendlyRpaRunStatusKey(status?: string) {
+  const normalized = String(status || "queued").toLowerCase();
+  const keys: Record<string, string> = {
+    queued: "components.rpa.RPAWorkbench.runStatus.queued",
+    running: "components.rpa.RPAWorkbench.runStatus.running",
+    completed: "components.rpa.RPAWorkbench.runStatus.completed",
+    succeeded: "components.rpa.RPAWorkbench.runStatus.completed",
+    failed: "components.rpa.RPAWorkbench.runStatus.failed",
+    cancelled: "components.rpa.RPAWorkbench.runStatus.cancelled",
+    paused: "components.rpa.RPAWorkbench.runStatus.paused",
+    waiting_input: "components.rpa.RPAWorkbench.runStatus.waitingInput",
+    waiting_approval: "components.rpa.RPAWorkbench.runStatus.waitingApproval",
+  };
+  return keys[normalized] || "components.rpa.RPAWorkbench.runStatus.processing";
+}
+function friendlyRpaRunTitle(run: RunRecord, t: (key: string) => string) {
+  const metadata = run.metadata || {};
+  return firstString(
+    metadata.scriptName,
+    metadata.templateName,
+    metadata.draftName,
+    metadata.subject,
+    metadata.name,
+    metadata.currentStepTitle,
+    t("components.rpa.RPAWorkbench.runDefaultTitle"),
+  );
+}
+function friendlyRpaRunDetail(run: RunRecord, t: (key: string, params?: Record<string, unknown>) => string) {
+  const metadata = run.metadata || {};
+  return firstString(
+    metadata.executionState,
+    metadata.currentStepTitle,
+    metadata.reason,
+    metadata.error,
+    run.trigger_source ? t("components.rpa.RPAWorkbench.runTriggerSource", { source: run.trigger_source }) : "",
+    run.created_at ? t("components.rpa.RPAWorkbench.runCreatedAt", { time: formatWhen(run.created_at) }) : "",
+  );
+}
 function actionKind(action?: string) {
   const value = String(action || "").toLowerCase();
   if (value.includes("browser")) return "browser";
@@ -576,68 +642,6 @@ function firstString(...values: unknown[]) {
   }
   return "";
 }
-function hotkeyKeyLabel(key: string) {
-  const normalized = String(key || "").trim();
-  if (!normalized) return "";
-  const named: Record<string, string> = {
-    " ": "Space",
-    Alt: "Alt",
-    AltGraph: "AltGraph",
-    ArrowDown: "ArrowDown",
-    ArrowLeft: "ArrowLeft",
-    ArrowRight: "ArrowRight",
-    ArrowUp: "ArrowUp",
-    Backspace: "Backspace",
-    Control: "Ctrl",
-    Delete: "Delete",
-    End: "End",
-    Enter: "Enter",
-    Escape: "Esc",
-    Home: "Home",
-    Insert: "Insert",
-    Meta: "Win",
-    PageDown: "PageDown",
-    PageUp: "PageUp",
-    Shift: "Shift",
-    Tab: "Tab",
-  };
-  if (named[normalized]) return named[normalized];
-  if (/^F([1-9]|1\d|2[0-4])$/i.test(normalized)) return normalized.toUpperCase();
-  if (normalized.length === 1) return normalized.toUpperCase();
-  return normalized;
-}
-function hotkeySequenceFromKeyboardEvent(event: KeyboardEvent<HTMLInputElement>) {
-  const key = hotkeyKeyLabel(event.key);
-  if (!key || key === "Backspace" || key === "Delete") return "";
-  if (key === "Esc") return null;
-  const modifiers: string[] = [];
-  if (event.ctrlKey || key === "Ctrl") modifiers.push("Ctrl");
-  if (event.altKey || key === "Alt" || key === "AltGraph") modifiers.push(key === "AltGraph" ? "AltGraph" : "Alt");
-  if (event.shiftKey || key === "Shift") modifiers.push("Shift");
-  if (event.metaKey || key === "Win") modifiers.push("Win");
-  const isModifierOnly = ["Ctrl", "Alt", "AltGraph", "Shift", "Win"].includes(key);
-  const parts = [...new Set(modifiers)];
-  if (!isModifierOnly && !parts.includes(key)) parts.push(key);
-  return parts.join("+");
-}
-function captureHotkeyInput(event: KeyboardEvent<HTMLInputElement>, setValue: (value: string) => void) {
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.key === "Backspace" || event.key === "Delete") {
-    setValue("");
-    return;
-  }
-  const value = hotkeySequenceFromKeyboardEvent(event);
-  if (value === null) {
-    event.currentTarget.blur();
-    return;
-  }
-  if (value) setValue(value);
-}
-
-const RPA_CAPTURE_HOTKEY_STORAGE_KEY = "v8.rpa.captureHotkey";
-const RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY = "v8.rpa.captureCancelHotkey";
-
 function collectCandidateRecords(value: unknown, out: Record<string, unknown>[] = [], depth = 0) {
   if (depth > 4 || out.length >= 30) return out;
   if (Array.isArray(value)) {
@@ -797,18 +801,13 @@ export function RPAWorkbench() {
   const [activeRecording, setActiveRecording] = useState<RecordingSessionPayload | null>(null);
   const [recordingName, setRecordingName] = useState("");
   const [recordingGoal, setRecordingGoal] = useState("");
-  const [desktopLiveSessionId, setDesktopLiveSessionId] = useState("");
-  const [desktopLiveLoading, setDesktopLiveLoading] = useState(false);
   const [latestComputerObservation, setLatestComputerObservation] = useState<Record<string, unknown> | null>(null);
   const [computerSampling, setComputerSampling] = useState(false);
   const [recordAndForward, setRecordAndForward] = useState(false);
   const [browserCaptureActive, setBrowserCaptureActive] = useState(false);
   const [browserCapturePolling, setBrowserCapturePolling] = useState(false);
   const [captureAssistantActive, setCaptureAssistantActive] = useState(false);
-  const [captureAssistantStage, setCaptureAssistantStage] = useState<"idle" | "creating" | "preparing" | "starting" | "active" | "captured" | "failed">("idle");
-  const [captureHotkey, setCaptureHotkey] = useState("Ctrl+Alt+C");
-  const [captureCancelHotkey, setCaptureCancelHotkey] = useState("Ctrl+Alt+X");
-  const [captureHotkeyStorageReady, setCaptureHotkeyStorageReady] = useState(false);
+  const [captureAssistantStage, setCaptureAssistantStage] = useState<CaptureAssistantStage>("idle");
   const [nativeInspectorStatus, setNativeInspectorStatus] = useState<Record<string, unknown> | null>(null);
   const [nativeInspectorStatusLoaded, setNativeInspectorStatusLoaded] = useState(false);
   const [computerApps, setComputerApps] = useState<ComputerUseAppPayload[]>([]);
@@ -869,35 +868,40 @@ export function RPAWorkbench() {
       actions: [["set_variable", t("components.rpa.RPAWorkbench.studioActionSetVariable")], ["file_copy", t("components.rpa.RPAWorkbench.studioActionFileCopy")], ["http_request", t("components.rpa.RPAWorkbench.studioActionHttpRequest")], ["ocr", t("components.rpa.RPAWorkbench.studioActionOcr")], ["llm_call", t("components.rpa.RPAWorkbench.studioActionLlmCall")], ["assert_text", t("components.rpa.RPAWorkbench.studioActionAssertText")]]
     }
   ] as Array<{ key: string; title: string; actions: Array<[string, string]> }>, [t]);
+  const selectedDraftStepIndex = useMemo(() => draftStepOrder.indexOf(selectedDraftStepKey), [draftStepOrder, selectedDraftStepKey]);
   const canvasLaunchStep = useMemo(() => {
     const selectedAction = stepActionName(selectedBuilderStep);
     if (selectedBuilderStep && actionKind(selectedAction) === "app") {
       return selectedBuilderStep;
     }
-    return orderedDraftSteps.find(item => {
-      const action = stepActionName(item.step);
-      if (actionKind(action) !== "app") {
-        return false;
+    if (selectedDraftStepIndex >= 0) {
+      for (let index = selectedDraftStepIndex - 1; index >= 0; index -= 1) {
+        const candidate = orderedDraftSteps[index]?.step;
+        if (candidate && actionKind(stepActionName(candidate)) === "app") {
+          return candidate;
+        }
       }
-      const params = isPlainRecord(item.step.params) ? item.step.params : {};
-      return Boolean(firstString(params.appId, params.app, params.applicationId));
-    })?.step || orderedDraftSteps.find(item => actionKind(stepActionName(item.step)) === "app")?.step || null;
-  }, [orderedDraftSteps, selectedBuilderStep]);
+    }
+    return orderedDraftSteps.find(item => actionKind(stepActionName(item.step)) === "app")?.step || null;
+  }, [orderedDraftSteps, selectedBuilderStep, selectedDraftStepIndex]);
   const canvasLaunchParams = useMemo(() => isPlainRecord(canvasLaunchStep?.params) ? canvasLaunchStep.params : {}, [canvasLaunchStep]);
   const canvasTargetAppId = useMemo(() => {
+    const selectedKind = actionKind(stepActionName(selectedBuilderStep));
+    if (selectedKind === "browser") {
+      return "agent_browser";
+    }
     const fromStep = firstString(canvasLaunchParams.appId, canvasLaunchParams.app, canvasLaunchParams.applicationId);
-    return fromStep || selectedDraft?.appId || "desktop";
-  }, [canvasLaunchParams, selectedDraft]);
-  const hasBrowserStep = useMemo(() => orderedDraftSteps.some(item => actionKind(stepActionName(item.step)) === "browser"), [orderedDraftSteps]);
+    return fromStep || "desktop";
+  }, [canvasLaunchParams, selectedBuilderStep]);
   const canvasTargetMode = useMemo(() => {
-    if (canvasTargetAppId === "agent_browser" || hasBrowserStep) {
+    if (canvasTargetAppId === "agent_browser" || actionKind(stepActionName(selectedBuilderStep)) === "browser") {
       return "agent_browser";
     }
     if (!canvasTargetAppId || canvasTargetAppId === "desktop") {
       return "desktop_window";
     }
     return "launch_app";
-  }, [canvasTargetAppId, hasBrowserStep]);
+  }, [canvasTargetAppId, selectedBuilderStep]);
   const selectedComputerApp = useMemo(() => computerApps.find(app => {
     const appId = String(app.appId || app.id || app.profileId || "");
     return appId === canvasTargetAppId;
@@ -919,10 +923,94 @@ export function RPAWorkbench() {
     mode: canvasTargetMode,
     appId: canvasTargetAppId || "desktop",
     label: selectedComputerAppLabel,
+    stepId: selectedBuilderStep?.stepId || selectedDraftStepKey || undefined,
+    selectedStepKey: selectedDraftStepKey || undefined,
     browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
     ignoreAdminSurface: true,
     consoleTargetBlocked: targetLockLooksLikeAdmin
-  }), [canvasTargetAppId, canvasTargetMode, selectedComputerAppLabel, targetLockLooksLikeAdmin]);
+  }), [canvasTargetAppId, canvasTargetMode, selectedBuilderStep, selectedComputerAppLabel, selectedDraftStepKey, targetLockLooksLikeAdmin]);
+  const workflowSnapshotForCapture = useMemo(() => ({
+    draftId: selectedDraftId || undefined,
+    selectedStepKey: selectedDraftStepKey || undefined,
+    steps: orderedDraftSteps.map((item, index) => ({
+      key: item.key,
+      index,
+      stepId: item.step.stepId || item.key,
+      action: stepActionName(item.step),
+      intent: stepIntentLabel(item.step),
+      params: isPlainRecord(item.step.params) ? item.step.params : {},
+      target: isPlainRecord(item.step.target) ? item.step.target : {},
+      metadata: isPlainRecord(item.step.metadata) ? item.step.metadata : {},
+    })),
+  }), [orderedDraftSteps, selectedDraftId, selectedDraftStepKey]);
+  const buildStepCaptureContext = (): StepCaptureContext | null => {
+    if (!selectedBuilderStep || !selectedDraftStepKey) {
+      return null;
+    }
+    const stepId = selectedBuilderStep.stepId || selectedDraftStepKey;
+    const selectedKind = actionKind(stepActionName(selectedBuilderStep));
+    const launchStep = selectedKind === "app" ? selectedBuilderStep : canvasLaunchStep;
+    const launchParams = isPlainRecord(launchStep?.params) ? launchStep.params : {};
+    const appId = selectedKind === "browser"
+      ? "agent_browser"
+      : firstString(launchParams.appId, launchParams.app, launchParams.applicationId, canvasTargetAppId) || "desktop";
+    const mode = selectedKind === "browser" || appId === "agent_browser" ? "agent_browser" : appId === "desktop" ? "desktop_window" : "launch_app";
+    const app = computerApps.find(item => {
+      const id = String(item.appId || item.id || item.profileId || "");
+      return id === appId;
+    }) || null;
+    const label = app?.displayName || app?.name || (appId === "desktop" ? t("components.rpa.RPAWorkbench.studioManualDesktop") : appId);
+    const targetRaw = isPlainRecord(selectedBuilderStep.target) ? selectedBuilderStep.target : {};
+    const targetWindow = isPlainRecord(targetRaw.window)
+      ? targetRaw.window as Record<string, unknown>
+      : undefined;
+    const targetLock: Record<string, unknown> = {
+      enabled: true,
+      mode,
+      appId,
+      label,
+      stepId,
+      selectedStepKey: selectedDraftStepKey,
+      targetStepId: stepId,
+      launchStepId: launchStep?.stepId,
+      browserKind: mode === "agent_browser" ? "chrome" : undefined,
+      window: targetWindow,
+      ignoreAdminSurface: true,
+      consoleTargetBlocked: /v8 agent os|v8 os|localhost:9528|127\.0\.0\.1:9528|admin/i.test([
+        appId,
+        label,
+        app?.topWindowTitle,
+        targetWindow?.title,
+      ].filter(Boolean).join(" ")),
+    };
+    const launchStepSnapshot = launchStep ? {
+      stepId: launchStep.stepId,
+      action: stepActionName(launchStep),
+      params: isPlainRecord(launchStep.params) ? launchStep.params : {},
+      target: isPlainRecord(launchStep.target) ? launchStep.target : {},
+    } : null;
+    return {
+      stepKey: selectedDraftStepKey,
+      stepId,
+      targetStep: selectedBuilderStep,
+      launchStep,
+      mode,
+      appId,
+      label,
+      targetLock,
+      workflowSnapshot: workflowSnapshotForCapture,
+      launchStepSnapshot,
+      targetStepSnapshot: {
+        stepId,
+        action: stepActionName(selectedBuilderStep),
+        intent: stepIntentLabel(selectedBuilderStep),
+        params: isPlainRecord(selectedBuilderStep.params) ? selectedBuilderStep.params : {},
+        target: isPlainRecord(selectedBuilderStep.target) ? selectedBuilderStep.target : {},
+        metadata: isPlainRecord(selectedBuilderStep.metadata) ? selectedBuilderStep.metadata : {},
+      },
+      targetWindow,
+    };
+  };
   const appPickerOptions = useMemo(() => {
     const query = appSearch.trim().toLowerCase();
     const normalize = (value: unknown) => String(value || "").toLowerCase();
@@ -991,29 +1079,52 @@ export function RPAWorkbench() {
   const selectedBuilderVerification = useMemo(() => isPlainRecord(selectedBuilderStep?.verification) ? selectedBuilderStep.verification : {}, [selectedBuilderStep]);
   const selectedBuilderActionKind = useMemo(() => actionKind(stepActionName(selectedBuilderStep)), [selectedBuilderStep]);
   const capturePoolItems = useMemo(() => Array.isArray(activeRecording?.capturePool) ? activeRecording.capturePool : [], [activeRecording]);
+  const selectedCapturePoolItems = useMemo(() => {
+    const stepId = selectedBuilderStep?.stepId || selectedDraftStepKey;
+    if (!stepId) {
+      return [];
+    }
+    return capturePoolItems.filter(item => {
+      const sourceStepId = firstString(item.sourceStepId, item.stepId, item.targetStepId);
+      return sourceStepId === stepId || sourceStepId === selectedDraftStepKey;
+    });
+  }, [capturePoolItems, selectedBuilderStep, selectedDraftStepKey]);
+  const captureTargetCandidates = useMemo(() => {
+    const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant : {};
+    const latest = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
+    const fromAssistant = Array.isArray(assistant.targetCandidates) ? assistant.targetCandidates : [];
+    const fromLatest = Array.isArray(latest.targetCandidates) ? latest.targetCandidates : [];
+    const source = fromAssistant.length ? fromAssistant : fromLatest;
+    const seen = new Set<string>();
+    return source
+      .filter(isPlainRecord)
+      .map(candidate => candidate as Record<string, unknown>)
+      .filter(candidate => {
+        const key = firstString(candidate.handle, candidate.title, candidate.windowTitle, candidate.processName, candidate.className) || JSON.stringify(candidate);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 8);
+  }, [activeRecording?.captureAssistant, latestResult]);
   const captureAssistantBusy = captureAssistantStage === "creating" || captureAssistantStage === "preparing" || captureAssistantStage === "starting";
   const captureAssistantStageLabel = useMemo(() => {
-    const keyByStage: Record<typeof captureAssistantStage, string> = {
+    const keyByStage: Record<CaptureAssistantStage, string> = {
       idle: "components.rpa.RPAWorkbench.studioStartCaptureAssistant",
       creating: "components.rpa.RPAWorkbench.studioCaptureStageCreating",
       preparing: "components.rpa.RPAWorkbench.studioCaptureStagePreparing",
+      selecting: "components.rpa.RPAWorkbench.studioCaptureStageSelecting",
       starting: "components.rpa.RPAWorkbench.studioCaptureStageStarting",
+      armed: "components.rpa.RPAWorkbench.studioCaptureStageArmed",
       active: "components.rpa.RPAWorkbench.studioCaptureStageActive",
       captured: "components.rpa.RPAWorkbench.studioCaptureStageCaptured",
+      coordinate: "components.rpa.RPAWorkbench.studioCaptureStageCoordinate",
       failed: "components.rpa.RPAWorkbench.studioCaptureStageFailed"
     };
     return t(keyByStage[captureAssistantStage]);
   }, [captureAssistantStage, t]);
-  const displayCaptureHotkey = captureHotkey.trim() || "Ctrl+Alt+C";
-  const displayCaptureCancelHotkey = captureCancelHotkey.trim() || "Ctrl+Alt+X";
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const savedHotkey = window.localStorage.getItem(RPA_CAPTURE_HOTKEY_STORAGE_KEY);
-    const savedCancelHotkey = window.localStorage.getItem(RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY);
-    if (savedHotkey) setCaptureHotkey(savedHotkey);
-    if (savedCancelHotkey) setCaptureCancelHotkey(savedCancelHotkey);
-    setCaptureHotkeyStorageReady(true);
-  }, []);
+  const displayCaptureGesture = "LeftClick";
+  const displayCancelGesture = "Esc";
   useEffect(() => {
     let cancelled = false;
     const loadStatus = async () => {
@@ -1022,19 +1133,6 @@ export function RPAWorkbench() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok || cancelled) return;
         setNativeInspectorStatus(data);
-        if (typeof window !== "undefined") {
-          const config = isPlainRecord(data?.nativeInspector) && isPlainRecord((data.nativeInspector as Record<string, unknown>).config)
-            ? (data.nativeInspector as Record<string, unknown>).config as Record<string, unknown>
-            : {};
-          if (!window.localStorage.getItem(RPA_CAPTURE_HOTKEY_STORAGE_KEY)) {
-            const nextHotkey = firstString(config.hotkey, (data.nativeHotkeyBackend as Record<string, unknown> | undefined)?.hotkey);
-            if (nextHotkey) setCaptureHotkey(nextHotkey);
-          }
-          if (!window.localStorage.getItem(RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY)) {
-            const nextCancel = firstString(config.cancelHotkey, (data.nativeHotkeyBackend as Record<string, unknown> | undefined)?.cancelHotkey);
-            if (nextCancel) setCaptureCancelHotkey(nextCancel);
-          }
-        }
       } catch {
         // Native inspector status is advisory; the capture button will still surface endpoint errors.
       } finally {
@@ -1047,15 +1145,7 @@ export function RPAWorkbench() {
     };
   }, []);
   useEffect(() => {
-    if (typeof window === "undefined" || !captureHotkeyStorageReady) return;
-    window.localStorage.setItem(RPA_CAPTURE_HOTKEY_STORAGE_KEY, displayCaptureHotkey);
-  }, [captureHotkeyStorageReady, displayCaptureHotkey]);
-  useEffect(() => {
-    if (typeof window === "undefined" || !captureHotkeyStorageReady) return;
-    window.localStorage.setItem(RPA_CAPTURE_CANCEL_HOTKEY_STORAGE_KEY, displayCaptureCancelHotkey);
-  }, [captureHotkeyStorageReady, displayCaptureCancelHotkey]);
-  useEffect(() => {
-    if (!captureHotkeyStorageReady || !nativeInspectorStatusLoaded) return;
+    if (!nativeInspectorStatusLoaded) return;
     const timer = window.setTimeout(() => {
       void fetch("/api/rpa/native-inspector/config", {
         method: "POST",
@@ -1064,8 +1154,8 @@ export function RPAWorkbench() {
         },
         body: JSON.stringify({
           backend: "auto",
-          hotkey: displayCaptureHotkey,
-          cancelHotkey: displayCaptureCancelHotkey,
+          captureGesture: displayCaptureGesture,
+          cancelGesture: displayCancelGesture,
           highlightOverlay: true,
           hoverSampleHz: 12,
         })
@@ -1077,7 +1167,7 @@ export function RPAWorkbench() {
       }).catch(() => undefined);
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [captureHotkeyStorageReady, displayCaptureCancelHotkey, displayCaptureHotkey, nativeInspectorStatusLoaded]);
+  }, [displayCancelGesture, displayCaptureGesture, nativeInspectorStatusLoaded]);
   const nativeHotkeyBackend = useMemo(() => {
     const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
     const backend = assistant.nativeHotkeyBackend;
@@ -1094,8 +1184,8 @@ export function RPAWorkbench() {
   const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
   const selectableElements = useMemo(() => [
     ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
-    ...capturePoolItems.map(item => ({ ...item, sourceBucket: "pool" as const, optionId: item.tempElementId || captureItemLabel(item) }))
-  ], [capturePoolItems, objectLibraryItems]);
+    ...selectedCapturePoolItems.map(item => ({ ...item, sourceBucket: "pool" as const, optionId: item.tempElementId || captureItemLabel(item) }))
+  ], [objectLibraryItems, selectedCapturePoolItems]);
   const selectedLoopStartKey = firstString(selectedBuilderParams.loopStartStepKey, selectedBuilderParams.startStepKey);
   const selectedLoopEndKey = firstString(selectedBuilderParams.loopEndStepKey, selectedBuilderParams.endStepKey);
   const selectedLoopStartIndex = selectedLoopStartKey ? orderedDraftSteps.findIndex(item => item.key === selectedLoopStartKey) : -1;
@@ -1260,21 +1350,6 @@ export function RPAWorkbench() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [studioDirty]);
   useEffect(() => {
-    return () => {
-      const sessionId = desktopLiveSessionId;
-      if (!sessionId) return;
-      void fetch("/api/desktop-live/release", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          sessionId
-        })
-      }).catch(() => undefined);
-    };
-  }, [desktopLiveSessionId]);
-  useEffect(() => {
     if (!selectedTemplateId) {
       setTemplateHistory([]);
       return;
@@ -1333,34 +1408,6 @@ export function RPAWorkbench() {
     cwd: cwd.trim() || undefined,
     outputDir: outputDir.trim() || undefined
   });
-  const handlePrepareDesktopLive = async () => {
-    setDesktopLiveLoading(true);
-    try {
-      const res = await fetch("/api/desktop-live/session", {
-        method: "POST",
-        cache: "no-store"
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.sessionId) {
-        throw new Error(data?.error || data?.detail || t("components.rpa.RPAWorkbench.desktopLiveFailed"));
-      }
-      setDesktopLiveSessionId(String(data.sessionId));
-      setLatestResult(data);
-      toast({
-        title: t("components.rpa.RPAWorkbench.desktopLiveReady"),
-        description: t("components.rpa.RPAWorkbench.desktopLiveClickHint")
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.desktopLiveFailed");
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.desktopLiveFailed"),
-        description: message
-      });
-    } finally {
-      setDesktopLiveLoading(false);
-    }
-  };
   const handleBrowserCaptureStart = async () => {
     if (!activeRecording?.recordingSessionId) {
       toast({
@@ -1447,13 +1494,19 @@ export function RPAWorkbench() {
     return data;
   }, []);
 
-  const buildRecordingStartPayload = () => {
-    const targetAppId = canvasTargetAppId || String(selectedComputerApp?.appId || selectedComputerApp?.id || selectedComputerApp?.profileId || "desktop");
+  const buildRecordingStartPayload = (captureContext?: StepCaptureContext | null) => {
+    const targetAppId = captureContext?.appId || canvasTargetAppId || String(selectedComputerApp?.appId || selectedComputerApp?.id || selectedComputerApp?.profileId || "desktop");
+    const targetMode = captureContext?.mode || canvasTargetMode;
+    const targetLabel = captureContext?.label || selectedComputerAppLabel;
+    const targetLock = captureContext?.targetLock || {
+      ...canvasCaptureTargetLock,
+      appId: targetAppId,
+    };
     return {
       name: recordingName.trim() || undefined,
       goal: recordingGoal.trim() || recordingName.trim() || selectedDraft?.goal || undefined,
-      targetMode: canvasTargetMode,
-      browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
+      targetMode,
+      browserKind: targetMode === "agent_browser" ? "chrome" : undefined,
       appId: targetAppId,
       activeApp: selectedComputerApp ? {
         appId: targetAppId,
@@ -1463,9 +1516,13 @@ export function RPAWorkbench() {
         launchable: selectedComputerApp.launchable
       } : undefined,
       targetLock: {
-        ...canvasCaptureTargetLock,
+        ...targetLock,
         appId: targetAppId,
+        label: targetLabel,
       },
+      stepId: captureContext?.stepId,
+      selectedStepKey: captureContext?.stepKey,
+      workflowSnapshot: captureContext?.workflowSnapshot,
       captureOptions: {
         screenshotAnchors: true,
         domSelectors: true,
@@ -1556,8 +1613,18 @@ export function RPAWorkbench() {
     }
   };
 
-  const startRecordingSession = async (options?: { quiet?: boolean }) => {
-    if (targetLockLooksLikeAdmin) {
+  const recordingMatchesCaptureContext = (recording: RecordingSessionPayload | null | undefined, captureContext?: StepCaptureContext | null) => {
+    if (!recording?.recordingSessionId || !captureContext) {
+      return Boolean(recording?.recordingSessionId);
+    }
+    const lock = isPlainRecord(recording.targetLock) ? recording.targetLock : {};
+    return firstString(lock.appId, recording.appId) === captureContext.appId
+      && firstString(lock.mode, recording.targetMode) === captureContext.mode;
+  };
+  const startRecordingSession = async (options?: { quiet?: boolean; captureContext?: StepCaptureContext | null }) => {
+    const captureContext = options?.captureContext || null;
+    const contextTargetBlocked = Boolean(captureContext?.targetLock?.consoleTargetBlocked);
+    if (contextTargetBlocked || (!captureContext && targetLockLooksLikeAdmin)) {
       toast({
         variant: "destructive",
         title: t("components.rpa.RPAWorkbench.studioTargetBlockedTitle"),
@@ -1570,7 +1637,7 @@ export function RPAWorkbench() {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(buildRecordingStartPayload())
+      body: JSON.stringify(buildRecordingStartPayload(captureContext))
     }), options?.quiet ? t("components.rpa.RPAWorkbench.recordingStartedQuiet") : t("components.rpa.RPAWorkbench.recordingStarted"));
     if (data?.recordingSessionId) {
       const recording = data as RecordingSessionPayload;
@@ -1581,15 +1648,24 @@ export function RPAWorkbench() {
     return null;
   };
 
-  const ensureActiveRecording = async () => {
-    if (activeRecording?.recordingSessionId && activeRecording.state === "recording") {
+  const ensureActiveRecording = async (captureContext?: StepCaptureContext | null) => {
+    if (activeRecording?.recordingSessionId && activeRecording.state === "recording" && recordingMatchesCaptureContext(activeRecording, captureContext)) {
       return activeRecording;
     }
-    return startRecordingSession({ quiet: true });
+    return startRecordingSession({ quiet: true, captureContext });
   };
 
   const handleCaptureAssistantStart = async () => {
-    if (targetLockLooksLikeAdmin) {
+    const captureContext = buildStepCaptureContext();
+    if (!captureContext) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioCaptureTargetNeedsStep"),
+        description: t("components.rpa.RPAWorkbench.studioCaptureTargetNeedsStepDescription")
+      });
+      return;
+    }
+    if (Boolean(captureContext.targetLock.consoleTargetBlocked)) {
       toast({
         variant: "destructive",
         title: t("components.rpa.RPAWorkbench.studioTargetBlockedTitle"),
@@ -1599,7 +1675,18 @@ export function RPAWorkbench() {
     }
     try {
       setCaptureAssistantStage("creating");
-      const recording = await ensureActiveRecording();
+      await fetch("/api/rpa/native-inspector/start-service", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          backend: "auto",
+          captureGesture: displayCaptureGesture,
+          cancelGesture: displayCancelGesture
+        })
+      }).catch(() => undefined);
+      const recording = await ensureActiveRecording(captureContext);
       if (!recording?.recordingSessionId) {
         setCaptureAssistantStage("failed");
         return;
@@ -1611,19 +1698,47 @@ export function RPAWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          mode: canvasTargetMode,
-          appId: canvasTargetAppId || "desktop",
-          label: selectedComputerAppLabel,
+          stepId: captureContext.stepId,
+          selectedStepKey: captureContext.stepKey,
+          workflowSnapshot: captureContext.workflowSnapshot,
+          launchStep: captureContext.launchStepSnapshot,
+          targetStep: captureContext.targetStepSnapshot,
+          captureIntent: "step_target",
+          mode: captureContext.mode,
+          appId: captureContext.appId || "desktop",
+          label: captureContext.label,
           ignoreAdminSurface: true,
-          consoleTargetBlocked: targetLockLooksLikeAdmin,
-          targetLock: canvasCaptureTargetLock,
+          consoleTargetBlocked: Boolean(captureContext.targetLock.consoleTargetBlocked),
+          targetLock: captureContext.targetLock,
         })
       }), t("components.rpa.RPAWorkbench.studioCaptureTargetPrepared"));
       if (prepared?.recording) {
         setActiveRecording(prepared.recording as RecordingSessionPayload);
       }
+      let forceCoordinateFallback = false;
       if (prepared?.ok === false) {
-        throw new Error(prepared?.reason || prepared?.detail || prepared?.error || t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"));
+        const status = firstString(prepared.status);
+        setLatestResult(prepared);
+        const targetCandidates = Array.isArray(prepared.targetCandidates) ? prepared.targetCandidates : [];
+        const canCoordinateFallback = status === "manual_coordinate_available" || status === "launched_no_visible_window";
+        if (status === "target_candidates_required" || targetCandidates.length > 0 || !canCoordinateFallback) {
+          setCaptureAssistantActive(false);
+          setCaptureAssistantStage(status === "target_candidates_required" ? "selecting" : status === "manual_coordinate_available" ? "coordinate" : "failed");
+          toast({
+            variant: status === "target_candidates_required" || status === "launched_no_visible_window" ? "default" : "destructive",
+            title: t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"),
+            description: prepared?.reason || prepared?.detail || prepared?.error || t("components.rpa.RPAWorkbench.studioHotkeyNotArmedTargetNotReady")
+          });
+          return;
+        }
+        forceCoordinateFallback = true;
+        setCaptureAssistantActive(false);
+        setCaptureAssistantStage("coordinate");
+        toast({
+          variant: "default",
+          title: t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"),
+          description: t("components.rpa.RPAWorkbench.studioCoordinateFallbackStarting")
+        });
       }
       setCaptureAssistantStage("starting");
       const data = await runAction(`recording:native-inspector:start:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/native-inspector/start`, {
@@ -1632,17 +1747,24 @@ export function RPAWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          stepId: captureContext.stepId,
+          selectedStepKey: captureContext.stepKey,
+          workflowSnapshot: captureContext.workflowSnapshot,
+          launchStep: captureContext.launchStepSnapshot,
+          targetStep: captureContext.targetStepSnapshot,
+          captureIntent: "step_target",
           action: "click",
-          backend: "auto",
+          backend: forceCoordinateFallback ? "fallback_overlay" : "auto",
           mode: "capture_only",
-          hotkey: displayCaptureHotkey,
-          cancelHotkey: displayCaptureCancelHotkey,
+          captureGesture: displayCaptureGesture,
+          cancelGesture: displayCancelGesture,
           persistent: true,
           highlightOverlay: true,
           recordAndForward,
-          targetLock: canvasCaptureTargetLock,
-          reusePreparedTarget: true,
-          preparedTarget: prepared?.targetWindow,
+          targetLock: captureContext.targetLock,
+          reusePreparedTarget: !forceCoordinateFallback,
+          preparedTarget: forceCoordinateFallback ? undefined : prepared?.targetWindow,
+          allowManualCoordinateFallback: forceCoordinateFallback,
         })
       }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"));
       if (data?.recording) {
@@ -1651,8 +1773,9 @@ export function RPAWorkbench() {
       if (data?.ok === false) {
         throw new Error(data?.reason || data?.detail || data?.error || t("components.rpa.RPAWorkbench.studioCaptureAssistantFailed"));
       }
-      setCaptureAssistantActive(true);
-      setCaptureAssistantStage("active");
+      const armed = Boolean(data?.armed);
+      setCaptureAssistantActive(armed || data?.status === "capture_assistant_started");
+      setCaptureAssistantStage(armed ? "armed" : "active");
       window.setTimeout(() => {
         void refreshRecording(recording.recordingSessionId);
       }, 1800);
@@ -1738,6 +1861,35 @@ export function RPAWorkbench() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [activeRecording?.recordingSessionId, activeRecording?.state, captureAssistantActive, handleCaptureAssistantPoll]);
+  const handleBindTargetCandidate = (candidate: Record<string, unknown>) => {
+    if (!selectedBuilderStep) return;
+    const label = captureTargetCandidateLabel(candidate);
+    updateSelectedDraftStep(step => {
+      const target = isPlainRecord(step.target) ? step.target : {};
+      const metadata = isPlainRecord(step.metadata) ? step.metadata : {};
+      return {
+        ...step,
+        target: {
+          ...target,
+          window: {
+            ...candidate,
+            selectedAt: new Date().toISOString(),
+            source: firstString(candidate.source) || "prepare_candidates",
+          },
+        },
+        metadata: {
+          ...metadata,
+          targetWindowSource: "prepare_candidates",
+          targetWindowSelectedAt: new Date().toISOString(),
+        },
+      };
+    });
+    setCaptureAssistantStage("idle");
+    toast({
+      title: t("components.rpa.RPAWorkbench.studioTargetCandidateBoundTitle"),
+      description: t("components.rpa.RPAWorkbench.studioTargetCandidateBoundDescription", { value: label })
+    });
+  };
   const applyElementToSelectedStep = (item: CapturePoolItem | ObjectLibraryElement) => {
     if (!selectedBuilderStep) return;
     const selectorValue = captureItemSelectorValue(item);
@@ -1808,29 +1960,55 @@ export function RPAWorkbench() {
   const handleSampleComputerUse = async () => {
     setComputerSampling(true);
     try {
-      const recording = await ensureActiveRecording();
+      const captureContext = buildStepCaptureContext();
+      if (!captureContext) {
+        toast({
+          variant: "destructive",
+          title: t("components.rpa.RPAWorkbench.studioCaptureTargetNeedsStep"),
+          description: t("components.rpa.RPAWorkbench.studioCaptureTargetNeedsStepDescription")
+        });
+        return;
+      }
+      const recording = await ensureActiveRecording(captureContext);
       if (!recording?.recordingSessionId) {
         return;
       }
+      const assistantState = isPlainRecord(recording.captureAssistant) ? recording.captureAssistant : {};
+      const preparedTarget = isPlainRecord(assistantState.preparedTarget)
+        ? assistantState.preparedTarget as Record<string, unknown>
+        : captureContext.targetWindow;
       const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/desktop-sample`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          stepId: captureContext.stepId,
+          selectedStepKey: captureContext.stepKey,
+          workflowSnapshot: captureContext.workflowSnapshot,
+          targetWindow: preparedTarget,
+          targetProcess: isPlainRecord(preparedTarget) ? {
+            processId: preparedTarget.processId,
+            processName: preparedTarget.processName,
+            processNames: preparedTarget.processNames,
+          } : undefined,
+          manualDesktopMode: captureContext.mode === "desktop_window" && captureContext.appId === "desktop",
           target: {
-            mode: canvasTargetMode,
-            appId: canvasTargetAppId || "desktop",
-            label: selectedComputerAppLabel,
+            ...captureContext.targetLock,
+            mode: captureContext.mode,
+            appId: captureContext.appId || "desktop",
+            label: captureContext.label,
+            window: preparedTarget,
             ignoreAdminSurface: true,
-            consoleTargetBlocked: targetLockLooksLikeAdmin,
+            consoleTargetBlocked: Boolean(captureContext.targetLock.consoleTargetBlocked),
           },
           event: {
             action: "sample_elements",
             source: "desktop_accessibility",
-            intent: selectedComputerAppLabel,
+            stepId: captureContext.stepId,
+            intent: captureContext.label,
             params: {
-              label: selectedComputerAppLabel
+              label: captureContext.label
             }
           },
           writeToCapturePool: true,
@@ -1907,9 +2085,6 @@ export function RPAWorkbench() {
     if (data?.id) {
       setSelectedDraftId(data.id);
     }
-  };
-  const handleStartRecording = async () => {
-    await startRecordingSession();
   };
   const parseDraftStepsFromBuilder = () => {
     const steps: EditableDraftStep[] = [];
@@ -2248,6 +2423,30 @@ export function RPAWorkbench() {
       timeoutMs: Number(timeoutMs || 600000),
       ...commonPayload()
     };
+    if (mode === "run") {
+      try {
+        const studioPayload = buildDraftStudioPayload();
+        Object.assign(payload, {
+          name: studioPayload.name,
+          goal: studioPayload.goal,
+          appId: studioPayload.appId,
+          steps: studioPayload.steps,
+          draftVariables: studioPayload.variables,
+          objectLibrary: studioPayload.objectLibrary,
+          metadataPatch: {
+            ...(isPlainRecord(studioPayload.metadata) ? studioPayload.metadata : {}),
+            debugRunSnapshot: true,
+          },
+        });
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: t("components.rpa.RPAWorkbench.invalidDraftStep"),
+          description: error instanceof Error ? error.message : t("components.rpa.RPAWorkbench.invalidJsonObject")
+        });
+        return;
+      }
+    }
     await runAction(`draft:${mode}`, () => fetch(`/api/rpa/drafts/${encodeURIComponent(selectedDraftId)}/${mode}`, {
       method: "POST",
       headers: {
@@ -2545,10 +2744,6 @@ export function RPAWorkbench() {
                                             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${computerAppsLoading ? "animate-spin" : ""}`} />
                                             {t("components.rpa.RPAWorkbench.studioAppList")}
                                         </Button>
-                                        <Button size="sm" onClick={() => void handleStartRecording()} disabled={!!busyAction || activeRecording?.state === "recording" || targetLockLooksLikeAdmin}>
-                                            <Video className="mr-1.5 h-3.5 w-3.5" />
-                                            {t("components.rpa.RPAWorkbench.studioStartRecording")}
-                                        </Button>
                                     </div>
                                 </div>
                                 <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${targetLockLooksLikeAdmin ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border/60 bg-muted/20 text-muted-foreground"}`}>
@@ -2608,7 +2803,6 @@ export function RPAWorkbench() {
                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                     <Badge variant="outline">{orderedDraftSteps.length} steps</Badge>
                                     <Badge variant={activeRecording?.state === "recording" ? "default" : "secondary"}>{activeRecording?.state || "idle"}</Badge>
-                                    {desktopLiveSessionId ? <Badge variant="outline">desktop live</Badge> : null}
                                     {browserCaptureActive ? <Badge variant="outline">browser capture</Badge> : null}
                                     {latestResult ? <span className="truncate">{t("components.rpa.RPAWorkbench.studioRecentResult")}{firstString((latestResult as Record<string, unknown>)?.status) || firstString((latestResult as Record<string, unknown>)?.message) || t("components.rpa.RPAWorkbench.studioResultUpdated")}</span> : <span>{t("components.rpa.RPAWorkbench.studioRunLogPlaceholder")}</span>}
                                 </div>
@@ -2640,11 +2834,6 @@ export function RPAWorkbench() {
                                                     {studioActionGroups.flatMap(group => group.actions).map(([action, label]) => <option key={action} value={action}>{label}</option>)}
                                                 </select>
                                             </div>
-                                            <div className="grid gap-2">
-                                                <Label>{t("components.rpa.RPAWorkbench.studioStepIntent")}</Label>
-                                                <Input className="h-9 text-xs" value={selectedBuilderStep.intent || ""} onChange={event => updateSelectedDraftStep(step => ({ ...step, intent: event.target.value }))} />
-                                            </div>
-
                                             {selectedBuilderActionKind === "app" ? <div className="space-y-3">
                                                     <div className="grid gap-2">
                                                         <Label>{t("components.rpa.RPAWorkbench.studioAppToLaunch")}</Label>
@@ -2818,16 +3007,15 @@ export function RPAWorkbench() {
                                         <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioElementsDescription")}</div>
                                     </div>
                                     <div className="flex flex-wrap gap-2">
-                                        <Button size="sm" variant="outline" onClick={() => void handleCaptureAssistantStart()} disabled={targetLockLooksLikeAdmin || !!busyAction || captureAssistantBusy}>
+                                        <Button size="sm" variant="outline" onClick={() => void handleCaptureAssistantStart()} disabled={!selectedBuilderStep || targetLockLooksLikeAdmin || !!busyAction || captureAssistantBusy}>
                                             <Crosshair className="mr-1.5 h-3.5 w-3.5" />
-                                            {captureAssistantBusy ? captureAssistantStageLabel : t("components.rpa.RPAWorkbench.studioStartCaptureAssistant")}
+                                            {captureAssistantBusy ? captureAssistantStageLabel : t("components.rpa.RPAWorkbench.studioCaptureStepTarget")}
                                         </Button>
                                         <Button size="sm" variant="ghost" onClick={() => void handleCaptureAssistantStop()} disabled={!captureAssistantActive}>
                                             {t("components.rpa.RPAWorkbench.studioStopCaptureAssistant")}
                                         </Button>
-                                        <Button size="sm" variant="outline" onClick={() => void handlePrepareDesktopLive()} disabled={desktopLiveLoading}>{desktopLiveSessionId ? t("components.rpa.RPAWorkbench.studioRestartPreview") : t("components.rpa.RPAWorkbench.studioStartPreview")}</Button>
-                                        <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={computerSampling}>{t("components.rpa.RPAWorkbench.studioSampleElements")}</Button>
-                                        <Button size="sm" variant="outline" onClick={() => void handleBrowserCaptureStart()} disabled={!activeRecording || browserCaptureActive}>{t("components.rpa.RPAWorkbench.studioBrowserCapture")}</Button>
+                                        <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={!selectedBuilderStep || computerSampling}>{t("components.rpa.RPAWorkbench.studioSampleElements")}</Button>
+                                        {selectedBuilderActionKind === "browser" ? <Button size="sm" variant="outline" onClick={() => void handleBrowserCaptureStart()} disabled={!activeRecording || browserCaptureActive}>{t("components.rpa.RPAWorkbench.studioBrowserCapture")}</Button> : null}
                                     </div>
                                     <label className="flex items-center gap-2 rounded-xl border border-border/60 p-2.5 text-xs">
                                         <input type="checkbox" checked={recordAndForward} onChange={event => setRecordAndForward(event.target.checked)} />
@@ -2839,64 +3027,56 @@ export function RPAWorkbench() {
                                         {" · "}
                                         {firstString(nativeHotkeyBackend?.state) || t("components.rpa.RPAWorkbench.studioNativeHotkeyFallback")}
                                     </div>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <label className="grid gap-1 text-[11px] text-muted-foreground">
-                                            {t("components.rpa.RPAWorkbench.studioCaptureHotkeyLabel")}
-                                            <Input
-                                                className="h-8 cursor-pointer select-none text-xs"
-                                                value={captureHotkey}
-                                                onChange={() => undefined}
-                                                onDrop={event => event.preventDefault()}
-                                                onKeyDown={event => captureHotkeyInput(event, setCaptureHotkey)}
-                                                onPaste={event => event.preventDefault()}
-                                                placeholder="Ctrl+Alt+C"
-                                                readOnly
-                                            />
-                                        </label>
-                                        <label className="grid gap-1 text-[11px] text-muted-foreground">
-                                            {t("components.rpa.RPAWorkbench.studioCaptureCancelHotkeyLabel")}
-                                            <Input
-                                                className="h-8 cursor-pointer select-none text-xs"
-                                                value={captureCancelHotkey}
-                                                onChange={() => undefined}
-                                                onDrop={event => event.preventDefault()}
-                                                onKeyDown={event => captureHotkeyInput(event, setCaptureCancelHotkey)}
-                                                onPaste={event => event.preventDefault()}
-                                                placeholder="Ctrl+Alt+X"
-                                                readOnly
-                                            />
-                                        </label>
-                                    </div>
                                     <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
-                                        {t("components.rpa.RPAWorkbench.studioCaptureHotkeyInputHelp")}
+                                        {t("components.rpa.RPAWorkbench.studioCaptureGestureHelp", { captureGesture: displayCaptureGesture, cancelGesture: displayCancelGesture })}
                                     </div>
-                                    {captureAssistantActive ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
-                                            {t("components.rpa.RPAWorkbench.studioCaptureHotkeyHelp", { hotkey: displayCaptureHotkey, cancelHotkey: displayCaptureCancelHotkey })}
+                                    {(captureAssistantActive && (captureAssistantStage === "armed" || captureAssistantStage === "active")) ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
+                                            {t("components.rpa.RPAWorkbench.studioCaptureHotkeyHelp", { hotkey: displayCaptureGesture, cancelHotkey: displayCancelGesture })}
                                         </div> : null}
                                     {captureAssistantStage === "failed" ? <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-2.5 text-[11px] text-destructive">
                                             <div>{t("components.rpa.RPAWorkbench.studioCaptureFailedHelp")}</div>
                                             {captureAssistantDiagnostic ? <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-background/70 p-2 text-[10px] text-destructive/80">{captureAssistantDiagnostic}</pre> : null}
                                         </div> : null}
-                                    {desktopLiveSessionId ? <div className="overflow-hidden rounded-xl border border-border/60">
-                                            <div className="relative h-[210px] w-full overflow-hidden bg-muted/20">
-                                                {/* eslint-disable-next-line @next/next/no-img-element -- multipart desktop live stream cannot use next/image */}
-                                                <img src={`/api/desktop-live/stream?sessionId=${encodeURIComponent(desktopLiveSessionId)}`} alt="Desktop live" className="h-full w-full select-none object-contain" draggable={false} />
-                                                <div className="absolute left-2 top-2 rounded-full bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm">
-                                                    {t("components.rpa.RPAWorkbench.studioLivePreviewOnly")}
+                                    {captureTargetCandidates.length ? <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-2.5 text-xs dark:border-amber-900/60 dark:bg-amber-950/20">
+                                            <div className="mb-2 flex items-start justify-between gap-2">
+                                                <div className="min-w-0">
+                                                    <div className="font-semibold text-amber-950 dark:text-amber-100">{t("components.rpa.RPAWorkbench.studioTargetCandidatesTitle")}</div>
+                                                    <div className="mt-0.5 text-[11px] text-amber-900/75 dark:text-amber-100/70">{t("components.rpa.RPAWorkbench.studioTargetCandidatesDescription")}</div>
                                                 </div>
+                                                <Badge variant="outline" className="shrink-0 text-[10px]">{captureTargetCandidates.length}</Badge>
                                             </div>
-                                        </div> : <div className="rounded-xl border border-dashed p-5 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioLiveEmpty")}</div>}
+                                            <ScrollArea className="max-h-40 pr-2">
+                                                <div className="space-y-1.5">
+                                                    {captureTargetCandidates.map((candidate, index) => {
+                                                        const label = captureTargetCandidateLabel(candidate);
+                                                        const subtitle = captureTargetCandidateSubtitle(candidate);
+                                                        const key = `${firstString(candidate.handle, candidate.title, candidate.windowTitle, candidate.processName, candidate.className) || label}:${index}`;
+                                                        return <div key={key} className="rounded-lg border border-amber-200/80 bg-background/80 p-2 dark:border-amber-900/50">
+                                                            <div className="flex items-start justify-between gap-2">
+                                                                <div className="min-w-0">
+                                                                    <AdminHoverInfo content={label} panelClassName="w-auto max-w-[26rem] whitespace-normal">
+                                                                        <div className="truncate font-medium">{label}</div>
+                                                                    </AdminHoverInfo>
+                                                                    {subtitle ? <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{subtitle}</div> : null}
+                                                                </div>
+                                                                <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => handleBindTargetCandidate(candidate)}>{t("components.rpa.RPAWorkbench.studioUseTargetCandidate")}</Button>
+                                                            </div>
+                                                        </div>;
+                                                    })}
+                                                </div>
+                                            </ScrollArea>
+                                        </div> : null}
                                     <div className="grid gap-3">
                                         <div className="flex items-center justify-between">
                                             <div>
                                                 <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioCapturePoolTitle")}</div>
                                                 <div className="text-[11px] text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolDescription")}</div>
                                             </div>
-                                            <Badge variant="outline" className="text-[10px]">{capturePoolItems.length}</Badge>
+                                            <Badge variant="outline" className="text-[10px]">{selectedCapturePoolItems.length}</Badge>
                                         </div>
                                         <ScrollArea className="h-44 pr-2">
                                             <div className="space-y-2">
-                                                {capturePoolItems.map(item => <div key={item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
+                                                {selectedCapturePoolItems.map(item => <div key={item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
                                                         <div className="flex items-start justify-between gap-2">
                                                             <div className="min-w-0">
                                                                 <AdminHoverInfo content={captureItemLabel(item)} panelClassName="w-auto max-w-[26rem] whitespace-normal">
@@ -2911,7 +3091,7 @@ export function RPAWorkbench() {
                                                             <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => void handleSaveCapturePoolItem(item)}>{t("components.rpa.RPAWorkbench.studioSaveElement")}</Button>
                                                         </div>
                                                     </div>)}
-                                                {!capturePoolItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolEmpty")}</div> : null}
+                                                {!selectedCapturePoolItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolEmpty")}</div> : null}
                                             </div>
                                         </ScrollArea>
                                     </div>
@@ -2945,8 +3125,13 @@ export function RPAWorkbench() {
                                     <ScrollArea className="h-[470px] pr-3">
                                         <div className="space-y-2">
                                             {rpaRuns.map(run => <div key={run.id} className="rounded-xl border border-border/60 p-3 text-xs">
-                                                    <div className="font-medium">{run.status || "queued"}</div>
-                                                    <div className="mt-1 break-all text-muted-foreground">{run.id}</div>
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="min-w-0 truncate font-medium">{friendlyRpaRunTitle(run)}</div>
+                                                        <Badge variant={String(run.status || "").toLowerCase() === "failed" ? "destructive" : "outline"} className="shrink-0 text-[10px]">
+                                                            {friendlyRpaRunStatus(run.status)}
+                                                        </Badge>
+                                                    </div>
+                                                    {friendlyRpaRunDetail(run) ? <div className="mt-1 truncate text-muted-foreground">{friendlyRpaRunDetail(run)}</div> : null}
                                                 </div>)}
                                             {!rpaRuns.length ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{t("components.rpa.RPAWorkbench.studioNoRpaRuns")}</div> : null}
                                         </div>
@@ -3406,10 +3591,6 @@ export function RPAWorkbench() {
                                                             <option value="scroll">{t("components.rpa.RPAWorkbench.actionScroll")}</option>
                                                             <option value="screenshot">{t("components.rpa.RPAWorkbench.actionScreenshot")}</option>
                                                         </select>
-                                                    </div>
-                                                    <div className="grid gap-2">
-                                                        <Label>{t("components.rpa.RPAWorkbench.stepIntent")}</Label>
-                                                        <Input value={selectedBuilderStep.intent || ""} onChange={event => updateSelectedDraftStep(step => ({ ...step, intent: event.target.value }))} />
                                                     </div>
                                                 </div>
                                                 <div className="grid gap-3 md:grid-cols-[8rem_1fr]">

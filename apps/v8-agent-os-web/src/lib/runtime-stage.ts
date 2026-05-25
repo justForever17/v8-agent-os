@@ -6,6 +6,7 @@ import {
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     isEffectiveContextGovernancePayload,
+    isRuntimeEpisodeGraphActivity,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
@@ -235,6 +236,12 @@ export function normalizeRuntimeTimeline(input: unknown[]): RuntimeTimelineEntry
 
 export function buildRuntimeTimelineEntryFromEvent(raw: unknown): RuntimeTimelineEntry | null {
     return buildAuthoritativeRuntimeTimelineEntryFromEvent(raw, { locale: "zh-CN" });
+}
+
+function isRuntimeEpisodeActivity(activity: RuntimeStageActivity): boolean {
+    return isRuntimeEpisodeGraphActivity({
+        topic: activity.topic || ("topic" in activity.node ? String(activity.node.topic || "") : ""),
+    });
 }
 
 export function mergeRuntimeTimeline(
@@ -538,7 +545,10 @@ export function buildRuntimeStageModel(
     activities.sort((left, right) => right.timestamp - left.timestamp);
 
     const realActivities = activities.filter((activity) => !activity.synthetic);
-    const rawActiveRuntimeId = normalizeRuntimeId(options?.ownerRuntime) ?? realActivities[0]?.runtimeId ?? null;
+    const normalizedOwnerRuntime = normalizeRuntimeId(options?.ownerRuntime);
+    const rawActiveRuntimeId = normalizedOwnerRuntime === "subagent_swarm"
+        ? "chat"
+        : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
     const firstVisibleRuntimeWithActivity = realActivities.find((activity) => VISIBLE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
     const activeRuntimeId = rawActiveRuntimeId && VISIBLE_RUNTIME_ORDER.includes(rawActiveRuntimeId)
         ? rawActiveRuntimeId
@@ -552,7 +562,9 @@ export function buildRuntimeStageModel(
 
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getRuntimeDescriptor(runtimeId);
-        const runtimeActivities = activities.filter((activity) => activity.runtimeId === runtimeId);
+        const runtimeActivities = runtimeId === "chat"
+            ? activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm" || isRuntimeEpisodeActivity(activity))
+            : activities.filter((activity) => activity.runtimeId === runtimeId);
         const lastActivity = runtimeActivities[0];
 
         let status: RuntimeCardStatus = "idle";

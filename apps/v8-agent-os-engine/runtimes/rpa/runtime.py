@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -50,9 +52,333 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _text_blob(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        if isinstance(value, dict):
+            parts.append(_text_blob(*value.values()))
+        elif isinstance(value, (list, tuple, set)):
+            parts.append(_text_blob(*value))
+        elif value not in (None, ""):
+            parts.append(str(value))
+    return " ".join(parts).strip().lower()
+
+
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _rpa_maximize_capture_window(handle: Any) -> bool:
+    window_handle = _as_int(handle)
+    if not window_handle or not sys.platform.startswith("win"):
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = wintypes.HWND(window_handle)
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        return False
+
+
+def _rpa_surface_identity(item: Dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return _text_blob(
+        item.get("title"),
+        item.get("windowTitle"),
+        item.get("name"),
+        item.get("className"),
+        item.get("controlType"),
+        item.get("role"),
+        item.get("processName"),
+        item.get("appId"),
+        item.get("source"),
+    )
+
+
+def _rpa_is_admin_surface(item: Dict[str, Any] | None) -> bool:
+    text = _rpa_surface_identity(item)
+    return any(
+        marker in text
+        for marker in (
+            "v8 agent os",
+            "v8 os",
+            "localhost:9528",
+            "127.0.0.1:9528",
+            "apps/v8-agent-os-admin",
+            "/admin/rpa",
+            "rpa runtime - microsoft edge",
+        )
+    )
+
+
+def _rpa_is_system_shell_surface(item: Dict[str, Any] | None) -> bool:
+    text = _rpa_surface_identity(item)
+    return any(
+        marker in text
+        for marker in (
+            "systemtrayicon",
+            "taskbarframe",
+            "shell_traywnd",
+            "traynotifywnd",
+            "syslistview32",
+            "任务栏",
+            "系统托盘",
+            "托盘",
+            "显示隐藏的图标",
+            "音量",
+            "网络 ",
+            "输入指示器",
+            "start menu",
+            "windows powershell",
+        )
+    )
+
+
+def _rpa_bounds(item: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    bounds = item.get("bounds") if isinstance(item.get("bounds"), dict) else item
+    return dict(bounds or {})
+
+
+def _rpa_window_relative_coordinate(coordinate: Dict[str, Any], target_window: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not coordinate or not isinstance(target_window, dict):
+        return {}
+    x = coordinate.get("x")
+    y = coordinate.get("y")
+    try:
+        x_float = float(x)
+        y_float = float(y)
+    except Exception:
+        return {}
+    bounds = _rpa_bounds(target_window)
+    left = bounds.get("x", bounds.get("left", bounds.get("screenX", 0)))
+    top = bounds.get("y", bounds.get("top", bounds.get("screenY", 0)))
+    try:
+        left_float = float(left or 0)
+        top_float = float(top or 0)
+    except Exception:
+        left_float = 0
+        top_float = 0
+    return {
+        "x": round(x_float - left_float, 2),
+        "y": round(y_float - top_float, 2),
+        "absoluteX": x_float,
+        "absoluteY": y_float,
+    }
+
+
+def _rpa_normalized_rect(value: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    rect = dict(value.get("bounds") or value)
+    left = rect.get("left", rect.get("x", rect.get("screenX", 0)))
+    top = rect.get("top", rect.get("y", rect.get("screenY", 0)))
+    right = rect.get("right")
+    bottom = rect.get("bottom")
+    width = rect.get("width")
+    height = rect.get("height")
+    try:
+        left_f = float(left or 0)
+        top_f = float(top or 0)
+        if right in (None, ""):
+            right_f = left_f + float(width or 0)
+        else:
+            right_f = float(right)
+        if bottom in (None, ""):
+            bottom_f = top_f + float(height or 0)
+        else:
+            bottom_f = float(bottom)
+    except Exception:
+        return {}
+    return {
+        "left": round(left_f, 2),
+        "top": round(top_f, 2),
+        "right": round(right_f, 2),
+        "bottom": round(bottom_f, 2),
+        "width": round(max(0.0, right_f - left_f), 2),
+        "height": round(max(0.0, bottom_f - top_f), 2),
+    }
+
+
+def _rpa_coordinate_anchor(
+    *,
+    coordinate: Dict[str, Any] | None,
+    target_window: Dict[str, Any] | None,
+    screen: Dict[str, Any] | None = None,
+    existing: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    existing = dict(existing or {})
+    if existing.get("mode") == "window_client_relative" and existing.get("ratioX") not in (None, ""):
+        return existing
+    coordinate = dict(coordinate or {})
+    target_window = dict(target_window or {})
+    if not coordinate or not target_window:
+        return existing
+    try:
+        absolute_x = float(coordinate.get("x"))
+        absolute_y = float(coordinate.get("y"))
+    except Exception:
+        return existing
+    window_rect = _rpa_normalized_rect(target_window)
+    client_rect = _rpa_normalized_rect(target_window.get("clientRect") if isinstance(target_window.get("clientRect"), dict) else None) or window_rect
+    if not client_rect:
+        return existing
+    left = float(client_rect.get("left") or 0)
+    top = float(client_rect.get("top") or 0)
+    width = max(1.0, float(client_rect.get("width") or 1))
+    height = max(1.0, float(client_rect.get("height") or 1))
+    rel_x = absolute_x - left
+    rel_y = absolute_y - top
+    ratio_x = max(0.0, min(1.0, rel_x / width))
+    ratio_y = max(0.0, min(1.0, rel_y / height))
+    screen = dict(screen or {})
+    return {
+        "mode": "window_client_relative",
+        "x": round(rel_x, 2),
+        "y": round(rel_y, 2),
+        "ratioX": round(ratio_x, 4),
+        "ratioY": round(ratio_y, 4),
+        "windowRect": window_rect,
+        "clientRect": client_rect,
+        "dpi": target_window.get("dpi") or existing.get("dpi") or 96,
+        "monitorId": screen.get("monitorId") or existing.get("monitorId") or "primary",
+        "absoluteX": round(absolute_x, 2),
+        "absoluteY": round(absolute_y, 2),
+    }
+
+
+def _rpa_image_anchor(
+    *,
+    event: Dict[str, Any],
+    target_window: Dict[str, Any] | None,
+    highlight_bounds: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    existing = event.get("imageAnchor")
+    if isinstance(existing, dict) and existing:
+        return dict(existing)
+    screenshot_anchor = event.get("screenshotAnchor")
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    if not isinstance(screenshot_anchor, dict):
+        screenshot_anchor = metadata.get("screenshotAnchor") if isinstance(metadata.get("screenshotAnchor"), dict) else {}
+    hover = event.get("hoverSample") if isinstance(event.get("hoverSample"), dict) else metadata.get("hoverSample")
+    hover = hover if isinstance(hover, dict) else {}
+    element = hover.get("element") if isinstance(hover.get("element"), dict) else {}
+    bounds = dict(highlight_bounds or event.get("highlightBounds") or metadata.get("highlightBounds") or element.get("bounds") or {})
+    ocr_text = str(
+        event.get("ocrText")
+        or element.get("name")
+        or ""
+    ).strip()
+    patch_ref = (
+        screenshot_anchor.get("screenshotPatchRef")
+        or screenshot_anchor.get("patchRef")
+        or screenshot_anchor.get("ref")
+        or None
+    )
+    return {
+        "screenshotPatchRef": patch_ref,
+        "ocrText": ocr_text[:240],
+        "matchThreshold": float(event.get("matchThreshold") or screenshot_anchor.get("matchThreshold") or 0.82),
+        "bounds": bounds,
+        "status": "ready" if patch_ref else "deferred_patch",
+    }
+
+
+def _rpa_target_criteria(
+    *,
+    target_window: Dict[str, Any] | None = None,
+    target_process: Dict[str, Any] | None = None,
+    target_lock: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    target_window = dict(target_window or {})
+    target_process = dict(target_process or {})
+    target_lock = dict(target_lock or {})
+    handles = {
+        item
+        for item in (
+            _as_int(target_window.get("handle")),
+            _as_int(target_window.get("windowHandle")),
+            _as_int(target_lock.get("windowHandle")),
+        )
+        if item is not None
+    }
+    process_ids = {
+        item
+        for item in (
+            _as_int(target_window.get("processId")),
+            _as_int(target_process.get("processId")),
+            _as_int(target_lock.get("processId")),
+        )
+        if item is not None
+    }
+    process_names: set[str] = set()
+    for value in (
+        target_window.get("processName"),
+        target_process.get("processName"),
+        target_lock.get("processName"),
+        target_window.get("processNames"),
+        target_process.get("processNames"),
+        target_lock.get("processNames"),
+    ):
+        if isinstance(value, (list, tuple, set)):
+            process_names.update(str(item).strip().lower() for item in value if str(item).strip())
+        elif str(value or "").strip():
+            process_names.add(str(value).strip().lower())
+    title_fragments = {
+        str(item).strip().lower()
+        for item in (
+            target_window.get("title"),
+            target_window.get("windowTitle"),
+            target_lock.get("windowTitle"),
+            target_lock.get("label"),
+            target_lock.get("appId"),
+        )
+        if str(item or "").strip() and str(item).strip().lower() not in {"desktop", "manual desktop", "agent_browser"}
+    }
+    return {
+        "handles": handles,
+        "processIds": process_ids,
+        "processNames": process_names,
+        "titleFragments": title_fragments,
+        "hasTarget": bool(handles or process_ids or process_names or title_fragments),
+    }
+
+
+def _rpa_item_matches_target(item: Dict[str, Any], criteria: Dict[str, Any]) -> bool:
+    if not criteria.get("hasTarget"):
+        return False
+    item_handle = _as_int(item.get("handle") or item.get("windowHandle"))
+    if item_handle is not None and item_handle in criteria.get("handles", set()):
+        return True
+    item_process_id = _as_int(item.get("processId"))
+    if item_process_id is not None and item_process_id in criteria.get("processIds", set()):
+        return True
+    item_process_name = str(item.get("processName") or "").strip().lower()
+    if item_process_name and item_process_name in criteria.get("processNames", set()):
+        return True
+    identity = _rpa_surface_identity(item)
+    return any(fragment and fragment in identity for fragment in criteria.get("titleFragments", set()))
+
+
 _DEFAULT_NATIVE_INSPECTOR_CONFIG: Dict[str, Any] = {
     "enabled": True,
     "backend": "auto",
+    "captureGesture": "LeftClick",
+    "alternateCaptureGesture": "Ctrl+LeftClick",
+    "cancelGesture": "Esc",
     "hotkey": "Ctrl+Alt+C",
     "cancelHotkey": "Ctrl+Alt+X",
     "relockHotkey": "Ctrl+Alt+R",
@@ -60,6 +386,89 @@ _DEFAULT_NATIVE_INSPECTOR_CONFIG: Dict[str, Any] = {
     "highlightOverlay": True,
     "ignoreAdminSurface": True,
 }
+
+
+def _native_inspector_helper_project_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "native" / "V8.Rpa.NativeInspector"
+
+
+def _native_inspector_helper_publish_command() -> list[str]:
+    project = _native_inspector_helper_project_dir() / "V8.Rpa.NativeInspector.csproj"
+    return [
+        "dotnet",
+        "publish",
+        str(project),
+        "-c",
+        "Release",
+        "-r",
+        "win-x64",
+        "--self-contained",
+        "false",
+    ]
+
+
+def _native_inspector_helper_install_command() -> list[str]:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "ensure_rpa_native_inspector.py"
+    return [sys.executable or "python", str(script)]
+
+
+def _native_inspector_helper_candidates(config: Dict[str, Any] | None = None) -> list[Path]:
+    native_config = dict(config or {})
+    explicit_candidates: list[Path] = []
+    for value in (
+        os.environ.get("V8_RPA_NATIVE_INSPECTOR_HELPER"),
+        native_config.get("helperPath"),
+    ):
+        if value:
+            explicit_candidates.append(Path(str(value)).expanduser())
+    if explicit_candidates:
+        candidates = explicit_candidates
+    else:
+        project_dir = _native_inspector_helper_project_dir()
+        candidates = [
+            project_dir / "bin" / "Release" / "net8.0-windows" / "win-x64" / "publish" / "V8.Rpa.NativeInspector.exe",
+            project_dir / "bin" / "Release" / "net8.0-windows" / "win-x64" / "V8.Rpa.NativeInspector.exe",
+            project_dir / "bin" / "Debug" / "net8.0-windows" / "win-x64" / "V8.Rpa.NativeInspector.exe",
+            V8_AGENT_OS_HOME / "bin" / "V8.Rpa.NativeInspector" / "V8.Rpa.NativeInspector.exe",
+        ]
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
+def _native_inspector_helper_status(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    candidates = _native_inspector_helper_candidates(config)
+    for candidate in candidates:
+        try:
+            if candidate.exists() and candidate.is_file():
+                return {
+                    "available": True,
+                    "state": "ready",
+                    "path": str(candidate),
+                    "projectPath": str(_native_inspector_helper_project_dir()),
+                    "runtime": "net8.0-windows",
+                    "package": "FlaUI",
+                    "installCommand": _native_inspector_helper_install_command(),
+                    "publishCommand": _native_inspector_helper_publish_command(),
+                }
+        except Exception:
+            continue
+    return {
+        "available": False,
+        "state": "helper_not_built",
+        "reason": "V8.Rpa.NativeInspector .NET/FlaUI helper has not been published.",
+        "projectPath": str(_native_inspector_helper_project_dir()),
+        "candidates": [str(candidate) for candidate in candidates],
+        "runtime": "net8.0-windows",
+        "package": "FlaUI",
+        "installCommand": _native_inspector_helper_install_command(),
+        "publishCommand": _native_inspector_helper_publish_command(),
+    }
 
 
 def _native_inspector_config_from_disk() -> Dict[str, Any]:
@@ -72,9 +481,13 @@ def _native_inspector_config_from_disk() -> Dict[str, Any]:
     merged = dict(_DEFAULT_NATIVE_INSPECTOR_CONFIG)
     if isinstance(native_config, dict):
         merged.update({key: value for key, value in native_config.items() if value is not None})
+    merged["captureGesture"] = str(merged.get("captureGesture") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["captureGesture"])
+    merged["cancelGesture"] = str(merged.get("cancelGesture") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["cancelGesture"])
     merged["hotkey"] = str(merged.get("hotkey") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["hotkey"])
     merged["cancelHotkey"] = str(merged.get("cancelHotkey") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["cancelHotkey"])
     merged["relockHotkey"] = str(merged.get("relockHotkey") or _DEFAULT_NATIVE_INSPECTOR_CONFIG["relockHotkey"])
+    if merged.get("helperPath"):
+        merged["helperPath"] = str(merged.get("helperPath"))
     try:
         merged["hoverSampleHz"] = max(2, min(30, int(float(merged.get("hoverSampleHz") or 12))))
     except Exception:
@@ -87,16 +500,21 @@ def _native_inspector_config_from_disk() -> Dict[str, Any]:
 def _native_hotkey_backend_capability(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
     native_config = dict(config or _native_inspector_config_from_disk())
     if sys.platform.startswith("win"):
+        helper = _native_inspector_helper_status(native_config)
         return {
-            "backend": "windows_register_hotkey",
-            "state": "ready",
-            "available": True,
+            "backend": "windows_fla_ui_helper",
+            "state": helper.get("state") or ("ready" if helper.get("available") else "helper_not_built"),
+            "available": bool(helper.get("available")),
             "nativeInspector": True,
+            "captureGesture": native_config.get("captureGesture") or "LeftClick",
+            "alternateCaptureGesture": native_config.get("alternateCaptureGesture") or "Ctrl+LeftClick",
+            "cancelGesture": native_config.get("cancelGesture") or "Esc",
             "hotkey": native_config.get("hotkey") or "Ctrl+Alt+C",
             "cancelHotkey": native_config.get("cancelHotkey") or "Ctrl+Alt+X",
             "relockHotkey": native_config.get("relockHotkey") or "Ctrl+Alt+R",
             "hoverSampleHz": native_config.get("hoverSampleHz") or 12,
             "highlightOverlay": bool(native_config.get("highlightOverlay", True)),
+            "helper": helper,
             "fallback": "fallback_overlay",
         }
     if sys.platform == "darwin":
@@ -105,17 +523,25 @@ def _native_hotkey_backend_capability(config: Dict[str, Any] | None = None) -> D
             "state": "requires_accessibility_permission",
             "available": False,
             "nativeInspector": True,
+            "captureGesture": native_config.get("captureGesture") or "LeftClick",
+            "alternateCaptureGesture": native_config.get("alternateCaptureGesture") or "Ctrl+LeftClick",
+            "cancelGesture": native_config.get("cancelGesture") or "Esc",
             "hotkey": native_config.get("hotkey") or "Ctrl+Alt+C",
             "cancelHotkey": native_config.get("cancelHotkey") or "Ctrl+Alt+X",
+            "reason": "macOS native inspector helper is not bundled yet; it must use AXUIElement + Event Tap + NSPanel with Accessibility permission.",
             "fallback": "fallback_overlay",
         }
     return {
-        "backend": "linux_portal",
+        "backend": "linux_atspi_or_portal",
         "state": "requires_portal_or_display_backend",
         "available": False,
         "nativeInspector": True,
+        "captureGesture": native_config.get("captureGesture") or "LeftClick",
+        "alternateCaptureGesture": native_config.get("alternateCaptureGesture") or "Ctrl+LeftClick",
+        "cancelGesture": native_config.get("cancelGesture") or "Esc",
         "hotkey": native_config.get("hotkey") or "Ctrl+Alt+C",
         "cancelHotkey": native_config.get("cancelHotkey") or "Ctrl+Alt+X",
+        "reason": "Linux native inspector helper is not bundled yet; X11 needs AT-SPI + overlay, Wayland needs portal capability checks.",
         "fallback": "fallback_overlay",
     }
 
@@ -135,6 +561,45 @@ def _tail_text_file(path: str | Path | None, *, max_chars: int = 2400) -> str:
     except Exception:
         return ""
     return text[-max_chars:].strip()
+
+
+def _capture_assistant_events_from_log(path: str | Path | None) -> list[Dict[str, Any]]:
+    if not path:
+        return []
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+    events: list[Dict[str, Any]] = []
+    for line in lines[-200:]:
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and str(payload.get("event") or "").startswith("rpa_capture_assistant."):
+            events.append(payload)
+        elif isinstance(payload, dict) and payload.get("ok") is False and (payload.get("error") or payload.get("warning")):
+            events.append(payload)
+    return events
+
+
+def _capture_assistant_last_event(path: str | Path | None, event_suffix: str) -> Dict[str, Any] | None:
+    for event in reversed(_capture_assistant_events_from_log(path)):
+        event_name = str(event.get("event") or "")
+        if event_name.endswith(event_suffix):
+            return event
+    return None
+
+
+def _capture_assistant_error_event(path: str | Path | None) -> Dict[str, Any] | None:
+    for event in reversed(_capture_assistant_events_from_log(path)):
+        event_name = str(event.get("event") or "")
+        if event_name.endswith(".error") or (not event_name and event.get("ok") is False and event.get("error")):
+            return event
+    return None
 
 
 def _is_process_running(pid: int) -> bool:
@@ -1137,17 +1602,38 @@ class RPARuntime:
             }
         )
         normalized_event["metadata"] = metadata
+        assistant = dict(recording.get("captureAssistant") or {})
+        target_from_event = normalized_event.get("target") if isinstance(normalized_event.get("target"), dict) else {}
+        prepared_target = assistant.get("preparedTarget") if isinstance(assistant.get("preparedTarget"), dict) else {}
         sample = self.sample_recording_desktop(
             recording_id,
             {
                 "event": normalized_event,
+                "stepId": normalized_event.get("stepId") or recording.get("stepId"),
                 "coordinate": normalized_event.get("coordinate"),
-                "target": normalized_event.get("target"),
+                "target": target_from_event,
+                "targetWindow": normalized_event.get("targetWindow")
+                or normalized_event.get("window")
+                or target_from_event.get("window")
+                or prepared_target,
+                "targetProcess": target_from_event.get("process"),
                 "params": normalized_event.get("params"),
                 "forwardAction": False,
             },
         )
-        selector_candidates = list(sample.get("selectorCandidates") or [])
+        selector_candidates: list[Dict[str, Any]] = []
+        seen_selectors: set[str] = set()
+        for source_candidate in [
+            *(normalized_event.get("selectorCandidates") or []),
+            *(sample.get("selectorCandidates") or []),
+        ]:
+            if not isinstance(source_candidate, dict):
+                continue
+            key = json.dumps(source_candidate, sort_keys=True, default=str)
+            if key in seen_selectors:
+                continue
+            seen_selectors.add(key)
+            selector_candidates.append(dict(source_candidate))
         temp_element_id = str(normalized_event.get("tempElementId") or f"temp_el_{hashlib.sha1(json.dumps(normalized_event, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]}")
         normalized_event["tempElementId"] = temp_element_id
         normalized_event["captureMode"] = metadata.get("captureMode") or metadata.get("capture_mode") or normalized_event.get("captureMode") or "capture_only"
@@ -1156,11 +1642,77 @@ class RPARuntime:
             target = dict(normalized_event.get("target") or {})
             target.setdefault("window", active_window)
             normalized_event["target"] = target
+        target = dict(normalized_event.get("target") or {})
+        target_window = dict(
+            normalized_event.get("targetWindow")
+            or target.get("window")
+            or active_window
+            or prepared_target
+            or {}
+        )
+        coordinate_anchor = _rpa_coordinate_anchor(
+            coordinate=dict(normalized_event.get("coordinate") or {}),
+            target_window=target_window,
+            screen=dict(normalized_event.get("screen") or {}),
+            existing=dict(normalized_event.get("coordinateAnchor") or metadata.get("coordinateAnchor") or {}),
+        )
+        image_anchor = _rpa_image_anchor(
+            event=normalized_event,
+            target_window=target_window,
+            highlight_bounds=dict(normalized_event.get("highlightBounds") or metadata.get("highlightBounds") or {}),
+        )
+        if coordinate_anchor:
+            normalized_event["coordinateAnchor"] = coordinate_anchor
+            normalized_event["windowRelativeCoordinate"] = {
+                "x": coordinate_anchor.get("x"),
+                "y": coordinate_anchor.get("y"),
+            }
+        if image_anchor:
+            normalized_event["imageAnchor"] = image_anchor
+        spatial_anchor = dict(target.get("spatialAnchor") or {})
+        if coordinate_anchor:
+            spatial_anchor.update(
+                {
+                    "coordinateAnchor": coordinate_anchor,
+                    "windowRelativeCoordinate": {
+                        "x": coordinate_anchor.get("x"),
+                        "y": coordinate_anchor.get("y"),
+                    },
+                    "windowRelativePoint": [coordinate_anchor.get("ratioX"), coordinate_anchor.get("ratioY")],
+                    "windowBounds": [
+                        int(float((coordinate_anchor.get("clientRect") or {}).get("left") or 0)),
+                        int(float((coordinate_anchor.get("clientRect") or {}).get("top") or 0)),
+                        int(float((coordinate_anchor.get("clientRect") or {}).get("right") or 0)),
+                        int(float((coordinate_anchor.get("clientRect") or {}).get("bottom") or 0)),
+                    ],
+                    "source": normalized_event.get("captureBackend") or "rpa_capture_assistant",
+                }
+            )
+        if image_anchor:
+            spatial_anchor["imageAnchor"] = image_anchor
         if selector_candidates:
             normalized_event["selectorCandidates"] = selector_candidates
             normalized_event["fragileCoordinateFallback"] = False
+            target.setdefault("selector", selector_candidates[0])
         else:
             normalized_event["fragileCoordinateFallback"] = True
+        if spatial_anchor:
+            spatial_anchor["fallback"] = not bool(selector_candidates)
+            target["spatialAnchor"] = spatial_anchor
+        if target_window:
+            target["window"] = target_window
+        if target:
+            normalized_event["target"] = target
+        metadata.update(
+            {
+                "selectorCandidates": selector_candidates,
+                "coordinateAnchor": coordinate_anchor,
+                "imageAnchor": image_anchor,
+                "windowRelativeCoordinate": normalized_event.get("windowRelativeCoordinate"),
+                "targetWindow": target_window,
+            }
+        )
+        normalized_event["metadata"] = metadata
         normalized_event["accessibilitySample"] = {
             key: value
             for key, value in {
@@ -1216,6 +1768,16 @@ class RPARuntime:
         target = dict(event.get("target") or {})
         window = dict(target.get("window") or sample.get("activeWindow") or {})
         params = dict(event.get("params") or {})
+        coordinate_anchor = dict(event.get("coordinateAnchor") or (event.get("metadata") or {}).get("coordinateAnchor") or {})
+        if not coordinate_anchor and coordinate:
+            coordinate_anchor = _rpa_coordinate_anchor(
+                coordinate=coordinate,
+                target_window=window,
+                screen=dict(event.get("screen") or {}),
+            )
+        image_anchor = dict(event.get("imageAnchor") or (event.get("metadata") or {}).get("imageAnchor") or {})
+        if not image_anchor:
+            image_anchor = _rpa_image_anchor(event=event, target_window=window, highlight_bounds=dict(event.get("highlightBounds") or {}))
         label = (
             str(params.get("label") or params.get("text") or "").strip()
             or str(window.get("title") or "").strip()
@@ -1227,13 +1789,32 @@ class RPARuntime:
             "label": label[:160],
             "source": event.get("source") or "rpa_capture_assistant",
             "action": event.get("action"),
+            "sourceStepId": event.get("sourceStepId") or event.get("stepId"),
+            "stepId": event.get("stepId"),
+            "targetStepId": event.get("targetStepId"),
             "targetWindow": window,
             "selectorCandidates": selector_candidates,
             "selector": best_selector,
             "coordinate": coordinate,
+            "coordinateAnchor": coordinate_anchor,
+            "imageAnchor": image_anchor,
+            "anchorBundle": {
+                "selectorCandidates": selector_candidates,
+                "imageAnchor": image_anchor,
+                "coordinateAnchor": coordinate_anchor,
+            },
+            "windowRelativeCoordinate": event.get("windowRelativeCoordinate"),
             "confidence": best_selector.get("confidence") if isinstance(best_selector, dict) else None,
             "screenshotAnchorRefs": list(event.get("screenshotAnchorRefs") or []),
             "fragileCoordinateFallback": bool(event.get("fragileCoordinateFallback")),
+            "coordinateFallback": bool(event.get("coordinateFallback") or event.get("fragileCoordinateFallback")),
+            "targetMatch": event.get("targetMatch"),
+            "filteredReason": event.get("filteredReason"),
+            "nativeInspectorSessionId": event.get("nativeInspectorSessionId") or (event.get("metadata") or {}).get("nativeInspectorSessionId"),
+            "captureBackend": event.get("captureBackend") or (event.get("metadata") or {}).get("captureBackend"),
+            "highlightBounds": event.get("highlightBounds") or (event.get("metadata") or {}).get("highlightBounds"),
+            "hoverSample": event.get("hoverSample") or (event.get("metadata") or {}).get("hoverSample"),
+            "screenshotAnchor": event.get("screenshotAnchor") or (event.get("metadata") or {}).get("screenshotAnchor"),
             "captureMode": event.get("captureMode"),
             "recordingId": recording_id,
             "capturedAt": utc_now_iso(),
@@ -1244,27 +1825,71 @@ class RPARuntime:
         if not recording:
             raise ValueError(f"Recording session '{recording_id}' not found.")
         event = dict(payload.get("event") or {})
+        step_id = str(payload.get("stepId") or event.get("stepId") or recording.get("stepId") or "").strip() or None
         coordinate = dict(event.get("coordinate") or payload.get("coordinate") or {})
         target = dict(event.get("target") or payload.get("target") or {})
+        target_lock = dict(recording.get("targetLock") or {})
+        target_lock.update(dict(target or {}))
+        target_lock.update(dict(payload.get("targetLock") or {}))
         params = dict(event.get("params") or payload.get("params") or {})
-        window = dict(target.get("window") or {})
+        assistant = dict(recording.get("captureAssistant") or {})
+        prepared_target = dict(assistant.get("preparedTarget") or {}) if isinstance(assistant.get("preparedTarget"), dict) else {}
+        window = dict(
+            payload.get("targetWindow")
+            or target.get("window")
+            or target_lock.get("window")
+            or prepared_target
+            or {}
+        )
+        target_process = dict(payload.get("targetProcess") or target.get("process") or {})
+        manual_desktop_mode = bool(payload.get("manualDesktopMode") or payload.get("manual_desktop_mode"))
+        criteria = _rpa_target_criteria(
+            target_window=window,
+            target_process=target_process,
+            target_lock=target_lock,
+        )
         window_title = str(
             window.get("title")
+            or window.get("windowTitle")
             or event.get("windowTitle")
             or (recording.get("activeApp") or {}).get("windowTitle")
             or ""
         ).strip() or None
         window_handle = (
             window.get("handle")
+            or window.get("windowHandle")
             or event.get("windowHandle")
             or recording.get("windowHandle")
         )
+        if not criteria.get("hasTarget") and not manual_desktop_mode:
+            return {
+                "ok": True,
+                "status": "target_context_required",
+                "recordingId": recording_id,
+                "backend": "desktop_accessibility",
+                "reason": "当前步骤没有目标窗口/进程上下文，已跳过全桌面采样，避免把 Admin、任务栏或托盘写入临时池。",
+                "sample": {
+                    "observation": None,
+                    "windows": [],
+                    "elements": [],
+                    "error": None,
+                },
+                "selectorCandidates": [],
+                "activeWindow": None,
+                "capturePoolItems": [],
+                "capturePoolAdded": 0,
+                "recording": recording,
+            }
         observation: Dict[str, Any] | None = None
         windows: list[Dict[str, Any]] = []
         elements: list[Dict[str, Any]] = []
         selector_candidates: list[Dict[str, Any]] = []
+        for candidate in list(event.get("selectorCandidates") or []):
+            if isinstance(candidate, dict):
+                selector_candidates.append({**candidate, "targetMatch": True})
         backend = "desktop_accessibility"
         sample_error: str | None = None
+        query_constrained = bool(window_title or window_handle)
         try:
             observation = computer_use_runtime.observe(
                 session_id=str(recording.get("sessionId") or f"rpa:recording:{recording_id}"),
@@ -1279,8 +1904,16 @@ class RPARuntime:
         except Exception as exc:
             sample_error = str(exc)
         try:
-            window_result = computer_use_runtime.list_windows(title_filter=window_title, limit=5)
-            windows = list(window_result.get("windows") or window_result.get("items") or [])[:5]
+            window_result = computer_use_runtime.list_windows(title_filter=window_title, limit=12)
+            raw_windows = list(window_result.get("windows") or window_result.get("items") or [])
+            windows = [
+                item
+                for item in raw_windows
+                if isinstance(item, dict)
+                and not _rpa_is_admin_surface(item)
+                and not _rpa_is_system_shell_surface(item)
+                and (manual_desktop_mode or _rpa_item_matches_target(item, criteria))
+            ][:8]
         except Exception:
             windows = []
         try:
@@ -1290,7 +1923,18 @@ class RPARuntime:
                 limit=8,
                 depth_limit=6,
             )
-            elements = list(element_result.get("elements") or [])[:8]
+            raw_elements = list(element_result.get("elements") or [])
+            elements = []
+            for item in raw_elements:
+                if not isinstance(item, dict):
+                    continue
+                if _rpa_is_admin_surface(item) or _rpa_is_system_shell_surface(item):
+                    continue
+                if not manual_desktop_mode and not query_constrained and not _rpa_item_matches_target(item, criteria):
+                    continue
+                elements.append(item)
+                if len(elements) >= 8:
+                    break
         except Exception:
             elements = []
         for item in elements[:8]:
@@ -1310,6 +1954,7 @@ class RPARuntime:
                 if value not in (None, "", [], {})
             }
             if candidate:
+                candidate["targetMatch"] = bool(manual_desktop_mode or query_constrained or _rpa_item_matches_target(item, criteria))
                 selector_candidates.append(candidate)
         capture_pool_items: list[Dict[str, Any]] = []
         capture_pool_recording: Dict[str, Any] | None = None
@@ -1324,16 +1969,59 @@ class RPARuntime:
                 pool_candidates = [{}]
             for index, candidate in enumerate(pool_candidates):
                 candidate_payload = candidate if isinstance(candidate, dict) else {}
+                target_match = bool(candidate_payload.get("targetMatch") or manual_desktop_mode or query_constrained)
+                if not target_match and candidate_payload:
+                    continue
                 event_for_pool = dict(event)
                 event_for_pool.setdefault("source", "desktop_accessibility")
                 event_for_pool.setdefault("action", "sample_elements")
+                if step_id:
+                    event_for_pool["stepId"] = step_id
+                    event_for_pool["sourceStepId"] = step_id
                 event_for_pool["selectorCandidates"] = [candidate_payload] if candidate_payload else []
                 event_for_pool["fragileCoordinateFallback"] = not bool(candidate_payload)
                 event_for_pool["coordinate"] = coordinate
-                event_for_pool["target"] = target
+                event_for_pool["target"] = {
+                    **target,
+                    "window": window or (windows[0] if windows else None),
+                    "process": target_process,
+                }
+                event_for_pool["targetMatch"] = target_match
+                pool_window = window or (windows[0] if windows else None)
+                coordinate_anchor = _rpa_coordinate_anchor(
+                    coordinate=coordinate,
+                    target_window=pool_window,
+                    screen=dict(event.get("screen") or payload.get("screen") or {}),
+                    existing=dict(event.get("coordinateAnchor") or {}),
+                )
+                image_anchor = _rpa_image_anchor(
+                    event=event_for_pool,
+                    target_window=pool_window,
+                    highlight_bounds=dict(candidate_payload.get("bounds") or event.get("highlightBounds") or {}),
+                )
+                event_for_pool["coordinateAnchor"] = coordinate_anchor
+                event_for_pool["imageAnchor"] = image_anchor
+                event_for_pool["windowRelativeCoordinate"] = (
+                    {"x": coordinate_anchor.get("x"), "y": coordinate_anchor.get("y")}
+                    if coordinate_anchor
+                    else _rpa_window_relative_coordinate(coordinate, pool_window)
+                )
+                spatial_anchor = dict((event_for_pool.get("target") or {}).get("spatialAnchor") or {})
+                if coordinate_anchor:
+                    spatial_anchor.update(
+                        {
+                            "coordinateAnchor": coordinate_anchor,
+                            "imageAnchor": image_anchor,
+                            "windowRelativeCoordinate": event_for_pool["windowRelativeCoordinate"],
+                            "windowRelativePoint": [coordinate_anchor.get("ratioX"), coordinate_anchor.get("ratioY")],
+                            "fallback": not bool(candidate_payload),
+                        }
+                    )
+                    event_for_pool["target"]["spatialAnchor"] = spatial_anchor
                 event_for_pool["captureMode"] = event_for_pool.get("captureMode") or "sample_to_pool"
                 stable_key = {
                     "recordingId": recording_id,
+                    "stepId": step_id,
                     "candidate": candidate_payload,
                     "coordinate": coordinate,
                     "index": index,
@@ -1344,7 +2032,7 @@ class RPARuntime:
                     recording_id=recording_id,
                     event=event_for_pool,
                     sample={
-                        "activeWindow": windows[0] if windows else None,
+                        "activeWindow": window or (windows[0] if windows else None),
                         "backend": backend,
                     },
                     selector_candidates=[candidate_payload] if candidate_payload else [],
@@ -1359,6 +2047,9 @@ class RPARuntime:
                 ).strip()
                 if candidate_label:
                     pool_item["label"] = candidate_label[:160]
+                pool_item["sourceStepId"] = step_id
+                pool_item["targetMatch"] = target_match
+                pool_item["windowRelativeCoordinate"] = event_for_pool.get("windowRelativeCoordinate")
                 capture_pool_recording = self.recording_manager.add_capture_pool_item(recording_id, pool_item)
                 capture_pool_items.append(pool_item)
         forwarded_result: Dict[str, Any] | None = None
@@ -1374,6 +2065,7 @@ class RPARuntime:
             )
         return {
             "ok": True,
+            "status": "sampled" if capture_pool_items or selector_candidates else "empty",
             "recordingId": recording_id,
             "backend": backend,
             "sample": {
@@ -1383,11 +2075,12 @@ class RPARuntime:
                 "error": sample_error,
             },
             "selectorCandidates": selector_candidates,
-            "activeWindow": windows[0] if windows else None,
+            "activeWindow": window or (windows[0] if windows else None),
             "forwardedActionResult": forwarded_result,
             "capturePoolItems": capture_pool_items,
             "capturePoolAdded": len(capture_pool_items),
-            "recording": capture_pool_recording,
+            "recording": capture_pool_recording or recording,
+            "reason": None if capture_pool_items or selector_candidates else "目标范围内没有可写入临时池的元素。",
         }
 
     def prepare_capture_target(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1437,7 +2130,7 @@ class RPARuntime:
         if bool(target_lock.get("consoleTargetBlocked")):
             return {
                 "ok": False,
-                "status": "target_blocked",
+                "status": "blocked_admin_surface",
                 "reason": "V8 Admin console window is excluded from RPA capture.",
                 "recording": recording,
             }
@@ -1445,17 +2138,23 @@ class RPARuntime:
             assistant = dict(recording.get("captureAssistant") or {})
             assistant.update(
                 {
-                    "prepareStatus": "manual_desktop",
+                    "prepareStatus": "manual_coordinate_available",
                     "preparedAt": utc_now_iso(),
                     "targetLock": target_lock,
+                    "stepId": payload.get("stepId") or recording.get("stepId"),
+                    "selectedStepKey": payload.get("selectedStepKey") or recording.get("selectedStepKey"),
+                    "workflowSnapshot": payload.get("workflowSnapshot") or recording.get("workflowSnapshot") or {},
+                    "launchStep": payload.get("launchStep"),
+                    "targetStep": payload.get("targetStep"),
                 }
             )
             updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
             return {
-                "ok": True,
-                "status": "manual_desktop",
+                "ok": False,
+                "status": "manual_coordinate_available",
                 "targetStable": False,
-                "reason": "No concrete app target selected; capture will use desktop coordinate fallback.",
+                "reason": "当前步骤没有明确应用或窗口目标。可以选择目标窗口，或进入手动桌面坐标模式。",
+                "manualCoordinateAvailable": True,
                 "recording": updated,
             }
         focused: Dict[str, Any] | None = None
@@ -1488,24 +2187,98 @@ class RPARuntime:
             except Exception as exc:
                 focus_error = str(exc)
         target_window = dict((focused or {}).get("target") or {}) if isinstance(focused, dict) else {}
+        if not target_window and isinstance(focused, dict):
+            for key in ("window", "activeWindow", "focusedWindow"):
+                if isinstance(focused.get(key), dict):
+                    target_window = dict(focused.get(key) or {})
+                    break
+        if target_window and _rpa_is_admin_surface(target_window):
+            target_window = {}
+        target_candidates: list[Dict[str, Any]] = []
+        candidate_reason = ""
+        try:
+            title_filter = str(window.get("title") or window.get("windowTitle") or label or "").strip() or None
+            candidate_result = computer_use_runtime.list_windows(title_filter=title_filter, limit=12)
+            raw_candidates = list(candidate_result.get("windows") or candidate_result.get("items") or [])
+            criteria = _rpa_target_criteria(
+                target_window=target_window or window,
+                target_process={},
+                target_lock={**target_lock, "label": label, "appId": app_id},
+            )
+            for item in raw_candidates:
+                if not isinstance(item, dict):
+                    continue
+                if _rpa_is_admin_surface(item) or _rpa_is_system_shell_surface(item):
+                    continue
+                if target_window and _rpa_item_matches_target(item, _rpa_target_criteria(target_window=target_window)):
+                    target_candidates.append(item)
+                elif not target_window and _rpa_item_matches_target(item, criteria):
+                    target_candidates.append(item)
+                if len(target_candidates) >= 8:
+                    break
+            if not target_candidates and title_filter:
+                fallback_result = computer_use_runtime.list_windows(title_filter=None, limit=24)
+                for item in list(fallback_result.get("windows") or fallback_result.get("items") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    if _rpa_is_admin_surface(item) or _rpa_is_system_shell_surface(item):
+                        continue
+                    if _rpa_item_matches_target(item, criteria):
+                        target_candidates.append(item)
+                    if len(target_candidates) >= 8:
+                        break
+        except Exception as exc:
+            candidate_reason = str(exc)
+            target_candidates = []
+        if not target_window and len(target_candidates) == 1:
+            target_window = dict(target_candidates[0])
+        if target_window:
+            handle_for_maximize = target_window.get("handle") or target_window.get("windowHandle")
+            if _rpa_maximize_capture_window(handle_for_maximize):
+                target_window["maximizedForCapture"] = True
+                time.sleep(0.25)
+        status = "target_prepared" if target_window else "launched_no_visible_window"
+        ok = bool(target_window)
+        if not target_window and len(target_candidates) > 1:
+            status = "target_candidates_required"
+        elif not target_window and not focus_error:
+            status = "launched_no_visible_window"
         assistant = dict(recording.get("captureAssistant") or {})
         assistant.update(
             {
-                "prepareStatus": "prepared" if target_window else "prepare_degraded",
+                "prepareStatus": status,
                 "targetLock": target_lock,
                 "preparedAt": utc_now_iso(),
                 "preparedTarget": target_window,
+                "targetCandidates": _jsonable(target_candidates),
                 "prepareError": focus_error,
+                "candidateError": candidate_reason,
+                "stepId": payload.get("stepId") or recording.get("stepId"),
+                "selectedStepKey": payload.get("selectedStepKey") or recording.get("selectedStepKey"),
+                "workflowSnapshot": payload.get("workflowSnapshot") or recording.get("workflowSnapshot") or {},
+                "launchStep": payload.get("launchStep"),
+                "targetStep": payload.get("targetStep"),
             }
         )
         updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
         return {
-            "ok": bool(target_window),
-            "status": "target_prepared" if target_window else "target_prepare_degraded",
+            "ok": ok,
+            "status": status,
             "targetStable": bool(target_window),
             "targetWindow": target_window,
+            "targetCandidates": _jsonable(target_candidates),
             "focusResult": _jsonable(focused),
-            "reason": focus_error,
+            "reason": (
+                focus_error
+                or candidate_reason
+                or (
+                    "应用已启动，但没有发现可捕获的目标窗口。若它只在托盘/后台运行，请先打开主窗口；也可以使用坐标 fallback。"
+                    if status == "launched_no_visible_window"
+                    else "发现多个候选窗口，请先选择一个目标窗口。"
+                    if status == "target_candidates_required"
+                    else None
+                )
+            ),
             "recording": updated,
         }
 
@@ -1600,7 +2373,7 @@ class RPARuntime:
                 "config": inspector_config,
                 "backend": backend,
             },
-            "defaultBackend": "native_hotkey" if backend.get("available") else "fallback_overlay",
+            "defaultBackend": backend.get("backend") if backend.get("available") else "native_helper_required",
             "serviceMode": "native_inspector_worker",
         }
 
@@ -1622,12 +2395,15 @@ class RPARuntime:
         allowed_keys = {
             "enabled",
             "backend",
+            "captureGesture",
+            "cancelGesture",
             "hotkey",
             "cancelHotkey",
             "relockHotkey",
             "hoverSampleHz",
             "highlightOverlay",
             "ignoreAdminSurface",
+            "helperPath",
         }
         updated = dict(current)
         for key in allowed_keys:
@@ -1663,7 +2439,7 @@ class RPARuntime:
         if bool(target_lock.get("consoleTargetBlocked")):
             return {
                 "ok": False,
-                "status": "target_blocked",
+                "status": "blocked_admin_surface",
                 "reason": "V8 Admin console window is excluded from RPA capture.",
                 "recording": recording,
             }
@@ -1683,13 +2459,41 @@ class RPARuntime:
         else:
             prepared = self.prepare_capture_target(recording_id, payload)
         recording = prepared.get("recording") or recording
+        force_fallback_overlay = False
         if isinstance(prepared, dict) and prepared.get("ok") is False:
             status = str(prepared.get("status") or "")
-            if status not in {"manual_desktop"}:
+            manual_fallback_requested = bool(
+                payload.get("allowManualCoordinateFallback")
+                or payload.get("manualCoordinateFallback")
+                or payload.get("forceCoordinateFallback")
+            )
+            if manual_fallback_requested and status in {"manual_coordinate_available", "launched_no_visible_window"}:
+                force_fallback_overlay = True
                 assistant = dict(recording.get("captureAssistant") or {})
                 assistant.update(
                     {
-                        "state": "failed",
+                        "state": "starting_coordinate_fallback",
+                        "prepareStatus": status,
+                        "targetLock": target_lock,
+                        "prepared": prepared,
+                        "coordinateFallbackStartedAt": utc_now_iso(),
+                    }
+                )
+                recording = self.recording_manager.update_capture_assistant(recording_id, assistant)
+                prepared = {
+                    "ok": True,
+                    "status": "manual_coordinate_fallback",
+                    "targetStable": False,
+                    "targetWindow": {},
+                    "recording": recording,
+                    "manualCoordinateAvailable": True,
+                    "previousPrepare": prepared,
+                }
+            else:
+                assistant = dict(recording.get("captureAssistant") or {})
+                assistant.update(
+                    {
+                        "state": "waiting_target" if status in {"target_candidates_required", "manual_coordinate_available", "launched_no_visible_window"} else "failed",
                         "prepareStatus": status or "target_prepare_failed",
                         "targetLock": target_lock,
                         "failedAt": utc_now_iso(),
@@ -1699,19 +2503,15 @@ class RPARuntime:
                 updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
                 return {
                     "ok": False,
-                    "status": "target_prepare_failed",
-                    "reason": prepared.get("reason") or prepared.get("detail") or "Recording target could not be brought to foreground.",
+                    "status": status or "target_prepare_failed",
+                    "reason": prepared.get("reason") or prepared.get("detail") or "Recording target is not ready; native inspector was not armed.",
                     "prepared": prepared,
+                    "targetCandidates": prepared.get("targetCandidates") or [],
+                    "manualCoordinateAvailable": bool(prepared.get("manualCoordinateAvailable") or status in {"manual_coordinate_available", "launched_no_visible_window"}),
+                    "armed": False,
+                    "hotkeyRegistered": False,
                     "recording": updated,
                 }
-        script_path = Path(__file__).resolve().parents[2] / "scripts" / "rpa_capture_assistant.py"
-        if not script_path.exists():
-            return {
-                "ok": False,
-                "status": "capture_assistant_unavailable",
-                "reason": f"Capture assistant script not found: {script_path}",
-                "recording": recording,
-            }
         engine_base_url = str(
             payload.get("engineBaseUrl")
             or os.environ.get("V8_ENGINE_BASE_URL")
@@ -1721,54 +2521,132 @@ class RPARuntime:
         inspector_config = _native_inspector_config_from_disk()
         requested_backend = str(payload.get("backend") or payload.get("captureBackend") or "auto").strip().lower() or "auto"
         native_capability = _native_hotkey_backend_capability(inspector_config)
+        native_backend_aliases = {
+            "auto",
+            "native_hotkey",
+            "native_inspector",
+            "windows_register_hotkey",
+            "windows_fla_ui_helper",
+            "fla_ui_helper",
+        }
         resolved_backend = requested_backend
-        if requested_backend == "auto":
-            resolved_backend = "native_hotkey" if bool(native_capability.get("available")) else "fallback_overlay"
+        if force_fallback_overlay:
+            resolved_backend = "fallback_overlay"
+        elif requested_backend in native_backend_aliases:
+            if bool(native_capability.get("available")):
+                resolved_backend = str(native_capability.get("backend") or requested_backend)
+            else:
+                helper = native_capability.get("helper") if isinstance(native_capability.get("helper"), dict) else {}
+                status = str(native_capability.get("state") or helper.get("state") or "native_inspector_unavailable")
+                assistant = dict(recording.get("captureAssistant") or {})
+                assistant.update(
+                    {
+                        "state": "failed",
+                        "prepareStatus": prepared.get("status") if isinstance(prepared, dict) else None,
+                        "targetLock": target_lock,
+                        "failedAt": utc_now_iso(),
+                        "prepared": prepared,
+                        "captureBackend": native_capability.get("backend") or "native_inspector",
+                        "nativeHotkeyBackend": native_capability,
+                        "armed": False,
+                        "hotkeyRegistered": False,
+                        "reason": helper.get("reason") or native_capability.get("reason") or "Native inspector helper is not available.",
+                    }
+                )
+                updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+                return {
+                    "ok": False,
+                    "status": status,
+                    "reason": assistant["reason"],
+                    "armed": False,
+                    "hotkeyRegistered": False,
+                    "captureGesture": inspector_config.get("captureGesture") or "LeftClick",
+                    "alternateCaptureGesture": inspector_config.get("alternateCaptureGesture") or "Ctrl+LeftClick",
+                    "cancelGesture": inspector_config.get("cancelGesture") or "Esc",
+                    "nativeHotkeyBackend": native_capability,
+                    "installCommand": helper.get("installCommand"),
+                    "publishCommand": helper.get("publishCommand"),
+                    "recording": updated,
+                }
         native_inspector_session_id = str(payload.get("nativeInspectorSessionId") or f"native_inspector_{uuid.uuid4().hex[:12]}")
+        capture_gesture = str(payload.get("captureGesture") or inspector_config.get("captureGesture") or native_capability.get("captureGesture") or "LeftClick")
+        cancel_gesture = str(payload.get("cancelGesture") or inspector_config.get("cancelGesture") or native_capability.get("cancelGesture") or "Esc")
         hotkey = str(payload.get("hotkey") or inspector_config.get("hotkey") or native_capability.get("hotkey") or "Ctrl+Alt+C")
         cancel_hotkey = str(payload.get("cancelHotkey") or payload.get("cancel_hotkey") or inspector_config.get("cancelHotkey") or native_capability.get("cancelHotkey") or "Ctrl+Alt+X")
         hover_sample_hz = inspector_config.get("hoverSampleHz") or native_capability.get("hoverSampleHz") or 12
         highlight_overlay = bool(payload.get("highlightOverlay", inspector_config.get("highlightOverlay", True)))
-        command = [
-            sys.executable,
-            str(script_path),
-            "--recording-id",
-            recording_id,
-            "--engine-url",
-            engine_base_url,
-            "--action",
-            str(payload.get("action") or "click"),
-            "--target-label",
-            str(target_lock.get("label") or recording.get("appId") or "desktop"),
-            "--mode",
-            str(payload.get("mode") or "capture_only"),
-            "--hotkey",
-            hotkey,
-            "--cancel-hotkey",
-            cancel_hotkey,
-            "--backend",
-            resolved_backend,
-            "--native-inspector-session-id",
-            native_inspector_session_id,
-            "--hover-sample-hz",
-            str(hover_sample_hz),
-        ]
-        if bool(payload.get("persistent")):
-            command.append("--persistent")
-        if bool(payload.get("recordAndForward")):
-            command.append("--record-and-forward")
-        if highlight_overlay:
-            command.append("--highlight-overlay")
-        else:
-            command.append("--no-highlight-overlay")
         prepared_target = dict((prepared.get("targetWindow") or {}) if isinstance(prepared, dict) else {})
-        if prepared_target.get("title"):
-            command.extend(["--target-window-title", str(prepared_target.get("title"))])
-        if prepared_target.get("handle") is not None:
-            command.extend(["--target-window-handle", str(prepared_target.get("handle"))])
-        if prepared_target.get("processId") is not None:
-            command.extend(["--target-window-process-id", str(prepared_target.get("processId"))])
         log_path = _capture_assistant_log_path(recording_id)
+        request_path: Path | None = None
+        if resolved_backend == "windows_fla_ui_helper":
+            helper_info = native_capability.get("helper") if isinstance(native_capability.get("helper"), dict) else {}
+            helper_path = Path(str(helper_info.get("path") or ""))
+            request_path = log_path.with_suffix(".request.json")
+            helper_request = {
+                "engineUrl": engine_base_url,
+                "recordingId": recording_id,
+                "stepId": str(payload.get("stepId") or payload.get("targetStepId") or payload.get("sourceStepId") or ""),
+                "action": str(payload.get("action") or "click"),
+                "mode": str(payload.get("mode") or "capture_only"),
+                "nativeInspectorSessionId": native_inspector_session_id,
+                "appId": str(recording.get("appId") or target_lock.get("appId") or ""),
+                "targetWindow": prepared_target,
+                "targetProcess": prepared.get("targetProcess") if isinstance(prepared, dict) else {},
+                "captureGesture": capture_gesture,
+                "cancelGesture": cancel_gesture,
+            }
+            request_path.write_text(json.dumps(_jsonable(helper_request), ensure_ascii=False, indent=2), encoding="utf-8")
+            if helper_path.suffix.lower() == ".dll":
+                command = ["dotnet", str(helper_path), "--request-file", str(request_path)]
+            else:
+                command = [str(helper_path), "--request-file", str(request_path)]
+        else:
+            script_path = Path(__file__).resolve().parents[2] / "scripts" / "rpa_capture_assistant.py"
+            if not script_path.exists():
+                return {
+                    "ok": False,
+                    "status": "capture_assistant_unavailable",
+                    "reason": f"Capture assistant script not found: {script_path}",
+                    "recording": recording,
+                }
+            command = [
+                sys.executable,
+                str(script_path),
+                "--recording-id",
+                recording_id,
+                "--engine-url",
+                engine_base_url,
+                "--action",
+                str(payload.get("action") or "click"),
+                "--target-label",
+                str(target_lock.get("label") or recording.get("appId") or "desktop"),
+                "--mode",
+                str(payload.get("mode") or "capture_only"),
+                "--hotkey",
+                hotkey,
+                "--cancel-hotkey",
+                cancel_hotkey,
+                "--backend",
+                resolved_backend,
+                "--native-inspector-session-id",
+                native_inspector_session_id,
+                "--hover-sample-hz",
+                str(hover_sample_hz),
+            ]
+            if bool(payload.get("persistent")):
+                command.append("--persistent")
+            if bool(payload.get("recordAndForward")):
+                command.append("--record-and-forward")
+            if highlight_overlay:
+                command.append("--highlight-overlay")
+            else:
+                command.append("--no-highlight-overlay")
+            if prepared_target.get("title"):
+                command.extend(["--target-window-title", str(prepared_target.get("title"))])
+            if prepared_target.get("handle") is not None:
+                command.extend(["--target-window-handle", str(prepared_target.get("handle"))])
+            if prepared_target.get("processId") is not None:
+                command.extend(["--target-window-process-id", str(prepared_target.get("processId"))])
         log_handle = log_path.open("a", encoding="utf-8", errors="replace")
         popen_kwargs: Dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
@@ -1798,8 +2676,70 @@ class RPARuntime:
                 log_handle.close()
             except Exception:
                 pass
-        time.sleep(0.2)
+        ready_event: Dict[str, Any] | None = None
+        error_event: Dict[str, Any] | None = None
+        exit_code: int | None = None
+        deadline = time.time() + (10.0 if resolved_backend == "windows_fla_ui_helper" else 5.0)
+        while time.time() < deadline:
+            exit_code = process.poll()
+            error_event = _capture_assistant_error_event(log_path)
+            if error_event:
+                break
+            ready_event = _capture_assistant_last_event(log_path, ".ready")
+            if ready_event:
+                break
+            if exit_code is not None:
+                break
+            time.sleep(0.1)
         exit_code = process.poll()
+        if error_event:
+            _terminate_process(process.pid)
+            diagnostic_tail = _tail_text_file(log_path)
+            reason = str(error_event.get("error") or error_event.get("warning") or diagnostic_tail or "Capture assistant failed before readiness.")
+            assistant = {
+                "state": "failed",
+                "nativeInspectorSessionId": native_inspector_session_id,
+                "mode": payload.get("mode") or "capture_only",
+                "processId": process.pid,
+                "exitCode": exit_code,
+                "hotkey": hotkey,
+                "cancelHotkey": cancel_hotkey,
+                "captureGesture": capture_gesture,
+                "cancelGesture": cancel_gesture,
+                "armed": False,
+                "hotkeyRegistered": False,
+                "mouseHookInstalled": bool(error_event.get("mouseHookInstalled")),
+                "keyboardHookInstalled": bool(error_event.get("keyboardHookInstalled")),
+                "overlayReady": False,
+                "targetReady": False,
+                "targetLock": target_lock,
+                "startedAt": utc_now_iso(),
+                "failedAt": utc_now_iso(),
+                "persistent": bool(payload.get("persistent")),
+                "recordAndForward": bool(payload.get("recordAndForward")),
+                "prepared": prepared,
+                "captureBackend": resolved_backend,
+                "manualCoordinateFallback": force_fallback_overlay,
+                "serviceMode": "native_inspector_worker",
+                "nativeInspectorConfig": inspector_config,
+                "hoverSampleHz": hover_sample_hz,
+                "highlightOverlay": highlight_overlay,
+                "nativeHotkeyBackend": native_capability,
+                "logPath": str(log_path),
+                "requestPath": str(request_path) if request_path else None,
+                "readinessEvent": error_event,
+                "diagnosticTail": diagnostic_tail,
+            }
+            updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+            return {
+                "ok": False,
+                "status": str(error_event.get("stage") or "capture_assistant_readiness_failed"),
+                "reason": reason,
+                "armed": False,
+                "hotkeyRegistered": False,
+                "assistant": assistant,
+                "recording": updated,
+            }
         if exit_code is not None:
             diagnostic_tail = _tail_text_file(log_path)
             assistant = {
@@ -1810,6 +2750,10 @@ class RPARuntime:
                 "exitCode": exit_code,
                 "hotkey": hotkey,
                 "cancelHotkey": cancel_hotkey,
+                "captureGesture": capture_gesture,
+                "cancelGesture": cancel_gesture,
+                "armed": False,
+                "hotkeyRegistered": False,
                 "targetLock": target_lock,
                 "startedAt": utc_now_iso(),
                 "failedAt": utc_now_iso(),
@@ -1817,12 +2761,14 @@ class RPARuntime:
                 "recordAndForward": bool(payload.get("recordAndForward")),
                 "prepared": prepared,
                 "captureBackend": resolved_backend,
+                "manualCoordinateFallback": force_fallback_overlay,
                 "serviceMode": "native_inspector_worker",
                 "nativeInspectorConfig": inspector_config,
                 "hoverSampleHz": hover_sample_hz,
                 "highlightOverlay": highlight_overlay,
                 "nativeHotkeyBackend": native_capability,
                 "logPath": str(log_path),
+                "requestPath": str(request_path) if request_path else None,
                 "diagnosticTail": diagnostic_tail,
             }
             updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
@@ -1830,6 +2776,111 @@ class RPARuntime:
                 "ok": False,
                 "status": "capture_assistant_failed",
                 "reason": diagnostic_tail or f"Capture assistant exited immediately with code {exit_code}.",
+                "armed": False,
+                "hotkeyRegistered": False,
+                "assistant": assistant,
+                "recording": updated,
+            }
+        if not ready_event:
+            _terminate_process(process.pid)
+            diagnostic_tail = _tail_text_file(log_path)
+            assistant = {
+                "state": "failed",
+                "nativeInspectorSessionId": native_inspector_session_id,
+                "mode": payload.get("mode") or "capture_only",
+                "processId": process.pid,
+                "hotkey": hotkey,
+                "cancelHotkey": cancel_hotkey,
+                "captureGesture": capture_gesture,
+                "cancelGesture": cancel_gesture,
+                "armed": False,
+                "hotkeyRegistered": False,
+                "targetLock": target_lock,
+                "startedAt": utc_now_iso(),
+                "failedAt": utc_now_iso(),
+                "persistent": bool(payload.get("persistent")),
+                "recordAndForward": bool(payload.get("recordAndForward")),
+                "prepared": prepared,
+                "captureBackend": resolved_backend,
+                "manualCoordinateFallback": force_fallback_overlay,
+                "serviceMode": "native_inspector_worker",
+                "nativeInspectorConfig": inspector_config,
+                "hoverSampleHz": hover_sample_hz,
+                "highlightOverlay": highlight_overlay,
+                "nativeHotkeyBackend": native_capability,
+                "logPath": str(log_path),
+                "requestPath": str(request_path) if request_path else None,
+                "diagnosticTail": diagnostic_tail,
+            }
+            updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+            return {
+                "ok": False,
+                "status": "capture_assistant_not_ready",
+                "reason": diagnostic_tail or "Capture assistant did not report readiness. Hotkeys are not armed.",
+                "armed": False,
+                "hotkeyRegistered": False,
+                "assistant": assistant,
+                "recording": updated,
+            }
+        hotkey_registered = bool(ready_event.get("hotkeyRegistered"))
+        input_hook_ready = bool(ready_event.get("inputHookReady", hotkey_registered))
+        mouse_hook_installed = bool(ready_event.get("mouseHookInstalled"))
+        keyboard_hook_installed = bool(ready_event.get("keyboardHookInstalled"))
+        overlay_ready = bool(ready_event.get("overlayReady"))
+        target_ready = bool(ready_event.get("targetReady", True))
+        automation_ready = bool(ready_event.get("automationReady", True))
+        requires_full_readiness = bool(resolved_backend in {"native_hotkey", "windows_register_hotkey", "windows_fla_ui_helper"} and highlight_overlay)
+        if resolved_backend == "fallback_overlay":
+            readiness_ok = bool(overlay_ready and target_ready)
+        else:
+            readiness_ok = bool(hotkey_registered and target_ready)
+        if requires_full_readiness:
+            readiness_ok = bool(readiness_ok and input_hook_ready and mouse_hook_installed and keyboard_hook_installed and overlay_ready and automation_ready)
+        if not readiness_ok:
+            _terminate_process(process.pid)
+            diagnostic_tail = _tail_text_file(log_path)
+            assistant = {
+                "state": "failed",
+                "nativeInspectorSessionId": native_inspector_session_id,
+                "mode": payload.get("mode") or "capture_only",
+                "processId": process.pid,
+                "hotkey": hotkey,
+                "cancelHotkey": cancel_hotkey,
+                "captureGesture": capture_gesture,
+                "cancelGesture": cancel_gesture,
+                "armed": False,
+                "hotkeyRegistered": hotkey_registered,
+                "inputHookReady": input_hook_ready,
+                "mouseHookInstalled": mouse_hook_installed,
+                "keyboardHookInstalled": keyboard_hook_installed,
+                "overlayReady": overlay_ready,
+                "targetReady": target_ready,
+                "automationReady": automation_ready,
+                "targetLock": target_lock,
+                "startedAt": utc_now_iso(),
+                "failedAt": utc_now_iso(),
+                "persistent": bool(payload.get("persistent")),
+                "recordAndForward": bool(payload.get("recordAndForward")),
+                "prepared": prepared,
+                "captureBackend": resolved_backend,
+                "manualCoordinateFallback": force_fallback_overlay,
+                "serviceMode": "native_inspector_worker",
+                "nativeInspectorConfig": inspector_config,
+                "hoverSampleHz": hover_sample_hz,
+                "highlightOverlay": highlight_overlay,
+                "nativeHotkeyBackend": native_capability,
+                "logPath": str(log_path),
+                "requestPath": str(request_path) if request_path else None,
+                "readinessEvent": ready_event,
+                "diagnosticTail": diagnostic_tail,
+            }
+            updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
+            return {
+                "ok": False,
+                "status": "capture_assistant_readiness_failed",
+                "reason": "Capture assistant is not fully ready; mouse/keyboard hooks, overlay, or target readiness failed.",
+                "armed": False,
+                "hotkeyRegistered": False,
                 "assistant": assistant,
                 "recording": updated,
             }
@@ -1840,23 +2891,42 @@ class RPARuntime:
             "processId": process.pid,
             "hotkey": hotkey,
             "cancelHotkey": cancel_hotkey,
+            "captureGesture": capture_gesture,
+            "cancelGesture": cancel_gesture,
+            "armed": True,
+            "hotkeyRegistered": hotkey_registered,
+            "inputHookReady": input_hook_ready,
+            "mouseHookInstalled": mouse_hook_installed,
+            "keyboardHookInstalled": keyboard_hook_installed,
+            "overlayReady": overlay_ready,
+            "targetReady": target_ready,
+            "automationReady": automation_ready,
             "targetLock": target_lock,
             "startedAt": utc_now_iso(),
             "persistent": bool(payload.get("persistent")),
             "recordAndForward": bool(payload.get("recordAndForward")),
             "prepared": prepared,
             "captureBackend": resolved_backend,
+            "manualCoordinateFallback": force_fallback_overlay,
             "serviceMode": "native_inspector_worker",
             "nativeInspectorConfig": inspector_config,
             "hoverSampleHz": hover_sample_hz,
             "highlightOverlay": highlight_overlay,
             "nativeHotkeyBackend": native_capability,
             "logPath": str(log_path),
+            "requestPath": str(request_path) if request_path else None,
+            "readinessEvent": ready_event,
         }
         updated = self.recording_manager.update_capture_assistant(recording_id, assistant)
         return {
             "ok": True,
             "status": "capture_assistant_started",
+            "armed": True,
+            "hotkeyRegistered": hotkey_registered,
+            "hotkey": hotkey,
+            "cancelHotkey": cancel_hotkey,
+            "captureGesture": capture_gesture,
+            "cancelGesture": cancel_gesture,
             "assistant": assistant,
             "recording": updated,
         }
@@ -1871,10 +2941,32 @@ class RPARuntime:
         if assistant:
             previous_state = str(assistant.get("state") or "")
             terminal_states = {"captured", "cancelled", "failed", "stopped"}
-            if running:
+            log_path = assistant.get("logPath")
+            latest_error = _capture_assistant_error_event(log_path)
+            latest_captured = _capture_assistant_last_event(log_path, ".captured")
+            latest_cancelled = _capture_assistant_last_event(log_path, ".cancelled")
+            latest_ready = _capture_assistant_last_event(log_path, ".ready")
+            if latest_error:
+                assistant["state"] = "failed"
+                assistant["lastInspectorEvent"] = latest_error
+                assistant["error"] = latest_error.get("error") or latest_error.get("warning")
+            elif latest_captured:
+                assistant["state"] = "captured"
+                assistant["lastInspectorEvent"] = latest_captured
+            elif latest_cancelled:
+                assistant["state"] = "cancelled"
+                assistant["lastInspectorEvent"] = latest_cancelled
+            elif running:
                 assistant["state"] = previous_state if previous_state in terminal_states else "active"
             else:
                 assistant["state"] = previous_state if previous_state in terminal_states else "stopped"
+            if latest_ready:
+                assistant["readinessEvent"] = latest_ready
+                assistant["hotkeyRegistered"] = bool(latest_ready.get("hotkeyRegistered"))
+                assistant["mouseHookInstalled"] = bool(latest_ready.get("mouseHookInstalled"))
+                assistant["keyboardHookInstalled"] = bool(latest_ready.get("keyboardHookInstalled"))
+                assistant["overlayReady"] = bool(latest_ready.get("overlayReady"))
+                assistant["targetReady"] = bool(latest_ready.get("targetReady", True))
             assistant["lastPolledAt"] = utc_now_iso()
             assistant["processRunning"] = running
             if not running and not str(assistant.get("diagnosticTail") or "").strip():
@@ -2600,6 +3692,7 @@ class RPARuntime:
         source = dict(script.get("source") or {}) if script else {}
         governance = dict(metadata.get("templateGovernance") or {})
         promotion_gate = dict(metadata.get("templatePromotionGate") or {})
+        source_kind = str(source.get("kind") or metadata.get("source") or metadata.get("createdFrom") or "").strip()
         has_template_governance = bool(governance) or bool(source.get("templateId") or source.get("templateStage") or source.get("templateStatus"))
         stage = str(governance.get("stage") or source.get("templateStage") or "").strip() or ("candidate" if has_template_governance else "unmanaged")
         status = str(metadata.get("templateStatus") or governance.get("templateStatus") or source.get("templateStatus") or "").strip() or ("candidate" if has_template_governance else "unmanaged")
@@ -2610,7 +3703,9 @@ class RPARuntime:
         approval_required = bool(governance.get("approvalRequired", True))
         has_computer_use_source = self._has_computer_use_replay_capability(mode=mode, prepared=prepared)
         promotion_gate_blocked = bool(promotion_gate.get("blockedPromotion"))
-        if promotion_gate_blocked:
+        if source_kind == "manual_canvas" and has_computer_use_source:
+            rollout_mode = "computer_use_first"
+        elif promotion_gate_blocked:
             rollout_mode = "computer_use_first"
         execution_path = "robot"
         if has_computer_use_source and rollout_mode == "computer_use_first":
@@ -2647,8 +3742,12 @@ class RPARuntime:
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
         if not script or not list(script.get("steps") or []):
             return False
+        metadata = script.get("metadata") if isinstance(script.get("metadata"), dict) else {}
         source = script.get("source") if isinstance(script.get("source"), dict) else {}
         source_type = str(source.get("type") or "").strip()
+        source_kind = str(source.get("kind") or metadata.get("source") or metadata.get("createdFrom") or "").strip()
+        if source_kind == "manual_canvas":
+            return True
         if source_type in {"computer_use_trace", "computer_use_trace_merge", "rpa_template_candidate"}:
             return True
         if any(str(step.get("use") or "").strip() == "computer_use_playbook" for step in list(script.get("steps") or []) if isinstance(step, dict)):

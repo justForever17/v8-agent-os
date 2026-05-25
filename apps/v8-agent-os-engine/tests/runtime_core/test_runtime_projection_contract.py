@@ -97,6 +97,86 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(timeline[0]["summary"], "运行状态已切换为：completed")
         self.assertEqual(timeline[0]["status"], "completed")
 
+    def test_runtime_episode_projection_routes_by_nested_kind(self):
+        events = [
+            {
+                "event_id": "evt_research_episode",
+                "run_id": "run_x",
+                "seq": 3,
+                "topic": "runtime.episode.queued",
+                "payload": {
+                    "episode": {
+                        "episodeId": "episode_research",
+                        "kind": "research",
+                        "state": "queued",
+                        "reason": "查证项目资料",
+                    }
+                },
+                "event_ts": "2026-04-15T09:10:17.916Z",
+                "source": {},
+            },
+            {
+                "event_id": "evt_research_handoff",
+                "run_id": "run_x",
+                "seq": 4,
+                "topic": "handoff.ref.created",
+                "payload": {
+                    "handoffRef": {
+                        "handoffRefId": "handoff_research",
+                        "producerEpisodeId": "episode_research",
+                        "kind": "research_evidence_bundle",
+                        "status": "ready",
+                        "compactSummary": "调研证据包 ready",
+                    }
+                },
+                "event_ts": "2026-04-15T09:10:18.916Z",
+                "source": {},
+            },
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual(timeline[0]["runtimeId"], "research")
+        self.assertEqual(timeline[0]["metadata"]["episodeId"], "episode_research")
+        self.assertEqual(timeline[1]["runtimeId"], "research")
+        self.assertEqual(timeline[1]["metadata"]["episodeId"], "episode_research")
+
+    def test_delegation_broker_missing_result_marks_dispatch_unconfirmed(self):
+        events = [
+            {
+                "event_id": "evt_delegation_start",
+                "run_id": "run_x",
+                "seq": 5,
+                "topic": "tool.started",
+                "payload": {
+                    "tool": {
+                        "toolCallId": "call_delegation",
+                        "toolName": "delegation_broker",
+                        "args": {"mode": "dispatch", "targetCount": 3},
+                    }
+                },
+                "event_ts": "2026-04-15T09:10:19.916Z",
+                "source": {},
+            },
+            {
+                "event_id": "evt_run_end",
+                "run_id": "run_x",
+                "seq": 6,
+                "topic": "run.state.changed",
+                "payload": {"to_status": "completed"},
+                "event_ts": "2026-04-15T09:10:20.916Z",
+                "source": {},
+            },
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+        missing = [entry for entry in timeline if entry.get("metadata", {}).get("missingResult")]
+
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["runtimeId"], "subagent_swarm")
+        self.assertEqual(missing[0]["status"], "missing_result")
+        self.assertIn("未确认实际派发", missing[0]["summary"])
+
     def test_tool_started_projection_sanitizes_runtime_internal_args(self):
         events = [
             {

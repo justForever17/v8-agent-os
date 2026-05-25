@@ -42,6 +42,10 @@ test-results/
 **/build/
 **/.turbo/
 
+# .NET native helper artifacts
+apps/v8-agent-os-engine/native/**/bin/
+apps/v8-agent-os-engine/native/**/obj/
+
 # Expo / mobile build artifacts
 apps/v8-agent-os-phone/.expo/
 apps/v8-agent-os-phone/web-build/

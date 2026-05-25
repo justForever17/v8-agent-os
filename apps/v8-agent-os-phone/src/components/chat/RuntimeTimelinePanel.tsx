@@ -181,7 +181,7 @@ function getEngineeringLabel(activity: PhoneRuntimeStageActivity): { title: stri
     };
 }
 
-type SwarmNodeStatus = "active" | "completed" | "failed" | "pending";
+type SwarmNodeStatus = "active" | "completed" | "failed" | "pending" | "attempted";
 
 type SwarmGraphNode = {
     id: string;
@@ -215,6 +215,7 @@ function normalizeSwarmStatus(value: string): SwarmNodeStatus | null {
     if (!normalized) return null;
     if (/(fail|error|reject|blocked|cancel)/.test(normalized)) return "failed";
     if (/(complete|finish|done|success|succeeded)/.test(normalized)) return "completed";
+    if (/(attempt|revealed|missing|no_task|no-task|no_tasks|no-tasks|unconfirmed)/.test(normalized)) return "attempted";
     if (/(start|dispatch|run|active|progress|pending|queued)/.test(normalized)) return "active";
     return null;
 }
@@ -332,6 +333,7 @@ function SwarmNodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[
         completed: t("src.components.chat.runtimetimelinepanel.swarm_status_completed"),
         failed: t("src.components.chat.runtimetimelinepanel.swarm_status_failed"),
         pending: t("src.components.chat.runtimetimelinepanel.swarm_status_pending"),
+        attempted: t("src.components.chat.runtimetimelinepanel.swarm_status_attempted"),
     };
 
     if (visibleNodes.length <= 1) {
@@ -360,6 +362,8 @@ function SwarmNodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[
                             ? colors.success
                             : node.status === "active"
                                 ? colors.accent
+                                : node.status === "attempted"
+                                    ? colors.warning
                                 : colors.textMuted;
                     return (
                         <View key={node.id} style={styles.swarmNodeRow}>
@@ -432,6 +436,7 @@ function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeStageActi
         completed: t("src.components.chat.runtimetimelinepanel.swarm_status_completed"),
         failed: t("src.components.chat.runtimetimelinepanel.swarm_status_failed"),
         pending: t("src.components.chat.runtimetimelinepanel.swarm_status_pending"),
+        attempted: t("src.components.chat.runtimetimelinepanel.swarm_status_attempted"),
     };
 
     if (visibleNodes.length <= 1) {
@@ -454,6 +459,8 @@ function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeStageActi
                             ? colors.success
                             : node.status === "active"
                                 ? colors.accent
+                                : node.status === "attempted"
+                                    ? colors.warning
                                 : colors.textMuted;
                     return (
                         <View key={node.id} style={styles.swarmNodeRow}>
@@ -716,10 +723,16 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                 return true;
             });
     }, [activities, effectiveSelectedRuntimeId]);
-    const episodeActivities = useMemo(
-        () => visibleActivities.filter(isPhoneRuntimeEpisodeActivity),
-        [visibleActivities],
+    const globalEpisodeActivities = useMemo(
+        () => activities.filter(isPhoneRuntimeEpisodeActivity),
+        [activities],
     );
+    const swarmActivities = useMemo(
+        () => activities.filter((activity) => activity.runtimeId === "subagent_swarm"),
+        [activities],
+    );
+    const isChatRuntime = effectiveSelectedRuntimeId === "chat";
+    const hasChatExecutionMap = globalEpisodeActivities.length > 0 || swarmActivities.length > 0;
     const runtimeListKey = useMemo(
         () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}`,
         [effectiveSelectedRuntimeId, visible],
@@ -967,14 +980,27 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             )}
                         </View>
 
-                        {effectiveSelectedRuntimeId === "subagent_swarm" ? (
+                        {isChatRuntime ? (
                             <GestureScrollView
                                 key={runtimeListKey}
                                 style={styles.contentList}
-                                contentContainerStyle={[styles.content, visibleActivities.length === 0 && styles.contentEmpty]}
+                                contentContainerStyle={[styles.content, !hasChatExecutionMap && styles.contentEmpty]}
                                 showsVerticalScrollIndicator={false}
                                 overScrollMode="never"
                             >
+                                {globalEpisodeActivities.length > 0 ? <RuntimeEpisodeBoard activities={globalEpisodeActivities} /> : null}
+                                {swarmActivities.length > 0 ? <SwarmNodeBoard activities={swarmActivities} /> : null}
+                                {!hasChatExecutionMap ? renderEmptyState() : null}
+                            </GestureScrollView>
+                        ) : effectiveSelectedRuntimeId === "subagent_swarm" ? (
+                            <GestureScrollView
+                                key={runtimeListKey}
+                                style={styles.contentList}
+                                contentContainerStyle={[styles.content, visibleActivities.length === 0 && globalEpisodeActivities.length === 0 && styles.contentEmpty]}
+                                showsVerticalScrollIndicator={false}
+                                overScrollMode="never"
+                            >
+                                {globalEpisodeActivities.length > 0 ? <RuntimeEpisodeBoard activities={globalEpisodeActivities} /> : null}
                                 <SwarmNodeBoard activities={visibleActivities} />
                             </GestureScrollView>
                         ) : (
@@ -1003,8 +1029,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                 }}
                                 ListHeaderComponent={visibleActivities.length > 0 ? (
                                     <>
-                                        {episodeActivities.length > 0 ? <RuntimeEpisodeBoard activities={episodeActivities} /> : null}
-                                        <BroadcastRail activities={visibleActivities} />
+                                        {visibleActivities.length > 0 ? <BroadcastRail activities={visibleActivities} /> : null}
                                     </>
                                 ) : undefined}
                                 ListEmptyComponent={renderEmptyState}

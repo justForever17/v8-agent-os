@@ -32,7 +32,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
 import { useSession } from "next-auth/react";
 import { LoginDialog } from "@/components/auth/LoginDialog";
-import { Bot, FolderTree } from "lucide-react";
+import { Bot, FolderTree, Route } from "lucide-react";
 import { TodosHUD } from "@/components/chat/TodosHUD";
 import { ProcessesHUD } from "@/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/components/chat/RunControlBar";
@@ -1685,7 +1685,19 @@ export default function ChatClient() {
                                 openGovernanceApproval();
                             }}
                         />
-                        <div className="ml-auto flex shrink-0 justify-end">
+                        <div className="ml-auto flex shrink-0 justify-end gap-1">
+                            <button
+                                type="button"
+                                className={cn(
+                                    "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
+                                    isTimelineOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                )}
+                                onClick={() => setIsTimelineOpen(true)}
+                                aria-label={t(lt("执行地图", "Execution Map"))}
+                                title={t(lt("执行地图", "Execution Map"))}
+                            >
+                                <Route className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
+                            </button>
                             <RuntimeDock
                                 model={runtimeStageModel}
                                 selectedRuntimeId={selectedRuntimeId}

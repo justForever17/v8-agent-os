@@ -5885,6 +5885,27 @@ export default function ChatScreen() {
                                         setSelectedRuntimeId(runtimeId);
                                         setRuntimePanelOpen(true);
                                     }}
+                                    leadingAccessory={(
+                                        <Pressable
+                                            accessibilityRole="button"
+                                            accessibilityLabel={t("src.components.chat.runtimetimelinepanel.episode_topology")}
+                                            style={({ pressed }) => [
+                                                styles.executionMapButton,
+                                                {
+                                                    backgroundColor: runtimePanelOpen ? palette.primarySoft : palette.surfaceStrong,
+                                                    borderColor: runtimePanelOpen ? palette.primary : "transparent",
+                                                    opacity: pressed ? 0.82 : 1,
+                                                },
+                                            ]}
+                                            onPress={() => setRuntimePanelOpen(true)}
+                                        >
+                                            <MaterialCommunityIcons
+                                                name="file-tree-outline"
+                                                size={16}
+                                                color={runtimePanelOpen ? palette.primary : palette.textMuted}
+                                            />
+                                        </Pressable>
+                                    )}
                                 />
                             </EdgeActionRail>
                         </View>
@@ -6228,6 +6249,14 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         borderRadius: 16,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
+    executionMapButton: {
+        width: 28,
+        height: 28,
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 12,
         borderWidth: StyleSheet.hairlineWidth,
     },
     scopeTrigger: {

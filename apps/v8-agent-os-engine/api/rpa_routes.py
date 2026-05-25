@@ -1,5 +1,9 @@
+from typing import Any
+
 from fastapi import APIRouter, Body, HTTPException
 from starlette.concurrency import run_in_threadpool
+
+from core.time_truth import utc_now_iso
 
 from .models import (
     RPACompileTracePayload,
@@ -659,6 +663,28 @@ async def prepare_rpa_draft_run(script_id: str, payload: RPADraftPreparePayload)
 @router.post("/rpa/drafts/{script_id}/run")
 async def run_rpa_draft(script_id: str, payload: RPADraftRunPayload):
     try:
+        draft_patch: dict[str, Any] = {}
+        if payload.name is not None:
+            draft_patch["name"] = payload.name
+        if payload.goal is not None:
+            draft_patch["goal"] = payload.goal
+        if payload.app_id is not None:
+            draft_patch["appId"] = payload.app_id
+        if payload.steps is not None:
+            draft_patch["steps"] = payload.steps
+        if payload.draft_variables is not None:
+            draft_patch["variables"] = payload.draft_variables
+        if payload.object_library is not None:
+            draft_patch["objectLibrary"] = payload.object_library
+        if payload.metadata_patch:
+            draft_patch["metadataPatch"] = {
+                **dict(payload.metadata_patch or {}),
+                "lastDebugRunSnapshotAt": utc_now_iso(),
+            }
+        elif draft_patch:
+            draft_patch["metadataPatch"] = {"lastDebugRunSnapshotAt": utc_now_iso()}
+        if draft_patch:
+            _rpa_runtime().patch_draft(script_id, draft_patch)
         return await run_in_threadpool(
             _rpa_runtime().run_draft,
             script_id=script_id,

@@ -376,16 +376,80 @@ function resolveChannelType(payload: JsonRecord, source?: SessionRuntimeEventSou
 }
 
 function resolveRuntimeKind(payload: JsonRecord) {
+  const episode = asRecord(payload.episode);
+  const need = asRecord(payload.need);
+  const handoffRef = asRecord(payload.handoffRef);
+  const handoff = asRecord(payload.handoff);
+  const childDelegation = asRecord(payload.childDelegation);
+  const tool = asRecord(payload.tool);
   return normalizeString(
     payload.runtimeId
+    || payload.runtime_id
+    || payload.ownerRuntimeId
+    || payload.owner_runtime_id
     || payload.runtime
     || payload.runtimeKind
     || payload.runtime_kind
     || payload.runtimeFamily
     || payload.runtime_family
+    || episode.runtimeId
+    || episode.runtime_id
+    || episode.runtimeKind
+    || episode.runtime_kind
+    || episode.kind
+    || need.runtimeId
+    || need.runtime_id
+    || need.runtimeKind
+    || need.runtime_kind
+    || need.kind
+    || handoffRef.runtimeId
+    || handoffRef.runtime_id
+    || handoffRef.runtimeKind
+    || handoffRef.runtime_kind
+    || handoffRef.kind
+    || handoff.runtimeId
+    || handoff.runtime_id
+    || handoff.runtimeKind
+    || handoff.runtime_kind
+    || handoff.kind
+    || childDelegation.runtimeId
+    || childDelegation.runtime_id
+    || childDelegation.runtimeKind
+    || childDelegation.runtime_kind
+    || childDelegation.kind
+    || tool.runtimeId
+    || tool.runtime_id
+    || tool.runtimeKind
+    || tool.runtime_kind
     || payload.kind
     || payload.family,
   );
+}
+
+function normalizeArtifactRuntimeId(hint: string): SessionRuntimeId | null {
+  const normalized = normalizeString(hint);
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.includes("research_evidence") || normalized.includes("source_matrix")) {
+    return "research";
+  }
+  if (normalized.includes("engineering_patch") || normalized.includes("verification_report") || normalized.includes("patch_bundle")) {
+    return "engineering";
+  }
+  if (normalized.includes("asset_bundle") || normalized.includes("media_asset") || normalized.includes("recipe_ref")) {
+    return "creative_media";
+  }
+  if (normalized.includes("computer_observation") || normalized.includes("observation_bundle") || normalized.includes("screenshot_ref")) {
+    return "computer_use";
+  }
+  if (normalized.includes("rpa_trace") || normalized.includes("trace_bundle")) {
+    return "rpa";
+  }
+  if (normalized.includes("subagent_result") || normalized.includes("delegation")) {
+    return "subagent_swarm";
+  }
+  return normalizeRuntimeId(normalized);
 }
 
 function resolveSourceHints(source?: SessionRuntimeEventSource) {
@@ -450,6 +514,11 @@ function resolveRuntimeId(topic: string, payload: JsonRecord, source?: SessionRu
   const pluginHostRuntimeId = resolvePluginHostRuntimeId(topic, payload, source);
   if (pluginHostRuntimeId) {
     return pluginHostRuntimeId;
+  }
+
+  const nestedRuntimeId = normalizeArtifactRuntimeId(resolveRuntimeKind(payload));
+  if (nestedRuntimeId) {
+    return nestedRuntimeId;
   }
 
   const hints = [
@@ -629,22 +698,21 @@ function readContextGovernanceData(value: unknown): JsonRecord {
 
 function hasContextGovernanceRecallSignal(value: unknown) {
   const recall = asRecord(value);
-  const topScores = Array.isArray(recall.top_scores)
-    ? recall.top_scores
-    : Array.isArray(recall.topScores)
-      ? recall.topScores
-      : [];
-  const hasRecallCue = Boolean(recall.has_recall_cue || recall.hasRecallCue);
-  const injectionAllowed = Boolean(recall.injection_allowed || recall.injectionAllowed);
-  const rejectReason = normalizeString(recall.reject_reason || recall.rejectReason);
-  return injectionAllowed || (hasRecallCue && Boolean(rejectReason)) || (hasRecallCue && topScores.length > 0);
+  return Boolean(recall.injection_allowed || recall.injectionAllowed);
+}
+
+function hasTruthyField(payload: JsonRecord, keys: string[]) {
+  return keys.some((key) => Boolean(payload[key]));
+}
+
+function hasPositiveNumberField(payload: JsonRecord, keys: string[]) {
+  return keys.some((key) => toFiniteNumber(payload[key]) > 0);
 }
 
 export function isEffectiveContextGovernancePayload(value: unknown) {
   const payload = readContextGovernanceData(value);
   const durableFlush = asRecord(payload.durable_flush || payload.durableFlush);
   const durableReason = normalizeString(durableFlush.reason || durableFlush.status);
-  const providerError = asRecord(payload.provider_error || payload.providerError);
   const durableSkipReasons = new Set(["", "compaction_not_needed", "none", "prepared", "context_prepared", "skipped", "unchanged"]);
 
   if (Boolean(payload.compaction_applied || payload.compactionApplied)) {
@@ -653,13 +721,39 @@ export function isEffectiveContextGovernancePayload(value: unknown) {
   if (toFiniteNumber(payload.estimated_saved_tokens || payload.estimatedSavedTokens) > 0) {
     return true;
   }
-  if (toFiniteNumber(payload.block_count || payload.blockCount) > 0) {
+  if (hasTruthyField(payload, [
+    "approval_required",
+    "approvalRequired",
+    "pendingApproval",
+    "requiresApproval",
+    "approvalRequested",
+    "approval_request",
+  ])) {
     return true;
   }
-  if (!durableSkipReasons.has(durableReason)) {
+  if (hasTruthyField(payload, [
+    "truncation_risk",
+    "truncationRisk",
+    "truncated",
+    "context_truncated",
+    "contextTruncated",
+    "budget_exceeded",
+    "budgetExceeded",
+    "overflow",
+  ])) {
     return true;
   }
-  if (Object.keys(providerError).length > 0) {
+  if (hasPositiveNumberField(payload, [
+    "truncated_tokens",
+    "truncatedTokens",
+    "overflow_tokens",
+    "overflowTokens",
+    "tokens_over_budget",
+    "tokensOverBudget",
+  ])) {
+    return true;
+  }
+  if (!durableSkipReasons.has(durableReason) && /compact|flush|truncate|approval|recall|inject|budget|overflow/.test(durableReason)) {
     return true;
   }
   return hasContextGovernanceRecallSignal(payload.recall_audit || payload.recallAudit);

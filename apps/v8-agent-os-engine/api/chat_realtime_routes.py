@@ -92,8 +92,40 @@ def _runtime_ack_event(topic: str, payload: dict, *, session_id: str | None = No
     )
 
 
-_ACTIVE_CHAT_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
+_ACTIVE_CHAT_STATUSES = {
+    "queued",
+    "pending",
+    "starting",
+    "attached",
+    "observing",
+    "streaming",
+    "running",
+    "waiting",
+    "waiting_approval",
+    "waiting_input",
+    "waiting_external_tool",
+    "waiting_external",
+    "paused",
+}
+_TERMINAL_CHAT_STATUSES = {"completed", "finished", "failed", "cancelled", "canceled", "blocked", "error"}
 _FALLBACK_ACTIVE_CHAT_STATUSES = _ACTIVE_CHAT_STATUSES - {"paused"}
+
+
+def _resolve_request_session_id(request: ChatRequest) -> str:
+    data = request.data
+    resolved = str(
+        request.session_id
+        or request.conversation_id
+        or (getattr(data, "conversation_id", None) if data else None)
+        or ""
+    ).strip()
+    if not resolved:
+        resolved = str(uuid.uuid4())
+    request.session_id = resolved
+    request.conversation_id = request.conversation_id or resolved
+    if data is not None and not getattr(data, "conversation_id", None):
+        data.conversation_id = resolved
+    return resolved
 
 
 def _emit_human_guidance_event(topic: str, *, session_id: str, run_id: str | None, payload: dict) -> dict:
@@ -102,6 +134,7 @@ def _emit_human_guidance_event(topic: str, *, session_id: str, run_id: str | Non
         topic=topic,
         session_id=session_id,
         run_id=run_id,
+        seq=db.get_next_runtime_seq(session_id) if session_id else None,
         payload=payload,
         source={
             "plane": "engine",
@@ -123,10 +156,32 @@ def _find_active_chat_run(session_id: str) -> dict | None:
         record = db.get_run_record(lane_run_id)
         if record and str(record.get("status") or "").strip().lower() in _ACTIVE_CHAT_STATUSES:
             return record
+        lane_state = str(lane.get("state") or "").strip().lower()
+        if lane_state and lane_state not in {"idle", "released", "completed", "failed", "cancelled", "canceled"}:
+            return {
+                "id": lane_run_id,
+                "session_id": session_id,
+                "status": lane_state,
+                "metadata": {
+                    "source": "session_lane_record",
+                    "runRecordMissing": record is None,
+                    "runRecordStatus": (record or {}).get("status"),
+                },
+            }
     for record in db.list_run_records(session_id=session_id, run_type="chat", limit=20):
         if str(record.get("status") or "").strip().lower() in _FALLBACK_ACTIVE_CHAT_STATUSES:
             return record
     return None
+
+
+def _existing_queue_item_for_client_message(session_id: str, client_message_id: str | None) -> dict | None:
+    normalized_client_message_id = str(client_message_id or "").strip()
+    if not normalized_client_message_id:
+        return None
+    return db.get_chat_user_message_queue_item_by_client_message_id(
+        session_id=session_id,
+        client_message_id=normalized_client_message_id,
+    )
 
 
 def _latest_user_content_from_request(request: ChatRequest) -> str:
@@ -187,9 +242,29 @@ def _request_from_queue_item(item: dict, *, run_id: str) -> ChatRequest:
 
 
 def _schedule_next_queued_user_message(session_id: str) -> str | None:
+    pending = db.list_chat_user_message_queue(session_id=session_id, states=["pending"], limit=1)
+    if not pending:
+        return None
     next_run_id = f"run_{uuid.uuid4().hex}"
+    db.create_run_record(
+        run_id=next_run_id,
+        session_id=session_id,
+        run_type="chat",
+        status="queued",
+        trigger_source="queued_user_message",
+        metadata={
+            "source": "chat_user_message_queue",
+            "queueItemId": pending[0].get("id"),
+        },
+    )
     item = db.claim_next_pending_chat_user_message(session_id=session_id, consumed_run_id=next_run_id)
     if not item:
+        db.update_run_record(
+            next_run_id,
+            status="cancelled",
+            error_message="Queued user message was claimed by another drain before scheduling.",
+            metadata={"source": "chat_user_message_queue", "cancelReason": "claim_lost"},
+        )
         return None
     request = _request_from_queue_item(item, run_id=next_run_id)
     _emit_human_guidance_event(
@@ -217,6 +292,21 @@ def _fire_on_chat_end_if_terminal(session_id: str, run_id: str | None) -> None:
     )
     record = db.get_run_record(run_id) or {}
     if str(record.get("status") or "").strip().lower() == "completed":
+        for item in db.requeue_promoted_chat_user_messages_for_run(
+            session_id=session_id,
+            run_id=run_id,
+            reason="run_completed_before_guidance_injection",
+        ):
+            _emit_human_guidance_event(
+                "human_guidance.queued",
+                session_id=session_id,
+                run_id=run_id,
+                payload={
+                    "queueMessage": _queue_item_payload(item),
+                    "state": "pending",
+                    "summary": "运行已结束，引导未赶上安全检查点，已回到消息队列。",
+                },
+            )
         _schedule_next_queued_user_message(session_id)
 
 
@@ -386,36 +476,37 @@ async def chat_upload(request: Request):
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
-    if not request.session_id:
-        request.session_id = str(uuid.uuid4())
+    session_id = _resolve_request_session_id(request)
     if not request.resume_run_id:
-        active_run = _find_active_chat_run(request.session_id)
+        active_run = _find_active_chat_run(session_id)
         if active_run:
             content = _latest_user_content_from_request(request)
             if not content and not (request.attachments or request.fileUrls):
                 raise HTTPException(status_code=400, detail="运行中队列消息必须包含文本或附件。")
             client_message_id = request.client_message_id or (getattr(request.data, "client_message_id", None) if request.data else None)
-            queue_item = db.add_chat_user_message_queue_item(
-                queue_id=f"queued_{uuid.uuid4().hex}",
-                session_id=request.session_id,
-                run_id=str(active_run.get("id") or ""),
-                client_message_id=client_message_id,
-                content=content or "已上传附件",
-                attachments=[item.model_dump(mode="json", by_alias=True) for item in list(request.attachments or [])],
-                file_urls=list(request.fileUrls or []),
-                request_payload=request.model_dump(mode="json", by_alias=True),
-                metadata={
-                    "source": "chat_stream_while_run_active",
-                    "activeRunStatus": active_run.get("status"),
-                },
-            )
+            queue_item = _existing_queue_item_for_client_message(session_id, client_message_id)
+            if not queue_item:
+                queue_item = db.add_chat_user_message_queue_item(
+                    queue_id=f"queued_{uuid.uuid4().hex}",
+                    session_id=session_id,
+                    run_id=str(active_run.get("id") or ""),
+                    client_message_id=client_message_id,
+                    content=content or "已上传附件",
+                    attachments=[item.model_dump(mode="json", by_alias=True) for item in list(request.attachments or [])],
+                    file_urls=list(request.fileUrls or []),
+                    request_payload=request.model_dump(mode="json", by_alias=True),
+                    metadata={
+                        "source": "chat_stream_while_run_active",
+                        "activeRunStatus": active_run.get("status"),
+                    },
+                )
             event = _emit_human_guidance_event(
                 "human_guidance.queued",
-                session_id=request.session_id,
+                session_id=session_id,
                 run_id=str(active_run.get("id") or ""),
                 payload={
                     "queueMessage": _queue_item_payload(queue_item),
-                    "state": "pending",
+                    "state": queue_item.get("state") or "pending",
                     "summary": "消息已排队，将在当前运行完成后自动发送。",
                 },
             )
@@ -443,49 +534,50 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
 @router.post("/chat/submit")
 async def chat_submit(request: ChatRequest):
-    if not request.session_id:
-        request.session_id = str(uuid.uuid4())
+    session_id = _resolve_request_session_id(request)
 
     run_id = request.resume_run_id or f"run_{uuid.uuid4().hex}"
     client_message_id = request.client_message_id or (getattr(request.data, "client_message_id", None) if request.data else None)
     user_message = None
     execution_request = request
     if not request.resume_run_id:
-        active_run = _find_active_chat_run(request.session_id)
+        active_run = _find_active_chat_run(session_id)
         if active_run:
             content = _latest_user_content_from_request(request)
             if not content and not (request.attachments or request.fileUrls):
                 raise HTTPException(status_code=400, detail="运行中队列消息必须包含文本或附件。")
-            queue_item = db.add_chat_user_message_queue_item(
-                queue_id=f"queued_{uuid.uuid4().hex}",
-                session_id=request.session_id,
-                run_id=str(active_run.get("id") or ""),
-                client_message_id=client_message_id,
-                content=content or "已上传附件",
-                attachments=[item.model_dump(mode="json", by_alias=True) for item in list(request.attachments or [])],
-                file_urls=list(request.fileUrls or []),
-                request_payload=request.model_dump(mode="json", by_alias=True),
-                metadata={
-                    "source": "chat_submit_while_run_active",
-                    "activeRunStatus": active_run.get("status"),
-                },
-            )
+            queue_item = _existing_queue_item_for_client_message(session_id, client_message_id)
+            if not queue_item:
+                queue_item = db.add_chat_user_message_queue_item(
+                    queue_id=f"queued_{uuid.uuid4().hex}",
+                    session_id=session_id,
+                    run_id=str(active_run.get("id") or ""),
+                    client_message_id=client_message_id,
+                    content=content or "已上传附件",
+                    attachments=[item.model_dump(mode="json", by_alias=True) for item in list(request.attachments or [])],
+                    file_urls=list(request.fileUrls or []),
+                    request_payload=request.model_dump(mode="json", by_alias=True),
+                    metadata={
+                        "source": "chat_submit_while_run_active",
+                        "activeRunStatus": active_run.get("status"),
+                    },
+                )
             event_payload = {
                 "queueMessage": _queue_item_payload(queue_item),
-                "state": "pending",
+                "state": queue_item.get("state") or "pending",
                 "summary": "消息已排队，将在当前运行完成后自动发送。",
             }
             _emit_human_guidance_event(
                 "human_guidance.queued",
-                session_id=request.session_id,
+                session_id=session_id,
                 run_id=str(active_run.get("id") or ""),
                 payload=event_payload,
             )
             return {
                 "accepted": True,
                 "queued": True,
-                "session_id": request.session_id,
-                "conversationId": request.session_id,
+                "session_id": session_id,
+                "conversationId": session_id,
                 "clientMessageId": client_message_id,
                 "run_id": active_run.get("id"),
                 "runId": active_run.get("id"),
@@ -507,8 +599,8 @@ async def chat_submit(request: ChatRequest):
     _schedule_chat_run(execution_request, transport="submit", run_id=run_id)
     return {
         "accepted": True,
-        "session_id": request.session_id,
-        "conversationId": request.session_id,
+        "session_id": session_id,
+        "conversationId": session_id,
         "clientMessageId": client_message_id,
         "run_id": run_id,
         "runId": run_id,

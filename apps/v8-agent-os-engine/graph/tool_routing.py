@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import ToolNode
@@ -43,6 +44,15 @@ SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS = {
     "edit_native_file",
     "delete_native_file",
 }
+_ENGINEERING_ROUTE_TOOLS = {
+    "run_system_command",
+    "command_session_broker",
+    "write_native_file",
+    "replace_native_file",
+    "edit_native_file",
+    "delete_native_file",
+}
+_RESEARCH_ROUTE_TOOLS = {"web_broker"}
 
 
 def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
@@ -59,6 +69,173 @@ def _state_messages(state: Any) -> list[Any]:
 
 def _state_mapping(state: Any) -> dict[str, Any]:
     return dict(state or {}) if isinstance(state, dict) else {}
+
+
+def _safe_tool_args(raw_args: Any) -> dict[str, Any]:
+    if isinstance(raw_args, dict):
+        args = dict(raw_args)
+    elif isinstance(raw_args, str) and raw_args.strip():
+        try:
+            parsed = json.loads(raw_args)
+            args = dict(parsed) if isinstance(parsed, dict) else {"_raw": raw_args}
+        except Exception:
+            args = {"_raw": raw_args}
+    else:
+        args = {}
+    compact: dict[str, Any] = {}
+    for key, value in args.items():
+        if key in {"apiKey", "api_key", "token", "password", "secret", "authorization"}:
+            compact[key] = "<redacted>"
+            continue
+        if isinstance(value, str):
+            compact[key] = value if len(value) <= 500 else value[:497].rstrip() + "..."
+        elif isinstance(value, (int, float, bool)) or value is None:
+            compact[key] = value
+        elif isinstance(value, list):
+            compact[key] = value[:8]
+        elif isinstance(value, dict):
+            compact[key] = {str(k): v for k, v in list(value.items())[:8]}
+        else:
+            compact[key] = str(value)
+    return compact
+
+
+def _route_kind_for_blocked_tool(tool_name: str, *, route_required: bool) -> str:
+    normalized = str(tool_name or "").strip()
+    if normalized in _RESEARCH_ROUTE_TOOLS:
+        return "research"
+    if normalized.startswith("creative_media_"):
+        return "creative_media"
+    if normalized.startswith("computer_use_"):
+        return "computer_use"
+    if normalized.startswith("rpa_"):
+        return "rpa"
+    if normalized in _ENGINEERING_ROUTE_TOOLS or route_required:
+        return "engineering"
+    return "delegation"
+
+
+def _workspace_from_state(state_mapping: dict[str, Any], args: dict[str, Any]) -> str:
+    for key in ("workspacePath", "workspace_path", "cwd", "workingDirectory", "working_directory"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("workspace_path", "workspacePath", "project_workspace", "projectWorkspace"):
+        value = state_mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    for key in ("workspacePath", "workspace_path", "projectWorkspace", "project_workspace"):
+        value = route_context.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _route_intent_for_blocked_tool(
+    *,
+    tool_name: str,
+    tool_call: dict[str, Any],
+    state_mapping: dict[str, Any],
+    hard_reasons: list[str],
+    route_required: bool,
+) -> dict[str, Any]:
+    args = _safe_tool_args(tool_call.get("args"))
+    route_kind = _route_kind_for_blocked_tool(tool_name, route_required=route_required)
+    workspace = _workspace_from_state(state_mapping, args)
+    inputs: dict[str, Any] = {
+        "blockedTool": tool_name,
+        "blockedToolArgs": args,
+        "blockedReasons": list(hard_reasons),
+    }
+    if workspace:
+        inputs["workspacePath"] = workspace
+    if route_kind == "engineering":
+        command = str(args.get("command") or args.get("_raw") or "").strip()
+        target_path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "").strip()
+        inputs.update(
+            {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "blocked-tool-engineering",
+                        "goal": command or target_path or f"Execute blocked engineering tool {tool_name}.",
+                        "context": {
+                            "blockedTool": tool_name,
+                            **({"workspacePath": workspace} if workspace else {}),
+                        },
+                        "writeSet": [target_path or workspace or "<project-workspace>/"],
+                        "behaviorScope": ["implementation", "verification"],
+                        "requiredCapabilities": ["workspace_mutation", "command_execution", "verification"],
+                        "acceptanceContract": "Complete the blocked engineering operation through Engineering Runtime and report touched files, commands, proof, and residual risks.",
+                        "executionLaneHint": "auto",
+                        "familyHint": "engineering",
+                    }
+                ],
+                "proofExpectations": [
+                    "Record command/file side effects in the Engineering Runtime proof ledger.",
+                    "Return a handoff before Supervisor continues implementation.",
+                ],
+            }
+        )
+    elif route_kind == "research":
+        query = str(args.get("query") or args.get("q") or args.get("_raw") or "").strip()
+        inputs.update(
+            {
+                "query": query,
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "blocked-tool-research",
+                        "goal": query or "Run source-backed research for the current task.",
+                        "behaviorScope": ["research", "source_triage"],
+                        "requiredCapabilities": ["web_research", "evidence_synthesis"],
+                        "acceptanceContract": "Return an evidence bundle with synthesized findings and source URLs.",
+                        "executionLaneHint": "auto",
+                        "familyHint": "research",
+                    }
+                ],
+            }
+        )
+    else:
+        inputs["brief"] = f"Route blocked Supervisor tool {tool_name} through {route_kind} runtime."
+    return {
+        "kind": route_kind,
+        "source": "supervisor_direct_gate",
+        "reason": hard_reasons[0] if hard_reasons else "capability_route_required",
+        "tool": tool_name,
+        "requiredRuntimeAccess": [],
+        "inputs": inputs,
+    }
+
+
+def _has_active_runtime_episode(state_mapping: dict[str, Any], *, run_id: str = "", session_id: str = "") -> bool:
+    active_states = {
+        "detected",
+        "routed",
+        "queued",
+        "leased",
+        "active",
+        "waiting",
+        "waiting_child",
+        "waiting_external",
+        "waiting_approval",
+    }
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    for raw_episode in list(route_context.get("capabilityEpisodes") or []):
+        if not isinstance(raw_episode, dict):
+            continue
+        if str(raw_episode.get("state") or "").strip() in active_states:
+            return True
+    try:
+        from core.database import db
+
+        episodes = []
+        if run_id:
+            episodes = db.list_runtime_episodes(run_id=run_id, active_only=True, limit=5)
+        if not episodes and session_id:
+            episodes = db.list_runtime_episodes(session_id=session_id, active_only=True, limit=5)
+        return bool(episodes)
+    except Exception:
+        return False
 
 
 def _message_tool_calls(message: Any) -> list[dict[str, Any]]:
@@ -212,15 +389,35 @@ def _supervisor_direct_scope_hard_block_message(
 
     runtime_context = get_runtime_context()
     run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
+    has_active_episode = _has_active_runtime_episode(state_mapping, run_id=run_id, session_id=session_id)
     raw_reasons = ", ".join(hard_reasons)
+    if has_active_episode:
+        hard_reasons = [reason for reason in hard_reasons if reason != "no_runtime_episode_queued"] or ["runtime_episode_already_queued"]
+        raw_reasons = ", ".join(hard_reasons)
+    route_intent = _route_intent_for_blocked_tool(
+        tool_name=tool_name,
+        tool_call=tool_call,
+        state_mapping=state_mapping,
+        hard_reasons=hard_reasons,
+        route_required=route_required,
+    )
+    next_action = "wait_episode" if has_active_episode else "runtime_broker(mode='route')"
+    next_instruction = (
+        "Next step: wait for the active Runtime episode handoff before continuing. Do not call direct mutating tools."
+        if has_active_episode
+        else (
+            "Next step: call runtime_broker(mode='route', need=<routeIntent>) to create a Runtime episode, then wait "
+            "for the episode handoff before continuing."
+        )
+    )
     content = (
         "[route required]\n"
         f"Blocked direct Supervisor tool: {tool_name}\n"
         f"Reason: {raw_reasons}\n"
         "This run is classified as a complex Engineering/project task. Direct exception is not available for "
         "mutating, research, or long-running tools.\n"
-        "Next step: call runtime_broker(mode='route') to create a Runtime episode; dispatch workers with "
-        "delegation_broker only after the route is selected."
+        f"{next_instruction}"
     )
     return ToolMessage(
         content=content,
@@ -234,15 +431,11 @@ def _supervisor_direct_scope_hard_block_message(
             "toolStepCount": tool_step_count,
             "projectWriteCount": project_write_count,
             "reasons": hard_reasons,
-            "capabilityNeed": {
-                "kind": "engineering" if route_required else "delegation",
-                "source": "supervisor_direct_gate",
-                "reason": hard_reasons[0],
-                "tool": tool_name,
-                "requiredRuntimeAccess": [],
-            },
-            "allowedNextTools": ["runtime_broker", "delegation_broker", "ask_user"],
-            "recommendedNextAction": "runtime_broker(mode='route')",
+            "capabilityNeed": route_intent,
+            "routeIntent": route_intent,
+            "hasActiveRuntimeEpisode": has_active_episode,
+            "allowedNextTools": ["runtime_broker"],
+            "recommendedNextAction": next_action,
         },
     )
 

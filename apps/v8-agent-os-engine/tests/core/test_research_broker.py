@@ -125,6 +125,9 @@ def test_research_broker_run_returns_evidence_bundle(monkeypatch):
     assert payload["sourceMatrix"][0]["tier"] == "primary"
     assert payload["confidence"] in {"medium", "high"}
     assert payload["shards"][0]["fetchedTopSources"][0]["textPreview"]
+    assert payload["finalExperiencePack"]["architectAgentId"] == "web-research-architect"
+    assert "Web Research Architect final result" in payload["answer"]
+    assert payload["finalExperiencePack"]["sourceUrls"][0]["url"] == "https://docs.example.com/research"
 
     observed = json.loads(
         research_module.research_broker.func(

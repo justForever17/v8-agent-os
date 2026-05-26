@@ -152,4 +152,38 @@ assert.ok(activeIds.has("episode_engineering"), "engineering edge should be acti
 assert.ok(activeIds.has("episode_subagent"), "subagent edge should be active before handoff");
 assert.ok(activeIds.has("episode_child"), "child delegation edge should be active before handoff");
 
+const repeatedMissingDispatch = buildRuntimeEpisodeGraph([
+  {
+    id: "evt-missing-1",
+    topic: "delegation_broker.result",
+    summary: "delegation_broker(mode=dispatch) 需要提供 tasks。",
+    timestamp: baseTs + 14_000,
+    data: {
+      dispatchStatus: "missing_tasks",
+      missingTasks: true,
+      dispatchGroup: "delegation_missing_tasks:run_x",
+      diagnosticKey: "delegation_missing_tasks",
+      summary: "delegation_broker(mode=dispatch) 需要提供 tasks。",
+    },
+  },
+  {
+    id: "evt-missing-2",
+    topic: "delegation_broker.result",
+    summary: "delegation_broker(mode=dispatch) 需要提供 tasks。",
+    timestamp: baseTs + 15_000,
+    data: {
+      dispatchStatus: "missing_tasks",
+      missingTasks: true,
+      dispatchGroup: "delegation_missing_tasks:run_x",
+      diagnosticKey: "delegation_missing_tasks",
+      summary: "delegation_broker(mode=dispatch) 需要提供 tasks。",
+    },
+  },
+], {
+  rootLabel: "Supervisor",
+  kindLabels,
+});
+const missingNodes = repeatedMissingDispatch.filter((node) => node.diagnostic === "dispatch_missing_tasks");
+assert.equal(missingNodes.length, 1, "repeated missing-task delegation diagnostics must collapse into one node");
+
 console.log("runtime episode graph fixture verified");

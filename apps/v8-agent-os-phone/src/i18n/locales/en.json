@@ -157,6 +157,7 @@
   "src.components.chat.messageblockitem.no_canonical_resourceref_is_available_raw_paths_are_text_only": "No canonical resourceRef is available; raw paths are text-only.",
   "src.components.chat.messageblockitem.run_scheduling": "Run scheduling",
   "src.components.chat.messageblockitem.human_guidance": "Mid-run guidance",
+  "src.components.chat.messageblockitem.guidance_in_progress": "Guiding",
   "src.components.chat.messageblockitem.runtime_control": "Runtime control",
   "src.components.chat.messageblockitem.safety_blocked": "Safety blocked",
   "src.components.chat.messageblockitem.the_file_url_is_unreachable_right_now_and_the_rest_of_the_reply_remains_visible": "The file URL is unreachable right now, and the rest of the reply remains visible.",

@@ -4748,6 +4748,102 @@ def _redact_tool_observation_preview(text: str) -> str:
     return redacted
 
 
+def _parse_tool_observation_json(text: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(str(text or ""))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _tool_observation_short_text(value: Any, limit: int = 420) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str, max_chars: int) -> str | None:
+    kind = str(payload.get("kind") or "").strip()
+    if kind not in {"research_evidence_bundle", "research_result_pack", "research_experience_pack"} and not any(
+        key in payload for key in ("finalExperiencePack", "researchResult", "sourceMatrix")
+    ):
+        return None
+
+    pack = payload.get("finalExperiencePack") or payload.get("researchResult") or payload
+    if not isinstance(pack, dict):
+        pack = payload
+    answer = (
+        str(pack.get("answer") or "").strip()
+        or str(payload.get("resultPreview") or "").strip()
+        or str(payload.get("answer") or "").strip()
+        or str(pack.get("headline") or payload.get("summary") or "").strip()
+    )
+    findings = pack.get("keyFindings") if isinstance(pack.get("keyFindings"), list) else []
+    sources = pack.get("sourceUrls") if isinstance(pack.get("sourceUrls"), list) else []
+    if not sources and isinstance(payload.get("sourceMatrix"), list):
+        sources = payload.get("sourceMatrix") or []
+
+    lines = [
+        "Research result pack",
+        "agent: Web Research Architect",
+    ]
+    question = pack.get("question") or payload.get("question")
+    if question:
+        lines.append(f"question: {_tool_observation_short_text(question, 220)}")
+    confidence = pack.get("confidence") or payload.get("confidence")
+    if confidence:
+        lines.append(f"confidence: {confidence}")
+    lines.append("")
+    lines.append("Final result:")
+    if answer:
+        lines.append(_tool_observation_short_text(answer, max(900, min(max_chars // 2, 3200))))
+    else:
+        lines.append("No final source-backed research result was available in this observation.")
+
+    if findings:
+        lines.append("")
+        lines.append("Key findings:")
+        for item in findings[:8]:
+            if isinstance(item, dict):
+                claim = _tool_observation_short_text(item.get("claim") or item.get("summary") or item, 360)
+                source_title = _tool_observation_short_text(item.get("sourceTitle") or item.get("title"), 100)
+                if source_title:
+                    lines.append(f"- {claim} ({source_title})")
+                else:
+                    lines.append(f"- {claim}")
+            else:
+                lines.append(f"- {_tool_observation_short_text(item, 360)}")
+
+    if sources:
+        lines.append("")
+        lines.append("Sources:")
+        seen: set[str] = set()
+        for source in sources[:12]:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            title = _tool_observation_short_text(source.get("title") or source.get("sourceTitle") or source.get("host") or url, 140)
+            lines.append(f"- {title}: {url}")
+
+    limitations = pack.get("limitations")
+    if isinstance(limitations, list) and limitations:
+        lines.append("")
+        lines.append("Limitations:")
+        for item in limitations[:4]:
+            lines.append(f"- {_tool_observation_short_text(item, 240)}")
+
+    lines.append("")
+    lines.append(f"rawRef: {raw_ref}")
+    rendered = "\n".join(line for line in lines if line is not None).strip()
+    if len(rendered) > max_chars:
+        rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
+    return rendered
+
+
 @tool
 def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
     """Read a bounded, redacted preview for a previous tool observation rawRef."""
@@ -4769,6 +4865,16 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
             return f"rawRef not found: {normalized_ref}"
 
         raw_body = str(record.get("raw_body_text") or "")
+        payload = _parse_tool_observation_json(raw_body)
+        if payload and (
+            str(record.get("tool_name") or "") == "research_broker"
+            or str(payload.get("kind") or "").startswith("research_")
+            or any(key in payload for key in ("finalExperiencePack", "researchResult"))
+        ):
+            rendered = _render_research_observation_detail(payload, raw_ref=normalized_ref, max_chars=requested_chars)
+            if rendered:
+                return rendered
+
         raw_preview = raw_body[:requested_chars]
         preview = _redact_tool_observation_preview(raw_preview)
         omitted_chars = max(0, len(raw_body) - len(raw_preview))
@@ -5295,13 +5401,20 @@ def _runtime_broker_payload(
     if changed is not None:
         payload["changed"] = list(changed or [])
     if episode:
+        episode_id = str(episode.get("episodeId") or episode.get("needId") or "")
+        episode_kind = str(episode.get("kind") or "")
+        episode_state = str(episode.get("state") or "")
         payload["episode"] = {
-            "episodeId": str(episode.get("episodeId") or episode.get("needId") or ""),
-            "kind": str(episode.get("kind") or ""),
-            "state": str(episode.get("state") or ""),
+            "episodeId": episode_id,
+            "kind": episode_kind,
+            "state": episode_state,
             "reason": str(episode.get("reason") or ""),
             "continuationTarget": str(episode.get("continuationTarget") or ""),
         }
+        payload["queuedEpisodeId"] = episode_id
+        payload["episodeKind"] = episode_kind
+        payload["state"] = episode_state
+        payload["nextAction"] = "wait_episode"
     if next_action:
         payload["recommendedNextAction"] = next_action
     if normalized_detail not in {"catalog", "detail", "full"} and groups:
@@ -5346,6 +5459,109 @@ def _capability_route_groups(
         requested.append(tool_group)
     requested.extend(_RUNTIME_ROUTE_DEFAULT_GROUPS.get(kind, []))
     return normalize_runtime_access(requested, runtime_kind=runtime_kind or kind)
+
+
+def _planner_task_briefs_from_state(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    state = dict(state or {})
+    planner_plan = state.get("planner_plan")
+    briefs: list[Any] = []
+    if isinstance(planner_plan, dict):
+        for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
+            value = planner_plan.get(key)
+            if isinstance(value, list) and value:
+                briefs = value
+                break
+    if not briefs:
+        route_context = dict(state.get("current_route_context") or {})
+        for episode in list(route_context.get("capabilityEpisodes") or []):
+            if not isinstance(episode, dict):
+                continue
+            inputs = episode.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
+                value = inputs.get(key)
+                if isinstance(value, list) and value:
+                    briefs = value
+                    break
+            if briefs:
+                break
+    return normalize_task_briefs(briefs)
+
+
+def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, Any]:
+    inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+    blocked_tool = str(need.get("tool") or inputs.get("blockedTool") or "").strip()
+    args = dict(inputs.get("blockedToolArgs") or {}) if isinstance(inputs.get("blockedToolArgs"), dict) else {}
+    command = str(args.get("command") or args.get("_raw") or "").strip()
+    target_path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "").strip()
+    reason = str(need.get("reason") or inputs.get("brief") or inputs.get("query") or "").strip()
+    goal = (
+        command
+        or target_path
+        or reason
+        or (f"Handle blocked Supervisor tool {blocked_tool} through {kind} runtime." if blocked_tool else f"Run {kind} runtime episode.")
+    )
+    brief = {
+        "taskBriefId": f"route-{kind}-minimal",
+        "title": goal[:96],
+        "goal": goal,
+        "brief": goal,
+        "familyHint": "engineering" if kind == "engineering" else ("research" if kind == "research" else "generalist"),
+        "executionLaneHint": "auto",
+        "requiredCapabilities": ["workspace_mutation", "verification"] if kind == "engineering" else [],
+        "acceptanceContract": "Return a compact handoff with outcome, evidence, and next steps.",
+    }
+    workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
+    if workspace:
+        brief["workspacePath"] = workspace
+        brief["writeSet"] = [target_path or workspace]
+    if blocked_tool:
+        brief["context"] = {"blockedTool": blocked_tool, **({"workspacePath": workspace} if workspace else {})}
+    return brief
+
+
+def _enrich_route_need_for_episode(
+    need: dict[str, Any],
+    *,
+    kind: str,
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    enriched = dict(need or {})
+    enriched["kind"] = kind
+    enriched.setdefault("source", "supervisor")
+    enriched.setdefault("reason", str(enriched.get("reason") or "capability_route").strip() or "capability_route")
+    inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
+    planner_briefs = _planner_task_briefs_from_state(state)
+
+    if kind in {"engineering", "delegation"}:
+        route_tasks = planner_briefs or normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        if not route_tasks:
+            route_tasks = [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
+        if not inputs.get("workerBriefs"):
+            inputs["workerBriefs"] = route_tasks
+        if not inputs.get("tasks"):
+            inputs["tasks"] = route_tasks
+        if not inputs.get("taskBriefs"):
+            inputs["taskBriefs"] = route_tasks
+        if kind == "engineering":
+            inputs.setdefault(
+                "proofExpectations",
+                [
+                    "Execute through Engineering Runtime.",
+                    "Return touched files, commands, verification proof, and remaining risks.",
+                ],
+            )
+    elif kind == "research":
+        query = str(inputs.get("query") or enriched.get("query") or enriched.get("reason") or "").strip()
+        if query:
+            inputs.setdefault("query", query)
+        if not inputs.get("taskBriefs"):
+            inputs["taskBriefs"] = planner_briefs or [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
+        inputs.setdefault("sourcePolicy", "multi_source_evidence")
+
+    enriched["inputs"] = inputs
+    return enriched
 
 
 def _append_runtime_episode(
@@ -5440,6 +5656,7 @@ def runtime_broker(
                     "current_route_context": route_context,
                 },
             )
+        need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
         requested_groups = _capability_route_groups(
             need=need_payload,
             runtime_kind=runtime_kind or route_kind,
@@ -5465,15 +5682,15 @@ def runtime_broker(
         _emit_runtime_episode_event("capability.need.detected", {"episode": episode})
         _emit_runtime_episode_event("runtime.episode.queued", {"episode": episode})
         if route_kind in {"engineering", "delegation"}:
-            next_action = "Episode queued for Engineering/delegation runner; observe runtime episodes rather than continuing direct mutating tools."
+            next_action = "wait_episode"
         elif route_kind == "research":
-            next_action = "Research episode queued; wait for evidence handoff before implementation."
+            next_action = "wait_episode"
         elif route_kind == "creative_media":
-            next_action = "Creative Media episode queued; wait for asset/recipe handoff."
+            next_action = "wait_episode"
         elif route_kind in {"computer_use", "rpa"}:
-            next_action = "Runtime episode queued; wait for observation/trace handoff."
+            next_action = "wait_episode"
         else:
-            next_action = "Continue through the routed runtime lane; avoid direct fallback unless explicitly enabled."
+            next_action = "wait_episode"
         return Command(
             goto="supervisor",
             update={
@@ -5495,6 +5712,16 @@ def runtime_broker(
                     )
                 ],
                 "current_route_context": updated_context,
+                "planner_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "dispatched": True,
+                    "blocked": False,
+                    "reason": "runtime_episode_queued",
+                    "episodeId": str(episode.get("episodeId") or ""),
+                    "episodeKind": route_kind,
+                    "episodeCount": 1,
+                    "nextAction": "wait_episode",
+                },
             },
         )
 
@@ -6192,7 +6419,21 @@ def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotat
     if details:
         request["details"] = details
 
-    response = interrupt(request)
+    try:
+        response = interrupt(request)
+    except Exception as exc:
+        _raise_langgraph_interrupt_if_needed(exc)
+        if "__pregel_scratchpad" in str(exc):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "ask_user_unavailable_in_runtime_gate",
+                    "summary": "当前工具调用上下文不能暂停询问用户。",
+                    "recommendedNextAction": "runtime_broker(mode='route') or queue human guidance for the active run.",
+                },
+                ensure_ascii=False,
+            )
+        raise
     if isinstance(response, dict):
         if isinstance(response.get("answer"), str) and response["answer"].strip():
             return response["answer"].strip()
@@ -9498,6 +9739,31 @@ def delegation_broker(
 
     if normalized_mode == "dispatch":
         requested_tasks = list(tasks or worker_briefs or [])
+        dispatch_task_source = "explicit"
+        if not requested_tasks:
+            requested_tasks = _planner_task_briefs_from_state(
+                {
+                    **base_state,
+                    "current_route_context": inherited_context,
+                }
+            )
+            if requested_tasks:
+                dispatch_task_source = "planner_or_episode_fallback"
+        if not requested_tasks:
+            need_reason = str(inherited_context.get("reason") or inherited_context.get("lastNeedReason") or followup or "").strip()
+            active_episodes = [
+                item for item in list(inherited_context.get("capabilityEpisodes") or [])
+                if isinstance(item, dict) and str(item.get("kind") or "").strip() in {"delegation", "engineering"}
+            ]
+            if active_episodes:
+                latest_episode = active_episodes[-1]
+                inputs = latest_episode.get("inputs") if isinstance(latest_episode.get("inputs"), dict) else {}
+                need_reason = need_reason or str(latest_episode.get("reason") or inputs.get("brief") or "").strip()
+                requested_tasks = [normalize_task_brief(_minimal_route_task_from_need(latest_episode, str(latest_episode.get("kind") or "delegation")))]
+                dispatch_task_source = "active_episode_minimal"
+            elif need_reason:
+                requested_tasks = [normalize_task_brief({"title": need_reason[:96], "goal": need_reason, "brief": need_reason, "executionLaneHint": "auto"})]
+                dispatch_task_source = "followup_minimal"
         if target_count and target_count > len(requested_tasks) and requested_tasks:
             seed = dict(requested_tasks[-1])
             for index in range(len(requested_tasks), int(target_count)):
@@ -9515,6 +9781,8 @@ def delegation_broker(
                     }
                 )
         if not normalized_tasks:
+            runtime_context = get_runtime_context()
+            run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "unknown").strip() or "unknown"
             return Command(
                 goto="supervisor",
                 update={
@@ -9526,6 +9794,19 @@ def delegation_broker(
                                 summary="delegation_broker(mode=dispatch) 需要提供 tasks。",
                                 recommended_next_action="none",
                                 error="missing_tasks",
+                                dispatchStatus="missing_tasks",
+                                missingTasks=True,
+                                missingResult=True,
+                                diagnosticKey="delegation_missing_tasks",
+                                dispatchGroup=f"delegation_missing_tasks:{run_id}",
+                                exampleTasks=[
+                                    {
+                                        "title": "Implement one isolated work package",
+                                        "goal": "Describe the exact subtask and expected artifact.",
+                                        "runtimeAccess": ["memory.read"],
+                                        "acceptanceContract": "Return result summary, touched files, proof, and risks.",
+                                    }
+                                ],
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -9592,6 +9873,8 @@ def delegation_broker(
         dispatch_source = str(base_state.get("delegationDispatchSource") or inherited_context.get("delegationDispatchSource") or "").strip()
         compat_source = str(base_state.get("delegationCompatSource") or inherited_context.get("delegationCompatSource") or "").strip()
         auto_dispatch_source = dispatch_source if dispatch_source.startswith("planner_auto") else ""
+        if dispatch_task_source != "explicit" and not dispatch_source:
+            dispatch_source = dispatch_task_source
         workset_decisions = build_workset_dispatch_decisions(
             normalized_tasks,
             auto_dispatch=bool(auto_dispatch_source),

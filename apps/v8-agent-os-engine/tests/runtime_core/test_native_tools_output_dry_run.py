@@ -91,3 +91,56 @@ def test_tool_observation_detail_reads_bounded_redacted_preview(tmp_path, monkey
     assert "[secrets redacted]" in result
     assert "super-secret-token-value" not in result
     assert "api_key=<redacted>" in result
+
+
+def test_tool_observation_detail_renders_research_pack_without_raw_json(tmp_path, monkeypatch) -> None:
+    from core.native_tools import tool_observation_detail
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    payload = {
+        "kind": "research_evidence_bundle",
+        "question": "How should Research Runtime summarize results?",
+        "finalExperiencePack": {
+            "architectAgentId": "web-research-architect",
+            "answer": "Web Research Architect final result:\n- Use source-backed findings only.",
+            "keyFindings": [
+                {
+                    "claim": "Use a final research result pack instead of raw search snippets.",
+                    "sourceTitle": "Research docs",
+                    "sourceUrl": "https://docs.example.com/research",
+                }
+            ],
+            "sourceUrls": [
+                {"title": "Research docs", "url": "https://docs.example.com/research", "host": "docs.example.com"}
+            ],
+            "confidence": "high",
+        },
+        "sourceMatrix": [{"title": "Raw matrix entry", "url": "https://docs.example.com/research"}],
+    }
+    temp_db.add_tool_observation_record(
+        {
+            "id": "obs-research",
+            "raw_ref": "toolobs://obs-research",
+            "tool_name": "research_broker",
+            "tool_call_id": "call-research",
+            "runtime_kind": "research",
+            "surface": "tool_node",
+            "raw_chars": 1024,
+            "visible_chars": 256,
+            "raw_sha256": "sha",
+            "raw_body": json.dumps(payload, ensure_ascii=False),
+            "budget": {"agentVisibleBudget": 1000},
+            "metadata": {},
+        }
+    )
+
+    result = tool_observation_detail.invoke({"raw_ref": "toolobs://obs-research", "max_chars": 4000})
+
+    assert "Research result pack" in result
+    assert "agent: Web Research Architect" in result
+    assert "Use source-backed findings only" in result
+    assert "https://docs.example.com/research" in result
+    assert '"sourceMatrix"' not in result

@@ -120,6 +120,8 @@ PROXY_ENV_KEYS = (
     "https_proxy",
     "no_proxy",
 )
+_WEB_BROKER_CONTEXT_COUNTS: dict[str, int] = {}
+_WEB_BROKER_RESEARCH_WARNING_THRESHOLD = 3
 
 
 @dataclass(slots=True)
@@ -186,6 +188,41 @@ def _guard_url(url: str, *, tool_call_id: str) -> tuple[bool, str | None]:
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _runtime_context_value(context: Any, *keys: str) -> str:
+    if isinstance(context, dict):
+        for key in keys:
+            value = _safe_text(context.get(key))
+            if value:
+                return value
+    for key in keys:
+        value = _safe_text(getattr(context, key, ""))
+        if value:
+            return value
+    return ""
+
+
+def _note_web_broker_context_call(tool_call_id: str) -> tuple[int, bool]:
+    try:
+        context = get_runtime_context()
+    except Exception:
+        context = None
+    context_id = (
+        _runtime_context_value(context, "run_id", "runId")
+        or _runtime_context_value(context, "session_id", "sessionId", "conversation_id", "conversationId")
+    )
+    if not context_id:
+        context_id = _safe_text(tool_call_id)[:32]
+    if not context_id:
+        return 0, False
+    current = _WEB_BROKER_CONTEXT_COUNTS.get(context_id, 0) + 1
+    _WEB_BROKER_CONTEXT_COUNTS[context_id] = current
+    # Keep the in-memory counter bounded for long-lived dev processes.
+    if len(_WEB_BROKER_CONTEXT_COUNTS) > 512:
+        for key in list(_WEB_BROKER_CONTEXT_COUNTS.keys())[:128]:
+            _WEB_BROKER_CONTEXT_COUNTS.pop(key, None)
+    return current, current > _WEB_BROKER_RESEARCH_WARNING_THRESHOLD
 
 
 def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
@@ -2537,4 +2574,16 @@ def web_broker(
     if not isinstance(parsed, dict):
         return raw_result
     compact = _compact_web_broker_payload(parsed, requested_mode=normalized_mode, debug=bool(debug))
+    call_count, over_research_threshold = _note_web_broker_context_call(tool_call_id)
+    if call_count:
+        compact["webBrokerCallCount"] = call_count
+    if over_research_threshold:
+        compact["researchRuntimeWarning"] = (
+            "web_broker 已超过本轮建议上限（3 次）。复杂、多源、新鲜度敏感或需要来源排序的调研，"
+            "必须申请 research.core 并改用 research_broker / Research Runtime。"
+        )
+        compact["recommendedNextAction"] = (
+            "stop_ad_hoc_web_broker; request research.core; call research_broker(mode='search_experience') "
+            "then research_broker(mode='run') when needed"
+        )
     return json.dumps(compact, ensure_ascii=False, indent=2)

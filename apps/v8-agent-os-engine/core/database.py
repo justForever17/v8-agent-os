@@ -2773,7 +2773,7 @@ class DatabaseManager:
             query += " AND parent_episode_id = ?"
             params.append(parent_episode_id)
         if active_only:
-            query += " AND state IN ('detected', 'routed', 'queued', 'active', 'waiting_child', 'waiting_external', 'waiting_approval')"
+            query += " AND state IN ('detected', 'routed', 'queued', 'leased', 'active', 'waiting', 'waiting_child', 'waiting_external', 'waiting_approval')"
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(int(limit or 100))
         with self.get_connection() as conn:
@@ -2999,6 +2999,35 @@ class DatabaseManager:
                 return None
             return self._hydrate_chat_user_message_queue_row(dict(row))
 
+    def get_chat_user_message_queue_item_by_client_message_id(
+        self,
+        *,
+        session_id: str,
+        client_message_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_client_message_id = str(client_message_id or "").strip()
+        if not normalized_session_id or not normalized_client_message_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM chat_user_message_queue
+                WHERE session_id = ?
+                  AND client_message_id = ?
+                  AND state != 'cancelled'
+                ORDER BY created_at ASC
+                LIMIT 1
+                ''',
+                (normalized_session_id, normalized_client_message_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._hydrate_chat_user_message_queue_row(dict(row))
+
     def list_chat_user_message_queue(
         self,
         *,
@@ -3110,6 +3139,59 @@ class DatabaseManager:
                 return self._hydrate_chat_user_message_queue_row(data)
 
         return self._run_write_with_retry(_write)
+
+    def requeue_promoted_chat_user_messages_for_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        reason: str,
+    ) -> List[Dict[str, Any]]:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_session_id or not normalized_run_id:
+            return []
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT *
+                    FROM chat_user_message_queue
+                    WHERE session_id = ?
+                      AND run_id = ?
+                      AND state = 'promoted'
+                      AND injected_at IS NULL
+                    ORDER BY ordinal ASC, created_at ASC
+                    ''',
+                    (normalized_session_id, normalized_run_id),
+                )
+                rows = [dict(row) for row in cursor.fetchall()]
+                if not rows:
+                    return []
+                for row in rows:
+                    metadata = json.loads(row.get("metadata_json") or "{}")
+                    metadata["requeuedReason"] = reason
+                    metadata["requeuedAt"] = now_iso
+                    conn.execute(
+                        '''
+                        UPDATE chat_user_message_queue
+                        SET state = 'pending',
+                            updated_at = ?,
+                            metadata_json = ?
+                        WHERE id = ?
+                        ''',
+                        (now_iso, json.dumps(to_jsonable(metadata), ensure_ascii=False), row["id"]),
+                    )
+                    row["state"] = "pending"
+                    row["updated_at"] = now_iso
+                    row["metadata_json"] = json.dumps(to_jsonable(metadata), ensure_ascii=False)
+                conn.commit()
+                return [self._hydrate_chat_user_message_queue_row(row) for row in rows]
+
+        return self._run_write_with_retry(_write) or []
 
     def add_runtime_artifact(
         self,

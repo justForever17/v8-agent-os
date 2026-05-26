@@ -384,9 +384,16 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
         "ok": bool(payload.get("ok")),
         "kind": payload.get("kind") or payload.get("mode") or "research_payload",
         "summary": _safe_text(payload.get("summary"))[:600],
+        "answer": _safe_text(payload.get("answer") or payload.get("resultPreview"))[:1600],
+        "finalExperiencePack": {
+            key: value
+            for key, value in dict(payload.get("finalExperiencePack") or payload.get("researchResult") or {}).items()
+            if key in {"kind", "architectAgentId", "architectName", "headline", "confidence", "sourceUrls"}
+        },
         "evidenceBundleId": payload.get("evidenceBundleId"),
         "confidence": payload.get("confidence"),
         "authorityScore": payload.get("authorityScore"),
+        "sourceMatrix": list(payload.get("sourceMatrix") or [])[:3],
         "omitted": {
             **omitted,
             "fallback": "agent_visible_budget_fallback",
@@ -395,6 +402,135 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
         "recommendedNextAction": payload.get("recommendedNextAction") or "get_evidence",
     }
     return json.dumps(fallback, ensure_ascii=False, indent=2)
+
+
+def _compact_research_text(value: Any, *, limit: int = 700) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _research_sentences(value: Any, *, limit: int = 3) -> list[str]:
+    text = _compact_research_text(value, limit=900)
+    if not text:
+        return []
+    parts = [
+        item.strip(" \t\r\n-•。；;")
+        for item in re.split(r"(?<=[。！？!?\.])\s+|[；;]\s*", text)
+        if item.strip(" \t\r\n-•。；;")
+    ]
+    if not parts:
+        parts = [text]
+    result: list[str] = []
+    for part in parts:
+        if len(part) < 12 and len(parts) > 1:
+            continue
+        result.append(_compact_research_text(part, limit=260))
+        if len(result) >= limit:
+            break
+    return result or [_compact_research_text(text, limit=260)]
+
+
+def _fetched_source_map(shards: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    fetched: dict[str, dict[str, Any]] = {}
+    for shard in shards:
+        for item in list(shard.get("fetchedTopSources") or []):
+            if not isinstance(item, dict):
+                continue
+            url = _safe_text(item.get("url"))
+            if url and url not in fetched:
+                fetched[url] = item
+    return fetched
+
+
+def _web_research_architect_pack(
+    *,
+    question: str,
+    source_matrix: list[dict[str, Any]],
+    shards: list[dict[str, Any]],
+    confidence: str,
+    average_authority: float,
+) -> dict[str, Any]:
+    """Build the final research-result pack consumed by Supervisor and detail tools.
+
+    This deterministic synthesis is intentionally source-backed and compact. It
+    represents the Research Runtime's Web Research Architect handoff: the model
+    sees conclusions and source URLs, while raw search/debug payloads stay behind
+    rawRef/detail tooling.
+    """
+
+    fetched = _fetched_source_map(shards)
+    source_urls: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    for source in source_matrix[:8]:
+        url = _safe_text(source.get("url"))
+        if not url:
+            continue
+        read_payload = fetched.get(url) or {}
+        title = _safe_text(read_payload.get("title") or source.get("title") or url)
+        host = _safe_text(source.get("host")) or _host(url)
+        source_entry = {
+            "title": title,
+            "url": url,
+            "host": host,
+            "tier": source.get("tier"),
+            "authorityScore": source.get("authorityScore"),
+        }
+        source_urls.append({key: value for key, value in source_entry.items() if value not in (None, "", [], {})})
+        source_text = _safe_text(read_payload.get("textPreview")) or _safe_text(source.get("snippet"))
+        for sentence in _research_sentences(source_text, limit=2):
+            if not sentence:
+                continue
+            findings.append(
+                {
+                    "claim": sentence,
+                    "sourceTitle": title,
+                    "sourceUrl": url,
+                    "host": host,
+                }
+            )
+            if len(findings) >= 8:
+                break
+        if len(findings) >= 8:
+            break
+
+    if findings:
+        headline = f"Web Research Architect synthesized {len(findings)} source-backed finding(s) from {len(source_urls)} source(s)."
+        answer_lines = ["Web Research Architect final result:"]
+        for item in findings[:6]:
+            title = _compact_research_text(item.get("sourceTitle"), limit=88)
+            claim = _compact_research_text(item.get("claim"), limit=280)
+            answer_lines.append(f"- {claim} ({title})")
+        if len(findings) > 6:
+            answer_lines.append(f"- ... {len(findings) - 6} more source-backed finding(s) omitted from the visible pack.")
+        limitations: list[str] = []
+        if confidence == "low":
+            limitations.append("Evidence confidence is low; verify with more authoritative or primary sources before making final decisions.")
+        if len(source_urls) < 2:
+            limitations.append("Only one usable source was available; treat conclusions as provisional.")
+    else:
+        headline = "Web Research Architect could not synthesize a reliable result because no usable source text was collected."
+        answer_lines = [
+            "Web Research Architect final result:",
+            "- No reliable source-backed findings were collected. Revise the query, grant Research Runtime, or provide authoritative seed URLs.",
+        ]
+        limitations = ["No usable source text was collected."]
+
+    return {
+        "kind": "research_result_pack",
+        "architectAgentId": "web-research-architect",
+        "architectName": "Web Research Architect",
+        "question": question,
+        "headline": headline,
+        "answer": "\n".join(answer_lines),
+        "keyFindings": findings,
+        "sourceUrls": source_urls,
+        "confidence": confidence,
+        "authorityScore": average_authority,
+        "limitations": limitations,
+        "createdAt": _utc_now_iso(),
+    }
 
 
 def _deadline_failure(
@@ -680,16 +816,31 @@ def _synthesize_bundle(
     if not source_matrix:
         conflicts.append({"kind": "no_sources", "summary": "No usable source result was collected."})
     visible_shards = shards[:12]
+    architect_pack = _web_research_architect_pack(
+        question=question,
+        source_matrix=source_matrix,
+        shards=shards,
+        confidence=confidence,
+        average_authority=average_authority,
+    )
     return {
         "ok": bool(source_matrix),
         "kind": "research_evidence_bundle",
-        "summary": f"Collected {len(source_matrix)} ranked source(s) across {len(shards)} research shard(s).",
+        "summary": architect_pack.get("headline") or f"Collected {len(source_matrix)} ranked source(s) across {len(shards)} research shard(s).",
         "question": question,
         "researchIntent": research_intent,
         "sourcePolicy": source_policy,
         "freshness": freshness,
         "deliverable": deliverable,
-        "answer": "Evidence collected. Use sourceMatrix and fetchedTopSources to write the final answer.",
+        "answer": architect_pack.get("answer") or "No source-backed research result was synthesized.",
+        "resultPreview": architect_pack.get("answer") or architect_pack.get("headline"),
+        "researchResult": architect_pack,
+        "finalExperiencePack": architect_pack,
+        "refinedBy": {
+            "agentId": "web-research-architect",
+            "agentName": "Web Research Architect",
+            "role": "research_runtime_synthesis",
+        },
         "confidence": confidence,
         "authorityScore": average_authority,
         "sourceMatrix": source_matrix[:8],

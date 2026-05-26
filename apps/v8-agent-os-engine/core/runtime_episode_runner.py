@@ -42,6 +42,7 @@ class RuntimeEpisodeRunner:
         self._stop_event: asyncio.Event | None = None
         self._lease_seconds = 75
         self._poll_seconds = 0.8
+        self._agent_nodes_map_cache: dict[str, Any] | None = None
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -789,7 +790,29 @@ class RuntimeEpisodeRunner:
                 extra={"errorCode": "delegation_budget_exceeded", "targetCount": target_count},
             )
         if not worker_briefs:
-            worker_briefs = [{"title": "Delegated task", "brief": inputs.get("brief") or (episode.get("need") or {}).get("reason") or ""}]
+            reason = str(inputs.get("brief") or (episode.get("need") or {}).get("reason") or "").strip()
+            if not reason:
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="delegation",
+                    compact_summary="Delegation episode cannot dispatch because it has no worker brief/task.",
+                    status="failed",
+                    confidence="high",
+                    consumer_hint="Retry with inputs.workerBriefs/tasks or route from a planner plan that contains taskBriefs.",
+                    extra={
+                        "errorCode": "delegation_missing_tasks",
+                        "dispatchStatus": "missing_tasks",
+                        "exampleTasks": [
+                            {
+                                "title": "Implement one isolated work package",
+                                "goal": "Describe the exact subtask and expected artifact.",
+                                "runtimeAccess": ["memory.read"],
+                                "acceptanceContract": "Return result summary, touched files, proof, and risks.",
+                            }
+                        ],
+                    },
+                )
+            worker_briefs = [{"title": reason[:96], "goal": reason, "brief": reason, "executionLaneHint": "auto"}]
         try:
             from core.native_tools import delegation_broker
 
@@ -798,8 +821,13 @@ class RuntimeEpisodeRunner:
                 tasks=worker_briefs,
                 target_count=target_count,
                 state={
+                    "run_id": episode.get("run_id") or episode.get("runId"),
+                    "session_id": episode.get("session_id") or episode.get("sessionId"),
+                    "workspace_path": inputs.get("workspacePath") or inputs.get("workspace_path") or (episode.get("need") or {}).get("workspacePath"),
                     "delegationDispatchSource": "runtime_episode_runner",
                     "current_route_context": {
+                        "activeCapabilityEpisodeId": episode.get("episodeId"),
+                        "capabilityEpisodes": [episode],
                         "runtimeToolGrants": [{"group": "delegation.recursive", "runtimeKind": "subagent"}],
                     },
                 },
@@ -807,11 +835,26 @@ class RuntimeEpisodeRunner:
             )
             update = dict(getattr(command, "update", None) or {})
             results = [item for item in list(update.get("parallel_results") or []) if isinstance(item, dict)]
+            local_results, child_episode_ids = await self._execute_local_delegation_sends(command, episode)
+            if local_results:
+                results.extend(local_results)
             failed = [item for item in results if str(item.get("status") or "").lower() in {"error", "failed", "blocked"}]
-            status = "failed" if results and len(failed) == len(results) else "ready"
+            waiting_child = [
+                item
+                for item in results
+                if str(item.get("status") or "").lower() in {"waiting_child_delegation", "waiting_child", "waiting"}
+            ]
+            status = "waiting" if waiting_child else ("failed" if results and len(failed) == len(results) else "ready")
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
+            if local_results:
+                summary = f"Delegation executed {len(local_results)} local subagent worker(s)."
             if failed:
                 summary += f" failed={len(failed)}"
+            if waiting_child:
+                summary += f" waiting_child={len(waiting_child)}"
+            if not results:
+                status = "failed"
+                summary = "Delegation dispatch did not produce confirmed worker tasks."
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="delegation",
@@ -819,7 +862,21 @@ class RuntimeEpisodeRunner:
                 status=status,
                 confidence="medium",
                 consumer_hint="Parent episode should wait for delegation completion events before merging.",
-                extra={"delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)]},
+                extra={
+                    "delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)],
+                    "childEpisodeIds": child_episode_ids,
+                    "results": [
+                        {
+                            "delegationId": item.get("delegationId") or item.get("id"),
+                            "targetLabel": item.get("targetLabel") or item.get("agentName"),
+                            "status": item.get("status"),
+                            "error": item.get("error"),
+                            "compactTranscript": _preview(item.get("compactTranscript"), limit=900),
+                        }
+                        for item in results[:8]
+                        if isinstance(item, dict)
+                    ],
+                },
             )
         except Exception as exc:
             return build_handoff_ref(
@@ -831,6 +888,156 @@ class RuntimeEpisodeRunner:
                 consumer_hint="Check subagent registry/worker configuration.",
                 extra={"errorCode": "delegation_dispatch_failed", "errorMessage": str(exc)},
             )
+
+    def _build_agent_nodes_map(self) -> dict[str, Any]:
+        if self._agent_nodes_map_cache is not None:
+            return self._agent_nodes_map_cache
+        from api.models import EngineConfig
+        from graph.compat import sanitize_message_chain as compat_sanitize_message_chain
+        from graph.compat import sanitize_response_tool_calls as compat_sanitize_response_tool_calls
+        from graph.supervisor_builder import build_supervisor_runtime_bundle
+        from graph.supervisor_support import build_agent_runtime_failure_command, extract_task_context, resolve_todos
+        from runtimes.extensions.skills.loader import fetch_skill_instructions
+
+        try:
+            from core.engine_config_resolver import resolve_engine_config_for_role
+
+            config = resolve_engine_config_for_role("supervisor").get("engine_config") or EngineConfig()
+        except Exception:
+            config = EngineConfig()
+        bundle = build_supervisor_runtime_bundle(
+            config=config,
+            fetch_skill_instructions_tool=fetch_skill_instructions,
+            build_failure_command=build_agent_runtime_failure_command,
+            extract_task_context=extract_task_context,
+            resolve_todos=resolve_todos,
+            sanitize_message_chain=compat_sanitize_message_chain,
+            sanitize_response_tool_calls=compat_sanitize_response_tool_calls,
+        )
+        self._agent_nodes_map_cache = dict(bundle.agent_nodes_map or {})
+        return self._agent_nodes_map_cache
+
+    async def _execute_local_delegation_sends(self, command: Any, episode: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+        from langgraph.types import Send
+
+        goto = getattr(command, "goto", None)
+        sends = [item for item in (goto if isinstance(goto, list) else []) if isinstance(item, Send)]
+        if not sends:
+            return [], []
+        from graph.parallel_support import _run_parallel_agent_branch
+
+        agent_nodes_map = self._build_agent_nodes_map()
+        results: list[dict[str, Any]] = []
+        child_episode_ids: list[str] = []
+        for item in sends:
+            node = str(getattr(item, "node", "") or "")
+            arg = getattr(item, "arg", None)
+            if node != "parallel_delegate_task" or not isinstance(arg, dict):
+                continue
+            branch = dict(arg.get("parallel_branch") or {})
+            agent_id = str(branch.get("agentId") or "").strip()
+            agent_data = agent_nodes_map.get(agent_id)
+            if not agent_data:
+                results.append(
+                    {
+                        "invocationId": branch.get("invocationId"),
+                        "taskBriefId": branch.get("taskBriefId"),
+                        "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                        "taskGoal": branch.get("reason"),
+                        "agentId": agent_id,
+                        "agentName": branch.get("agentName") or agent_id,
+                        "delegationId": branch.get("delegationId"),
+                        "lane": branch.get("lane") or "subagent",
+                        "targetId": agent_id,
+                        "targetLabel": branch.get("agentName") or agent_id,
+                        "branchIndex": branch.get("branchIndex"),
+                        "status": "error",
+                        "error": f"未找到子 Agent '{agent_id}'。",
+                        "completedAt": utc_now_iso(),
+                    }
+                )
+                continue
+            try:
+                _delta_messages, _delta_todos, summary, child_requests = await _run_parallel_agent_branch(arg, agent_data)
+                results.append(dict(summary or {}))
+                child_episode_ids.extend(self._enqueue_child_delegation_requests(child_requests, episode=episode))
+            except Exception as exc:
+                results.append(
+                    {
+                        "invocationId": branch.get("invocationId"),
+                        "taskBriefId": branch.get("taskBriefId"),
+                        "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                        "taskGoal": branch.get("reason"),
+                        "agentId": agent_id,
+                        "agentName": branch.get("agentName") or agent_id,
+                        "delegationId": branch.get("delegationId"),
+                        "lane": branch.get("lane") or "subagent",
+                        "targetId": agent_id,
+                        "targetLabel": branch.get("agentName") or agent_id,
+                        "branchIndex": branch.get("branchIndex"),
+                        "status": "error",
+                        "error": str(exc).strip() or exc.__class__.__name__,
+                        "completedAt": utc_now_iso(),
+                    }
+                )
+        return results, child_episode_ids
+
+    def _enqueue_child_delegation_requests(self, child_requests: list[dict[str, Any]], *, episode: dict[str, Any]) -> list[str]:
+        if not child_requests:
+            return []
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+        child_episode_ids: list[str] = []
+        for item in child_requests:
+            child_branch = dict(((item.get("send") or {}).get("arg") or {}).get("parallel_branch") or {})
+            worker_brief = {
+                "id": item.get("childTaskBriefId") or item.get("childInvocationId"),
+                "title": item.get("childTaskGoal") or "child delegation",
+                "goal": item.get("childTaskGoal") or "Continue the requested child delegation.",
+                "brief": item.get("childTaskGoal") or "Continue the requested child delegation.",
+                "agentId": item.get("childAgentId"),
+                "agentName": item.get("childAgentName"),
+                "runtimeAccess": child_branch.get("runtimeAccess") or ["delegation.recursive"],
+                "parentDelegationId": item.get("sourceDelegationId"),
+                "parentInvocationId": item.get("sourceInvocationId"),
+                "writeSet": child_branch.get("writeSet"),
+                "acceptanceHint": child_branch.get("acceptanceHint"),
+            }
+            child_episode = build_runtime_episode(
+                need={
+                    "kind": "delegation",
+                    "source": "subagent",
+                    "reason": item.get("childTaskGoal") or "child delegation",
+                    "needId": item.get("childDelegationId") or item.get("childInvocationId"),
+                    "parentEpisodeId": episode_id,
+                    "inputs": {
+                        "targetCount": 1,
+                        "workerBriefs": [worker_brief],
+                        "allowChildDelegation": bool(child_branch.get("allowChildDelegation")),
+                        "childDelegationBudget": child_branch.get("childDelegationBudget") or {},
+                        "writeSetPartitions": child_branch.get("writeSetPartitions") or [],
+                    },
+                },
+                kind="delegation",
+                state="queued",
+                required_runtime_access=["delegation.recursive"],
+                parent_episode_id=episode_id,
+                continuation_target="runtime_episode_runner",
+                extra={
+                    "sourceInvocationId": item.get("sourceInvocationId"),
+                    "childInvocationId": item.get("childInvocationId"),
+                    "childTaskBriefId": item.get("childTaskBriefId"),
+                    "childAgentId": item.get("childAgentId"),
+                    "childAgentName": item.get("childAgentName"),
+                    "childDepth": item.get("childDepth"),
+                },
+            )
+            persisted = db.upsert_runtime_episode_record(child_episode, session_id=session_id, run_id=run_id, enqueue=True)
+            child_episode_ids.append(str(persisted.get("episodeId") or persisted.get("id") or ""))
+            self._emit("delegation.child.requested", episode=persisted, childDelegation=item, session_id=session_id, run_id=run_id)
+            self._emit("runtime.episode.queued", episode=persisted, session_id=session_id, run_id=run_id)
+        return [item for item in child_episode_ids if item]
 
     async def _execute_network_peer_target(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "network_peer: delegate")

@@ -161,6 +161,91 @@ type WorkspaceBindingDraft =
     | { kind: "main" }
     | { kind: "project"; projectId: string };
 
+function normalizeWorkspacePathForDisplay(value?: string | null) {
+    return String(value || "").trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+
+function deriveWorkspaceLabelFromPath(value?: string | null) {
+    const normalized = String(value || "").trim().replace(/\\+$/, "").replace(/\/+$/, "");
+    if (!normalized) {
+        return "";
+    }
+    const segments = normalized.split(/[\\/]/).filter(Boolean);
+    return segments[segments.length - 1] || normalized;
+}
+
+function normalizeWorkspaceRootCandidate(value?: string | null, keyHint = "") {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    let decoded = raw;
+    try {
+        decoded = decodeURIComponent(raw);
+    } catch {
+        decoded = raw;
+    }
+    const normalized = decoded.replace(/\//g, "\\");
+    const lowered = normalized.toLowerCase();
+    const markerIndex = lowered.indexOf("\\.v8\\");
+    if (markerIndex > 2) {
+        return normalized.slice(0, markerIndex).replace(/\\+$/, "");
+    }
+    if (/\bworkspace_?path\b/i.test(keyHint) && /[A-Za-z]:\\|^\\\\/.test(normalized)) {
+        return normalized.replace(/\\+$/, "");
+    }
+    return "";
+}
+
+function deriveWorkspacePathFromMessages(messages: ChatMessage[]) {
+    const scanValue = (value: unknown, keyHint = "", depth = 0): string => {
+        if (depth > 5 || value == null) {
+            return "";
+        }
+        if (typeof value === "string") {
+            return normalizeWorkspaceRootCandidate(value, keyHint);
+        }
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const found = scanValue(item, keyHint, depth + 1);
+                if (found) return found;
+            }
+            return "";
+        }
+        if (typeof value === "object") {
+            const record = value as Record<string, unknown>;
+            const priorityKeys = [
+                "workspacePath",
+                "workspace_path",
+                "sourcePath",
+                "source_path",
+                "path",
+                "url",
+                "publicUrl",
+                "previewUrl",
+                "externalUrl",
+            ];
+            for (const key of priorityKeys) {
+                if (!(key in record)) continue;
+                const found = scanValue(record[key], key, depth + 1);
+                if (found) return found;
+            }
+            for (const [key, item] of Object.entries(record)) {
+                const found = scanValue(item, key, depth + 1);
+                if (found) return found;
+            }
+        }
+        return "";
+    };
+    for (const message of messages) {
+        const found = scanValue(message, "message", 0);
+        if (found) {
+            return found;
+        }
+    }
+    return "";
+}
+
 function buildRuntimeTimelineEntry(
     runtimeId: PhoneRuntimeId,
     topic: string,
@@ -1523,6 +1608,24 @@ function isLegacyChatUnsupportedPayload(payload: Partial<ConversationDetail | Re
     return Boolean(root.legacyChatUnsupported || snapshot.legacyChatUnsupported);
 }
 
+const QUEUE_ELIGIBLE_RUN_STATUSES = new Set([
+    "queued",
+    "pending",
+    "starting",
+    "streaming",
+    "running",
+    "waiting",
+    "waiting_input",
+    "waiting_approval",
+    "waiting_external_tool",
+    "waiting_external",
+    "paused",
+]);
+
+function isQueueEligibleRunStatus(status: unknown) {
+    return QUEUE_ELIGIBLE_RUN_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
@@ -1879,6 +1982,7 @@ export default function ChatScreen() {
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [askUserInteractions, setAskUserInteractions] = useState<AskUserInteraction[]>([]);
     const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+    const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
     const [editingQueuedMessage, setEditingQueuedMessage] = useState<QueuedChatMessage | null>(null);
     const [queuedMessageEditText, setQueuedMessageEditText] = useState("");
     const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
@@ -3239,7 +3343,7 @@ export default function ChatScreen() {
         const state = String(item.state || "pending").trim();
         setQueuedMessages((current) => {
             const without = current.filter((candidate) => candidate.id !== id);
-            if (["cancelled", "consumed", "injected"].includes(state)) {
+            if (["cancelled", "consumed", "injected", "sent", "completed"].includes(state)) {
                 return without;
             }
             return [...without, { ...item, state }].sort((a, b) => Number(a.ordinal || 0) - Number(b.ordinal || 0));
@@ -3417,6 +3521,23 @@ export default function ChatScreen() {
         }
 
         if (normalized.name === "human_guidance") {
+            const terminalQueueState = String(normalized.data?.state || "").trim().toLowerCase();
+            const eventQueueMessage = normalized.data?.queueMessage as { id?: unknown } | undefined;
+            const terminalQueueId = String(
+                normalized.data?.queueMessageId
+                || normalized.data?.guidanceQueueMessageId
+                || eventQueueMessage?.id
+                || "",
+            ).trim();
+            if (
+                terminalQueueId
+                && (
+                    ["human_guidance.injected", "human_guidance.consumed", "human_guidance.cancelled"].includes(String(normalized.topic || "").trim())
+                    || ["injected", "consumed", "cancelled"].includes(terminalQueueState)
+                )
+            ) {
+                setQueuedMessages((current) => current.filter((item) => item.id !== terminalQueueId));
+            }
             const queuePayload = normalized.data?.queueMessage;
             const queueMessage = queuePayload && typeof queuePayload === "object"
                 ? queuePayload as QueuedChatMessage
@@ -5094,6 +5215,8 @@ export default function ChatScreen() {
         let submissionAccepted = false;
         let optimisticUserMessageId = "";
         let optimisticAssistantMessageId = "";
+        let localQueueId = "";
+        let submittedClientMessageId = "";
         setSending(true);
         try {
             const historyMessages = messagesRef.current
@@ -5116,6 +5239,148 @@ export default function ChatScreen() {
                 files: pendingFiles,
             }, engineNowMs);
             const clientMessageId = userMessage.id;
+            submittedClientMessageId = clientMessageId;
+            const queueEligible = isQueueEligibleRunStatus(projection.runControlState.status);
+            const activeRunId = String(projection.runControlState.runId || activeRunIdRef.current || "").trim();
+
+            if (queueEligible) {
+                localQueueId = `local_queued_${clientMessageId}`;
+                upsertQueuedMessage({
+                    id: localQueueId,
+                    sessionId: currentConversationId,
+                    runId: activeRunId || undefined,
+                    clientMessageId,
+                    content: effectiveText,
+                    state: "pending",
+                    ordinal: queuedMessages.length + 1,
+                    createdAt: engineNowIso,
+                    updatedAt: engineNowIso,
+                });
+                setRuntime((current) => ({
+                    ...current,
+                    label: t("src.screens.chatscreen.message_queued"),
+                }));
+                setInput("");
+                setActiveQueryMode(null);
+                setActiveQueryText("");
+                setSelectedCommand(null);
+                setSelectedSkills([]);
+                setSelectedSubagentFamilies([]);
+                setUploadedFiles([]);
+
+                if (effectiveText) {
+                    setConversations((current) => current.map((conversation) =>
+                        conversation.id === currentConversationId
+                            ? {
+                                ...conversation,
+                                title: isPlaceholderConversationTitle(conversation.title)
+                                    ? (effectiveText.slice(0, 36) || conversation.title || "")
+                                    : conversation.title,
+                                updatedAt: engineNowIso,
+                                historySortAt: engineNowIso,
+                                previewExcerpt: effectiveText.slice(0, 120),
+                            }
+                            : conversation,
+                    ));
+                }
+
+                const submitResult = await submitChatMessage(
+                    authorizedFetch,
+                    effectiveText,
+                    {
+                        messages: historyMessages,
+                        conversationId: currentConversationId,
+                        clientMessageId,
+                        commandPresetName: pendingCommand?.name || null,
+                        skillReferences: pendingSkills,
+                        contextMentions: [
+                            ...pendingSkills.map((skill): ContextMentionSummary => ({
+                                kind: "skill",
+                                name: skill.name,
+                                label: skill.name,
+                                description: skill.description,
+                                path: skill.path,
+                                sourceType: "explicit_mention",
+                            })),
+                            ...pendingSubagentFamilies.map((family): ContextMentionSummary => ({
+                                kind: "subagent_family",
+                                id: family.familyId,
+                                familyId: family.familyId,
+                                name: family.displayName || family.familyId,
+                                label: family.displayName || family.familyId,
+                                description: family.description,
+                                sourceType: "explicit_mention",
+                            })),
+                        ],
+                        fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
+                        attachments: buildUploadedFileAttachments(pendingFiles),
+                        taskPlanningMode,
+                    },
+                );
+                if (submitResult.accepted === false) {
+                    throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
+                }
+                submissionAccepted = true;
+                setQueuedMessages((current) => current.filter((item) => item.id !== localQueueId));
+                if (submitResult.queued && submitResult.queuedMessage) {
+                    upsertQueuedMessage(submitResult.queuedMessage);
+                    return;
+                }
+
+                const acceptedUserMessage = normalizeAcceptedUserMessage(submitResult.userMessage, userMessage) || userMessage;
+                const assistantPlaceholder = buildAssistantPlaceholder();
+                assistantPlaceholder.metadata = {
+                    ...(assistantPlaceholder.metadata || {}),
+                    clientMessageId,
+                };
+                if (taskPlanningMode) {
+                    assistantPlaceholder.uiStreamPhase = "task_planning";
+                    assistantPlaceholder.metadata = {
+                        ...(assistantPlaceholder.metadata || {}),
+                        assistantTaskProgress: {
+                            phase: "task_planning",
+                            label: t("src.screens.chatscreen.planning_task"),
+                            subtitle: t("src.screens.chatscreen.breaking_down_the_steps_and_preparing_execution"),
+                        },
+                    };
+                }
+                const submittedRunId = String(
+                    submitResult.runId
+                    || submitResult.run_id
+                    || "",
+                ).trim();
+                if (submittedRunId) {
+                    assistantPlaceholder.runId = submittedRunId;
+                    assistantPlaceholder.metadata = {
+                        ...(assistantPlaceholder.metadata || {}),
+                        runId: submittedRunId,
+                    };
+                }
+                setMessages((current) => {
+                    const next = normalizeMessagesForState([
+                        ...current,
+                        acceptedUserMessage,
+                        assistantPlaceholder,
+                    ]);
+                    realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                        next,
+                        PHONE_STREAM_LIFECYCLE_OPTIONS,
+                    );
+                    lastMessageFingerprintRef.current = buildMessagesFingerprint(next);
+                    messagesRef.current = next;
+                    messageConversationIdRef.current = currentConversationId;
+                    return next;
+                });
+                if (submittedRunId) {
+                    setRuntime((current) => ({
+                        ...current,
+                        status: "running",
+                        runId: submittedRunId,
+                    }));
+                }
+                return;
+            }
+
             const assistantPlaceholder = buildAssistantPlaceholder();
             assistantPlaceholder.metadata = {
                 ...(assistantPlaceholder.metadata || {}),
@@ -5297,10 +5562,14 @@ export default function ChatScreen() {
 
         } catch (error) {
             if (!submissionAccepted) {
+                setInput(text);
                 setSelectedCommand(pendingCommand);
                 setSelectedSkills(pendingSkills);
                 setSelectedSubagentFamilies(pendingSubagentFamilies);
                 setUploadedFiles(pendingFiles);
+                setQueuedMessages((current) => current.filter((item) =>
+                    item.id !== localQueueId && item.clientMessageId !== submittedClientMessageId,
+                ));
                 setMessages((current) => {
                     const next = normalizeMessagesForState(current.filter((message) =>
                         message.id !== optimisticAssistantMessageId && message.id !== optimisticUserMessageId,
@@ -5323,6 +5592,9 @@ export default function ChatScreen() {
         clearNewConversationIntent,
         getEngineNowMs,
         input,
+        projection.runControlState.runId,
+        projection.runControlState.status,
+        queuedMessages.length,
         selectedCommand,
         selectedSkills,
         selectedSubagentFamilies,
@@ -5357,8 +5629,27 @@ export default function ChatScreen() {
             subtitle: t("src.screens.chatscreen.this_history_record_has_no_stable_transcript_nodes_to_avoid_mixed_source_drift_this_version_no_longer_replays_legacy_chat_content"),
         }
         : null;
-    const currentWorkspaceLabel = boundProject?.name || t("src.screens.chatscreen.main_workspace");
-    const currentWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || t("src.screens.chatscreen.unbound");
+    const conversationWorkspacePath = String(projection.activeConversation?.workspacePath || "").trim();
+    const transcriptWorkspacePath = useMemo(() => deriveWorkspacePathFromMessages(messages), [messages]);
+    const scopedWorkspacePath = String(scopeBinding?.workspacePath || "").trim();
+    const mainWorkspacePathValue = String(mainWorkspacePath || "").trim();
+    const scopeUsesMainWorkspace = scopedWorkspacePath
+        && normalizeWorkspacePathForDisplay(scopedWorkspacePath) === normalizeWorkspacePathForDisplay(mainWorkspacePathValue);
+    const conversationUsesMainWorkspace = conversationWorkspacePath
+        && normalizeWorkspacePathForDisplay(conversationWorkspacePath) === normalizeWorkspacePathForDisplay(mainWorkspacePathValue);
+    const transcriptUsesMainWorkspace = transcriptWorkspacePath
+        && normalizeWorkspacePathForDisplay(transcriptWorkspacePath) === normalizeWorkspacePathForDisplay(mainWorkspacePathValue);
+    const effectiveWorkspacePath = scopedWorkspacePath && !scopeUsesMainWorkspace
+        ? scopedWorkspacePath
+        : conversationWorkspacePath && !conversationUsesMainWorkspace
+            ? conversationWorkspacePath
+            : transcriptWorkspacePath && !transcriptUsesMainWorkspace
+                ? transcriptWorkspacePath
+                : scopedWorkspacePath;
+    const currentWorkspaceLabel = boundProject?.name
+        || (effectiveWorkspacePath && normalizeWorkspacePathForDisplay(effectiveWorkspacePath) !== normalizeWorkspacePathForDisplay(mainWorkspacePathValue) ? deriveWorkspaceLabelFromPath(effectiveWorkspacePath) : "")
+        || t("src.screens.chatscreen.main_workspace");
+    const currentWorkspacePath = effectiveWorkspacePath || mainWorkspacePathValue || t("src.screens.chatscreen.unbound");
     const showWorkspaceChooser = !activeConversationId && workspaceChooserVisible;
     const composerHorizontalInset = isLandscape ? 18 : 10;
     const composerBottomInset = Math.max(safeAreaInsets.bottom, Platform.OS === "ios" ? 8 : 10);
@@ -5383,7 +5674,7 @@ export default function ChatScreen() {
         && !projection.runControlState.pendingApproval
         && !projectionHasActiveProcess
         && !["running", "waiting_input", "waiting_approval", "queued", "pending", "starting", "streaming"].includes(runControlStatus);
-    const composerRunActive = runControlStatus === "running";
+    const composerRunActive = isQueueEligibleRunStatus(runControlStatus);
     const composerCanStop = Boolean(composerRunActive && (projection.runControlState.canInterrupt || projection.runControlState.runId));
     const hasOverlayLayer = Boolean(
         pickerOverlayVisible
@@ -5483,70 +5774,88 @@ export default function ChatScreen() {
         >
             {activeConversationId && visibleQueuedMessages.length > 0 ? (
                 <GlassCard style={[styles.queuedMessageStrip, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
-                    <View style={styles.queuedMessageStripHeader}>
-                        <Text style={[styles.queuedMessageStripTitle, { color: palette.text }]}>
-                            {t("src.screens.chatscreen.queued_messages")}
-                        </Text>
-                        <Text style={[styles.queuedMessageStripHint, { color: palette.textMuted }]}>
-                            {t("src.screens.chatscreen.queued_messages_waiting_hint")}
-                        </Text>
-                    </View>
-                    <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.queuedMessageList}
-                        keyboardShouldPersistTaps="handled"
+                    <Pressable
+                        style={styles.queuedMessageStripHeader}
+                        onPress={() => setQueuedMessagesCollapsed((current) => !current)}
+                        accessibilityRole="button"
                     >
-                        {visibleQueuedMessages.map((item) => {
-                            const state = String(item.state || "pending").trim().toLowerCase();
-                            const promoted = state === "promoted";
-                            return (
-                                <View key={item.id} style={[styles.queuedMessageChip, { backgroundColor: palette.surface, borderColor: promoted ? palette.primary : palette.border }]}>
-                                    <View style={styles.queuedMessageChipHeader}>
-                                        <Text style={[styles.queuedMessageState, { color: promoted ? palette.primary : palette.textMuted }]}>
-                                            {promoted
-                                                ? t("src.screens.chatscreen.queued_message_promoted")
-                                                : t("src.screens.chatscreen.queued_message_pending")}
+                        <View style={styles.queuedMessageStripTitleRow}>
+                            <Text style={[styles.queuedMessageStripTitle, { color: palette.text }]}>
+                                {t("src.screens.chatscreen.queued_messages")}
+                            </Text>
+                            <Text style={[styles.queuedMessageStripCount, { backgroundColor: palette.surface, color: palette.textMuted }]}>
+                                {visibleQueuedMessages.length}
+                            </Text>
+                        </View>
+                        <View style={styles.queuedMessageStripHeaderRight}>
+                            <Text style={[styles.queuedMessageStripHint, { color: palette.textMuted }]} numberOfLines={1}>
+                                {t("src.screens.chatscreen.queued_messages_waiting_hint")}
+                            </Text>
+                            <MaterialCommunityIcons
+                                name={queuedMessagesCollapsed ? "chevron-up" : "chevron-down"}
+                                size={18}
+                                color={palette.textMuted}
+                            />
+                        </View>
+                    </Pressable>
+                    {!queuedMessagesCollapsed ? (
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.queuedMessageList}
+                            keyboardShouldPersistTaps="handled"
+                        >
+                            {visibleQueuedMessages.map((item) => {
+                                const state = String(item.state || "pending").trim().toLowerCase();
+                                const promoted = state === "promoted";
+                                return (
+                                    <View key={item.id} style={[styles.queuedMessageChip, { backgroundColor: palette.surface, borderColor: promoted ? palette.primary : palette.border }]}>
+                                        <View style={styles.queuedMessageChipHeader}>
+                                            <Text style={[styles.queuedMessageState, { color: promoted ? palette.primary : palette.textMuted }]}>
+                                                {promoted
+                                                    ? t("src.screens.chatscreen.queued_message_promoted")
+                                                    : t("src.screens.chatscreen.queued_message_pending")}
+                                            </Text>
+                                            <Text style={[styles.queuedMessageOrdinal, { color: palette.textSoft }]}>
+                                                #{Number(item.ordinal || 1)}
+                                            </Text>
+                                        </View>
+                                        <Text style={[styles.queuedMessagePreview, { color: palette.text }]} numberOfLines={2}>
+                                            {item.content || t("src.screens.chatscreen.empty_queued_message")}
                                         </Text>
-                                        <Text style={[styles.queuedMessageOrdinal, { color: palette.textSoft }]}>
-                                            #{Number(item.ordinal || 1)}
-                                        </Text>
+                                        <View style={styles.queuedMessageActions}>
+                                            <Pressable
+                                                style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
+                                                disabled={promoted}
+                                                onPress={() => handleOpenQueuedMessageEditor(item)}
+                                            >
+                                                <Text style={[styles.queuedMessageActionText, { color: palette.textMuted }]}>
+                                                    {t("src.screens.chatscreen.edit")}
+                                                </Text>
+                                            </Pressable>
+                                            <Pressable
+                                                style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
+                                                disabled={promoted}
+                                                onPress={() => void handlePromoteQueuedMessage(item)}
+                                            >
+                                                <Text style={[styles.queuedMessageActionText, { color: palette.primary }]}>
+                                                    {t("src.screens.chatscreen.promote_guidance")}
+                                                </Text>
+                                            </Pressable>
+                                            <Pressable
+                                                style={[styles.queuedMessageActionButton, { borderColor: palette.border }]}
+                                                onPress={() => void handleCancelQueuedMessage(item)}
+                                            >
+                                                <Text style={[styles.queuedMessageActionText, { color: palette.danger }]}>
+                                                    {t("src.screens.chatscreen.cancel")}
+                                                </Text>
+                                            </Pressable>
+                                        </View>
                                     </View>
-                                    <Text style={[styles.queuedMessagePreview, { color: palette.text }]} numberOfLines={2}>
-                                        {item.content || t("src.screens.chatscreen.empty_queued_message")}
-                                    </Text>
-                                    <View style={styles.queuedMessageActions}>
-                                        <Pressable
-                                            style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
-                                            disabled={promoted}
-                                            onPress={() => handleOpenQueuedMessageEditor(item)}
-                                        >
-                                            <Text style={[styles.queuedMessageActionText, { color: palette.textMuted }]}>
-                                                {t("src.screens.chatscreen.edit")}
-                                            </Text>
-                                        </Pressable>
-                                        <Pressable
-                                            style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
-                                            disabled={promoted}
-                                            onPress={() => void handlePromoteQueuedMessage(item)}
-                                        >
-                                            <Text style={[styles.queuedMessageActionText, { color: palette.primary }]}>
-                                                {t("src.screens.chatscreen.promote_guidance")}
-                                            </Text>
-                                        </Pressable>
-                                        <Pressable
-                                            style={[styles.queuedMessageActionButton, { borderColor: palette.border }]}
-                                            onPress={() => void handleCancelQueuedMessage(item)}
-                                        >
-                                            <Text style={[styles.queuedMessageActionText, { color: palette.danger }]}>
-                                                {t("src.screens.chatscreen.cancel")}
-                                            </Text>
-                                        </Pressable>
-                                    </View>
-                                </View>
-                            );
-                        })}
-                    </ScrollView>
+                                );
+                            })}
+                        </ScrollView>
+                    ) : null}
                 </GlassCard>
             ) : null}
             {activeConversationId ? (
@@ -6344,13 +6653,38 @@ const styles = StyleSheet.create({
     },
     queuedMessageStripHeader: {
         flexDirection: "row",
-        alignItems: "baseline",
+        alignItems: "center",
         justifyContent: "space-between",
         gap: 10,
+    },
+    queuedMessageStripTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        flexShrink: 0,
     },
     queuedMessageStripTitle: {
         fontSize: 13,
         fontWeight: "900",
+    },
+    queuedMessageStripCount: {
+        minWidth: 24,
+        height: 22,
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        textAlign: "center",
+        textAlignVertical: "center",
+        overflow: "hidden",
+        fontSize: 11,
+        fontWeight: "900",
+    },
+    queuedMessageStripHeaderRight: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: 6,
+        minWidth: 0,
     },
     queuedMessageStripHint: {
         flex: 1,

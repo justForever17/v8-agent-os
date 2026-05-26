@@ -72,7 +72,7 @@ from erc.safety_guardian import safety_guardian
 from erc.workflow_ledger import workflow_ledger_service
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from runtimes.engineering.service import engineering_lane_service
 from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.memory.scope_resolution import (
@@ -274,6 +274,17 @@ class PlannerPlanPayload(BaseModel):
     repairCount: int = 0
     autoDispatchDecision: dict[str, Any] = Field(default_factory=dict)
     dispatchEligibilityReason: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_common_model_shapes(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return {
+                "executionStrategy": "mixed" if len(value) > 1 else "delegate",
+                "capabilityPlan": [item for item in value if isinstance(item, dict)],
+                "qualityFlags": ["planner_list_payload_wrapped"],
+            }
+        return value
 
 
 @dataclass(slots=True)

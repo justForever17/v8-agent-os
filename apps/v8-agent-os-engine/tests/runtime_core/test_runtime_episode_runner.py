@@ -340,3 +340,186 @@ def test_external_worker_target_dispatches_through_delegation_broker(monkeypatch
     assert stored["state"] == "completed"
     handoffs = db.list_runtime_episode_handoffs(episode["episodeId"])
     assert handoffs[-1]["payload"]["refs"] == ["external:trace:1"]
+
+
+def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "local subagent task"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "id": "brief-local",
+                        "title": "Implement isolated patch",
+                        "goal": "Implement isolated patch",
+                        "agentId": "engineering_worker",
+                    }
+                ],
+                "targetCount": 1,
+            }
+        },
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command, Send
+
+    def _fake_dispatch(**kwargs):
+        assert kwargs["mode"] == "dispatch"
+        return Command(
+            goto=[
+                Send(
+                    "parallel_delegate_task",
+                    {
+                        "parallel_branch": {
+                            "agentId": "engineering_worker",
+                            "agentName": "Engineering Worker",
+                            "delegationId": "delegation-local-1",
+                            "invocationId": "invoke-local-1",
+                            "taskBriefId": "brief-local",
+                            "reason": "Implement isolated patch",
+                        },
+                        "messages": [],
+                        "todos": [],
+                    },
+                )
+            ],
+            update={},
+        )
+
+    async def _fake_run_parallel_agent_branch(state, agent_data):
+        branch = state["parallel_branch"]
+        return [], [], {
+            "invocationId": branch["invocationId"],
+            "taskBriefId": branch["taskBriefId"],
+            "agentId": branch["agentId"],
+            "agentName": branch["agentName"],
+            "delegationId": branch["delegationId"],
+            "targetLabel": branch["agentName"],
+            "status": "ok",
+            "compactTranscript": "patch proposal ready",
+        }, []
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda self: {"engineering_worker": {"node_func": object()}})
+    import graph.parallel_support as parallel_support
+
+    monkeypatch.setattr(parallel_support, "_run_parallel_agent_branch", _fake_run_parallel_agent_branch)
+
+    runner = RuntimeEpisodeRunner()
+    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["delegation"])
+    assert claimed is not None
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = db.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "completed"
+    payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
+    assert payload["kind"] == "subagent_result_bundle"
+    assert payload["delegationRefs"] == ["delegation-local-1"]
+    assert payload["results"][0]["compactTranscript"] == "patch proposal ready"
+
+
+def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "id": "brief-parent",
+                        "title": "Review evidence",
+                        "goal": "Review evidence",
+                        "agentId": "review_worker",
+                    }
+                ],
+                "targetCount": 1,
+            }
+        },
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command, Send
+
+    def _fake_dispatch(**kwargs):
+        return Command(
+            goto=[
+                Send(
+                    "parallel_delegate_task",
+                    {
+                        "parallel_branch": {
+                            "agentId": "review_worker",
+                            "agentName": "Review Worker",
+                            "delegationId": "delegation-parent-1",
+                            "invocationId": "invoke-parent-1",
+                            "taskBriefId": "brief-parent",
+                            "reason": "Review evidence",
+                        },
+                        "messages": [],
+                        "todos": [],
+                    },
+                )
+            ],
+            update={},
+        )
+
+    async def _fake_run_parallel_agent_branch(state, agent_data):
+        branch = state["parallel_branch"]
+        child_request = {
+            "requestId": "child-request-1",
+            "sourceDelegationId": branch["delegationId"],
+            "sourceInvocationId": branch["invocationId"],
+            "childInvocationId": "invoke-child-1",
+            "childTaskBriefId": "brief-child",
+            "childTaskGoal": "Run child verification",
+            "childAgentId": "verification_worker",
+            "childAgentName": "Verification Worker",
+            "childDepth": 1,
+            "send": {
+                "arg": {
+                    "parallel_branch": {
+                        "runtimeAccess": ["delegation.recursive"],
+                        "allowChildDelegation": False,
+                    }
+                }
+            },
+        }
+        return [], [], {
+            "invocationId": branch["invocationId"],
+            "taskBriefId": branch["taskBriefId"],
+            "agentId": branch["agentId"],
+            "agentName": branch["agentName"],
+            "delegationId": branch["delegationId"],
+            "targetLabel": branch["agentName"],
+            "status": "waiting_child_delegation",
+            "error": "delegation_child_requested",
+            "childDelegationCount": 1,
+        }, [child_request]
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda self: {"review_worker": {"node_func": object()}})
+    import graph.parallel_support as parallel_support
+
+    monkeypatch.setattr(parallel_support, "_run_parallel_agent_branch", _fake_run_parallel_agent_branch)
+
+    runner = RuntimeEpisodeRunner()
+    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["delegation"])
+    assert claimed is not None
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = db.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "waiting"
+    child_episodes = db.list_runtime_episodes(parent_episode_id=episode["episodeId"], limit=10)
+    assert len(child_episodes) == 1
+    assert child_episodes[0]["kind"] == "delegation"
+    payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
+    assert payload["status"] == "waiting"
+    assert payload["childEpisodeIds"] == [child_episodes[0]["episodeId"]]

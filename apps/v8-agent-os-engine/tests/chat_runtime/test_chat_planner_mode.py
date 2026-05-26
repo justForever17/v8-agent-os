@@ -3,10 +3,26 @@ import unittest
 from api.models import ChatMessage, ChatRequest, ChatRequestData
 from graph.workflow_assembly import build_planner_auto_dispatch_node
 from graph.parallel_support import build_parallel_delegate_join_node
-from runtimes.chat.runtime import ChatRuntime
+from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
 
 class ChatPlannerModeTests(unittest.TestCase):
+    def test_planner_payload_wraps_bare_capability_plan_list(self):
+        payload = PlannerPlanPayload.model_validate(
+            [
+                {
+                    "capability": "research",
+                    "kind": "research",
+                    "runtime": "research",
+                    "reason": "needs current sources",
+                }
+            ]
+        )
+
+        self.assertEqual(payload.executionStrategy, "delegate")
+        self.assertEqual(payload.capabilityPlan[0]["kind"], "research")
+        self.assertIn("planner_list_payload_wrapped", payload.qualityFlags)
+
     def test_task_planning_mode_maps_to_force_planner_mode(self):
         runtime = ChatRuntime()
         request = ChatRequest(

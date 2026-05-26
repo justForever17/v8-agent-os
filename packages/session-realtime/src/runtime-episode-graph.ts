@@ -72,6 +72,7 @@ export function isRuntimeEpisodeGraphActivity(activity: Pick<RuntimeEpisodeGraph
   return topic.startsWith("capability.need.")
     || topic.startsWith("runtime.episode.")
     || topic.startsWith("delegation.child.")
+    || topic.startsWith("delegation_broker.")
     || topic.startsWith("delegation.")
     || topic.startsWith("subagent.task.")
     || topic.startsWith("handoff.ref.");
@@ -234,6 +235,16 @@ export function buildSessionExecutionGraph(
     }
 
     const data = getEpisodePayload(activity);
+    const dispatchStatus = readString(data.dispatchStatus) || readString(data.dispatch_status);
+    const missingTasks = Boolean(
+      data.missingTasks
+      || data.missing_tasks
+      || data.missingResult
+      || data.missing_result
+      || data.diagnosticKey === "delegation_missing_tasks"
+      || dispatchStatus === "missing_tasks"
+    );
+    const dispatchGroup = readString(data.dispatchGroup) || readString(data.dispatch_group);
     const topicId =
       readString(data.episodeId)
       || readString(data.episode_id)
@@ -246,15 +257,16 @@ export function buildSessionExecutionGraph(
       || readString(data.invocationId)
       || readString(data.invocation_id)
       || readString(activity.id);
-    const id = topic.startsWith("delegation.") || topic.startsWith("subagent.task.")
-      ? `delegation:${topicId}`
+    const isDelegationActivity = topic.startsWith("delegation_broker.") || topic.startsWith("delegation.") || topic.startsWith("subagent.task.");
+    const id = isDelegationActivity
+      ? `delegation:${missingTasks ? (dispatchGroup || "missing_tasks") : (dispatchGroup || topicId)}`
       : topicId;
     if (!id) continue;
     const kind = normalizeRuntimeKind(
       readString(data.kind)
       || readString(data.runtimeKind)
       || readString(data.runtime_kind)
-      || (topic.startsWith("delegation.") || topic.startsWith("subagent.task.") ? "delegation" : "runtime"),
+      || (isDelegationActivity ? "delegation" : "runtime"),
     ) || "runtime";
     const parentId = readString(data.parentEpisodeId)
       || readString(data.parent_episode_id)
@@ -265,8 +277,6 @@ export function buildSessionExecutionGraph(
     const grants = Array.isArray(data.requiredRuntimeAccess)
       ? data.requiredRuntimeAccess.map((item) => readString(item)).filter(Boolean)
       : [];
-    const missingTasks = Boolean(data.missingTasks || data.missing_tasks || data.missingResult || data.missing_result);
-    const dispatchStatus = readString(data.dispatchStatus) || readString(data.dispatch_status);
     const inferredStatus = missingTasks
       ? "attempted"
       : inferStatus(activity, { ...data, status: dispatchStatus || data.status });
@@ -282,7 +292,7 @@ export function buildSessionExecutionGraph(
       timestamp,
       runtimeId: kind === "delegation" ? "subagent_swarm" : kind,
       kind,
-      diagnostic: missingTasks ? "missing_tasks" : dispatchStatus || undefined,
+      diagnostic: missingTasks ? "dispatch_missing_tasks" : dispatchStatus || undefined,
     });
     const edgeId = `${parentId}->${id}`;
     edges.set(edgeId, {

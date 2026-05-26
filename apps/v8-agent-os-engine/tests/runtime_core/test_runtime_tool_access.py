@@ -16,6 +16,7 @@ from core.native_tools import (
     creative_media_create_job,
     creative_media_create_quality_job,
     memory_broker,
+    delegation_broker,
     runtime_broker,
 )
 from core.runtime_tool_access import (
@@ -156,9 +157,56 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert payload["episode"]["kind"] == "research"
     assert payload["episode"]["state"] == "queued"
     assert payload["episode"]["continuationTarget"] == "runtime_episode_runner"
+    assert payload["queuedEpisodeId"] == payload["episode"]["episodeId"]
+    assert payload["episodeKind"] == "research"
+    assert payload["nextAction"] == "wait_episode"
     assert runtime_access_from_route_context(updated_context) == ["research.core"]
     assert updated_context["capabilityEpisodes"][-1]["kind"] == "research"
     assert updated_context["capabilityEpisodes"][-1]["state"] == "queued"
+    assert command.update["planner_dispatch_status"]["nextAction"] == "wait_episode"
+
+
+def test_runtime_broker_route_fills_delegation_tasks_from_planner_plan():
+    command = runtime_broker.func(
+        mode="route",
+        need={"kind": "delegation", "source": "supervisor", "reason": "parallel implementation"},
+        state={
+            "current_route_context": {},
+            "planner_plan": {
+                "taskBriefs": [
+                    {
+                        "title": "Implement UI shell",
+                        "goal": "Build the visible application shell.",
+                        "runtimeAccess": ["memory.read"],
+                    }
+                ]
+            },
+        },
+        tool_call_id="call-runtime-route",
+    )
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert payload["episodeKind"] == "delegation"
+    assert payload["nextAction"] == "wait_episode"
+    assert episode["inputs"]["tasks"][0]["goal"] == "Build the visible application shell."
+    assert episode["inputs"]["workerBriefs"][0]["goal"] == "Build the visible application shell."
+
+
+def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
+    command = delegation_broker.func(
+        mode="dispatch",
+        state={"current_route_context": {}},
+        tool_call_id="call-delegation-empty",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "missing_tasks"
+    assert payload["dispatchStatus"] == "missing_tasks"
+    assert payload["missingTasks"] is True
+    assert payload["diagnosticKey"] == "delegation_missing_tasks"
+    assert payload["exampleTasks"]
 
 
 def test_windows_shell_syntax_violation_blocks_posix_mkdir(monkeypatch):

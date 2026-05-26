@@ -934,8 +934,16 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                                 return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
                                             })()}
                                             {item.eventCount > 0 ? (
-                                                <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
-                                                    <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
+                                                <View
+                                                    style={[
+                                                        styles.tabBadge,
+                                                        {
+                                                            backgroundColor: themeMode === "dark" ? "#0B1220" : "#0F172A",
+                                                            borderColor: themeMode === "dark" ? "rgba(248,250,252,0.88)" : "#FFFFFF",
+                                                        },
+                                                    ]}
+                                                >
+                                                    <Text style={[styles.tabBadgeText, { color: "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
                                                 </View>
                                             ) : null}
                                         </Pressable>
@@ -970,8 +978,16 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                                 return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
                                             })()}
                                             {item.eventCount > 0 ? (
-                                                <View style={[styles.tabBadge, { backgroundColor: colors.text }]}>
-                                                    <Text style={styles.tabBadgeText}>{Math.min(item.eventCount, 9)}</Text>
+                                                <View
+                                                    style={[
+                                                        styles.tabBadge,
+                                                        {
+                                                            backgroundColor: themeMode === "dark" ? "#0B1220" : "#0F172A",
+                                                            borderColor: themeMode === "dark" ? "rgba(248,250,252,0.88)" : "#FFFFFF",
+                                                        },
+                                                    ]}
+                                                >
+                                                    <Text style={[styles.tabBadgeText, { color: "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
                                                 </View>
                                             ) : null}
                                         </Pressable>
@@ -1153,9 +1169,12 @@ const styles = StyleSheet.create({
         minWidth: 14,
         height: 14,
         borderRadius: 999,
+        borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
         paddingHorizontal: 3,
+        zIndex: 3,
+        elevation: 3,
     },
     tabBadgeText: {
         color: "#FFFFFF",

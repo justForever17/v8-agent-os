@@ -1,5 +1,5 @@
-import { memo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { memo, useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { ApprovalCard } from "@/src/components/chat/ApprovalCard";
@@ -116,6 +116,57 @@ function ContextGovernanceDivider({
                 ) : null}
             </View>
             <View style={[styles.contextGovernanceLine, { backgroundColor: colors.border }]} />
+        </View>
+    );
+}
+
+function HumanGuidanceInlineCard({
+    content,
+    label,
+}: {
+    content: string;
+    label: string;
+}) {
+    const { colors } = useUiPrefs();
+    const [expanded, setExpanded] = useState(false);
+    const body = String(content || "").trim();
+    if (!body) {
+        return null;
+    }
+    return (
+        <View
+            style={[
+                styles.humanGuidanceCard,
+                {
+                    backgroundColor: colors.surfaceStrong,
+                    borderColor: colors.border,
+                },
+            ]}
+        >
+            <Pressable
+                style={styles.humanGuidanceHeader}
+                onPress={() => setExpanded((value) => !value)}
+                accessibilityRole="button"
+            >
+                <MaterialCommunityIcons name="comment-processing-outline" size={14} color={colors.textMuted} />
+                <Text
+                    style={[styles.humanGuidanceText, { color: colors.textMuted }]}
+                    numberOfLines={1}
+                >
+                    <Text style={styles.humanGuidancePrefix}>{label}：</Text>
+                    <Text>{body}</Text>
+                </Text>
+                <MaterialCommunityIcons
+                    name={expanded ? "chevron-up" : "chevron-down"}
+                    size={14}
+                    color={colors.textMuted}
+                />
+            </Pressable>
+            {expanded ? (
+                <View style={[styles.humanGuidanceBody, { borderColor: colors.border }]}>
+                    <MarkdownRenderer content={body} />
+                </View>
+            ) : null}
         </View>
     );
 }
@@ -357,10 +408,16 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                 />
             );
         }
+        if (node.governanceType === "human_guidance") {
+            return (
+                <HumanGuidanceInlineCard
+                    label={t("src.components.chat.messageblockitem.guidance_in_progress")}
+                    content={String(node.question || node.reason || node.topic || node.status || "").trim()}
+                />
+            );
+        }
         const title = node.governanceType === "safety_blocked"
             ? t("src.components.chat.messageblockitem.safety_blocked")
-            : node.governanceType === "human_guidance"
-                ? t("src.components.chat.messageblockitem.human_guidance")
             : node.governanceType === "lane_updated"
                     ? t("src.components.chat.messageblockitem.run_scheduling")
                     : node.governanceType === "approval_request"
@@ -372,7 +429,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                         : t("src.components.chat.messageblockitem.runtime_control");
         const tone = node.governanceType === "safety_blocked" || approvalKind === "safety_blocked"
             ? "safety"
-            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated" || node.governanceType === "human_guidance"
+            : node.governanceType === "run_controlled" || node.governanceType === "lane_updated"
                 ? "control"
             : approvalKind === "safety_review"
                 ? "safety"
@@ -716,5 +773,32 @@ const styles = StyleSheet.create({
         flexShrink: 1,
         fontSize: 10,
         lineHeight: 14,
+    },
+    humanGuidanceCard: {
+        width: "100%",
+        borderRadius: radii.lg,
+        borderWidth: 1,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 7,
+        gap: 7,
+        opacity: 0.94,
+    },
+    humanGuidanceHeader: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 7,
+    },
+    humanGuidanceText: {
+        flex: 1,
+        fontSize: 11,
+        lineHeight: 16,
+        fontWeight: "600",
+    },
+    humanGuidancePrefix: {
+        fontWeight: "800",
+    },
+    humanGuidanceBody: {
+        borderTopWidth: StyleSheet.hairlineWidth,
+        paddingTop: 7,
     },
 });

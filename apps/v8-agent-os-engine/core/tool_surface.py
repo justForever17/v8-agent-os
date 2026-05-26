@@ -515,6 +515,47 @@ def _render_workspace_broker_surface(payload: dict[str, Any], raw_ref: str) -> s
 def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> str | None:
     mode = str(payload.get("mode") or "").strip()
     kind = str(payload.get("kind") or "").strip()
+    if kind == "research_evidence_bundle":
+        pack = payload.get("finalExperiencePack") or payload.get("researchResult") or {}
+        if not isinstance(pack, dict):
+            pack = {}
+        lines = ["Research result pack"]
+        lines.append("Agent: Web Research Architect")
+        question = pack.get("question") or payload.get("question")
+        if question:
+            lines.append(f"Question: {_short_text(question, 220)}")
+        answer = pack.get("answer") or payload.get("resultPreview") or payload.get("answer") or payload.get("summary")
+        if answer:
+            lines.append("Result:")
+            lines.append(_short_text(answer, 1200))
+        findings = pack.get("keyFindings")
+        if isinstance(findings, list) and findings:
+            lines.append("Key findings:")
+            for item in findings[:5]:
+                if isinstance(item, dict):
+                    claim = item.get("claim") or item.get("summary")
+                    source_title = item.get("sourceTitle") or item.get("title")
+                    suffix = f" ({_short_text(source_title, 90)})" if source_title else ""
+                    lines.append(f"- {_short_text(claim, 260)}{suffix}")
+                else:
+                    lines.append(f"- {_short_text(item, 260)}")
+        sources = pack.get("sourceUrls") or payload.get("sourceMatrix")
+        if isinstance(sources, list) and sources:
+            lines.append("Sources:")
+            for item in sources[:8]:
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url")
+                if not url:
+                    continue
+                title = item.get("title") or item.get("sourceTitle") or item.get("host") or url
+                lines.append(f"- {_short_text(title, 110)}: {_short_text(url, 180)}")
+        next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 160)}")
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+        return "\n".join(line for line in lines if line).strip()
+
     if mode != "plan" and kind != "research_plan":
         return None
     lines = ["Research plan"]

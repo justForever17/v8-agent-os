@@ -367,6 +367,27 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
             return <Text key={`strike:${tokenIndex}`} style={styles.strike}>{token.value}</Text>;
         }
         if (token.type === "code") {
+            const href = cleanHrefCandidate(token.value);
+            if (isRenderableHref(href) && !looksLikeWindowsAbsolutePath(href)) {
+                return (
+                    <Text
+                        key={`code-link:${href}:${tokenIndex}`}
+                        selectable
+                        style={[
+                            styles.inlineCode,
+                            styles.link,
+                            {
+                                color: colors.primaryDeep,
+                                backgroundColor: colors.surface,
+                                borderColor: colors.border,
+                            },
+                        ]}
+                        onPress={() => void Linking.openURL(normalizeRenderableWorkspaceUrl(adminBaseUrl, href))}
+                    >
+                        {renderLinkLabel(href)}
+                    </Text>
+                );
+            }
             return (
                 <Text
                     key={`code:${tokenIndex}`}

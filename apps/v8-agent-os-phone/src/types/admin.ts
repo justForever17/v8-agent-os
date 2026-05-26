@@ -140,7 +140,10 @@ export type MusicTrack = {
     durationMs?: number;
 };
 
-export type ConversationSummary = AuthoritativeSessionHistoryRecord;
+export type ConversationSummary = AuthoritativeSessionHistoryRecord & {
+    workspacePath?: string;
+    workspace_path?: string;
+};
 
 export type CommandPresetSummary = {
     name: string;

@@ -84,6 +84,34 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(getattr(result, "status", None), "error")
         self.assertIn("[route required]", str(result.content))
         self.assertEqual(result.additional_kwargs["recommendedNextAction"], "runtime_broker(mode='route')")
+        self.assertEqual(result.additional_kwargs["allowedNextTools"], ["runtime_broker"])
+        self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "engineering")
+        self.assertIn("inputs", result.additional_kwargs["routeIntent"])
+
+    async def test_complex_direct_write_waits_when_episode_already_queued(self):
+        request = _DummyRequest(
+            "write_native_file",
+            "tool_call_write",
+            state={
+                "current_route_context": {
+                    "engineeringRequired": True,
+                    "capabilityEpisodes": [
+                        {"episodeId": "episode_engineering", "kind": "engineering", "state": "queued"}
+                    ],
+                }
+            },
+        )
+
+        async def execute(_request):
+            raise AssertionError("direct write should have been blocked before execution")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(getattr(result, "status", None), "error")
+        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "wait_episode")
+        self.assertTrue(result.additional_kwargs["hasActiveRuntimeEpisode"])
+        self.assertIn("wait for the active Runtime episode", str(result.content))
 
 
 if __name__ == "__main__":

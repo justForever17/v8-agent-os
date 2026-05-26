@@ -1216,13 +1216,30 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
                 record = {**payload, "dispatchStatus": "dispatch_attempted"}
             else:
                 tasks = payload.get("tasks")
+                items = payload.get("items")
+                has_confirmed_tasks = (
+                    (isinstance(tasks, list) and len(tasks) > 0)
+                    or (isinstance(items, list) and len(items) > 0 and not bool(payload.get("missingTasks") or payload.get("missing_tasks")))
+                    or bool(payload.get("taskConfirmed") or payload.get("task_confirmed"))
+                )
                 dispatch_status = _read_string(payload, ["dispatchStatus", "dispatch_status", "status", "state"])
-                missing_tasks = not isinstance(tasks, list) or len(tasks) == 0
+                missing_tasks = bool(
+                    payload.get("missingTasks")
+                    or payload.get("missing_tasks")
+                    or payload.get("missingResult")
+                    or payload.get("missing_result")
+                    or payload.get("error") == "missing_tasks"
+                    or dispatch_status == "missing_tasks"
+                    or (not has_confirmed_tasks and not dispatch_status)
+                )
                 summary = _read_string(payload, ["summary", "message"]) or ("尝试派发子代理，但未确认实际任务" if missing_tasks else "Delegation broker 已调用")
+                runtime_context_run_id = str(event.get("run_id") or "").strip() or "unknown"
                 record = {
                     **payload,
                     "dispatchStatus": dispatch_status or ("missing_tasks" if missing_tasks else "dispatch_attempted"),
                     "missingResult": missing_tasks,
+                    "dispatchGroup": payload.get("dispatchGroup") or (f"delegation_missing_tasks:{runtime_context_run_id}" if missing_tasks else payload.get("delegationId")),
+                    "diagnosticKey": payload.get("diagnosticKey") or ("delegation_missing_tasks" if missing_tasks else None),
                 }
             kind = "tool"
         else:

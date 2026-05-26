@@ -157,6 +157,7 @@
   "src.components.chat.messageblockitem.no_canonical_resourceref_is_available_raw_paths_are_text_only": "没有 canonical resourceRef，裸路径仅保留为文本。",
   "src.components.chat.messageblockitem.run_scheduling": "运行调度",
   "src.components.chat.messageblockitem.human_guidance": "运行中引导",
+  "src.components.chat.messageblockitem.guidance_in_progress": "引导中",
   "src.components.chat.messageblockitem.runtime_control": "系统控制",
   "src.components.chat.messageblockitem.safety_blocked": "安全阻断",
   "src.components.chat.messageblockitem.the_file_url_is_unreachable_right_now_and_the_rest_of_the_reply_remains_visible": "当前文件地址不可达，已保留正文其余内容。",

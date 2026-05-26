@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Archive, GitBranch, RefreshCw, RotateCcw, Search, Trash2 } from "lucide-react";
 
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,12 @@ type EvidenceBundle = {
 type ExperiencePack = {
     experiencePackId?: string;
     title?: string;
+    query?: string;
+    summary?: string;
+    resultPreview?: string;
+    answer?: string;
+    findings?: string;
+    applicability?: string;
     status?: string;
     confidence?: string;
     authorityScore?: number;
@@ -29,6 +36,7 @@ type ExperiencePack = {
     lastUsedAt?: string | null;
     archivedAt?: string | null;
     sourceMatrixDigest?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
+    createdFromBundleId?: string;
 };
 
 type LedgerPayload = {
@@ -70,6 +78,26 @@ function normalizeErrorCode(value?: string) {
         return lowered;
     }
     return "unknown";
+}
+
+function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeof useT>) {
+    const lines: string[] = [];
+    const rawResult = String(item.resultPreview || item.answer || item.findings || item.summary || "").trim();
+    const summary = rawResult.toLowerCase().startsWith("collected ") ? "" : rawResult;
+    const applicability = String(item.applicability || "").trim();
+    if (summary) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${summary.length > 1200 ? `${summary.slice(0, 1200)}…` : summary}`);
+    if (applicability) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.applicability")}: ${applicability}`);
+    const sources = Array.isArray(item.sourceMatrixDigest) ? item.sourceMatrixDigest : [];
+    for (const source of sources.slice(0, 4)) {
+        const title = String(source.title || source.host || source.url || "").trim();
+        if (!title) continue;
+        const host = String(source.host || "").trim();
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.source")}: ${title}${host && host !== title ? ` · ${host}` : ""}`);
+    }
+    if (!lines.length && item.experiencePackId) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.experiencePack")}: ${item.experiencePackId}`);
+    }
+    return lines;
 }
 
 export function ResearchRuntimeLedgerPanel() {
@@ -262,7 +290,20 @@ export function ResearchRuntimeLedgerPanel() {
                             <div key={item.experiencePackId} className="rounded-2xl border border-slate-200 bg-white p-4">
                                 <div className="flex items-start justify-between gap-3">
                                     <div>
-                                        <div className="font-medium text-slate-900">{item.title || item.experiencePackId}</div>
+                                        <AdminHoverInfo
+                                            content={(
+                                                <div className="space-y-1">
+                                                    {buildExperiencePackHoverLines(item, t).map((line, index) => (
+                                                        <div key={index} className="whitespace-normal break-words">{line}</div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            panelClassName="w-[32rem] max-w-[calc(100vw-2rem)] whitespace-normal text-xs leading-5"
+                                        >
+                                            <div className="font-medium text-slate-900 underline decoration-slate-300 decoration-dotted underline-offset-4">
+                                                {item.title || item.experiencePackId}
+                                            </div>
+                                        </AdminHoverInfo>
                                         <div className="mt-1 text-xs text-slate-500">{item.experiencePackId}</div>
                                     </div>
                                     <Badge variant="outline" className={confidenceTone(item.confidence)}>

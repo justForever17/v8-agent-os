@@ -40,6 +40,8 @@ from runtimes.extensions.mcp.client import mcp_manager
 router = APIRouter()
 
 _ACTIVE_MCP_APP_GUIDANCE_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
+_DEMO_MCP_APP_SERVER = "v8-demo-fixture"
+_DEMO_MCP_APP_URIS = {"ui://v8-demo/counter", "ui://v8-demo/review-panel"}
 
 
 class McpConfigValidationError(ValueError):
@@ -170,9 +172,97 @@ async def get_mcp_apps_registry():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _demo_mcp_app_resource(server_name: str, uri: str) -> dict[str, Any] | None:
+    if server_name != _DEMO_MCP_APP_SERVER or uri not in _DEMO_MCP_APP_URIS:
+        return None
+    title = "V8 MCP App Demo"
+    body = "这是一个用于 Phone/Web 历史回放验收的 UI:// fixture。"
+    if uri.endswith("/review-panel"):
+        title = "Research Review"
+        body = "MCP App 可以在工具结果位置嵌入交互面板；这里展示证据摘要、确认按钮和本地状态。"
+    html = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style>
+    :root {{ color-scheme: light dark; }}
+    body {{
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(135deg, #f8fafc, #eef2ff);
+      color: #0f172a;
+    }}
+    .app {{
+      min-height: 220px;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+      box-sizing: border-box;
+    }}
+    .title {{ font-size: 18px; font-weight: 750; letter-spacing: .01em; }}
+    .body {{ color: #475569; line-height: 1.55; }}
+    .panel {{
+      border: 1px solid rgba(99, 102, 241, .18);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .72);
+      padding: 14px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, .08);
+    }}
+    .row {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+    button {{
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 14px;
+      background: #4f46e5;
+      color: white;
+      font-weight: 650;
+      cursor: pointer;
+    }}
+    .ghost {{ background: #e2e8f0; color: #334155; }}
+    .note {{ font-size: 12px; color: #64748b; }}
+    @media (prefers-color-scheme: dark) {{
+      body {{ background: linear-gradient(135deg, #020617, #111827); color: #f8fafc; }}
+      .body {{ color: #cbd5e1; }}
+      .panel {{ background: rgba(15, 23, 42, .72); border-color: rgba(129, 140, 248, .35); }}
+      .ghost {{ background: #1e293b; color: #cbd5e1; }}
+      .note {{ color: #94a3b8; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="panel">
+      <div class="title">{title}</div>
+      <p class="body">{body}</p>
+      <div class="row">
+        <button type="button" onclick="window.__count=(window.__count||0)+1;document.getElementById('count').textContent=window.__count">本地计数 <span id="count">0</span></button>
+        <button type="button" class="ghost" onclick="document.getElementById('status').textContent='已在 iframe 内响应点击'">确认</button>
+      </div>
+      <p id="status" class="note">静态 fixture 不调用真实 MCP 工具；用于验证 UI:// iframe/WebView 渲染链路。</p>
+    </section>
+  </main>
+</body>
+</html>"""
+    return {
+        "serverName": server_name,
+        "uri": uri,
+        "mimeType": "text/html;profile=mcp-app",
+        "html": html,
+        "sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
+        "uiMeta": {"title": title, "source": "demo_fixture"},
+        "csp": {"connectDomains": [], "resourceDomains": [], "frameDomains": []},
+        "permissions": {"toolCalls": False, "openLinks": False},
+    }
+
+
 @router.get("/mcp/apps/resources/read")
 async def read_mcp_app_resource(serverName: str, uri: str):
     try:
+        demo = _demo_mcp_app_resource(serverName, uri)
+        if demo is not None:
+            return demo
         return await mcp_manager.read_app_resource(server_name=serverName, uri=uri)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -119,18 +119,48 @@ def _source_digest(bundle: dict[str, Any], *, limit: int = 6) -> list[dict[str, 
     return digest
 
 
+def _research_result_preview(bundle: dict[str, Any], *, limit: int = 900) -> str:
+    generic_answers = {
+        "evidence collected. use sourcematrix and fetchedtopsources to write the final answer.",
+    }
+    for key in ("answer", "result", "findings", "resultPreview", "researchResult"):
+        value = _safe_text(bundle.get(key))
+        if value and value.lower() not in generic_answers:
+            return value[:limit]
+    summary = _safe_text(bundle.get("summary"))
+    if summary and not summary.lower().startswith("collected "):
+        return summary[:limit]
+    snippets: list[str] = []
+    for source in _as_list(bundle.get("sourceMatrix"))[:5]:
+        if not isinstance(source, dict):
+            continue
+        title = _safe_text(source.get("title") or source.get("host") or source.get("url"))
+        snippet = _safe_text(source.get("snippet"))
+        if title and snippet:
+            snippets.append(f"{title}: {snippet}")
+        elif snippet:
+            snippets.append(snippet)
+        elif title:
+            snippets.append(title)
+    if snippets:
+        return "；".join(snippets)[:limit]
+    return summary[:limit]
+
+
 def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", title: str = "", tags: list[str] | None = None) -> dict[str, Any]:
     bundle_id = _safe_text(bundle.get("evidenceBundleId")) or f"research_{uuid.uuid4().hex[:12]}"
     source_digest = _source_digest(bundle)
     topic = _safe_text(title) or _safe_text(bundle.get("question"))[:120] or "Research experience"
     pack_id = f"rxp_{uuid.uuid5(uuid.NAMESPACE_URL, bundle_id).hex[:16]}"
     created_at = _utc_now_iso()
+    result_preview = _research_result_preview(bundle)
     return {
         "experiencePackId": pack_id,
         "status": status,
         "title": topic,
         "query": bundle.get("question"),
-        "summary": _safe_text(bundle.get("summary"))[:600],
+        "summary": result_preview[:600],
+        "resultPreview": result_preview,
         "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
         "confidence": bundle.get("confidence"),
         "authorityScore": bundle.get("authorityScore"),
@@ -384,7 +414,19 @@ def list_experience_packs(*, scope: str = "global", limit: int = 50, include_arc
 
 def research_ledger_summary(*, scope: str = "global", include_archived: bool = False) -> dict[str, Any]:
     bundles = list_evidence_bundles(scope=scope, limit=200)
-    packs = list_experience_packs(scope=scope, limit=200, include_archived=include_archived)
+    bundles_by_id = {
+        _safe_text(item.get("evidenceBundleId")): item
+        for item in bundles
+        if isinstance(item, dict) and _safe_text(item.get("evidenceBundleId"))
+    }
+    packs = []
+    for item in list_experience_packs(scope=scope, limit=200, include_archived=include_archived):
+        enriched = dict(item)
+        if not _safe_text(enriched.get("resultPreview")):
+            bundle = bundles_by_id.get(_safe_text(enriched.get("createdFromBundleId")))
+            if bundle:
+                enriched["resultPreview"] = _research_result_preview(bundle)
+        packs.append(enriched)
     timeline = [
         {
             "at": item.get("createdAt"),

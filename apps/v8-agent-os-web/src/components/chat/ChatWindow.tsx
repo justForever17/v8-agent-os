@@ -11,6 +11,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
+import type { RuntimeStageActivity } from "@/lib/runtime-stage";
 
 import {
     Dialog,
@@ -25,13 +26,15 @@ interface ChatWindowProps {
     messages: Message[];
     processes: AdminProcessRef[];
     contextReferences: ContextReferenceItem[];
+    conversationId?: string | null;
     onDeleteMessage?: (id: string) => void;
     isLoading?: boolean;
     userAvatar?: string | null;
     shellClassName?: string;
+    runtimeActivities?: RuntimeStageActivity[];
 }
 
-export function ChatWindow({ messages, processes, contextReferences, onDeleteMessage, isLoading, userAvatar, shellClassName }: ChatWindowProps) {
+export function ChatWindow({ messages, processes, contextReferences, conversationId, onDeleteMessage, isLoading, userAvatar, shellClassName, runtimeActivities = [] }: ChatWindowProps) {
     const t = useT();
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -157,7 +160,8 @@ export function ChatWindow({ messages, processes, contextReferences, onDeleteMes
         if (!deleteId) return;
 
         try {
-            const res = await fetch(`/api/messages/${deleteId}`, { method: 'DELETE' });
+            const suffix = conversationId ? `?session_id=${encodeURIComponent(conversationId)}` : "";
+            const res = await fetch(`/api/messages/${encodeURIComponent(deleteId)}${suffix}`, { method: 'DELETE' });
             if (res.ok) {
                 onDeleteMessage?.(deleteId);
                 // No reload needed if onDeleteMessage handles state update
@@ -205,6 +209,7 @@ export function ChatWindow({ messages, processes, contextReferences, onDeleteMes
                                         onDelete={setDeleteId}
                                         isLast={index === messages.length - 1}
                                         userAvatar={userAvatar}
+                                        runtimeActivities={runtimeActivities}
                                     />
                                 ))
                             )}

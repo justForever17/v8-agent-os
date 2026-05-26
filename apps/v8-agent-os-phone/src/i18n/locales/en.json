@@ -204,6 +204,7 @@
   "src.components.chat.runtimetimelinepanel.runtime": "Runtime",
   "src.components.chat.runtimetimelinepanel.runtime_activity_is_streaming_here_while_you_stay_in_chat": "Runtime activity is streaming here while you stay in chat.",
   "src.components.chat.runtimetimelinepanel.runtime_activity_is_updating": "Runtime activity is updating",
+  "src.components.chat.runtimetimelinepanel.subagent_swarm_merged_into_chat_runtime": "Subagent swarm activity is merged into the Conversation runtime execution map. Open the Supervisor bubble or Conversation runtime to inspect the dispatch tree.",
   "src.components.chat.runtimetimelinepanel.there_are_no_context_governance_entries_for_this_session_yet": "There are no context governance entries for this session yet.",
   "src.components.chat.runtimetimelinepanel.there_are_no_runtime_entries_to_display_yet": "There are no runtime entries to display yet.",
   "src.components.chat.thinkingcard.provider_reasoning": "reasoning",

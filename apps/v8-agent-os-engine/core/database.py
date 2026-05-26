@@ -301,6 +301,20 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS chat_message_deletions (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    canonical_message_id TEXT,
+                    run_id TEXT,
+                    source TEXT NOT NULL,
+                    metadata_json TEXT,
+                    deleted_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS session_lane_records (
                     session_id TEXT PRIMARY KEY,
                     active_run_id TEXT,
@@ -927,6 +941,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_run_id ON chat_canonical_messages (run_id, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_canonical_messages_updated_at ON chat_canonical_messages (updated_at DESC)')
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_canonical_messages_session_ordinal ON chat_canonical_messages (session_id, ordinal)')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_message_deletions_session_message ON chat_message_deletions (session_id, message_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_message_deletions_session_id ON chat_message_deletions (session_id, deleted_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_records_active_run_id ON session_lane_records (active_run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_records_updated_at ON session_lane_records (updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_session_id ON session_lane_queue_entries (session_id, created_at DESC)')
@@ -1497,14 +1513,223 @@ class DatabaseManager:
             data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
             return data
 
-    def delete_message(self, message_id: str) -> bool:
+    def _record_chat_message_deletion(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_id: str,
+        message_id: str,
+        canonical_message_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        source: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_session_id or not normalized_message_id:
+            return
+
+        now_iso = utc_now_iso()
+        conn.execute(
+            '''
+            INSERT INTO chat_message_deletions
+            (id, session_id, message_id, canonical_message_id, run_id, source, metadata_json, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, message_id) DO UPDATE SET
+                canonical_message_id = COALESCE(excluded.canonical_message_id, chat_message_deletions.canonical_message_id),
+                run_id = COALESCE(excluded.run_id, chat_message_deletions.run_id),
+                source = excluded.source,
+                metadata_json = excluded.metadata_json,
+                deleted_at = excluded.deleted_at
+            ''',
+            (
+                f"msgdel_{uuid.uuid4().hex}",
+                normalized_session_id,
+                normalized_message_id,
+                canonical_message_id,
+                run_id,
+                source,
+                json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                now_iso,
+            ),
+        )
+
+    def get_deleted_chat_message_ids(self, session_id: str) -> set[str]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return set()
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM messages WHERE id = ?', (message_id,))
-            deleted = cursor.rowcount > 0
-            if deleted:
-                conn.commit()
+            cursor.execute(
+                '''
+                SELECT message_id, canonical_message_id
+                FROM chat_message_deletions
+                WHERE session_id = ?
+                ''',
+                (normalized_session_id,),
+            )
+            deleted: set[str] = set()
+            for row in cursor.fetchall():
+                for key in ("message_id", "canonical_message_id"):
+                    value = str(row[key] or "").strip()
+                    if value:
+                        deleted.add(value)
             return deleted
+
+    def delete_message(self, message_id: str, *, session_id: Optional[str] = None) -> Dict[str, Any]:
+        normalized_message_id = str(message_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_message_id:
+            return {"deleted": False, "message_id": message_id, "session_id": normalized_session_id}
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT * FROM messages WHERE id = ?', (normalized_message_id,))
+            legacy_row = cursor.fetchone()
+            if legacy_row:
+                legacy = dict(legacy_row)
+                resolved_session_id = str(legacy.get("session_id") or normalized_session_id or "").strip()
+                cursor.execute('DELETE FROM messages WHERE id = ?', (normalized_message_id,))
+                self._record_chat_message_deletion(
+                    conn,
+                    session_id=resolved_session_id,
+                    message_id=normalized_message_id,
+                    run_id=None,
+                    source="legacy_message",
+                    metadata={"role": legacy.get("role")},
+                )
+                conn.commit()
+                return {
+                    "deleted": True,
+                    "session_id": resolved_session_id,
+                    "message_id": normalized_message_id,
+                    "source": "legacy_message",
+                    "physical_delete": True,
+                }
+
+            cursor.execute('SELECT * FROM chat_canonical_messages WHERE id = ?', (normalized_message_id,))
+            canonical_row = cursor.fetchone()
+            if canonical_row:
+                canonical = dict(canonical_row)
+                resolved_session_id = str(canonical.get("session_id") or normalized_session_id or "").strip()
+                cursor.execute('DELETE FROM chat_canonical_messages WHERE id = ?', (normalized_message_id,))
+                self._record_chat_message_deletion(
+                    conn,
+                    session_id=resolved_session_id,
+                    message_id=normalized_message_id,
+                    canonical_message_id=normalized_message_id,
+                    run_id=canonical.get("run_id"),
+                    source="canonical_message",
+                    metadata={"role": canonical.get("role"), "state": canonical.get("state")},
+                )
+                conn.commit()
+                return {
+                    "deleted": True,
+                    "session_id": resolved_session_id,
+                    "message_id": normalized_message_id,
+                    "source": "canonical_message",
+                    "physical_delete": True,
+                }
+
+            if normalized_session_id:
+                cursor.execute(
+                    '''
+                    SELECT *
+                    FROM chat_canonical_messages
+                    WHERE session_id = ?
+                    ORDER BY ordinal ASC, created_at ASC
+                    ''',
+                    (normalized_session_id,),
+                )
+                for row in cursor.fetchall():
+                    canonical = self._hydrate_chat_canonical_row(dict(row))
+                    candidate_ids = {
+                        str(canonical.get("id") or "").strip(),
+                        str((canonical.get("metadata") or {}).get("messageId") or "").strip(),
+                        str((canonical.get("metadata") or {}).get("clientMessageId") or "").strip(),
+                    }
+                    for node in canonical.get("nodes") or []:
+                        if isinstance(node, dict):
+                            candidate_ids.add(str(node.get("id") or "").strip())
+                    for artifact in canonical.get("artifacts") or []:
+                        if isinstance(artifact, dict):
+                            candidate_ids.add(str(artifact.get("id") or "").strip())
+                            candidate_ids.add(str(artifact.get("messageId") or "").strip())
+                    canonical_id = str(canonical.get("id") or "").strip()
+                    if normalized_message_id in candidate_ids or (
+                        canonical_id and normalized_message_id.startswith(f"{canonical_id}:")
+                    ):
+                        cursor.execute('DELETE FROM chat_canonical_messages WHERE id = ?', (canonical_id,))
+                        self._record_chat_message_deletion(
+                            conn,
+                            session_id=normalized_session_id,
+                            message_id=normalized_message_id,
+                            canonical_message_id=canonical_id,
+                            run_id=canonical.get("run_id"),
+                            source="canonical_projection_alias",
+                            metadata={"role": canonical.get("role"), "state": canonical.get("state")},
+                        )
+                        if normalized_message_id != canonical_id:
+                            self._record_chat_message_deletion(
+                                conn,
+                                session_id=normalized_session_id,
+                                message_id=canonical_id,
+                                canonical_message_id=canonical_id,
+                                run_id=canonical.get("run_id"),
+                                source="canonical_projection_alias",
+                                metadata={"alias": normalized_message_id},
+                            )
+                        conn.commit()
+                        return {
+                            "deleted": True,
+                            "session_id": normalized_session_id,
+                            "message_id": normalized_message_id,
+                            "canonical_message_id": canonical_id,
+                            "source": "canonical_projection_alias",
+                            "physical_delete": True,
+                        }
+
+            cursor.execute('SELECT * FROM runtime_events WHERE id = ?', (normalized_message_id,))
+            event_row = cursor.fetchone()
+            if event_row:
+                event = dict(event_row)
+                resolved_session_id = str(event.get("session_id") or normalized_session_id or "").strip()
+                self._record_chat_message_deletion(
+                    conn,
+                    session_id=resolved_session_id,
+                    message_id=normalized_message_id,
+                    run_id=event.get("run_id"),
+                    source="runtime_event_projection",
+                    metadata={"topic": event.get("topic")},
+                )
+                conn.commit()
+                return {
+                    "deleted": True,
+                    "session_id": resolved_session_id,
+                    "message_id": normalized_message_id,
+                    "source": "runtime_event_projection",
+                    "physical_delete": False,
+                }
+
+            if normalized_session_id:
+                self._record_chat_message_deletion(
+                    conn,
+                    session_id=normalized_session_id,
+                    message_id=normalized_message_id,
+                    source="client_projection",
+                    metadata={"fallback": True},
+                )
+                conn.commit()
+                return {
+                    "deleted": True,
+                    "session_id": normalized_session_id,
+                    "message_id": normalized_message_id,
+                    "source": "client_projection",
+                    "physical_delete": False,
+                }
+
+            return {"deleted": False, "message_id": normalized_message_id, "session_id": normalized_session_id}
 
     def get_recent_messages(self, session_id: str, limit: int = 20, role: Optional[str] = None) -> List[Dict[str, Any]]:
         query = 'SELECT * FROM messages WHERE session_id = ?'
@@ -1753,9 +1978,19 @@ class DatabaseManager:
                 SELECT *
                 FROM chat_canonical_messages
                 WHERE session_id = ?
+                  AND id NOT IN (
+                    SELECT message_id
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                  AND id NOT IN (
+                    SELECT COALESCE(canonical_message_id, '')
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
                 ORDER BY ordinal ASC, created_at ASC
                 ''',
-                (session_id,),
+                (session_id, session_id, session_id),
             )
             return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
 

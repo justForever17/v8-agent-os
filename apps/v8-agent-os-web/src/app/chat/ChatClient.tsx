@@ -1889,9 +1889,11 @@ export default function ChatClient() {
                             messages={messages}
                             processes={hudProcesses}
                             contextReferences={projectionContextReferences}
+                            conversationId={activeConversationId}
                             isLoading={isLoading}
                             userAvatar={session?.user?.image}
                             shellClassName="w-full"
+                            runtimeActivities={runtimeStageModel.activities}
                             onDeleteMessage={(messageId) => {
                                 setMessages((prev) => prev.filter((message) => message.id !== messageId));
                                 const conversationId = activeConversationIdRef.current;

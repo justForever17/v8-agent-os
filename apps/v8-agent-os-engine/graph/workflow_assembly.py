@@ -1,3 +1,5 @@
+import hashlib
+
 from langgraph.graph import StateGraph
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -11,11 +13,65 @@ from core.runtime_episodes import (
     transition_runtime_episode,
     upsert_runtime_episode,
 )
+from erc.runtime_context import get_runtime_context
 from erc.runtime_stability import runtime_stability_service
 from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
 
 
 def build_planner_auto_dispatch_node():
+    def _string_value(*values) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _state_runtime_identity(state: dict | None) -> tuple[str | None, str | None, str | None]:
+        runtime_context = get_runtime_context()
+        state_dict = dict(state or {})
+        route_context = dict(state_dict.get("current_route_context") or {})
+        session_id = _string_value(
+            state_dict.get("session_id"),
+            state_dict.get("sessionId"),
+            route_context.get("session_id"),
+            route_context.get("sessionId"),
+            runtime_context.get("session_id"),
+            runtime_context.get("sessionId"),
+        ) or None
+        run_id = _string_value(
+            state_dict.get("run_id"),
+            state_dict.get("runId"),
+            route_context.get("run_id"),
+            route_context.get("runId"),
+            runtime_context.get("run_id"),
+            runtime_context.get("runId"),
+        ) or None
+        workspace_path = _string_value(
+            state_dict.get("workspace_path"),
+            state_dict.get("workspacePath"),
+            route_context.get("workspace_path"),
+            route_context.get("workspacePath"),
+            runtime_context.get("workspace_path"),
+            runtime_context.get("workspacePath"),
+        ) or None
+        return session_id, run_id, workspace_path
+
+    def _episode_identity(*, session_id: str | None, run_id: str | None, plan: dict, item: dict, kind: str) -> tuple[str, str]:
+        seed = "|".join(
+            [
+                str(session_id or ""),
+                str(run_id or ""),
+                str(plan.get("planId") or ""),
+                str(item.get("taskBriefId") or item.get("id") or item.get("title") or ""),
+                str(kind or ""),
+                str(item.get("reason") or item.get("capability") or ""),
+            ]
+        )
+        digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        episode_id = str(item.get("episodeId") or item.get("needId") or f"episode_{digest}")
+        idempotency_key = str(item.get("idempotencyKey") or f"planner:{run_id or session_id or 'no_run'}:{digest}")
+        return episode_id, idempotency_key
+
     def _matching_task_briefs(plan: dict, item: dict) -> list[dict]:
         briefs = [dict(brief) for brief in list(plan.get("taskBriefs") or []) if isinstance(brief, dict)]
         task_brief_id = str(item.get("taskBriefId") or "").strip()
@@ -32,8 +88,25 @@ def build_planner_auto_dispatch_node():
             return briefs
         return briefs[:1] if briefs else []
 
-    def _with_capability_episodes(route_context: dict, plan: dict, *, enqueue: bool = False) -> dict:
+    def _with_capability_episodes(
+        route_context: dict,
+        plan: dict,
+        *,
+        enqueue: bool = False,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict:
         updated = dict(route_context or {})
+        if session_id:
+            updated.setdefault("sessionId", session_id)
+            updated.setdefault("session_id", session_id)
+        if run_id:
+            updated.setdefault("runId", run_id)
+            updated.setdefault("run_id", run_id)
+        if workspace_path:
+            updated.setdefault("workspacePath", workspace_path)
+            updated.setdefault("workspace_path", workspace_path)
         for item in list(plan.get("capabilityPlan") or []):
             if not isinstance(item, dict):
                 continue
@@ -49,6 +122,24 @@ def build_planner_auto_dispatch_node():
                 if kind == "delegation":
                     inputs.setdefault("workerBriefs", matching_briefs)
                     inputs.setdefault("targetCount", len(matching_briefs))
+            if workspace_path:
+                inputs.setdefault("workspacePath", workspace_path)
+            episode_id, idempotency_key = _episode_identity(
+                session_id=session_id,
+                run_id=run_id,
+                plan=plan,
+                item=item,
+                kind=kind,
+            )
+            need_payload.setdefault("episodeId", episode_id)
+            need_payload.setdefault("needId", episode_id)
+            need_payload.setdefault("idempotencyKey", idempotency_key)
+            if session_id:
+                need_payload.setdefault("sessionId", session_id)
+                need_payload.setdefault("session_id", session_id)
+            if run_id:
+                need_payload.setdefault("runId", run_id)
+                need_payload.setdefault("run_id", run_id)
             if inputs:
                 need_payload["inputs"] = inputs
             episode = build_runtime_episode(
@@ -59,6 +150,12 @@ def build_planner_auto_dispatch_node():
                 continuation_target=str(item.get("continuationTarget") or "planner_auto_dispatch"),
                 extra={"taskBriefId": str(item.get("taskBriefId") or "")},
             )
+            if session_id:
+                episode["sessionId"] = session_id
+                episode["session_id"] = session_id
+            if run_id:
+                episode["runId"] = run_id
+                episode["run_id"] = run_id
             item["episodeId"] = episode.get("episodeId")
             item["needId"] = episode.get("needId")
             before_ids = {
@@ -70,9 +167,32 @@ def build_planner_auto_dispatch_node():
             if str(episode.get("episodeId") or "") not in before_ids:
                 emit_runtime_episode_event("capability.need.detected", {"episode": episode})
             if enqueue:
-                persisted = enqueue_runtime_episode(episode, priority=int(item.get("priority") or 0))
-                updated = upsert_runtime_episode(updated, {**episode, "state": persisted.get("state") or "queued"})
-                emit_runtime_episode_event("runtime.episode.queued", {"episode": {**episode, "state": "queued"}})
+                persisted = enqueue_runtime_episode(
+                    episode,
+                    session_id=session_id,
+                    run_id=run_id,
+                    priority=int(item.get("priority") or 0),
+                )
+                merged_episode = {
+                    **episode,
+                    **{
+                        k: v
+                        for k, v in dict(persisted or {}).items()
+                        if k
+                        in {
+                            "session_id",
+                            "sessionId",
+                            "run_id",
+                            "runId",
+                            "state",
+                            "lastHeartbeatAt",
+                            "leaseGeneration",
+                        }
+                    },
+                    "state": str((persisted or {}).get("state") or "queued"),
+                }
+                updated = upsert_runtime_episode(updated, merged_episode)
+                emit_runtime_episode_event("runtime.episode.queued", {"episode": merged_episode})
         return updated
 
     def _mark_plan_episodes(route_context: dict, plan: dict, *, state: str, reason: str | None = None) -> dict:
@@ -101,7 +221,14 @@ def build_planner_auto_dispatch_node():
 
     def planner_auto_dispatch_node(state):
         plan = dict((state or {}).get("planner_plan") or {})
-        route_context = _with_capability_episodes(dict((state or {}).get("current_route_context") or {}), plan)
+        session_id, run_id, workspace_path = _state_runtime_identity(state)
+        route_context = _with_capability_episodes(
+            dict((state or {}).get("current_route_context") or {}),
+            plan,
+            session_id=session_id,
+            run_id=run_id,
+            workspace_path=workspace_path,
+        )
         engineering_trigger = dict(route_context.get("engineeringTriggerDecision") or {})
         if route_context.get("explicitEngineeringRequested") and engineering_trigger.get("reason") == "engineering_lane_disabled":
             return Command(
@@ -163,7 +290,14 @@ def build_planner_auto_dispatch_node():
             )
         if dict((state or {}).get("planner_dispatch_status") or {}).get("dispatched"):
             return Command(goto="supervisor", update={"current_route_context": route_context})
-        route_context = _with_capability_episodes(route_context, plan, enqueue=True)
+        route_context = _with_capability_episodes(
+            route_context,
+            plan,
+            enqueue=True,
+            session_id=session_id,
+            run_id=run_id,
+            workspace_path=workspace_path,
+        )
         update = {"current_route_context": route_context}
         queued_episodes = [
             item

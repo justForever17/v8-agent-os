@@ -81,6 +81,63 @@ def _attach_profile(payload: dict, *, route: str, started_at_ms: float, extra: d
     return payload
 
 
+def _message_projection_ids(message: dict) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(message, dict):
+        return ids
+    for key in ("id", "messageId", "message_id", "renderKey", "canonicalMessageId", "canonical_message_id"):
+        value = str(message.get(key) or "").strip()
+        if value:
+            ids.add(value)
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    for key in ("id", "messageId", "message_id", "clientMessageId", "client_message_id", "canonicalMessageId", "canonical_message_id"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            ids.add(value)
+    for node in message.get("nodes") or []:
+        if isinstance(node, dict):
+            value = str(node.get("id") or "").strip()
+            if value:
+                ids.add(value)
+    for artifact in message.get("artifacts") or []:
+        if isinstance(artifact, dict):
+            for key in ("id", "messageId", "message_id"):
+                value = str(artifact.get(key) or "").strip()
+                if value:
+                    ids.add(value)
+    return ids
+
+
+def _filter_deleted_messages(session_id: str, messages: list[dict] | None) -> list[dict]:
+    deleted_ids = db.get_deleted_chat_message_ids(session_id)
+    if not deleted_ids:
+        return list(messages or [])
+    return [
+        message
+        for message in list(messages or [])
+        if _message_projection_ids(message).isdisjoint(deleted_ids)
+    ]
+
+
+def _filter_deleted_artifacts(session_id: str, artifacts: list[dict] | None) -> list[dict]:
+    deleted_ids = db.get_deleted_chat_message_ids(session_id)
+    if not deleted_ids:
+        return list(artifacts or [])
+    filtered: list[dict] = []
+    for artifact in list(artifacts or []):
+        if not isinstance(artifact, dict):
+            filtered.append(artifact)
+            continue
+        artifact_ids = {
+            str(artifact.get("id") or "").strip(),
+            str(artifact.get("messageId") or "").strip(),
+            str(artifact.get("message_id") or "").strip(),
+        }
+        if artifact_ids.isdisjoint(deleted_ids):
+            filtered.append(artifact)
+    return filtered
+
+
 def _scope_resolution_payload(result) -> dict:
     evidence = dict(getattr(result, "evidence", {}) or {})
     return {
@@ -303,9 +360,19 @@ async def get_session_messages(session_id: str):
         snapshot_payload = runtime_command_router.get_snapshot(session_id)
         snapshot = snapshot_payload.get("snapshot") or {}
         if snapshot.get("messages"):
+            filtered_messages = _filter_deleted_messages(session_id, snapshot.get("messages") or [])
+            filtered_artifacts = _filter_deleted_artifacts(session_id, snapshot.get("artifacts") or [])
+            filtered_projection = {
+                **snapshot_payload,
+                "snapshot": {
+                    **snapshot,
+                    "messages": filtered_messages,
+                    "artifacts": filtered_artifacts,
+                },
+            }
             return {
-                "messages": snapshot["messages"],
-                "artifacts": snapshot.get("artifacts") or [],
+                "messages": filtered_messages,
+                "artifacts": filtered_artifacts,
                 "source": snapshot_payload.get("source") or "runtime_snapshot",
                 "latestSeq": snapshot_payload.get("latestSeq", 0),
                 "runtimeTimeline": snapshot_payload.get("runtimeTimeline") or [],
@@ -321,7 +388,7 @@ async def get_session_messages(session_id: str):
                 "summary": snapshot_payload.get("summary") or {},
                 "contextGovernance": snapshot_payload.get("contextGovernance"),
                 "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
-                "projection": snapshot_payload,
+                "projection": filtered_projection,
             }
         if snapshot_payload.get("legacyChatUnsupported") or snapshot.get("legacyChatUnsupported"):
             return {
@@ -372,22 +439,26 @@ async def get_session_messages(session_id: str):
 
 
 @router.delete("/messages/{message_id}")
-async def delete_message(message_id: str):
+async def delete_message(
+    message_id: str,
+    session_id: Optional[str] = Query(default=None, alias="session_id"),
+    sessionId: Optional[str] = Query(default=None, alias="sessionId"),
+):
     try:
-        message = db.get_message(message_id)
-        if message is None:
+        resolved_session_hint = session_id or sessionId
+        result = db.delete_message(message_id, session_id=resolved_session_hint)
+        if not result.get("deleted"):
             raise HTTPException(status_code=404, detail="Message not found")
 
-        session_id = str(message.get("session_id") or "")
-        if not db.delete_message(message_id):
-            raise HTTPException(status_code=404, detail="Message not found")
-
-        if session_id:
-            snapshot_service.refresh_chat_projection(session_id)
+        resolved_session_id = str(result.get("session_id") or resolved_session_hint or "")
+        if resolved_session_id:
+            snapshot_service.refresh_chat_projection(resolved_session_id)
         return {
             "status": "success",
-            "sessionId": session_id,
+            "sessionId": resolved_session_id,
             "messageId": message_id,
+            "source": result.get("source"),
+            "physicalDelete": bool(result.get("physical_delete")),
         }
     except HTTPException:
         raise
@@ -638,6 +709,17 @@ async def get_session_snapshot(session_id: str):
     started_at_ms = _now_perf_ms()
     try:
         payload = runtime_command_router.get_snapshot(session_id)
+        if isinstance(payload, dict):
+            snapshot = payload.get("snapshot")
+            if isinstance(snapshot, dict):
+                payload = {
+                    **payload,
+                    "snapshot": {
+                        **snapshot,
+                        "messages": _filter_deleted_messages(session_id, snapshot.get("messages") or []),
+                        "artifacts": _filter_deleted_artifacts(session_id, snapshot.get("artifacts") or []),
+                    },
+                }
         runtime_timeline = payload.get("runtimeTimeline") if isinstance(payload, dict) else []
         return _attach_profile(
             payload,
@@ -682,6 +764,13 @@ async def get_session_history(session_id: str):
         snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
         timings["snapshotBuildMs"] = _elapsed_ms(step_started)
         snapshot = snapshot_payload.get("snapshot")
+        if isinstance(snapshot, dict):
+            snapshot = {
+                **snapshot,
+                "messages": _filter_deleted_messages(session_id, snapshot.get("messages") or []),
+                "artifacts": _filter_deleted_artifacts(session_id, snapshot.get("artifacts") or []),
+            }
+            snapshot_payload = {**snapshot_payload, "snapshot": snapshot}
         latest_seq = int(snapshot_payload.get("latestSeq") or 0)
         step_started = _now_perf_ms()
         timeline_messages = build_canonical_chat_messages(session_id)

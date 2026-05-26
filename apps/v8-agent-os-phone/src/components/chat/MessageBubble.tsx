@@ -3,7 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "r
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { buildMessageTimelineSegments, type AdminProcessRef } from "@v8/session-realtime";
+import { buildMessageTimelineSegments, isRuntimeEpisodeGraphActivity, type AdminProcessRef } from "@v8/session-realtime";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -27,6 +27,8 @@ import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
+import { RuntimeEpisodeBoard } from "@/src/components/chat/RuntimeTimelinePanel";
+import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 
@@ -402,6 +404,7 @@ export const MessageBubble = memo(function MessageBubble({
     userImageUri,
     userDisplayName,
     processes = [],
+    runtimeActivities = [],
 }: {
     adminBaseUrl: string;
     message: ChatMessage;
@@ -414,6 +417,7 @@ export const MessageBubble = memo(function MessageBubble({
     userImageUri?: string;
     userDisplayName?: string;
     processes?: AdminProcessRef[];
+    runtimeActivities?: PhoneRuntimeStageActivity[];
 }) {
     const { width, height } = useWindowDimensions();
     const { colors: palette, t, themeMode, locale } = useUiPrefs();
@@ -577,6 +581,10 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
     const assistantActive = !isUser && isLast && isLoading;
+    const bubbleExecutionActivities = useMemo(
+        () => (!isUser && isLast ? runtimeActivities.filter((activity) => isRuntimeEpisodeGraphActivity({ topic: activity.topic })) : []),
+        [isLast, isUser, runtimeActivities],
+    );
     const timelineSegments = useMemo(
         () => buildMessageTimelineSegments(renderableNodes, { active: assistantActive }),
         [assistantActive, renderableNodes],
@@ -877,6 +885,11 @@ export const MessageBubble = memo(function MessageBubble({
                             <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
                         ) : null}
                         <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
+                            {bubbleExecutionActivities.length > 0 ? (
+                                <View style={styles.assistantExecutionMap}>
+                                    <RuntimeEpisodeBoard activities={bubbleExecutionActivities} />
+                                </View>
+                            ) : null}
                             {hasStructuredNodes ? (
                                 timelineSegments.map((segment, index) => {
                                     if (segment.kind === "trace_group") {
@@ -1215,6 +1228,9 @@ const styles = StyleSheet.create({
     },
     assistantBubbleSheen: {
         height: 2,
+    },
+    assistantExecutionMap: {
+        marginBottom: 2,
     },
     assistantInner: {
         paddingHorizontal: 16,

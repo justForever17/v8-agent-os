@@ -406,7 +406,7 @@ function SwarmNodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[
     );
 }
 
-function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
+export function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
     const { colors, t, themeMode } = useUiPrefs();
     const kindLabels = useMemo(
         () => ({
@@ -841,6 +841,16 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         ),
         [colors.border, colors.surfaceStrong, colors.textMuted, effectiveSelectedRuntimeId, t],
     );
+    const renderSubagentMergedNotice = useCallback(
+        () => (
+            <View style={[styles.emptyState, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
+                <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
+                    {t("src.components.chat.runtimetimelinepanel.subagent_swarm_merged_into_chat_runtime")}
+                </Text>
+            </View>
+        ),
+        [colors.border, colors.surfaceStrong, colors.textMuted, t],
+    );
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -938,12 +948,12 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                                     style={[
                                                         styles.tabBadge,
                                                         {
-                                                            backgroundColor: themeMode === "dark" ? "#0B1220" : "#0F172A",
-                                                            borderColor: themeMode === "dark" ? "rgba(248,250,252,0.88)" : "#FFFFFF",
+                                                            backgroundColor: themeMode === "dark" ? "#F8FAFC" : "#0F172A",
+                                                            borderColor: themeMode === "dark" ? "rgba(15,23,42,0.88)" : "#FFFFFF",
                                                         },
                                                     ]}
                                                 >
-                                                    <Text style={[styles.tabBadgeText, { color: "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
+                                                    <Text style={[styles.tabBadgeText, { color: themeMode === "dark" ? "#0F172A" : "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
                                                 </View>
                                             ) : null}
                                         </Pressable>
@@ -982,12 +992,12 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                                     style={[
                                                         styles.tabBadge,
                                                         {
-                                                            backgroundColor: themeMode === "dark" ? "#0B1220" : "#0F172A",
-                                                            borderColor: themeMode === "dark" ? "rgba(248,250,252,0.88)" : "#FFFFFF",
+                                                            backgroundColor: themeMode === "dark" ? "#F8FAFC" : "#0F172A",
+                                                            borderColor: themeMode === "dark" ? "rgba(15,23,42,0.88)" : "#FFFFFF",
                                                         },
                                                     ]}
                                                 >
-                                                    <Text style={[styles.tabBadgeText, { color: "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
+                                                    <Text style={[styles.tabBadgeText, { color: themeMode === "dark" ? "#0F172A" : "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
                                                 </View>
                                             ) : null}
                                         </Pressable>
@@ -1012,12 +1022,11 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             <GestureScrollView
                                 key={runtimeListKey}
                                 style={styles.contentList}
-                                contentContainerStyle={[styles.content, visibleActivities.length === 0 && globalEpisodeActivities.length === 0 && styles.contentEmpty]}
+                                contentContainerStyle={[styles.content, styles.contentEmpty]}
                                 showsVerticalScrollIndicator={false}
                                 overScrollMode="never"
                             >
-                                {globalEpisodeActivities.length > 0 ? <RuntimeEpisodeBoard activities={globalEpisodeActivities} /> : null}
-                                <SwarmNodeBoard activities={visibleActivities} />
+                                {renderSubagentMergedNotice()}
                             </GestureScrollView>
                         ) : (
                             <FlatList

@@ -5,6 +5,7 @@ from unittest.mock import patch
 from langchain_core.messages import ToolMessage
 
 from graph.tool_routing import async_tool_call_wrapper
+from erc.runtime_context import bind_runtime_context
 
 
 class _DummyRequest:
@@ -87,6 +88,30 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.additional_kwargs["allowedNextTools"], ["runtime_broker"])
         self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "engineering")
         self.assertIn("inputs", result.additional_kwargs["routeIntent"])
+
+    async def test_complex_direct_write_enqueues_episode_when_runtime_context_exists(self):
+        request = _DummyRequest(
+            "write_native_file",
+            "tool_call_write",
+            state={"current_route_context": {"engineeringRequired": True}},
+        )
+
+        async def execute(_request):
+            raise AssertionError("direct write should have been blocked before execution")
+
+        with bind_runtime_context(run_id="run_gate_test", session_id="session_gate_test"):
+            with patch("graph.tool_routing._enqueue_route_intent_episode") as enqueue_episode:
+                enqueue_episode.return_value = {"episodeId": "episode_gate_test", "state": "queued"}
+                result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(getattr(result, "status", None), "error")
+        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "wait_episode")
+        self.assertEqual(result.additional_kwargs["queuedEpisodeId"], "episode_gate_test")
+        self.assertTrue(result.additional_kwargs["hasActiveRuntimeEpisode"])
+        enqueue_episode.assert_called_once()
+        self.assertEqual(enqueue_episode.call_args.kwargs["run_id"], "run_gate_test")
+        self.assertEqual(enqueue_episode.call_args.kwargs["session_id"], "session_gate_test")
 
     async def test_complex_direct_write_waits_when_episode_already_queued(self):
         request = _DummyRequest(

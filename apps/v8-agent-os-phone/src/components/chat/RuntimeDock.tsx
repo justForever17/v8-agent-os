@@ -182,8 +182,8 @@ function RuntimeDockItem({
             </Animated.View>
             <View style={[styles.dot, { backgroundColor: tone.dot, borderColor: dark ? "rgba(24,24,27,0.92)" : "#FFFFFF" }]} />
             {item.eventCount > 0 ? (
-                <View style={[styles.badge, { backgroundColor: dark ? "#0F172A" : "#0F172A", borderColor: dark ? "rgba(248,250,252,0.82)" : "#FFFFFF" }]}>
-                    <Text style={[styles.badgeText, { color: "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
+                <View style={[styles.badge, { backgroundColor: dark ? "#F8FAFC" : "#0F172A", borderColor: dark ? "rgba(15,23,42,0.88)" : "#FFFFFF" }]}>
+                    <Text style={[styles.badgeText, { color: dark ? "#0F172A" : "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
                 </View>
             ) : null}
         </Pressable>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
 import json
 
 from langchain_core.messages import ToolMessage
@@ -238,6 +239,64 @@ def _has_active_runtime_episode(state_mapping: dict[str, Any], *, run_id: str = 
         return False
 
 
+def _enqueue_route_intent_episode(
+    route_intent: dict[str, Any],
+    *,
+    session_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    kind = str(route_intent.get("kind") or "").strip() or "engineering"
+    if not session_id and not run_id:
+        return None
+    try:
+        from core.runtime_episodes import build_runtime_episode, enqueue_runtime_episode
+
+        raw_key = json.dumps(
+            {
+                "runId": run_id,
+                "sessionId": session_id,
+                "kind": kind,
+                "tool": route_intent.get("tool"),
+                "inputs": route_intent.get("inputs"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:12]
+        episode_id = f"episode_gate_{digest}"
+        need = {
+            **route_intent,
+            "episodeId": episode_id,
+            "needId": episode_id,
+            "sessionId": session_id,
+            "session_id": session_id,
+            "runId": run_id,
+            "run_id": run_id,
+            "idempotencyKey": f"direct_gate:{digest}",
+        }
+        episode = build_runtime_episode(
+            need=need,
+            kind=kind,
+            state="queued",
+            required_runtime_access=list(route_intent.get("requiredRuntimeAccess") or []),
+            continuation_target="supervisor_route_gate",
+            extra={
+                "sessionId": session_id,
+                "session_id": session_id,
+                "runId": run_id,
+                "run_id": run_id,
+                "targetKind": "local_runtime",
+                "targetId": kind,
+                "retryPolicy": {"maxAttempts": 1},
+                "idempotencyKey": f"direct_gate:{digest}",
+            },
+        )
+        return enqueue_runtime_episode(episode, session_id=session_id or None, run_id=run_id or None, priority=20)
+    except Exception as exc:
+        return {"state": "failed", "errorCode": "gate_episode_enqueue_failed", "errorMessage": str(exc), "kind": kind}
+
+
 def _message_tool_calls(message: Any) -> list[dict[str, Any]]:
     calls = getattr(message, "tool_calls", None) or []
     normalized: list[dict[str, Any]] = []
@@ -402,6 +461,11 @@ def _supervisor_direct_scope_hard_block_message(
         hard_reasons=hard_reasons,
         route_required=route_required,
     )
+    queued_episode: dict[str, Any] | None = None
+    if not has_active_episode:
+        queued_episode = _enqueue_route_intent_episode(route_intent, session_id=session_id, run_id=run_id)
+        if queued_episode and str(queued_episode.get("state") or "").strip() in {"queued", "active", "leased", "waiting"}:
+            has_active_episode = True
     next_action = "wait_episode" if has_active_episode else "runtime_broker(mode='route')"
     next_instruction = (
         "Next step: wait for the active Runtime episode handoff before continuing. Do not call direct mutating tools."
@@ -436,6 +500,8 @@ def _supervisor_direct_scope_hard_block_message(
             "hasActiveRuntimeEpisode": has_active_episode,
             "allowedNextTools": ["runtime_broker"],
             "recommendedNextAction": next_action,
+            "queuedEpisodeId": (queued_episode or {}).get("episodeId") or (queued_episode or {}).get("id"),
+            "queuedEpisodeState": (queued_episode or {}).get("state"),
         },
     )
 

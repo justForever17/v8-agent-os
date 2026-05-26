@@ -140,14 +140,17 @@ function upsertNode(
     nodes.set(next.id, next);
     return;
   }
+  const repeatedMissingTasks = existing.diagnostic === "dispatch_missing_tasks"
+    && next.diagnostic === "dispatch_missing_tasks";
   nodes.set(next.id, {
     ...existing,
     parentId: existing.parentId || next.parentId,
     label: existing.label || next.label,
     subtitle: next.subtitle || existing.subtitle,
-    status: next.status === "pending" ? existing.status : next.status,
+    status: repeatedMissingTasks ? "attempted" : (next.status === "pending" ? existing.status : next.status),
     eventCount: existing.eventCount + Math.max(1, next.eventCount),
     timestamp: Math.max(existing.timestamp, next.timestamp),
+    diagnostic: existing.diagnostic || next.diagnostic,
   });
 }
 
@@ -245,6 +248,12 @@ export function buildSessionExecutionGraph(
       || dispatchStatus === "missing_tasks"
     );
     const dispatchGroup = readString(data.dispatchGroup) || readString(data.dispatch_group);
+    const runScope = readString(data.runId)
+      || readString(data.run_id)
+      || readString(data.rootRunId)
+      || readString(data.root_run_id)
+      || readString(data.sessionId)
+      || readString(data.session_id);
     const topicId =
       readString(data.episodeId)
       || readString(data.episode_id)
@@ -259,7 +268,7 @@ export function buildSessionExecutionGraph(
       || readString(activity.id);
     const isDelegationActivity = topic.startsWith("delegation_broker.") || topic.startsWith("delegation.") || topic.startsWith("subagent.task.");
     const id = isDelegationActivity
-      ? `delegation:${missingTasks ? (dispatchGroup || "missing_tasks") : (dispatchGroup || topicId)}`
+      ? `delegation:${missingTasks ? `${dispatchGroup || runScope || "missing_tasks"}:missing_tasks` : (dispatchGroup || topicId)}`
       : topicId;
     if (!id) continue;
     const kind = normalizeRuntimeKind(

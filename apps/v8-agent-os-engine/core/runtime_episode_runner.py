@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from core.database import db
+from core.delegation_broker import normalize_task_briefs
 from core.json_safe import to_jsonable
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
@@ -502,14 +503,94 @@ class RuntimeEpisodeRunner:
             )
         except Exception as exc:
             context_summary = f"Engineering context initialized with workspace digest; context pack warning: {type(exc).__name__}: {exc}"
+        worker_briefs = normalize_task_briefs(
+            inputs.get("workerBriefs")
+            or inputs.get("worker_briefs")
+            or inputs.get("taskBriefs")
+            or inputs.get("task_briefs")
+            or inputs.get("tasks")
+            or need.get("workerBriefs")
+            or need.get("taskBriefs")
+            or need.get("tasks")
+        )
+        blocked_tool_intent = inputs.get("blockedToolIntent") or need.get("blockedToolIntent")
+        if not worker_briefs and isinstance(blocked_tool_intent, dict):
+            tool_name = str(blocked_tool_intent.get("tool") or blocked_tool_intent.get("name") or "engineering action").strip()
+            worker_briefs = normalize_task_briefs(
+                [
+                    {
+                        "title": f"Handle blocked {tool_name}",
+                        "goal": (
+                            f"Execute the routed engineering work for blocked Supervisor tool `{tool_name}`. "
+                            "Return touched files, proof, and any blockers."
+                        ),
+                        "context": {
+                            "blockedToolIntent": blocked_tool_intent,
+                            "workspacePath": str(workspace_path) if workspace_path else "",
+                        },
+                        "runtimeAccess": ["memory.read"],
+                        "executionLaneHint": "subagent",
+                        "acceptanceContract": "Return result summary, touched files, validation proof, and remaining risks.",
+                    }
+                ]
+            )
+        if worker_briefs:
+            self._heartbeat(str(episode.get("episodeId")), "engineering: delegate executable work")
+            delegation_episode = {
+                **episode,
+                "kind": "delegation",
+                "inputs": {
+                    **inputs,
+                    "workerBriefs": worker_briefs,
+                    "tasks": worker_briefs,
+                    "targetCount": int(inputs.get("targetCount") or len(worker_briefs) or 1),
+                    "workspacePath": str(workspace_path) if workspace_path else inputs.get("workspacePath"),
+                    "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
+                },
+                "need": {
+                    **need,
+                    "kind": "delegation",
+                    "reason": need.get("reason") or inputs.get("task") or "engineering execution requires delegated worker(s)",
+                },
+            }
+            delegation_handoff = await self._execute_delegation(delegation_episode)
+            delegation_status = str(delegation_handoff.get("status") or "ready").strip().lower()
+            status = "waiting" if delegation_status in {"waiting", "pending", "running"} else delegation_status
+            if status not in {"failed", "blocked", "waiting"}:
+                status = "ready"
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="engineering",
+                compact_summary=(
+                    f"Engineering execution_started through {len(worker_briefs)} delegated worker(s).\n"
+                    f"{_preview(delegation_handoff.get('compactSummary') or delegation_handoff.get('summary') or context_summary, limit=700)}"
+                ),
+                status=status,
+                confidence=str(delegation_handoff.get("confidence") or "medium"),
+                consumer_hint="Merge this engineering handoff into Supervisor route context before continuing.",
+                extra={
+                    "engineeringState": "execution_started",
+                    "delegationHandoff": delegation_handoff,
+                    "workspaceDigestRef": f"workspace_digest:{episode.get('episodeId')}",
+                    "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
+                    "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],
+                },
+            )
+        reason = str(inputs.get("task") or need.get("reason") or "engineering episode").strip()
         return build_handoff_ref(
             producer_episode_id=str(episode.get("episodeId") or ""),
             kind="engineering",
-            compact_summary=f"{context_summary}\n{_preview(digest_text, limit=700)}",
-            status="ready",
+            compact_summary=(
+                f"Engineering work_plan_ready, but no executable worker brief/task was available yet.\n"
+                f"Reason: {reason}\n{_preview(context_summary or digest_text, limit=700)}"
+            ),
+            status="waiting",
             confidence="medium",
-            consumer_hint="Engineering episode owns writeSet/proof/build work. Supervisor should not batch-write directly.",
+            consumer_hint="Provide workerBriefs/taskBriefs or reroute with blockedToolIntent; Supervisor should not batch-write directly.",
             extra={
+                "engineeringState": "work_plan_ready",
+                "recoverable": True,
+                "errorCode": "engineering_missing_executable_tasks",
                 "workspaceDigestRef": f"workspace_digest:{episode.get('episodeId')}",
                 "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
                 "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],

@@ -5,7 +5,7 @@ import { User, Copy, Trash2, Check, Sparkles, TerminalSquare } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo } from "react";
 import { motion } from "framer-motion";
-import { coerceAdminResourceRef, resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
+import { coerceAdminResourceRef, isRuntimeEpisodeGraphActivity, resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { Message, UiExecutionNode, UiTimelineNode } from "@/store/chat-types";
 import { ContentDispatcher } from "./ContentDispatcher";
@@ -16,6 +16,8 @@ import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifact
 import { useChatStore } from "@/store/chat-store";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
+import { RuntimeEpisodeBoard } from "./RuntimeTimelinePanel";
+import type { RuntimeStageActivity } from "@/lib/runtime-stage";
 
 interface ChatMessageProps {
     message: Message;
@@ -24,6 +26,7 @@ interface ChatMessageProps {
     onDelete: (id: string) => void;
     isLast?: boolean;
     userAvatar?: string | null;
+    runtimeActivities?: RuntimeStageActivity[];
 }
 
 interface MessageActionButtonsProps {
@@ -133,7 +136,7 @@ function MessageActionButtons({
     );
 }
 
-function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar }: ChatMessageProps) {
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, runtimeActivities = [] }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const setActiveArtifactId = useChatStore((state) => state.setActiveArtifactId);
@@ -203,6 +206,12 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             return !toolCallIds.has(node.toolCallId.trim());
         });
     }, [message.nodes, toolCallIds]);
+    const bubbleExecutionActivities = useMemo(
+        () => (message.role !== "user" && message.role !== "tool" && isLast
+            ? runtimeActivities.filter((activity) => isRuntimeEpisodeGraphActivity({ topic: activity.topic }))
+            : []),
+        [isLast, message.role, runtimeActivities],
+    );
 
     // USER MESSAGE
     if (message.role === 'user' || message.role === 'tool') {
@@ -389,6 +398,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-violet-500/40 via-purple-400/20 to-transparent opacity-80" />
 
                 <div className="space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]">
+                    {bubbleExecutionActivities.length > 0 && (
+                        <RuntimeEpisodeBoard activities={bubbleExecutionActivities} />
+                    )}
+
                     {visibleNodes.map((node, i) => (
                         <ContentDispatcher 
                             key={node.id || i}

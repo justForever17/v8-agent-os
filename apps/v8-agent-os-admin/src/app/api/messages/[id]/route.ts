@@ -20,7 +20,8 @@ export async function DELETE(
     }
 
     try {
-        const res = await fetch(`${ENGINE_URL}/messages/${id}`, {
+        const query = req.nextUrl.search || "";
+        const res = await fetch(`${ENGINE_URL}/messages/${encodeURIComponent(id)}${query}`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
         });

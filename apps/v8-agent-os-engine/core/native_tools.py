@@ -5521,6 +5521,97 @@ def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, 
     return brief
 
 
+def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> str:
+    candidates: list[str] = []
+    for key in ("kind", "runtimeKind", "runtime_kind", "runtime", "capability", "routeIntent", "route_intent", "tool"):
+        value = payload.get(key)
+        if value is not None:
+            candidates.append(str(value))
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+    for key in ("kind", "runtimeKind", "capability", "routeIntent", "blockedTool"):
+        value = inputs.get(key)
+        if value is not None:
+            candidates.append(str(value))
+    candidates.extend([str(item) for item in fallbacks if item])
+    joined = " ".join(candidates).strip().lower().replace("-", "_")
+    if not joined:
+        return ""
+    if any(token in joined for token in ("engineer", "project", "coding", "implementation", "write_native_file", "run_system_command", "install", "build", "workspace")):
+        return "engineering"
+    if any(token in joined for token in ("research", "search", "evidence", "web_research")):
+        return "research"
+    if any(token in joined for token in ("delegation", "subagent", "worker", "agent_swarm")):
+        return "delegation"
+    if any(token in joined for token in ("creative", "media", "asset", "image", "video", "audio")):
+        return "creative_media"
+    if any(token in joined for token in ("computer_use", "desktop", "browser", "screen")):
+        return "computer_use"
+    if "rpa" in joined or "trace" in joined:
+        return "rpa"
+    return _normalize_capability_kind(joined)
+
+
+def _coerce_route_need_payload(
+    need: Any,
+    *,
+    runtime_kind: Optional[str],
+    tool_group: Optional[str],
+    reason: Optional[str],
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(need, dict):
+        payload = dict(need)
+    elif isinstance(need, str):
+        raw = need.strip()
+        payload = {}
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    payload = dict(parsed)
+                elif isinstance(parsed, list):
+                    payload = {"taskBriefs": parsed, "reason": reason or "capability_route"}
+                else:
+                    payload = {"routeIntent": raw, "reason": reason or raw}
+            except Exception:
+                payload = {"routeIntent": raw, "reason": reason or raw}
+    elif need:
+        payload = {"reason": str(need)}
+    else:
+        payload = {}
+
+    route_kind = _infer_route_kind_from_payload(payload, runtime_kind, tool_group, reason)
+    if route_kind:
+        payload["kind"] = route_kind
+    if reason and not str(payload.get("reason") or "").strip():
+        payload["reason"] = str(reason).strip()
+
+    inputs = dict(payload.get("inputs") or {}) if isinstance(payload.get("inputs"), dict) else {}
+    for source_key, target_key in (
+        ("cwd", "workspacePath"),
+        ("workspace", "workspacePath"),
+        ("workspacePath", "workspacePath"),
+        ("workspace_path", "workspacePath"),
+        ("task", "task"),
+        ("query", "query"),
+        ("brief", "brief"),
+    ):
+        value = payload.get(source_key)
+        if value is not None and str(value).strip():
+            inputs.setdefault(target_key, value)
+
+    runtime_context = get_runtime_context()
+    state_dict = dict(state or {})
+    for source in (state_dict, dict(state_dict.get("current_route_context") or {}), runtime_context):
+        workspace = str(source.get("workspace_path") or source.get("workspacePath") or "").strip()
+        if workspace:
+            inputs.setdefault("workspacePath", workspace)
+            break
+    if inputs:
+        payload["inputs"] = inputs
+    return payload
+
+
 def _enrich_route_need_for_episode(
     need: dict[str, Any],
     *,
@@ -5584,7 +5675,13 @@ def _append_runtime_episode(
     session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip() or None
     run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip() or None
     persisted = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=int(need.get("priority") or 0))
-    merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "run_id", "state", "lastHeartbeatAt"}}}
+    merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "sessionId", "run_id", "runId", "state", "lastHeartbeatAt"}}}
+    if session_id:
+        merged_episode.setdefault("sessionId", session_id)
+        merged_episode.setdefault("session_id", session_id)
+    if run_id:
+        merged_episode.setdefault("runId", run_id)
+        merged_episode.setdefault("run_id", run_id)
     return upsert_runtime_episode(route_context, merged_episode), merged_episode
 
 
@@ -5635,7 +5732,13 @@ def runtime_broker(
         )
 
     if normalized_mode == "route":
-        need_payload = dict(need or {})
+        need_payload = _coerce_route_need_payload(
+            need,
+            runtime_kind=runtime_kind,
+            tool_group=tool_group,
+            reason=reason,
+            state=state,
+        )
         route_kind = _normalize_capability_kind(need_payload.get("kind") or runtime_kind or tool_group)
         if not route_kind:
             return Command(

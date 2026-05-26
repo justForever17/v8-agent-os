@@ -193,6 +193,29 @@ def test_runtime_broker_route_fills_delegation_tasks_from_planner_plan():
     assert episode["inputs"]["workerBriefs"][0]["goal"] == "Build the visible application shell."
 
 
+def test_runtime_broker_route_accepts_json_need_string_and_infers_engineering():
+    command = runtime_broker.func(
+        mode="route",
+        need=json.dumps(
+            {
+                "tool": "write_native_file",
+                "reason": "blocked direct project mutation",
+                "inputs": {"workspacePath": r"E:\Projects\test7"},
+            }
+        ),
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-route-json",
+    )
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert payload["episodeKind"] == "engineering"
+    assert payload["nextAction"] == "wait_episode"
+    assert episode["kind"] == "engineering"
+    assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
+    assert episode["inputs"]["workerBriefs"][0]["context"]["blockedTool"] == "write_native_file"
+
+
 def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
     command = delegation_broker.func(
         mode="dispatch",

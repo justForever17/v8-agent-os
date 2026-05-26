@@ -554,10 +554,11 @@ export async function fetchWorkspaceFileResponse(authorizedFetch: AuthorizedFetc
     return response;
 }
 
-export async function deleteMessage(authorizedFetch: AuthorizedFetch, id: string) {
+export async function deleteMessage(authorizedFetch: AuthorizedFetch, id: string, conversationId?: string | null) {
+    const suffix = conversationId ? `?session_id=${encodeURIComponent(conversationId)}` : "";
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,
-        `/api/client/messages/${encodeURIComponent(id)}`,
+        `/api/client/messages/${encodeURIComponent(id)}${suffix}`,
         translateCurrent("src.lib.phone_api.text_25"),
         { method: "DELETE" },
     );

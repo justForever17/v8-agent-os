@@ -380,7 +380,7 @@ function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) 
     );
 }
 
-function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
+export function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
     const nodes = React.useMemo(
         () => buildRuntimeEpisodeGraph(toRuntimeEpisodeGraphActivities(activities), {
             rootLabel: "Supervisor",
@@ -863,7 +863,9 @@ export function RuntimeTimelinePanel({
                                             )}
                                         </>
                                     ) : isSubagentRuntime ? (
-                                        <SwarmNodeBoard activities={activities} />
+                                        <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
+                                            子代理蜂群已合并到对话运行的执行地图里；请在 Supervisor 气泡或对话运行入口查看调度树。
+                                        </div>
                                     ) : activities.length > 0 ? (
                                         <>
                                             {activities.map((activity, index) => {

@@ -204,6 +204,7 @@
   "src.components.chat.runtimetimelinepanel.runtime": "运行状态",
   "src.components.chat.runtimetimelinepanel.runtime_activity_is_streaming_here_while_you_stay_in_chat": "运行轨迹正在持续刷新。你可以继续停留在聊天主界面，细节会在这里循环播报。",
   "src.components.chat.runtimetimelinepanel.runtime_activity_is_updating": "运行轨迹正在更新",
+  "src.components.chat.runtimetimelinepanel.subagent_swarm_merged_into_chat_runtime": "子代理蜂群已合并到对话运行的执行地图里；请在 Supervisor 气泡或对话运行入口查看调度树。",
   "src.components.chat.runtimetimelinepanel.there_are_no_context_governance_entries_for_this_session_yet": "当前会话还没有上下文治理记录。",
   "src.components.chat.runtimetimelinepanel.there_are_no_runtime_entries_to_display_yet": "当前还没有可展示的运行记录。",
   "src.components.chat.thinkingcard.provider_reasoning": "reasoning",

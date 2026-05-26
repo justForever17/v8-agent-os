@@ -4594,11 +4594,21 @@ export default function ChatScreen() {
                 style: "destructive",
                 onPress: () => {
                     void (async () => {
-                        if (message.id && !message.id.startsWith("user-") && !message.id.startsWith("assistant-")) {
-                            await deleteMessage(authorizedFetch, message.id);
+                        const messageId = String(message.id || message.renderKey || "").trim();
+                        const conversationId = activeConversationIdRef.current || activeConversationId;
+                        if (messageId) {
+                            await deleteMessage(authorizedFetch, messageId, conversationId);
                         }
                         setMessages((current) => {
-                            const next = current.filter((item) => item.renderKey !== message.renderKey);
+                            const next = current.filter((item) => {
+                                if (message.renderKey && item.renderKey === message.renderKey) {
+                                    return false;
+                                }
+                                if (messageId && item.id === messageId) {
+                                    return false;
+                                }
+                                return true;
+                            });
                             messagesRef.current = next;
                             realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
                                 next,
@@ -4612,7 +4622,7 @@ export default function ChatScreen() {
                 },
             },
         ]);
-    }, [authorizedFetch, t]);
+    }, [activeConversationId, authorizedFetch, t]);
 
     const handlePickAttachment = useCallback(async () => {
         setAttachmentBusy(true);
@@ -6096,6 +6106,7 @@ export default function ChatScreen() {
                                     userImageUri={profileImageUri || ""}
                                     userDisplayName={user?.name || user?.login || user?.email || ""}
                                     processes={hudProcesses}
+                                    runtimeActivities={projection.runtimeStageModel.activities}
                                     contextReferences={projection.contextReferences}
                                     pendingApproval={projection.pendingApproval}
                                     pendingApprovalCount={projection.pendingApprovalCount}

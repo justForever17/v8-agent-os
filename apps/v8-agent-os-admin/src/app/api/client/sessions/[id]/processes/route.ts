@@ -6,6 +6,22 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { normalizeProcessForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const PROCESS_SURFACE_TIMEOUT_MS = 6000;
+
+function staleProcessSurface(sessionId: string, reason: string) {
+    return {
+        sessionId,
+        currentRunId: null,
+        latestSeq: 0,
+        processes: [],
+        stale: true,
+        processPanelError: reason,
+        _profile: {
+            stale: true,
+            processPanelError: reason,
+        },
+    };
+}
 
 export async function GET(
     req: NextRequest,
@@ -18,17 +34,36 @@ export async function GET(
     }
 
     const { id } = await params;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
 
     try {
+        const controller = new AbortController();
+        timeout = setTimeout(() => controller.abort(), PROCESS_SURFACE_TIMEOUT_MS);
         const response = await fetch(`${ENGINE_URL}/sessions/${id}/processes`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
+            signal: controller.signal,
         });
+        clearTimeout(timeout);
 
         if (!response.ok) {
             console.error("[Client Session Processes] Failed to fetch engine process surface:", await response.text());
-            return NextResponse.json({ error: "Failed to fetch process surface" }, { status: 500 });
+            const responsePayload = staleProcessSurface(id, "engine_process_surface_unavailable");
+            const elapsedMs = Date.now() - startedAt;
+            recordAdminApiMetric({
+                route: "client.sessions.processes",
+                status: 200,
+                elapsedMs,
+                payloadBytes: jsonSizeBytes(responsePayload),
+            });
+            return NextResponse.json(responsePayload, {
+                headers: {
+                    "x-v8-admin-proxy-ms": String(elapsedMs),
+                    "x-v8-payload-bytes": String(jsonSizeBytes(responsePayload)),
+                    "x-v8-process-surface-stale": "1",
+                },
+            });
         }
 
         const payload = await response.json().catch(() => ({}));
@@ -60,7 +95,24 @@ export async function GET(
             },
         });
     } catch (error) {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
         console.error("[Client Session Processes] Engine communication failed:", error);
-        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+        const responsePayload = staleProcessSurface(id, "engine_process_surface_timeout");
+        const elapsedMs = Date.now() - startedAt;
+        recordAdminApiMetric({
+            route: "client.sessions.processes",
+            status: 200,
+            elapsedMs,
+            payloadBytes: jsonSizeBytes(responsePayload),
+        });
+        return NextResponse.json(responsePayload, {
+            headers: {
+                "x-v8-admin-proxy-ms": String(elapsedMs),
+                "x-v8-payload-bytes": String(jsonSizeBytes(responsePayload)),
+                "x-v8-process-surface-stale": "1",
+            },
+        });
     }
 }

@@ -14,6 +14,7 @@ import { type AdminProcessRef, type ContextReferenceItem } from "@v8/session-rea
 import { AskUserModal } from "@/src/components/chat/AskUserModal";
 import { ContextReferencesHUD } from "@/src/components/chat/ContextReferencesHUD";
 import { MessageBubble } from "@/src/components/chat/MessageBubble";
+import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { hasRenderablePhoneTimelineNodes } from "@/src/lib/chat-node-visibility";
 import { isActiveAssistantStreamPhase } from "@/src/lib/chat-stream-state";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -34,6 +35,7 @@ type ChatWindowProps = {
     userImageUri?: string;
     userDisplayName?: string;
     processes: AdminProcessRef[];
+    runtimeActivities?: PhoneRuntimeStageActivity[];
     contextReferences: ContextReferenceItem[];
     pendingApproval?: ChatPendingInteraction | null;
     pendingApprovalCount?: number;
@@ -114,6 +116,7 @@ export const ChatWindow = memo(function ChatWindow({
     userImageUri,
     userDisplayName,
     processes,
+    runtimeActivities = [],
     contextReferences,
     pendingApproval,
     pendingApprovalCount = 0,
@@ -246,6 +249,7 @@ export const ChatWindow = memo(function ChatWindow({
                                 userImageUri={userImageUri}
                                 userDisplayName={userDisplayName}
                                 processes={processes}
+                                runtimeActivities={runtimeActivities}
                             />
                         ))
                     )}

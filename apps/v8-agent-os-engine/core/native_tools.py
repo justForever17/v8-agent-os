@@ -5663,6 +5663,7 @@ def _append_runtime_episode(
     groups: list[dict[str, Any]],
     allow_direct_fallback: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    route_context = dict(route_context or {})
     episode = build_runtime_episode(
         need=need,
         kind=kind,
@@ -5672,8 +5673,20 @@ def _append_runtime_episode(
         extra={"allowDirectFallback": bool(allow_direct_fallback)},
     )
     runtime_context = get_runtime_context()
-    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip() or None
-    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip() or None
+    session_id = str(
+        runtime_context.get("session_id")
+        or runtime_context.get("sessionId")
+        or route_context.get("session_id")
+        or route_context.get("sessionId")
+        or ""
+    ).strip() or None
+    run_id = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or route_context.get("run_id")
+        or route_context.get("runId")
+        or ""
+    ).strip() or None
     persisted = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=int(need.get("priority") or 0))
     merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "sessionId", "run_id", "runId", "state", "lastHeartbeatAt"}}}
     if session_id:
@@ -5697,7 +5710,7 @@ def runtime_broker(
     tool_groups: Optional[list[str]] = None,
     reason: Optional[str] = None,
     detail_level: str = "summary",
-    need: Optional[dict[str, Any]] = None,
+    need: Any = None,
     allow_direct_fallback: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
@@ -9767,16 +9780,46 @@ def command_session_broker(
         )
 
 
+def _coerce_delegation_json_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return value
+
+
+def _coerce_delegation_list(value: Any, *, nested_keys: tuple[str, ...] = ("tasks", "workerBriefs", "worker_briefs")) -> list[Any]:
+    parsed = _coerce_delegation_json_value(value)
+    if isinstance(parsed, list):
+        return list(parsed)
+    if isinstance(parsed, dict):
+        for key in nested_keys:
+            nested = parsed.get(key)
+            if isinstance(nested, list):
+                return list(nested)
+        return [parsed]
+    return []
+
+
+def _coerce_delegation_dict(value: Any) -> dict[str, Any]:
+    parsed = _coerce_delegation_json_value(value)
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
 @tool
 def delegation_broker(
     mode: str = "observe",
     family: str = "",
-    tasks: list[dict[str, Any]] | None = None,
+    tasks: Any = None,
     target_count: int | None = None,
-    worker_briefs: list[dict[str, Any]] | None = None,
+    worker_briefs: Any = None,
     allow_child_delegation: bool = False,
-    child_delegation_budget: dict[str, Any] | None = None,
-    write_set_partitions: list[dict[str, Any]] | None = None,
+    child_delegation_budget: Any = None,
+    write_set_partitions: Any = None,
     delegation_id: str = "",
     followup: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -9811,6 +9854,10 @@ def delegation_broker(
     inherited_context = dict(base_state.get("current_route_context") or {})
     if not inherited_context:
         inherited_context = latest_delegation_context(base_contexts, agent_id=None)
+    tasks_list = _coerce_delegation_list(tasks, nested_keys=("tasks", "taskBriefs", "task_briefs"))
+    worker_briefs_list = _coerce_delegation_list(worker_briefs, nested_keys=("workerBriefs", "worker_briefs", "workers"))
+    child_delegation_budget = _coerce_delegation_dict(child_delegation_budget)
+    write_set_partitions_list = _coerce_delegation_list(write_set_partitions, nested_keys=("writeSetPartitions", "write_set_partitions"))
 
     if normalized_mode == "reveal":
         loaded_agents = storage.get_all_agents()
@@ -9841,7 +9888,7 @@ def delegation_broker(
         )
 
     if normalized_mode == "dispatch":
-        requested_tasks = list(tasks or worker_briefs or [])
+        requested_tasks = list(tasks_list or worker_briefs_list or [])
         dispatch_task_source = "explicit"
         if not requested_tasks:
             requested_tasks = _planner_task_briefs_from_state(
@@ -9873,14 +9920,14 @@ def delegation_broker(
                 requested_tasks.append({**seed, "title": f"{seed.get('title') or 'Delegated task'} #{index + 1}"})
         macro_tasks = normalize_task_briefs(requested_tasks)
         normalized_tasks = expand_delegation_task_briefs(requested_tasks)
-        if allow_child_delegation or child_delegation_budget or write_set_partitions:
+        if allow_child_delegation or child_delegation_budget or write_set_partitions_list:
             for task in normalized_tasks:
                 task.setdefault("delegationPolicy", {})
                 task["delegationPolicy"].update(
                     {
                         "allowChildDelegation": bool(allow_child_delegation),
                         **({"childDelegationBudget": child_delegation_budget} if child_delegation_budget else {}),
-                        **({"writeSetPartitions": write_set_partitions} if write_set_partitions else {}),
+                        **({"writeSetPartitions": write_set_partitions_list} if write_set_partitions_list else {}),
                     }
                 )
         if not normalized_tasks:

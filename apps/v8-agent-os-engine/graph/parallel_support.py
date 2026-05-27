@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import uuid
 from typing import Any
@@ -17,10 +18,28 @@ from core.runtime_episodes import (
     transition_runtime_episode,
     upsert_runtime_episode,
 )
+from erc.runtime_context import bind_runtime_context
 from .route_context import merge_route_context
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = dict(state or {})
+    route_context = dict(state.get("current_route_context") or {})
+    branch = dict(branch or state.get("parallel_branch") or {})
+    context = {
+        "runtime_kind": "subagent",
+        "trigger_source": "delegation_broker",
+        "session_id": state.get("session_id") or state.get("sessionId") or route_context.get("session_id") or route_context.get("sessionId"),
+        "run_id": state.get("run_id") or state.get("runId") or route_context.get("run_id") or route_context.get("runId"),
+        "workspace_path": state.get("workspace_path") or state.get("workspacePath") or route_context.get("workspace_path") or route_context.get("workspacePath"),
+        "goal": branch.get("reason") or branch.get("taskGoal") or branch.get("taskBrief"),
+        "delegation_id": branch.get("delegationId"),
+        "subagent_id": branch.get("agentId"),
+    }
+    return {key: value for key, value in context.items() if value is not None and str(value).strip()}
 
 
 def _merge_state_update(state: dict[str, Any], update: dict[str, Any] | None) -> dict[str, Any]:
@@ -74,6 +93,96 @@ def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
     return compact
 
 
+def _child_request_from_send_state(
+    child_state: dict[str, Any],
+    *,
+    source_branch: dict[str, Any],
+    source_agent_id: str,
+    seed: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(child_state, dict):
+        return None
+    child_branch = dict(child_state.get("parallel_branch") or {})
+    if not child_branch:
+        return None
+    seed = dict(seed or {})
+    child_invocation_id = str(child_branch.get("invocationId") or seed.get("childInvocationId") or "").strip()
+    child_delegation_id = str(child_branch.get("delegationId") or seed.get("childDelegationId") or "").strip()
+    request_id = str(seed.get("requestId") or "").strip()
+    if not request_id:
+        stable_part = child_invocation_id or child_delegation_id
+        request_id = f"child_{stable_part}" if stable_part else f"child_{uuid.uuid4().hex[:12]}"
+    return {
+        "requestId": request_id,
+        "createdAt": seed.get("createdAt") or _now_iso(),
+        "sourceInvocationId": seed.get("sourceInvocationId") or source_branch.get("invocationId"),
+        "sourceDelegationId": seed.get("sourceDelegationId") or source_branch.get("delegationId"),
+        "sourceAgentId": seed.get("sourceAgentId") or source_agent_id,
+        "sourceAgentName": seed.get("sourceAgentName") or source_branch.get("agentName") or source_agent_id,
+        "childInvocationId": child_invocation_id or seed.get("childInvocationId"),
+        "childDelegationId": child_delegation_id or seed.get("childDelegationId"),
+        "childTaskBriefId": seed.get("childTaskBriefId") or child_branch.get("taskBriefId"),
+        "childTaskGoal": seed.get("childTaskGoal") or child_branch.get("reason"),
+        "childAgentId": seed.get("childAgentId") or child_branch.get("agentId"),
+        "childAgentName": seed.get("childAgentName") or child_branch.get("agentName"),
+        "childDepth": seed.get("childDepth") or child_branch.get("delegationDepth"),
+        "send": {
+            "node": "parallel_delegate_task",
+            "arg": child_state,
+        },
+    }
+
+
+def _child_requests_from_pending_records(
+    pending: Any,
+    *,
+    source_branch: dict[str, Any],
+    source_agent_id: str,
+) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    for raw in list(pending or []):
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        send_data = item.get("send") if isinstance(item.get("send"), dict) else {}
+        node = str(send_data.get("node") or item.get("node") or "").strip()
+        arg = send_data.get("arg") if isinstance(send_data.get("arg"), dict) else item.get("arg")
+        if not isinstance(arg, dict):
+            child_branch = item.get("childBranch") if isinstance(item.get("childBranch"), dict) else {}
+            if child_branch:
+                arg = {"parallel_branch": dict(child_branch)}
+        if node and node != "parallel_delegate_task":
+            continue
+        request = _child_request_from_send_state(
+            arg,
+            source_branch=source_branch,
+            source_agent_id=source_agent_id,
+            seed=item,
+        ) if isinstance(arg, dict) else None
+        if request:
+            requests.append(request)
+    return requests
+
+
+def _dedupe_child_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in requests:
+        key = str(
+            item.get("requestId")
+            or item.get("childDelegationId")
+            or item.get("childInvocationId")
+            or ""
+        ).strip()
+        if not key:
+            key = uuid.uuid4().hex
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _extract_child_delegation_requests(
     goto: Any,
     *,
@@ -81,9 +190,25 @@ def _extract_child_delegation_requests(
     source_agent_id: str,
 ) -> list[dict[str, Any]]:
     requests: list[dict[str, Any]] = []
-    items = goto if isinstance(goto, list) else []
+    if isinstance(goto, list):
+        items = goto
+    elif isinstance(goto, (Command, Send)):
+        items = [goto]
+    elif isinstance(goto, dict):
+        items = [goto]
+    else:
+        items = []
     for item in items:
         if isinstance(item, Command):
+            update = getattr(item, "update", None)
+            if isinstance(update, dict):
+                requests.extend(
+                    _child_requests_from_pending_records(
+                        update.get("pending_child_delegations"),
+                        source_branch=source_branch,
+                        source_agent_id=source_agent_id,
+                    )
+                )
             requests.extend(
                 _extract_child_delegation_requests(
                     getattr(item, "goto", None),
@@ -92,39 +217,49 @@ def _extract_child_delegation_requests(
                 )
             )
             continue
+        if isinstance(item, dict):
+            requests.extend(
+                _child_requests_from_pending_records(
+                    item.get("pending_child_delegations")
+                    or (item.get("update") or {}).get("pending_child_delegations")
+                    if isinstance(item.get("update"), dict)
+                    else item.get("pending_child_delegations"),
+                    source_branch=source_branch,
+                    source_agent_id=source_agent_id,
+                )
+            )
+            if "goto" in item:
+                requests.extend(
+                    _extract_child_delegation_requests(
+                        item.get("goto"),
+                        source_branch=source_branch,
+                        source_agent_id=source_agent_id,
+                    )
+                )
+            maybe_node = str(item.get("node") or "").strip()
+            maybe_arg = item.get("arg")
+            if maybe_node == "parallel_delegate_task" and isinstance(maybe_arg, dict):
+                request = _child_request_from_send_state(
+                    maybe_arg,
+                    source_branch=source_branch,
+                    source_agent_id=source_agent_id,
+                )
+                if request:
+                    requests.append(request)
+            continue
         if not isinstance(item, Send):
             continue
         if str(getattr(item, "node", "") or "") != "parallel_delegate_task":
             continue
         child_state = getattr(item, "arg", None)
-        if not isinstance(child_state, dict):
-            continue
-        child_branch = dict(child_state.get("parallel_branch") or {})
-        child_invocation_id = str(child_branch.get("invocationId") or "").strip()
-        child_delegation_id = str(child_branch.get("delegationId") or "").strip()
-        request_id = f"child_{uuid.uuid4().hex[:12]}"
-        requests.append(
-            {
-                "requestId": request_id,
-                "createdAt": _now_iso(),
-                "sourceInvocationId": source_branch.get("invocationId"),
-                "sourceDelegationId": source_branch.get("delegationId"),
-                "sourceAgentId": source_agent_id,
-                "sourceAgentName": source_branch.get("agentName") or source_agent_id,
-                "childInvocationId": child_invocation_id,
-                "childDelegationId": child_delegation_id,
-                "childTaskBriefId": child_branch.get("taskBriefId"),
-                "childTaskGoal": child_branch.get("reason"),
-                "childAgentId": child_branch.get("agentId"),
-                "childAgentName": child_branch.get("agentName"),
-                "childDepth": child_branch.get("delegationDepth"),
-                "send": {
-                    "node": "parallel_delegate_task",
-                    "arg": child_state,
-                },
-            }
+        request = _child_request_from_send_state(
+            child_state,
+            source_branch=source_branch,
+            source_agent_id=source_agent_id,
         )
-    return requests
+        if request:
+            requests.append(request)
+    return _dedupe_child_requests(requests)
 
 
 async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str, Any]) -> tuple[list[Any], list[Any], dict[str, Any], list[dict[str, Any]]]:
@@ -140,17 +275,30 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
     max_steps = 24
     for _ in range(max_steps):
         if current_node == agent_id:
-            result = agent_data["node_func"](local_state)
+            runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
+
+            def _invoke_agent_node() -> Any:
+                with bind_runtime_context(**runtime_context):
+                    return agent_data["node_func"](local_state)
+
+            result = await asyncio.to_thread(_invoke_agent_node)
         elif current_node == f"{agent_id}_tools":
             tool_node = agent_data.get("tool_node_func")
             if tool_node is None:
                 raise RuntimeError(f"{agent_id} 没有可用的工具节点。")
-            result = await tool_node(local_state)
+            with bind_runtime_context(**_runtime_context_from_parallel_state(local_state, branch=branch)):
+                result = await tool_node(local_state)
         elif current_node == f"{agent_id}_reviewer":
             reviewer = agent_data.get("reviewer_func")
             if reviewer is None:
                 raise RuntimeError(f"{agent_id} 没有可用的 reviewer 节点。")
-            result = reviewer(local_state)
+            runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
+
+            def _invoke_reviewer_node() -> Any:
+                with bind_runtime_context(**runtime_context):
+                    return reviewer(local_state)
+
+            result = await asyncio.to_thread(_invoke_reviewer_node)
         else:
             raise RuntimeError(f"{agent_id} 进入了未识别的并发分支节点：{current_node}")
 
@@ -408,6 +556,9 @@ def build_parallel_delegate_join_node():
         child_sends, child_invocations, child_summaries = _child_sends_for_invocation(state, invocation_id)
         if child_sends:
             route_context = dict(state.get("current_route_context") or {})
+            session_id = str(state.get("session_id") or state.get("sessionId") or route_context.get("session_id") or route_context.get("sessionId") or "").strip() or None
+            run_id = str(state.get("run_id") or state.get("runId") or route_context.get("run_id") or route_context.get("runId") or "").strip() or None
+            workspace_path = str(state.get("workspace_path") or state.get("workspacePath") or route_context.get("workspace_path") or route_context.get("workspacePath") or "").strip() or None
             child_episodes: list[dict[str, Any]] = []
             for child_summary in child_summaries:
                 child_branch = dict(child_summary.get("childBranch") or {})
@@ -423,6 +574,8 @@ def build_parallel_delegate_join_node():
                     "writeSet": child_branch.get("writeSet"),
                     "acceptanceHint": child_branch.get("acceptanceHint"),
                 }
+                if workspace_path:
+                    worker_brief.setdefault("workspacePath", workspace_path)
                 episode = build_runtime_episode(
                     need={
                         "kind": "delegation",
@@ -436,6 +589,7 @@ def build_parallel_delegate_join_node():
                             "allowChildDelegation": bool(child_branch.get("allowChildDelegation")),
                             "childDelegationBudget": child_branch.get("childDelegationBudget") or {},
                             "writeSetPartitions": child_branch.get("writeSetPartitions") or [],
+                            **({"workspacePath": workspace_path} if workspace_path else {}),
                         },
                     },
                     kind="delegation",
@@ -450,13 +604,28 @@ def build_parallel_delegate_join_node():
                         "childAgentId": child_summary.get("childAgentId"),
                         "childAgentName": child_summary.get("childAgentName"),
                         "childDepth": child_summary.get("childDepth"),
+                        **({"workspacePath": workspace_path} if workspace_path else {}),
                     },
                 )
-                queued_episode = enqueue_runtime_episode(episode, priority=45)
+                with bind_runtime_context(
+                    session_id=session_id,
+                    run_id=run_id,
+                    workspace_path=workspace_path,
+                    runtime_kind="delegation",
+                    trigger_source="child_delegation_router",
+                ):
+                    queued_episode = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=45)
                 route_context = upsert_runtime_episode(route_context, queued_episode)
                 child_episodes.append(queued_episode)
-                emit_runtime_episode_event("delegation.child.requested", {"episode": queued_episode, "childDelegation": child_summary})
-                emit_runtime_episode_event("runtime.episode.queued", {"episode": queued_episode})
+                with bind_runtime_context(
+                    session_id=session_id,
+                    run_id=run_id,
+                    workspace_path=workspace_path,
+                    runtime_kind="delegation",
+                    trigger_source="child_delegation_router",
+                ):
+                    emit_runtime_episode_event("delegation.child.requested", {"episode": queued_episode, "childDelegation": child_summary})
+                    emit_runtime_episode_event("runtime.episode.queued", {"episode": queued_episode})
             return Command(
                 goto="supervisor",
                 update={

@@ -21,13 +21,14 @@ from core.runtime_episodes import (
     transition_runtime_episode,
     upsert_runtime_episode,
 )
+from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
 from erc.runtime_stability import runtime_stability_service
 from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
 
 
 RUNTIME_EPISODE_WAIT_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_WAIT_SECONDS", "600"))
-RUNTIME_EPISODE_QUEUE_GRACE_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_QUEUE_GRACE_SECONDS", "12"))
+RUNTIME_EPISODE_QUEUE_GRACE_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_QUEUE_GRACE_SECONDS", "60"))
 RUNTIME_EPISODE_POLL_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_POLL_SECONDS", "0.8"))
 
 
@@ -68,6 +69,28 @@ def _state_runtime_identity(state: dict | None) -> tuple[str | None, str | None,
         runtime_context.get("workspacePath"),
     ) or None
     return session_id, run_id, workspace_path
+
+
+def _has_live_bound_episode_lease() -> bool:
+    """Return true when a runner is actively working a canonical session-bound episode."""
+    now_iso = utc_now_iso()
+    try:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM runtime_episode_queue
+                WHERE state = 'leased'
+                  AND COALESCE(session_id, '') <> ''
+                  AND COALESCE(run_id, '') <> ''
+                  AND COALESCE(lease_expires_at, '') > ?
+                LIMIT 1
+                """,
+                (now_iso,),
+            ).fetchone()
+            return bool(row)
+    except Exception:
+        return False
 
 
 def build_planner_auto_dispatch_node():
@@ -455,8 +478,22 @@ def build_runtime_episode_wait_node():
         return HumanMessage(content="\n".join(lines))
 
     async def runtime_episode_wait_node(state):
-        session_id, run_id, _workspace_path = _state_runtime_identity(state)
+        session_id, run_id, workspace_path = _state_runtime_identity(state)
         route_context = dict((state or {}).get("current_route_context") or {})
+        if session_id:
+            route_context.setdefault("session_id", session_id)
+            route_context.setdefault("sessionId", session_id)
+        if run_id:
+            route_context.setdefault("run_id", run_id)
+            route_context.setdefault("runId", run_id)
+        if workspace_path:
+            route_context.setdefault("workspace_path", workspace_path)
+            route_context.setdefault("workspacePath", workspace_path)
+        identity_update = {
+            **({"session_id": session_id, "sessionId": session_id} if session_id else {}),
+            **({"run_id": run_id, "runId": run_id} if run_id else {}),
+            **({"workspace_path": workspace_path, "workspacePath": workspace_path} if workspace_path else {}),
+        }
         started_at = time.monotonic()
         queue_deadline = started_at + max(0.1, RUNTIME_EPISODE_QUEUE_GRACE_SECONDS)
         deadline = started_at + max(queue_deadline - started_at, RUNTIME_EPISODE_WAIT_SECONDS)
@@ -469,11 +506,12 @@ def build_runtime_episode_wait_node():
             route_context, handoffs = _merge_handoffs(route_context, episodes)
             active = _active_episodes(episodes)
             terminal = _terminal_episodes(episodes)
-            if handoffs or (episodes and not active):
+            if episodes and not active:
                 return Command(
                     goto="supervisor",
                     update={
                         "current_route_context": route_context,
+                        **identity_update,
                         "planner_dispatch_status": {
                             "mode": "runtime_episode",
                             "nextAction": "resume_supervisor",
@@ -489,6 +527,9 @@ def build_runtime_episode_wait_node():
                 active_states = {str(episode.get("state") or "") for episode in active}
                 only_unclaimed_queue = active_states <= {"detected", "routed", "queued"}
                 if only_unclaimed_queue and time.monotonic() >= queue_deadline:
+                    if _has_live_bound_episode_lease() and time.monotonic() < deadline:
+                        await asyncio.sleep(max(0.1, RUNTIME_EPISODE_POLL_SECONDS))
+                        continue
                     failed_episodes: list[dict] = []
                     for episode in active:
                         episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
@@ -510,6 +551,7 @@ def build_runtime_episode_wait_node():
                         goto="supervisor",
                         update={
                             "current_route_context": route_context,
+                            **identity_update,
                             "planner_dispatch_status": {
                                 "mode": "runtime_episode",
                                 "nextAction": "recoverable_failure",
@@ -531,6 +573,7 @@ def build_runtime_episode_wait_node():
                         goto="supervisor",
                         update={
                             "current_route_context": route_context,
+                            **identity_update,
                             "planner_dispatch_status": {
                                 "mode": "runtime_episode",
                                 "nextAction": "recoverable_failure",
@@ -558,6 +601,7 @@ def build_runtime_episode_wait_node():
                 goto="supervisor",
                 update={
                     "current_route_context": route_context,
+                    **identity_update,
                     "planner_dispatch_status": {
                         "mode": "runtime_episode",
                         "nextAction": "resume_supervisor",

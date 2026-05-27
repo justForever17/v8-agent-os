@@ -319,15 +319,11 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
 
 def _schedule_chat_run(request: ChatRequest, *, transport: str, run_id: str | None = None) -> str | None:
     scheduled_run_id = run_id or request.resume_run_id
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_drain_chat_run(request, transport=transport, run_id=run_id))
-    except RuntimeError:
-        threading.Thread(
-            target=lambda: asyncio.run(_drain_chat_run(request, transport=transport, run_id=run_id)),
-            name=f"chat-run-{scheduled_run_id or uuid.uuid4().hex[:8]}",
-            daemon=True,
-        ).start()
+    threading.Thread(
+        target=lambda: asyncio.run(_drain_chat_run(request, transport=transport, run_id=run_id)),
+        name=f"chat-run-{scheduled_run_id or uuid.uuid4().hex[:8]}",
+        daemon=True,
+    ).start()
     return scheduled_run_id
 
 

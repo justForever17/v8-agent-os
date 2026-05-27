@@ -518,6 +518,47 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertTrue(any(item.get("handoffRefId") == handoff["handoffRefId"] for item in refs))
         self.assertEqual(command.update["planner_dispatch_status"]["state"], "handoff_ready")
 
+    def test_runtime_episode_wait_node_does_not_resume_on_partial_handoff(self):
+        node = build_runtime_episode_wait_node()
+        research_id = "episode_wait_node_partial_research"
+        engineering_id = "episode_wait_node_partial_engineering"
+        research = build_runtime_episode(
+            need={"episodeId": research_id, "kind": "research", "reason": "need evidence"},
+            kind="research",
+            state="completed",
+            continuation_target="runtime_episode_runner",
+        )
+        engineering = build_runtime_episode(
+            need={"episodeId": engineering_id, "kind": "engineering", "reason": "implementation still running"},
+            kind="engineering",
+            state="active",
+            continuation_target="runtime_episode_runner",
+        )
+        db.upsert_runtime_episode_record(research, enqueue=False)
+        db.upsert_runtime_episode_record(engineering, enqueue=False)
+        handoff = build_handoff_ref(
+            producer_episode_id=research_id,
+            kind="research",
+            compact_summary="Research evidence bundle ready.",
+            status="ready",
+        )
+        db.add_runtime_episode_handoff(episode_id=research_id, handoff=handoff)
+        db.complete_runtime_episode(research_id, state="completed", result_ref=handoff["handoffRefId"])
+
+        with self.assertRaises(asyncio.TimeoutError):
+            asyncio.run(
+                asyncio.wait_for(
+                    node(
+                        {
+                            "current_route_context": {
+                                "capabilityEpisodes": [research, engineering],
+                            }
+                        }
+                    ),
+                    timeout=0.2,
+                )
+            )
+
     def test_parallel_join_routes_pending_child_delegations_from_top_level(self):
         join_node = build_parallel_delegate_join_node()
         child_state = {

@@ -15,6 +15,7 @@ from .tool_routing import create_routed_tool_node as tool_routing_create_routed_
 from .supervisor_builder import build_supervisor_node, build_supervisor_runtime_bundle
 from .supervisor_support import build_agent_runtime_failure_command, extract_task_context, resolve_todos
 from .workflow_assembly import compile_supervisor_workflow
+from .route_context import merge_route_context
 
 install_provider_compatibility_patches()
 
@@ -28,7 +29,7 @@ class AgentState(TypedDict):
     parallel_results: Annotated[list, operator.add]
     parallel_invocations: Annotated[list, operator.add]
     pending_child_delegations: Annotated[list, operator.add]
-    current_route_context: dict
+    current_route_context: Annotated[dict, merge_route_context]
     transport: NotRequired[str]
     planner_plan: NotRequired[dict]
     planner_dispatch_status: NotRequired[dict]
@@ -36,6 +37,16 @@ class AgentState(TypedDict):
     task_shape_hint: NotRequired[dict]
     explicit_subagent_families: NotRequired[list]
     context_mentions: NotRequired[list]
+    session_id: NotRequired[str]
+    sessionId: NotRequired[str]
+    run_id: NotRequired[str]
+    runId: NotRequired[str]
+    workspace_path: NotRequired[str]
+    workspacePath: NotRequired[str]
+    workspace_id: NotRequired[str]
+    workspaceId: NotRequired[str]
+    resolved_scope: NotRequired[str]
+    resolvedScope: NotRequired[str]
 
 from core.context_orchestrator import context_orchestrator
 

@@ -171,7 +171,7 @@ def enqueue_runtime_episode(
     priority: int = 0,
 ) -> dict[str, Any]:
     return persist_runtime_episode(
-        {**dict(episode or {}), "state": str((episode or {}).get("state") or "queued")},
+        {**dict(episode or {}), "state": "queued"},
         session_id=session_id,
         run_id=run_id,
         priority=priority,

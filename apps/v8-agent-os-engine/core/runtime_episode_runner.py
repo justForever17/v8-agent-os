@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import uuid
 from typing import Any
 
@@ -11,6 +12,7 @@ from core.json_safe import to_jsonable
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
 from core.workspace_state_digest import build_workspace_state_digest_context
+from erc.runtime_context import bind_runtime_context
 
 
 def _preview(value: Any, *, limit: int = 900) -> str:
@@ -40,21 +42,37 @@ class RuntimeEpisodeRunner:
     def __init__(self) -> None:
         self.worker_id = f"episode-runner:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self._task: asyncio.Task | None = None
-        self._stop_event: asyncio.Event | None = None
+        self._stop_event: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+        self._thread_started = threading.Event()
+        self._thread_loop: asyncio.AbstractEventLoop | None = None
         self._lease_seconds = 75
         self._poll_seconds = 0.8
         self._agent_nodes_map_cache: dict[str, Any] | None = None
 
     async def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
         if self._task and not self._task.done():
             return
-        self._stop_event = asyncio.Event()
-        self._task = asyncio.create_task(self._run_loop(), name="runtime-episode-runner")
+        self._stop_event = threading.Event()
+        self._thread_started.clear()
+        self._thread = threading.Thread(
+            target=self._run_loop_in_thread,
+            name="runtime-episode-runner",
+            daemon=True,
+        )
+        self._thread.start()
+        await asyncio.to_thread(self._thread_started.wait, 2.0)
         print(f"[EpisodeRunner] Started worker {self.worker_id}.")
 
     async def stop(self) -> None:
         if self._stop_event:
             self._stop_event.set()
+        if self._thread_loop and self._thread_loop.is_running():
+            self._thread_loop.call_soon_threadsafe(lambda: None)
+        if self._thread and self._thread.is_alive():
+            await asyncio.to_thread(self._thread.join, 3.0)
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -63,11 +81,27 @@ class RuntimeEpisodeRunner:
                 pass
         print(f"[EpisodeRunner] Stopped worker {self.worker_id}.")
 
+    def _run_loop_in_thread(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._thread_loop = loop
+        asyncio.set_event_loop(loop)
+        self._thread_started.set()
+        try:
+            loop.run_until_complete(self._run_loop())
+        finally:
+            loop.close()
+            if self._thread_loop is loop:
+                self._thread_loop = None
+
     async def _run_loop(self) -> None:
         assert self._stop_event is not None
         while not self._stop_event.is_set():
             try:
-                episode = db.claim_runtime_episode(worker_id=self.worker_id, lease_seconds=self._lease_seconds)
+                episode = db.claim_runtime_episode(
+                    worker_id=self.worker_id,
+                    lease_seconds=self._lease_seconds,
+                    require_bound_run=True,
+                )
                 if not episode:
                     await asyncio.sleep(self._poll_seconds)
                     continue
@@ -119,6 +153,8 @@ class RuntimeEpisodeRunner:
             handoff_status = str(handoff.get("status") or "ready").strip().lower()
             if handoff_status in {"running", "waiting", "pending"}:
                 waiting_state = "waiting_external" if target_kind in {"network_peer", "external_worker"} else "waiting"
+                if self._handoff_has_child_episodes(handoff):
+                    waiting_state = "waiting_child"
                 waiting = db.complete_runtime_episode(
                     episode_id,
                     state=waiting_state,
@@ -312,6 +348,14 @@ class RuntimeEpisodeRunner:
         raw = inputs.get("capabilityNeeds") or inputs.get("childNeeds") or need.get("capabilityNeeds") or need.get("childNeeds") or []
         return [dict(item) for item in list(raw or []) if isinstance(item, dict)]
 
+    def _handoff_has_child_episodes(self, handoff: dict[str, Any]) -> bool:
+        if not isinstance(handoff, dict):
+            return False
+        if handoff.get("childEpisodeIds"):
+            return True
+        nested = handoff.get("delegationHandoff")
+        return isinstance(nested, dict) and bool(nested.get("childEpisodeIds"))
+
     def _should_dispatch_child_needs(self, episode: dict[str, Any]) -> bool:
         metadata = dict(episode.get("metadata") or {})
         if metadata.get("childNeedsDispatched"):
@@ -377,7 +421,7 @@ class RuntimeEpisodeRunner:
         if not parent_id:
             return
         parent = db.get_runtime_episode(parent_id)
-        if not parent or str(parent.get("state") or "") != "waiting_child":
+        if not parent or str(parent.get("state") or "") not in {"waiting_child", "waiting"}:
             return
         children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=1000)
         if not children:
@@ -397,6 +441,8 @@ class RuntimeEpisodeRunner:
             "resumedFrom": "child_handoffs",
             "childEpisodeIds": [child.get("episodeId") for child in children],
             "handoffIds": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs],
+            "childHandoffs": child_handoffs,
+            "handoffBundle": child_handoffs,
             "failedChildCount": len(failed_children),
         }
         if failed_children:
@@ -418,6 +464,25 @@ class RuntimeEpisodeRunner:
             handoffBundle=child_handoffs,
             resumeToken=resume_token,
         )
+
+    def _load_child_handoffs_from_resume_token(self, resume_token: dict[str, Any]) -> list[dict[str, Any]]:
+        child_handoffs: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_child_id in list(resume_token.get("childEpisodeIds") or []):
+            child_id = str(raw_child_id or "").strip()
+            if not child_id:
+                continue
+            for handoff in db.list_runtime_episode_handoffs(child_id):
+                payload = dict(handoff.get("payload") or {})
+                if not payload:
+                    continue
+                handoff_id = str(payload.get("handoffId") or payload.get("handoffRefId") or handoff.get("handoffId") or "")
+                dedupe_key = handoff_id or f"{child_id}:{len(child_handoffs)}"
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                child_handoffs.append(payload)
+        return child_handoffs
 
     async def _execute_research(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "research: experience lookup")
@@ -473,6 +538,43 @@ class RuntimeEpisodeRunner:
         self._heartbeat(str(episode.get("episodeId")), "engineering: workspace digest")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
+        resume_token = dict(episode.get("resumeToken") or episode.get("resume_token") or {})
+        child_handoffs = list(resume_token.get("handoffBundle") or resume_token.get("childHandoffs") or [])
+        if not child_handoffs and str(resume_token.get("resumedFrom") or "") == "child_handoffs":
+            child_handoffs = self._load_child_handoffs_from_resume_token(resume_token)
+        if not child_handoffs and str(resume_token.get("resumedFrom") or "") == "child_handoffs":
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="engineering",
+                compact_summary="Engineering could not resume because completed child handoffs were not available.",
+                status="failed",
+                confidence="low",
+                consumer_hint="Retry the parent episode after child handoff recovery; do not dispatch new child work blindly.",
+                extra={
+                    "engineeringState": "recoverable_failed",
+                    "recoverable": True,
+                    "errorCode": "child_handoff_missing",
+                    "resumeToken": resume_token,
+                },
+            )
+        if child_handoffs:
+            ready_count = len(child_handoffs)
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="engineering",
+                compact_summary=(
+                    f"Engineering handoff_ready after {ready_count} child delegation handoff(s).\n"
+                    f"{_preview('; '.join(str(item.get('compactSummary') or item.get('summary') or item.get('kind') or '') for item in child_handoffs), limit=900)}"
+                ),
+                status="ready",
+                confidence="medium",
+                consumer_hint="Merge child delegation handoffs into Supervisor route context and continue orchestration.",
+                extra={
+                    "engineeringState": "handoff_ready",
+                    "childHandoffs": child_handoffs,
+                    "handoffRefs": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs if isinstance(item, dict)],
+                },
+            )
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
         workspace_path = inputs.get("workspacePath") or need.get("workspacePath")
@@ -896,27 +998,45 @@ class RuntimeEpisodeRunner:
             worker_briefs = [{"title": reason[:96], "goal": reason, "brief": reason, "executionLaneHint": "auto"}]
         try:
             from core.native_tools import delegation_broker
-
-            command = delegation_broker.func(
-                mode="dispatch",
-                tasks=worker_briefs,
-                target_count=target_count,
-                state={
-                    "run_id": episode.get("run_id") or episode.get("runId"),
-                    "session_id": episode.get("session_id") or episode.get("sessionId"),
-                    "workspace_path": inputs.get("workspacePath") or inputs.get("workspace_path") or (episode.get("need") or {}).get("workspacePath"),
-                    "delegationDispatchSource": "runtime_episode_runner",
-                    "current_route_context": {
-                        "activeCapabilityEpisodeId": episode.get("episodeId"),
-                        "capabilityEpisodes": [episode],
-                        "runtimeToolGrants": [{"group": "delegation.recursive", "runtimeKind": "subagent"}],
+            session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
+            run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+            workspace_path = str(
+                inputs.get("workspacePath")
+                or inputs.get("workspace_path")
+                or (episode.get("need") or {}).get("workspacePath")
+                or (episode.get("need") or {}).get("workspace_path")
+                or ""
+            ).strip() or None
+            runtime_context = {
+                "runtime_kind": "delegation",
+                "trigger_source": "runtime_episode_runner",
+                "session_id": session_id,
+                "run_id": run_id,
+                "workspace_path": workspace_path,
+                "goal": str(episode.get("reason") or (episode.get("need") or {}).get("reason") or "").strip(),
+            }
+            with bind_runtime_context(**runtime_context):
+                command = delegation_broker.func(
+                    mode="dispatch",
+                    tasks=worker_briefs,
+                    target_count=target_count,
+                    state={
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "workspace_path": workspace_path,
+                        "delegationDispatchSource": "runtime_episode_runner",
+                        "current_route_context": {
+                            "activeCapabilityEpisodeId": episode.get("episodeId"),
+                            "capabilityEpisodes": [episode],
+                            "runtimeToolGrants": [{"group": "delegation.recursive", "runtimeKind": "subagent"}],
+                            **({"workspacePath": workspace_path, "workspace_path": workspace_path} if workspace_path else {}),
+                        },
                     },
-                },
-                tool_call_id=f"episode:{episode.get('episodeId')}:delegation_dispatch",
-            )
-            update = dict(getattr(command, "update", None) or {})
-            results = [item for item in list(update.get("parallel_results") or []) if isinstance(item, dict)]
-            local_results, child_episode_ids = await self._execute_local_delegation_sends(command, episode)
+                    tool_call_id=f"episode:{episode.get('episodeId')}:delegation_dispatch",
+                )
+                update = dict(getattr(command, "update", None) or {})
+                results = [item for item in list(update.get("parallel_results") or []) if isinstance(item, dict)]
+                local_results, child_episode_ids = await self._execute_local_delegation_sends(command, episode)
             if local_results:
                 results.extend(local_results)
             failed = [item for item in results if str(item.get("status") or "").lower() in {"error", "failed", "blocked"}]
@@ -1010,11 +1130,45 @@ class RuntimeEpisodeRunner:
         agent_nodes_map = self._build_agent_nodes_map()
         results: list[dict[str, Any]] = []
         child_episode_ids: list[str] = []
+        inputs = dict(episode.get("inputs") or {})
+        need = dict(episode.get("need") or {})
+        session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+        workspace_path = str(
+            inputs.get("workspacePath")
+            or inputs.get("workspace_path")
+            or need.get("workspacePath")
+            or need.get("workspace_path")
+            or ""
+        ).strip() or None
         for item in sends:
             node = str(getattr(item, "node", "") or "")
             arg = getattr(item, "arg", None)
             if node != "parallel_delegate_task" or not isinstance(arg, dict):
                 continue
+            arg = dict(arg)
+            route_context = dict(arg.get("current_route_context") or {})
+            route_context.setdefault("activeCapabilityEpisodeId", episode.get("episodeId"))
+            route_context["capabilityEpisodes"] = [
+                *[entry for entry in list(route_context.get("capabilityEpisodes") or []) if isinstance(entry, dict)],
+                episode,
+            ][-50:]
+            if workspace_path:
+                route_context.setdefault("workspacePath", workspace_path)
+                route_context.setdefault("workspace_path", workspace_path)
+                arg.setdefault("workspace_path", workspace_path)
+                arg.setdefault("workspacePath", workspace_path)
+            if session_id:
+                route_context.setdefault("sessionId", session_id)
+                route_context.setdefault("session_id", session_id)
+                arg.setdefault("session_id", session_id)
+                arg.setdefault("sessionId", session_id)
+            if run_id:
+                route_context.setdefault("runId", run_id)
+                route_context.setdefault("run_id", run_id)
+                arg.setdefault("run_id", run_id)
+                arg.setdefault("runId", run_id)
+            arg["current_route_context"] = route_context
             branch = dict(arg.get("parallel_branch") or {})
             agent_id = str(branch.get("agentId") or "").strip()
             agent_data = agent_nodes_map.get(agent_id)
@@ -1039,7 +1193,25 @@ class RuntimeEpisodeRunner:
                 )
                 continue
             try:
-                _delta_messages, _delta_todos, summary, child_requests = await _run_parallel_agent_branch(arg, agent_data)
+                _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
+                    str(episode.get("episodeId") or ""),
+                    _run_parallel_agent_branch(arg, agent_data),
+                    progress=f"delegation: running subagent {agent_id or 'worker'}",
+                    interval_seconds=8.0,
+                )
+                if not child_requests and self._summary_indicates_unrouted_child_delegation(summary):
+                    child_requests = [self._fallback_child_delegation_request(branch=branch, summary=summary)]
+                    summary = {
+                        **dict(summary or {}),
+                        "status": "waiting_child_delegation",
+                        "error": "delegation_child_requested",
+                        "childDelegationCount": 1,
+                        "childDelegationRequestIds": [child_requests[0]["requestId"]],
+                        "localSelfCheck": (
+                            "Subagent requested child delegation but returned an incomplete nested dispatch payload. "
+                            "RuntimeEpisodeRunner promoted a conservative child delegation episode instead of failing the parent."
+                        ),
+                    }
                 results.append(dict(summary or {}))
                 child_episode_ids.extend(self._enqueue_child_delegation_requests(child_requests, episode=episode))
             except Exception as exc:
@@ -1063,12 +1235,82 @@ class RuntimeEpisodeRunner:
                 )
         return results, child_episode_ids
 
+    @staticmethod
+    def _summary_indicates_unrouted_child_delegation(summary: Any) -> bool:
+        if not isinstance(summary, dict):
+            return False
+        if str(summary.get("error") or "").strip() != "delegation_child_requested":
+            return False
+        if int(summary.get("childDelegationCount") or 0) > 0:
+            return False
+        return int(summary.get("nestedDispatchCount") or 0) > 0
+
+    @staticmethod
+    def _fallback_child_delegation_request(*, branch: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+        source_invocation_id = str(
+            summary.get("invocationId")
+            or branch.get("invocationId")
+            or uuid.uuid4().hex[:12]
+        ).strip()
+        source_delegation_id = str(summary.get("delegationId") or branch.get("delegationId") or "").strip()
+        child_invocation_id = f"{source_invocation_id}:child:{uuid.uuid4().hex[:8]}"
+        child_delegation_id = f"{source_delegation_id or source_invocation_id}:child"
+        task_goal = str(
+            summary.get("taskGoal")
+            or branch.get("reason")
+            or "Continue the child delegation requested by the subagent."
+        ).strip()
+        child_branch = {
+            "invocationId": child_invocation_id,
+            "delegationId": child_delegation_id,
+            "taskBriefId": f"{child_invocation_id}:brief",
+            "reason": f"Continue child delegation for: {task_goal}",
+            "delegationDepth": int(branch.get("delegationDepth") or 0) + 1,
+            "runtimeAccess": ["delegation.recursive"],
+            "allowChildDelegation": False,
+        }
+        return {
+            "requestId": f"fallback_child_{child_invocation_id}",
+            "createdAt": utc_now_iso(),
+            "sourceInvocationId": source_invocation_id,
+            "sourceDelegationId": source_delegation_id or None,
+            "sourceAgentId": summary.get("agentId") or branch.get("agentId"),
+            "sourceAgentName": summary.get("agentName") or branch.get("agentName"),
+            "childInvocationId": child_invocation_id,
+            "childDelegationId": child_delegation_id,
+            "childTaskBriefId": child_branch["taskBriefId"],
+            "childTaskGoal": child_branch["reason"],
+            "childAgentId": child_branch.get("agentId"),
+            "childAgentName": child_branch.get("agentName"),
+            "childDepth": child_branch["delegationDepth"],
+            "fallbackReason": "incomplete_nested_delegation_payload",
+            "send": {
+                "node": "parallel_delegate_task",
+                "arg": {
+                    "parallel_branch": child_branch,
+                    "messages": [],
+                    "todos": [],
+                },
+            },
+        }
+
     def _enqueue_child_delegation_requests(self, child_requests: list[dict[str, Any]], *, episode: dict[str, Any]) -> list[str]:
         if not child_requests:
             return []
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+        inputs = dict(episode.get("inputs") or {}) if isinstance(episode.get("inputs"), dict) else {}
+        need = dict(episode.get("need") or {}) if isinstance(episode.get("need"), dict) else {}
+        workspace_path = str(
+            inputs.get("workspacePath")
+            or inputs.get("workspace_path")
+            or need.get("workspacePath")
+            or need.get("workspace_path")
+            or episode.get("workspacePath")
+            or episode.get("workspace_path")
+            or ""
+        ).strip() or None
         child_episode_ids: list[str] = []
         for item in child_requests:
             child_branch = dict(((item.get("send") or {}).get("arg") or {}).get("parallel_branch") or {})
@@ -1085,6 +1327,27 @@ class RuntimeEpisodeRunner:
                 "writeSet": child_branch.get("writeSet"),
                 "acceptanceHint": child_branch.get("acceptanceHint"),
             }
+            if workspace_path:
+                worker_brief["workspacePath"] = workspace_path
+            child_inputs = {
+                "targetCount": 1,
+                "workerBriefs": [worker_brief],
+                "allowChildDelegation": bool(child_branch.get("allowChildDelegation")),
+                "childDelegationBudget": child_branch.get("childDelegationBudget") or {},
+                "writeSetPartitions": child_branch.get("writeSetPartitions") or [],
+            }
+            if workspace_path:
+                child_inputs["workspacePath"] = workspace_path
+            extra = {
+                "sourceInvocationId": item.get("sourceInvocationId"),
+                "childInvocationId": item.get("childInvocationId"),
+                "childTaskBriefId": item.get("childTaskBriefId"),
+                "childAgentId": item.get("childAgentId"),
+                "childAgentName": item.get("childAgentName"),
+                "childDepth": item.get("childDepth"),
+            }
+            if workspace_path:
+                extra["workspacePath"] = workspace_path
             child_episode = build_runtime_episode(
                 need={
                     "kind": "delegation",
@@ -1092,32 +1355,26 @@ class RuntimeEpisodeRunner:
                     "reason": item.get("childTaskGoal") or "child delegation",
                     "needId": item.get("childDelegationId") or item.get("childInvocationId"),
                     "parentEpisodeId": episode_id,
-                    "inputs": {
-                        "targetCount": 1,
-                        "workerBriefs": [worker_brief],
-                        "allowChildDelegation": bool(child_branch.get("allowChildDelegation")),
-                        "childDelegationBudget": child_branch.get("childDelegationBudget") or {},
-                        "writeSetPartitions": child_branch.get("writeSetPartitions") or [],
-                    },
+                    "inputs": child_inputs,
                 },
                 kind="delegation",
                 state="queued",
                 required_runtime_access=["delegation.recursive"],
                 parent_episode_id=episode_id,
                 continuation_target="runtime_episode_runner",
-                extra={
-                    "sourceInvocationId": item.get("sourceInvocationId"),
-                    "childInvocationId": item.get("childInvocationId"),
-                    "childTaskBriefId": item.get("childTaskBriefId"),
-                    "childAgentId": item.get("childAgentId"),
-                    "childAgentName": item.get("childAgentName"),
-                    "childDepth": item.get("childDepth"),
-                },
+                extra=extra,
             )
-            persisted = db.upsert_runtime_episode_record(child_episode, session_id=session_id, run_id=run_id, enqueue=True)
-            child_episode_ids.append(str(persisted.get("episodeId") or persisted.get("id") or ""))
-            self._emit("delegation.child.requested", episode=persisted, childDelegation=item, session_id=session_id, run_id=run_id)
-            self._emit("runtime.episode.queued", episode=persisted, session_id=session_id, run_id=run_id)
+            with bind_runtime_context(
+                session_id=session_id,
+                run_id=run_id,
+                workspace_path=workspace_path,
+                runtime_kind="delegation",
+                trigger_source="runtime_episode_runner.child_delegation",
+            ):
+                persisted = db.upsert_runtime_episode_record(child_episode, session_id=session_id, run_id=run_id, enqueue=True)
+                child_episode_ids.append(str(persisted.get("episodeId") or persisted.get("id") or ""))
+                self._emit("delegation.child.requested", episode=persisted, childDelegation=item, session_id=session_id, run_id=run_id)
+                self._emit("runtime.episode.queued", episode=persisted, session_id=session_id, run_id=run_id)
         return [item for item in child_episode_ids if item]
 
     async def _execute_network_peer_target(self, episode: dict[str, Any]) -> dict[str, Any]:

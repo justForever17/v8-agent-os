@@ -73,6 +73,22 @@ class SupervisorAgentRunner:
             state["transport"] = transport
         if isinstance(current_route_context, dict) and current_route_context:
             state["current_route_context"] = dict(current_route_context)
+            identity_pairs = (
+                ("session_id", "session_id"),
+                ("sessionId", "sessionId"),
+                ("run_id", "run_id"),
+                ("runId", "runId"),
+                ("workspace_path", "workspace_path"),
+                ("workspacePath", "workspacePath"),
+                ("workspace_id", "workspace_id"),
+                ("workspaceId", "workspaceId"),
+                ("resolved_scope", "resolved_scope"),
+                ("resolvedScope", "resolvedScope"),
+            )
+            for source_key, state_key in identity_pairs:
+                value = current_route_context.get(source_key)
+                if value:
+                    state[state_key] = value
         if isinstance(planner_plan, dict) and planner_plan:
             state["planner_plan"] = planner_plan
         if isinstance(engineering_context, dict) and engineering_context:

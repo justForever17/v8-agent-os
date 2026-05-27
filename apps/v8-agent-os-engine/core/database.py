@@ -2107,25 +2107,42 @@ class DatabaseManager:
             source_payload = to_jsonable(event.get("source") or {})
             event_payload = to_jsonable(event.get("payload") or {})
             with self.get_connection() as conn:
-                conn.execute(
-                    '''
-                    INSERT INTO runtime_events
-                    (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (
-                        event["event_id"],
-                        event.get("session_id"),
-                        event.get("run_id"),
-                        event.get("seq"),
-                        event.get("kind", "event"),
-                        event.get("topic"),
-                        event.get("ts"),
-                        json.dumps(source_payload, ensure_ascii=False),
-                        json.dumps(event_payload, ensure_ascii=False),
-                    ),
-                )
-                conn.commit()
+                session_id = event.get("session_id")
+                seq = event.get("seq")
+                for attempt in range(5):
+                    if session_id:
+                        row = conn.execute(
+                            'SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?',
+                            (session_id,),
+                        ).fetchone()
+                        seq = int(row["next_seq"]) if row else 1
+                    try:
+                        conn.execute(
+                            '''
+                            INSERT INTO runtime_events
+                            (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''',
+                            (
+                                event["event_id"],
+                                session_id,
+                                event.get("run_id"),
+                                seq,
+                                event.get("kind", "event"),
+                                event.get("topic"),
+                                event.get("ts"),
+                                json.dumps(source_payload, ensure_ascii=False),
+                                json.dumps(event_payload, ensure_ascii=False),
+                            ),
+                        )
+                        conn.commit()
+                        return
+                    except sqlite3.IntegrityError as exc:
+                        if "runtime_events.session_id, runtime_events.seq" not in str(exc):
+                            raise
+                        if attempt >= 4:
+                            raise
+                        time.sleep(0.01 * (attempt + 1))
 
         self._run_write_with_retry(_write)
 
@@ -2486,6 +2503,7 @@ class DatabaseManager:
         worker_id: str,
         lease_seconds: int = 60,
         kinds: Optional[List[str]] = None,
+        require_bound_run: bool = False,
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
         expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=int(lease_seconds or 60))).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -2510,6 +2528,8 @@ class DatabaseManager:
                     placeholders = ",".join("?" for _ in normalized_kinds)
                     query += f" AND q.kind IN ({placeholders})"
                     params.extend(normalized_kinds)
+                if require_bound_run:
+                    query += " AND COALESCE(q.session_id, '') <> '' AND COALESCE(q.run_id, '') <> ''"
                 query += " ORDER BY q.priority DESC, q.created_at ASC LIMIT 1"
                 cursor.execute(query, params)
                 row = cursor.fetchone()

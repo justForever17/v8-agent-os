@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+import asyncio
 import hashlib
 import json
+import os
 
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import ToolNode
@@ -16,6 +18,7 @@ from core.tool_surface import (
 )
 
 DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 15000
+DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = float(os.environ.get("V8_AGENT_OS_TOOL_CALL_TIMEOUT_SECONDS", "240").strip() or "240")
 
 SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS = {
     "delegation_broker",
@@ -117,10 +120,6 @@ def _route_kind_for_blocked_tool(tool_name: str, *, route_required: bool) -> str
 
 
 def _workspace_from_state(state_mapping: dict[str, Any], args: dict[str, Any]) -> str:
-    for key in ("workspacePath", "workspace_path", "cwd", "workingDirectory", "working_directory"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
     for key in ("workspace_path", "workspacePath", "project_workspace", "projectWorkspace"):
         value = state_mapping.get(key)
         if isinstance(value, str) and value.strip():
@@ -128,6 +127,10 @@ def _workspace_from_state(state_mapping: dict[str, Any], args: dict[str, Any]) -
     route_context = dict(state_mapping.get("current_route_context") or {})
     for key in ("workspacePath", "workspace_path", "projectWorkspace", "project_workspace"):
         value = route_context.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("workspacePath", "workspace_path", "cwd", "workingDirectory", "working_directory"):
+        value = args.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
@@ -566,7 +569,23 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
         )
 
     try:
-        result = await execute(request)
+        result = await asyncio.wait_for(execute(request), timeout=max(1.0, DEFAULT_TOOL_CALL_TIMEOUT_SECONDS))
+    except asyncio.TimeoutError:
+        error_msg = (
+            f"Tool '{tool_name}' timed out after {DEFAULT_TOOL_CALL_TIMEOUT_SECONDS:.0f}s. "
+            "Treat this as a recoverable tool failure and continue with available runtime handoffs or route the work to the matching runtime."
+        )
+        print(f"[ToolWrapper] {error_msg}")
+        return apply_tool_surface_budget(
+            ToolMessage(
+                content=error_msg,
+                name=tool_name,
+                tool_call_id=request.tool_call.get("id", ""),
+                status="error",
+            ),
+            budget_meta,
+            tool_name=tool_name,
+        )
     except Exception as execution_err:
         _raise_runtime_governance_exception_if_needed(execution_err)
         error_msg = str(execution_err)

@@ -251,6 +251,212 @@ def _load_durable_runtime_events(case: LiveCaseResult) -> tuple[list[dict[str, A
     return sorted(deduped.values(), key=lambda item: int(item.get("seq") or 0)), None
 
 
+def _load_durable_episode_facts(case: LiveCaseResult) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    try:
+        from core.database import db
+    except Exception as exc:  # noqa: BLE001 - live audit should preserve diagnostic context.
+        return [], [], f"{type(exc).__name__}: {exc}"
+    episodes: list[dict[str, Any]] = []
+    handoffs: list[dict[str, Any]] = []
+    try:
+        with db.get_connection() as conn:
+            params: list[Any] = []
+            clauses: list[str] = []
+            if case.session_id:
+                clauses.append("session_id = ?")
+                params.append(case.session_id)
+            if case.run_id:
+                clauses.append("run_id = ?")
+                params.append(case.run_id)
+            if not clauses:
+                return [], [], None
+            rows = conn.execute(
+                f"""
+                SELECT id, kind, state, session_id, run_id, parent_episode_id, root_episode_id,
+                       error_code, error_message, result_ref, last_progress, worker_id
+                FROM runtime_episodes
+                WHERE {" OR ".join(clauses)}
+                ORDER BY created_at
+                """,
+                tuple(params),
+            ).fetchall()
+            episodes = [dict(row) for row in rows]
+            episode_ids = [str(item.get("id") or "") for item in episodes if item.get("id")]
+            if episode_ids:
+                placeholders = ",".join("?" for _ in episode_ids)
+                handoff_rows = conn.execute(
+                    f"""
+                    SELECT id, episode_id, kind, status, compact_summary, raw_ref, detail_tool, payload_json
+                    FROM runtime_episode_handoffs
+                    WHERE episode_id IN ({placeholders})
+                    ORDER BY created_at
+                    """,
+                    tuple(episode_ids),
+                ).fetchall()
+                handoffs = []
+                for row in handoff_rows:
+                    item = dict(row)
+                    raw_payload = item.get("payload_json")
+                    if raw_payload:
+                        try:
+                            item["payload"] = json.loads(raw_payload)
+                        except Exception:
+                            item["payload"] = {}
+                    else:
+                        item["payload"] = {}
+                    handoffs.append(item)
+    except Exception as exc:  # noqa: BLE001 - live audit should preserve diagnostic context.
+        return [], [], f"{type(exc).__name__}: {exc}"
+    return episodes, handoffs, None
+
+
+def _load_live_run_facts(case: LiveCaseResult) -> tuple[dict[str, Any], str | None]:
+    try:
+        from core.database import db
+    except Exception as exc:  # noqa: BLE001 - live audit should preserve diagnostic context.
+        return {}, f"{type(exc).__name__}: {exc}"
+    facts: dict[str, Any] = {}
+    try:
+        if case.run_id:
+            record = db.get_run_record(case.run_id) or {}
+            facts["run"] = {
+                "runId": record.get("run_id") or record.get("id") or case.run_id,
+                "status": record.get("status"),
+                "finishedAt": record.get("finished_at") or record.get("finishedAt"),
+                "errorMessage": record.get("error_message") or record.get("errorMessage"),
+            }
+        episodes, _handoffs, episode_error = _load_durable_episode_facts(case)
+        if episode_error:
+            facts["episodeError"] = episode_error
+        terminal_states = {"completed", "failed", "cancelled", "merged"}
+        active = [
+            {
+                "episodeId": item.get("id"),
+                "kind": item.get("kind"),
+                "state": item.get("state"),
+                "parentEpisodeId": item.get("parent_episode_id"),
+                "lastProgress": item.get("last_progress"),
+            }
+            for item in episodes
+            if str(item.get("state") or "") not in terminal_states
+        ]
+        facts["activeEpisodes"] = active
+        facts["episodeStates"] = sorted({str(item.get("state") or "") for item in episodes if item.get("state")})
+    except Exception as exc:  # noqa: BLE001 - live audit should preserve diagnostic context.
+        return facts, f"{type(exc).__name__}: {exc}"
+    return facts, None
+
+
+def _live_run_terminal(case: LiveCaseResult) -> tuple[bool, dict[str, Any]]:
+    facts, error = _load_live_run_facts(case)
+    if error:
+        facts["error"] = error
+    run_status = str(((facts.get("run") or {}).get("status") or "")).lower()
+    active_episodes = list(facts.get("activeEpisodes") or [])
+    terminal_run_statuses = {"completed", "failed", "cancelled", "canceled", "succeeded", "success"}
+    if case.run_id and run_status and run_status not in terminal_run_statuses:
+        return False, facts
+    if active_episodes:
+        return False, facts
+    return True, facts
+
+
+def _route_evidence_for_expected_tool(case: LiveCaseResult, expected_tool: str) -> tuple[bool, str]:
+    searchable = " ".join(case.actual_tools + case.observed_topics + case.key_events)
+    if expected_tool in searchable and expected_tool not in {"runtime_broker", "delegation_broker"}:
+        return True, f"observed_tool:{expected_tool}"
+    episodes, handoffs, error = _load_durable_episode_facts(case)
+    if error:
+        case.key_events.append(_redact({"durableEpisodeFactsError": error}))
+    episode_kinds = {str(item.get("kind") or "") for item in episodes}
+    episode_states = {str(item.get("state") or "") for item in episodes}
+    handoff_kinds = {str(item.get("kind") or "") for item in handoffs}
+    terminal_states = {"completed", "failed", "cancelled", "merged"}
+    active_episodes = [
+        {"episodeId": item.get("id"), "kind": item.get("kind"), "state": item.get("state")}
+        for item in episodes
+        if str(item.get("state") or "") not in terminal_states
+    ]
+    has_terminal_episode = bool(episode_states & terminal_states)
+    has_any_handoff = bool(handoffs)
+    has_runtime_episode = bool(episodes) or any(topic.startswith("runtime.episode.") for topic in case.observed_topics)
+    has_executed_episode = bool(episode_states & {"active", "completed", "failed", "cancelled", "merged"}) or any(
+        topic in {"runtime.episode.started", "runtime.episode.completed", "runtime.episode.failed"}
+        for topic in case.observed_topics
+    )
+    if expected_tool == "runtime_broker" and has_runtime_episode:
+        evidence = {
+            "routeSatisfiedBy": "runtime_episode",
+            "episodeKinds": sorted(episode_kinds),
+            "episodeStates": sorted(episode_states),
+            "handoffKinds": sorted(handoff_kinds),
+            "activeEpisodes": active_episodes[:12],
+        }
+        case.key_events.append(_redact(evidence))
+        _append_unique(case.actual_tools, ["runtime_broker(auto_episode_route)"])
+        if active_episodes:
+            return False, "runtime_episode_not_terminal"
+        if not (has_terminal_episode and has_any_handoff):
+            return False, "runtime_episode_not_terminal"
+        if episode_states & {"failed", "cancelled"} and case.failure_reason is None:
+            case.failure_reason = "runtime_episode_failed_or_cancelled"
+        return True, "runtime_episode"
+    if expected_tool == "delegation_broker":
+        has_delegation_episode = "delegation" in episode_kinds or "subagent_swarm" in episode_kinds
+        has_delegation_handoff = any("subagent" in item or "delegation" in item for item in handoff_kinds)
+        internal_delegation_handoffs: list[dict[str, Any]] = []
+        for handoff in handoffs:
+            payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else {}
+            delegation_handoff = payload.get("delegationHandoff") if isinstance(payload.get("delegationHandoff"), dict) else {}
+            delegation_refs = list(delegation_handoff.get("delegationRefs") or payload.get("delegationRefs") or [])
+            delegation_results = list(delegation_handoff.get("results") or payload.get("results") or [])
+            if delegation_refs or delegation_results or delegation_handoff.get("status"):
+                internal_delegation_handoffs.append(
+                    {
+                        "handoffId": handoff.get("id"),
+                        "episodeId": handoff.get("episode_id"),
+                        "kind": handoff.get("kind"),
+                        "delegationStatus": delegation_handoff.get("status"),
+                        "delegationRefs": len(delegation_refs),
+                        "results": len(delegation_results),
+                        "childEpisodeIds": list(delegation_handoff.get("childEpisodeIds") or []),
+                    }
+                )
+        has_delegation_topic = any(
+            topic.startswith("delegation.") or topic.startswith("subagent.") for topic in case.observed_topics
+        )
+        if has_delegation_episode or has_delegation_handoff or has_delegation_topic or internal_delegation_handoffs:
+            evidence = {
+                "delegationSatisfiedBy": "delegation_episode_or_handoff",
+                "episodeKinds": sorted(episode_kinds),
+                "episodeStates": sorted(episode_states),
+                "handoffKinds": sorted(handoff_kinds),
+                "hasExecutedEpisode": has_executed_episode,
+                "activeEpisodes": active_episodes[:12],
+            }
+            if internal_delegation_handoffs:
+                evidence["internalDelegationHandoffs"] = internal_delegation_handoffs
+            case.key_events.append(_redact(evidence))
+            _append_unique(case.actual_tools, ["delegation_broker(auto_episode_route)"])
+            if active_episodes:
+                return False, "delegation_episode_not_terminal"
+            if has_delegation_episode and not (has_delegation_handoff or has_terminal_episode):
+                return False, "delegation_episode_not_terminal"
+            if episode_states & {"failed", "cancelled"} and not has_delegation_handoff and case.failure_reason is None:
+                case.failure_reason = "delegation_episode_failed_or_cancelled"
+            return True, "delegation_episode"
+    return False, "missing"
+
+
+def _missing_expected_tools(case: LiveCaseResult) -> list[str]:
+    missing: list[str] = []
+    for tool in case.expected_tools:
+        matched, _reason = _route_evidence_for_expected_tool(case, tool)
+        if not matched:
+            missing.append(tool)
+    return missing
+
+
 def _classify_runtime_observation(topics: list[str], *, has_run_id: bool) -> str:
     if not topics:
         return "no_runtime_events"
@@ -264,13 +470,14 @@ def _classify_runtime_observation(topics: list[str], *, has_run_id: bool) -> str
     return "runtime_events_observed"
 
 
-def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: float = 35.0) -> LiveCaseResult:
+def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: float = 120.0) -> LiveCaseResult:
     if not case.session_id:
         return case
     started = time.perf_counter()
     after_seq: int | None = None
     event_count = 0
     compact_events: list[dict[str, Any]] = []
+    poll_errors: list[str] = []
     while time.perf_counter() - started < timeout_s:
         query = f"?after_seq={after_seq}" if after_seq is not None else ""
         try:
@@ -279,8 +486,11 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
                 timeout=8,
             )
         except Exception as exc:  # noqa: BLE001 - diagnostic script should preserve endpoint failure.
-            case.key_events.append(_redact({"runtime_event_poll_error": f"{type(exc).__name__}: {exc}"}))
-            break
+            error_text = _redact(f"{type(exc).__name__}: {exc}")
+            if error_text not in poll_errors:
+                poll_errors.append(error_text)
+            time.sleep(1)
+            continue
         events = payload.get("events") if isinstance(payload, dict) else []
         if not isinstance(events, list):
             events = []
@@ -309,12 +519,15 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
             _append_unique(case.observed_topics, topics)
             _append_unique(case.actual_tools, sorted(tools))
         searchable = " ".join(case.actual_tools + case.observed_topics + case.key_events)
-        expected_seen = all(tool in searchable for tool in case.expected_tools)
+        expected_seen = not _missing_expected_tools(case) if case.expected_tools else False
         forbidden_seen = any(tool in searchable for tool in case.forbidden_tools)
-        if forbidden_seen or (case.expected_tools and expected_seen):
+        run_terminal, _run_facts = _live_run_terminal(case) if expected_seen else (False, {})
+        if forbidden_seen or (case.expected_tools and expected_seen and run_terminal):
             break
         time.sleep(2)
-    if event_count == 0 or (case.expected_tools and not all(tool in " ".join(case.actual_tools + case.observed_topics + case.key_events) for tool in case.expected_tools)):
+    if poll_errors:
+        case.key_events.append(_redact({"runtime_event_poll_errors": poll_errors[:5]}))
+    if event_count == 0 or (case.expected_tools and _missing_expected_tools(case)):
         durable_events, durable_error = _load_durable_runtime_events(case)
         if durable_events:
             durable_topics: list[str] = []
@@ -350,6 +563,8 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
             )
         elif durable_error:
             case.key_events.append(_redact({"durableTimelineFallbackError": durable_error}))
+    if case.expected_tools:
+        _missing_expected_tools(case)
     observation_stage = _classify_runtime_observation(case.observed_topics, has_run_id=bool(case.run_id))
     case.key_events.append(
         _redact(
@@ -362,6 +577,10 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
             }
         )
     )
+    run_terminal, run_facts = _live_run_terminal(case)
+    case.key_events.append(_redact({"liveRunTerminal": run_terminal, "liveRunFacts": run_facts}))
+    if case.expected_tools and not run_terminal and case.failure_reason is None:
+        case.failure_reason = "run_not_terminal"
     if case.status == "submitted":
         case.status = "observed" if event_count else "submitted_no_events"
     if case.status in {"submitted_no_events", "observed"} and case.failure_reason is None and observation_stage in {
@@ -564,7 +783,7 @@ def main() -> int:
                 )
                 continue
             searchable = " ".join(case.actual_tools + case.observed_topics + case.key_events)
-            missing_expected = [tool for tool in case.expected_tools if tool not in searchable]
+            missing_expected = _missing_expected_tools(case)
             forbidden_seen = [tool for tool in case.forbidden_tools if tool in searchable]
             if forbidden_seen:
                 findings.append(
@@ -578,6 +797,21 @@ def main() -> int:
                         modules=["graph/tool_routing.py", "core/native_tools.py", "graph/workflow_assembly.py"],
                         recommended_fix="把该 live 事件转成 agent_quality fixture，并修复 route-required → episode wait 闭环。",
                         regression_test=f"apps/v8-agent-os-engine/tests/agent_quality/test_tool_call_validation.py::{case.case_id}",
+                    )
+                )
+            if case.failure_reason and case.status != "failed":
+                severity = "P0" if case.matrix in {"tool", "multi_agent"} else "P1"
+                findings.append(
+                    AuditFinding(
+                        severity=severity,
+                        case_id=case.case_id,
+                        title="Live case 未达到终态闭环",
+                        summary=f"失败阶段：{case.failure_reason}。",
+                        repro=f"Session {case.session_id}, run {case.run_id or '-'}",
+                        suspected_root_cause="runtime episode、EpisodeRunner、handoff 回流或 Supervisor 恢复链路仍有未闭合状态。",
+                        modules=["core/runtime_episode_runner.py", "graph/workflow_assembly.py", "core/native_tools.py"],
+                        recommended_fix="回查 liveRunFacts/activeEpisodes，把该 run 固化为 fixture，确保 route→episode→runner→handoff→Supervisor 终态闭环。",
+                        regression_test=f"agent_quality::{case.matrix}",
                     )
                 )
             if missing_expected:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import mimetypes
 import os
@@ -85,8 +86,30 @@ from runtimes.network_supervisor.openai_compat import build_external_tool_alias_
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
 
-PLANNER_MODEL_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_MODEL_TIMEOUT_SECONDS", "20"))
-PLANNER_REPAIR_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_REPAIR_TIMEOUT_SECONDS", "12"))
+PLANNER_MODEL_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_MODEL_TIMEOUT_SECONDS", "45"))
+PLANNER_REPAIR_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_REPAIR_TIMEOUT_SECONDS", "18"))
+
+
+async def _ainvoke_model_off_event_loop(model: Any, messages: list[Any], *, timeout_seconds: float) -> Any:
+    """Run provider calls away from FastAPI's event loop.
+
+    Some provider adapters expose an async `ainvoke` method but still perform
+    blocking network work internally. A plain `asyncio.wait_for(model.ainvoke())`
+    cannot preempt that kind of implementation and can freeze unrelated submit
+    requests. The planner is advisory, so isolating it in a worker thread is the
+    safer failure mode: the run can fall back while the server stays responsive.
+    """
+
+    def _invoke() -> Any:
+        result = model.ainvoke(messages)
+        if inspect.isawaitable(result):
+            return asyncio.run(result)
+        return result
+
+    return await asyncio.wait_for(
+        asyncio.to_thread(_invoke),
+        timeout=max(0.1, timeout_seconds),
+    )
 
 
 class StreamFilter:
@@ -1722,14 +1745,13 @@ class ChatRuntime:
                 "inside capabilityPlan and provide matching taskBriefs.\n"
                 f"Validation error: {structured_error[:1200]}"
             )
-            raw_response = await asyncio.wait_for(
-                repair_model.ainvoke(
-                    [
-                        SystemMessage(content=repair_prompt),
-                        HumanMessage(content=planner_user_message),
-                    ]
-                ),
-                timeout=max(0.1, PLANNER_REPAIR_TIMEOUT_SECONDS),
+            raw_response = await _ainvoke_model_off_event_loop(
+                repair_model,
+                [
+                    SystemMessage(content=repair_prompt),
+                    HumanMessage(content=planner_user_message),
+                ],
+                timeout_seconds=PLANNER_REPAIR_TIMEOUT_SECONDS,
             )
             parsed = self._extract_planner_payload_from_text(raw_response)
             if parsed is None:
@@ -1823,14 +1845,13 @@ class ChatRuntime:
                 max_tokens=1400,
                 _request_kind="planner",
             ).with_structured_output(PlannerPlanPayload)
-            raw_plan = await asyncio.wait_for(
-                planner_model.ainvoke(
-                    [
-                        SystemMessage(content=self._planner_system_prompt()),
-                        HumanMessage(content=planner_user_message),
-                    ]
-                ),
-                timeout=max(0.1, PLANNER_MODEL_TIMEOUT_SECONDS),
+            raw_plan = await _ainvoke_model_off_event_loop(
+                planner_model,
+                [
+                    SystemMessage(content=self._planner_system_prompt()),
+                    HumanMessage(content=planner_user_message),
+                ],
+                timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS,
             )
             plan = self._normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
         except asyncio.TimeoutError:
@@ -2736,9 +2757,21 @@ class ChatRuntime:
 
     async def create_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         compat_diagnostics = _compat_ingress_diagnostics_from_request(chat_run.request)
-        current_route_context = {}
+        current_route_context = {
+            "session_id": chat_run.session_id,
+            "sessionId": chat_run.session_id,
+            "run_id": chat_run.active_run_id,
+            "runId": chat_run.active_run_id,
+            "workspace_path": chat_run.scope_result.binding.workspace_path,
+            "workspacePath": chat_run.scope_result.binding.workspace_path,
+            "workspace_id": chat_run.scope_result.binding.workspace_id,
+            "workspaceId": chat_run.scope_result.binding.workspace_id,
+            "resolved_scope": chat_run.scope_result.binding.resolved_scope,
+            "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+        }
         if compat_diagnostics:
             current_route_context = {
+                **current_route_context,
                 "transport": chat_run.transport,
                 "compatIngressDiagnostics": compat_diagnostics,
                 "compatClientProfile": compat_diagnostics.get("compatClientProfile"),

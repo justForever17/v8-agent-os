@@ -1,6 +1,8 @@
 import time
 from types import SimpleNamespace
 
+from langchain_core.messages import HumanMessage
+
 from .supervisor_context import (
     apply_passive_rag_injection,
     build_supervisor_system_content,
@@ -158,6 +160,39 @@ def _attach_route_context_to_response(response, *, user_query: str, route_bundle
     additional_kwargs["v8_route_context"] = payload
     additional_kwargs["v8_delegation_context"] = delegation_context
     response.additional_kwargs = additional_kwargs
+
+
+def _runtime_episode_handoff_ready(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    dispatch_status = state.get("planner_dispatch_status")
+    if not isinstance(dispatch_status, dict):
+        return False
+    mode = str(dispatch_status.get("mode") or "").strip()
+    next_action = str(dispatch_status.get("nextAction") or "").strip()
+    dispatch_state = str(dispatch_status.get("state") or "").strip()
+    if mode != "runtime_episode" or next_action != "resume_supervisor":
+        return False
+    if dispatch_state not in {"handoff_ready", "episode_terminal"}:
+        return False
+    if dispatch_state == "handoff_ready":
+        return True
+    try:
+        return int(dispatch_status.get("handoffCount") or 0) > 0
+    except Exception:
+        return False
+
+
+def _runtime_handoff_final_message() -> HumanMessage:
+    return HumanMessage(
+        content=(
+            "[Runtime Completion Instruction]\n"
+            "Runtime episodes are terminal and their typed handoffs are already available in the conversation. "
+            "Now produce one concise user-facing completion/status summary and then stop. "
+            "Do not call tools, do not grant/list/route runtimes, do not inspect files, and do not start new research "
+            "unless the user sends a new request."
+        )
+    )
 
 
 def execute_supervisor_turn(
@@ -332,6 +367,9 @@ def execute_supervisor_turn(
             scope_chain=scope_chain,
             remaining_steps=state.get("remaining_steps", 100),
         )
+        if _runtime_episode_handoff_ready(state):
+            filtered_supervisor_tools = []
+            prepared_messages.append(_runtime_handoff_final_message())
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],

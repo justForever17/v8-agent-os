@@ -232,7 +232,7 @@ def test_child_capability_need_promotes_to_episode_and_resumes_parent(monkeypatc
     monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_engineering", _fake_engineering)
     runner = RuntimeEpisodeRunner()
 
-    first_parent = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["engineering"])
+    first_parent = db.get_runtime_episode(parent["episodeId"])
     assert first_parent is not None
     asyncio.run(runner._execute_episode(first_parent))
     waiting_parent = db.get_runtime_episode(parent["episodeId"])
@@ -243,7 +243,7 @@ def test_child_capability_need_promotes_to_episode_and_resumes_parent(monkeypatc
     assert len(children) == 1
     assert children[0]["kind"] == "creative_media"
 
-    child = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["creative_media"])
+    child = db.get_runtime_episode(children[0]["episodeId"])
     assert child is not None
     asyncio.run(runner._execute_episode(child))
 
@@ -251,13 +251,63 @@ def test_child_capability_need_promotes_to_episode_and_resumes_parent(monkeypatc
     assert resumed_parent is not None
     assert resumed_parent["state"] == "queued"
     assert resumed_parent["resumeToken"]["resumedFrom"] == "child_handoffs"
+    assert resumed_parent["resumeToken"]["childHandoffs"][0]["kind"] == "asset_bundle"
+    assert resumed_parent["resumeToken"]["handoffBundle"][0]["compactSummary"] == "asset ready"
 
-    second_parent = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["engineering"])
+    second_parent = db.get_runtime_episode(parent["episodeId"])
     assert second_parent is not None
     asyncio.run(runner._execute_episode(second_parent))
     completed_parent = db.get_runtime_episode(parent["episodeId"])
     assert completed_parent is not None
     assert completed_parent["state"] == "completed"
+
+
+def test_engineering_resume_loads_child_handoff_payload_before_delegating_again():
+    child = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "child worker finished"},
+        kind="delegation",
+        state="completed",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(child, enqueue=False)
+    db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="child worker produced validation proof",
+            status="ready",
+            confidence="medium",
+            extra={"delegationRefs": ["delegation:test"]},
+        ),
+    )
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "resume after child"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "resumeToken": {
+                "resumedFrom": "child_handoffs",
+                "childEpisodeIds": [child["episodeId"]],
+            },
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "title": "Should not dispatch again",
+                        "goal": "This task should be ignored because child handoff already exists.",
+                    }
+                ]
+            },
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(parent))
+
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "handoff_ready"
+    assert handoff["childHandoffs"][0]["kind"] == "subagent_result_bundle"
+    assert "child worker produced validation proof" in handoff["compactSummary"]
 
 
 def test_network_peer_target_completes_with_remote_handoff(monkeypatch):
@@ -516,10 +566,152 @@ def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkey
 
     stored = db.get_runtime_episode(episode["episodeId"])
     assert stored is not None
-    assert stored["state"] == "waiting"
+    assert stored["state"] == "waiting_child"
     child_episodes = db.list_runtime_episodes(parent_episode_id=episode["episodeId"], limit=10)
     assert len(child_episodes) == 1
     assert child_episodes[0]["kind"] == "delegation"
     payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
     assert payload["status"] == "waiting"
     assert payload["childEpisodeIds"] == [child_episodes[0]["episodeId"]]
+
+
+def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "id": "brief-parent",
+                        "title": "Implement feature",
+                        "goal": "Implement feature",
+                        "agentId": "implementation_worker",
+                    }
+                ],
+                "targetCount": 1,
+            }
+        },
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command, Send
+
+    def _fake_dispatch(**kwargs):
+        return Command(
+            goto=[
+                Send(
+                    "parallel_delegate_task",
+                    {
+                        "parallel_branch": {
+                            "agentId": "implementation_worker",
+                            "agentName": "Implementation Worker",
+                            "delegationId": "delegation-parent-malformed",
+                            "invocationId": "invoke-parent-malformed",
+                            "taskBriefId": "brief-parent",
+                            "reason": "Implement feature",
+                        },
+                        "messages": [],
+                        "todos": [],
+                    },
+                )
+            ],
+            update={},
+        )
+
+    async def _fake_run_parallel_agent_branch(state, agent_data):
+        branch = state["parallel_branch"]
+        return [], [], {
+            "invocationId": branch["invocationId"],
+            "taskBriefId": branch["taskBriefId"],
+            "agentId": branch["agentId"],
+            "agentName": branch["agentName"],
+            "delegationId": branch["delegationId"],
+            "targetLabel": branch["agentName"],
+            "status": "blocked",
+            "error": "delegation_child_requested",
+            "nestedDispatchCount": 1,
+            "childDelegationCount": 0,
+        }, []
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda self: {"implementation_worker": {"node_func": object()}})
+    import graph.parallel_support as parallel_support
+
+    monkeypatch.setattr(parallel_support, "_run_parallel_agent_branch", _fake_run_parallel_agent_branch)
+
+    runner = RuntimeEpisodeRunner()
+    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["delegation"])
+    assert claimed is not None
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = db.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "waiting_child"
+    child_episodes = db.list_runtime_episodes(parent_episode_id=episode["episodeId"], limit=10)
+    assert len(child_episodes) == 1
+    payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
+    assert payload["status"] == "waiting"
+    assert payload["childEpisodeIds"] == [child_episodes[0]["episodeId"]]
+    assert payload["results"][-1]["status"] == "waiting_child_delegation"
+
+
+def test_parallel_branch_extracts_child_delegation_from_command_update_list():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langgraph.types import Command
+
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "review_worker",
+            "agentName": "Review Worker",
+            "delegationId": "delegation-parent-1",
+            "invocationId": "invoke-parent-1",
+            "taskBriefId": "brief-parent",
+            "reason": "Review evidence",
+        },
+    }
+    child_arg = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "verification_worker",
+            "agentName": "Verification Worker",
+            "delegationId": "delegation-child-1",
+            "invocationId": "invoke-child-1",
+            "taskBriefId": "brief-child",
+            "reason": "Run child verification",
+            "delegationDepth": 2,
+        },
+    }
+
+    def _node_func(_state):
+        return [
+            Command(
+                goto="supervisor",
+                update={
+                    "pending_child_delegations": [
+                        {
+                            "requestId": "child-request-from-update",
+                            "sourceDelegationId": "delegation-parent-1",
+                            "sourceInvocationId": "invoke-parent-1",
+                            "send": {"node": "parallel_delegate_task", "arg": child_arg},
+                        }
+                    ]
+                },
+            )
+        ]
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(parent_state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert summary["status"] == "waiting_child_delegation"
+    assert summary["childDelegationCount"] == 1
+    assert child_requests[0]["requestId"] == "child-request-from-update"
+    assert child_requests[0]["childAgentId"] == "verification_worker"
+    assert child_requests[0]["send"]["arg"]["parallel_branch"]["invocationId"] == "invoke-child-1"

@@ -63,13 +63,13 @@ def test_research_to_engineering_to_delegation_handoff_chain(monkeypatch) -> Non
     monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
 
     runner = RuntimeEpisodeRunner()
-    claimed_research = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["research"])
+    claimed_research = db.get_runtime_episode(research["episodeId"])
     assert claimed_research is not None
     asyncio.run(runner._execute_episode(claimed_research))
     research_handoff = db.list_runtime_episode_handoffs(research["episodeId"])[-1]["payload"]
     assert research_handoff["kind"] == "research_evidence_bundle"
 
-    claimed_engineering = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["engineering"])
+    claimed_engineering = db.get_runtime_episode(engineering["episodeId"])
     assert claimed_engineering is not None
     asyncio.run(runner._execute_episode(claimed_engineering))
     engineering_handoff = db.list_runtime_episode_handoffs(engineering["episodeId"])[-1]["payload"]
@@ -122,7 +122,7 @@ def test_child_capability_need_promotes_and_parent_resumes(monkeypatch) -> None:
     monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_engineering", _fake_engineering)
     runner = RuntimeEpisodeRunner()
 
-    first_parent = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["engineering"])
+    first_parent = db.get_runtime_episode(parent["episodeId"])
     assert first_parent is not None
     asyncio.run(runner._execute_episode(first_parent))
     assert db.get_runtime_episode(parent["episodeId"])["state"] == "waiting_child"
@@ -131,13 +131,12 @@ def test_child_capability_need_promotes_and_parent_resumes(monkeypatch) -> None:
     assert len(children) == 1
     assert children[0]["kind"] == "creative_media"
 
-    child = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["creative_media"])
+    child = db.get_runtime_episode(children[0]["episodeId"])
     assert child is not None
     asyncio.run(runner._execute_episode(child))
     assert db.get_runtime_episode(parent["episodeId"])["state"] == "queued"
 
-    resumed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["engineering"])
+    resumed = db.get_runtime_episode(parent["episodeId"])
     assert resumed is not None
     asyncio.run(runner._execute_episode(resumed))
     assert db.get_runtime_episode(parent["episodeId"])["state"] == "completed"
-

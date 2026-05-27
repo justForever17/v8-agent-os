@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,6 +62,28 @@ def test_chat_submit_queues_against_data_conversation_id_and_is_idempotent(monke
     assert items[0]["client_message_id"] == "client-repeat"
     assert items[0]["content"] == "第二条消息"
     assert items[0]["state"] == "pending"
+
+
+def test_chat_submit_defers_engineering_context_pack_until_background_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_db(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    scheduled: list[tuple[ChatRequest, str, str | None]] = []
+    fake_chat_run = SimpleNamespace(session_id="session-light", active_run_id="run-light")
+
+    def fake_prepare(request: ChatRequest, **kwargs):
+        calls.append(dict(kwargs))
+        return fake_chat_run
+
+    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", fake_prepare)
+    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-light", "role": "user"})
+    monkeypatch.setattr(routes, "_schedule_chat_run", lambda request, *, transport, run_id=None: scheduled.append((request, transport, run_id)) or run_id)
+
+    response = asyncio.run(routes.chat_submit(_chat_request(session_id="session-light", client_message_id="client-light", content="开始完整实现")))
+
+    assert response["accepted"] is True
+    assert calls and calls[0]["transport"] == "submit"
+    assert calls[0]["build_engineering_context"] is False
+    assert scheduled and scheduled[0][1] == "submit"
 
 
 def test_completed_run_consumes_next_pending_message_in_same_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

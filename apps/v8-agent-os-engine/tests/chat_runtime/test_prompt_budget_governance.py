@@ -184,11 +184,16 @@ class PromptBudgetGovernanceTests(unittest.TestCase):
                         }
                     return {}
 
+                def fake_scan_single(descriptor):  # noqa: ANN001, ANN201
+                    if descriptor.get("sourceType") == "scoped_workspace":
+                        return fake_scan([descriptor])
+                    return {}
+
                 with patch.object(SkillLoader, "_resolve_root_descriptors", side_effect=fake_resolve_descriptors), patch.object(
                     SkillLoader,
                     "_scan_root_descriptors",
                     side_effect=fake_scan,
-                ):
+                ), patch.object(SkillLoader, "_scan_single_root_descriptor", side_effect=fake_scan_single):
                     inventory = SkillLoader.get_inventory(
                         force_refresh=False,
                         include_scoped=True,

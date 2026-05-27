@@ -1,12 +1,127 @@
+import asyncio
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData
-from graph.workflow_assembly import build_planner_auto_dispatch_node
+from core.database import db
+from core.runtime_episodes import build_handoff_ref, build_runtime_episode
+from graph.workflow_assembly import build_planner_auto_dispatch_node, build_runtime_episode_wait_node
 from graph.parallel_support import build_parallel_delegate_join_node
 from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
 
 class ChatPlannerModeTests(unittest.TestCase):
+    def test_planner_model_timeout_uses_deterministic_fallback_event(self):
+        class SlowPlannerModel:
+            def with_structured_output(self, _schema):
+                return self
+
+            async def ainvoke(self, _messages):
+                await asyncio.sleep(0.5)
+                return {}
+
+        emitted: list[tuple[str, dict]] = []
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            active_run_id="run-planner-timeout",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_intent_diagnostics={"reason": "test"},
+                latest_user_content="请规划一次调研和工程实现",
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="suggest",
+                task_shape_hint={},
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path="E:/Projects/v8chat",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda topic, payload, **_: emitted.append((topic, payload)),
+        )
+
+        with (
+            patch("runtimes.chat.runtime.PLANNER_MODEL_TIMEOUT_SECONDS", 0.1),
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=SlowPlannerModel()),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step", lambda *_, **__: None),
+            patch("runtimes.chat.runtime.engineering_lane_service.enrich_planner_plan_with_engineering_contract", lambda plan, **_: plan),
+            patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
+        ):
+            plan = asyncio.run(runtime.ensure_planner_plan(chat_run=chat_run))
+
+        topics = [topic for topic, _payload in emitted]
+        self.assertIsInstance(plan, dict)
+        self.assertIn("planner.fallback.used", topics)
+        self.assertIn("planner.plan.failed", topics)
+        self.assertIn("planner.plan.created", topics)
+        self.assertTrue((chat_run.prepared.planner_plan or {}).get("planId"))
+
+    def test_planner_structured_failure_repairs_with_plain_json_before_fallback(self):
+        class BrokenStructuredPlanner:
+            def with_structured_output(self, _schema):
+                return self
+
+            async def ainvoke(self, _messages):
+                raise ValueError("structured parser rejected bare list")
+
+        class PlainJsonRepairPlanner:
+            async def ainvoke(self, _messages):
+                return SimpleNamespace(
+                    content='[{"kind":"research","reason":"collect sources"},{"kind":"engineering","reason":"implement with proof"}]'
+                )
+
+        emitted: list[tuple[str, dict]] = []
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            active_run_id="run-planner-repair",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_intent_diagnostics={"reason": "test"},
+                latest_user_content="请先调研再实现，并给出验证结果",
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="suggest",
+                task_shape_hint={},
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path="E:/Projects/v8chat",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda topic, payload, **_: emitted.append((topic, payload)),
+        )
+
+        with (
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", side_effect=[BrokenStructuredPlanner(), PlainJsonRepairPlanner()]),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step", lambda *_, **__: None),
+            patch("runtimes.chat.runtime.engineering_lane_service.enrich_planner_plan_with_engineering_contract", lambda plan, **_: plan),
+            patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
+        ):
+            plan = asyncio.run(runtime.ensure_planner_plan(chat_run=chat_run))
+
+        topics = [topic for topic, _payload in emitted]
+        self.assertIsInstance(plan, dict)
+        self.assertIn("planner.output.repaired", topics)
+        self.assertNotIn("planner.fallback.used", topics)
+        self.assertEqual([item.get("kind") for item in plan.get("capabilityPlan") or []], ["research", "engineering"])
+        self.assertIn("planner_plain_json_repair_used", plan.get("qualityFlags") or [])
+
     def test_planner_payload_wraps_bare_capability_plan_list(self):
         payload = PlannerPlanPayload.model_validate(
             [
@@ -360,6 +475,7 @@ class ChatPlannerModeTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(getattr(command, "goto", None), "runtime_episode")
         self.assertNotIn("messages", command.update)
         self.assertNotIn("parallel_results", command.update)
         self.assertTrue(command.update["planner_dispatch_status"]["dispatched"])
@@ -367,6 +483,40 @@ class ChatPlannerModeTests(unittest.TestCase):
         episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
         self.assertEqual(episode["kind"], "engineering")
         self.assertEqual(episode["state"], "queued")
+
+    def test_runtime_episode_wait_node_merges_completed_handoff(self):
+        node = build_runtime_episode_wait_node()
+        episode_id = "episode_wait_node_test"
+        episode = build_runtime_episode(
+            need={"episodeId": episode_id, "kind": "research", "reason": "need evidence"},
+            kind="research",
+            state="queued",
+            continuation_target="runtime_episode_runner",
+        )
+        db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+        handoff = build_handoff_ref(
+            producer_episode_id=episode_id,
+            kind="research",
+            compact_summary="Research evidence bundle ready.",
+            status="ready",
+        )
+        db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+        db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+        command = asyncio.run(
+            node(
+                {
+                    "current_route_context": {
+                        "capabilityEpisodes": [episode],
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "supervisor")
+        refs = command.update["current_route_context"]["handoffRefs"]
+        self.assertTrue(any(item.get("handoffRefId") == handoff["handoffRefId"] for item in refs))
+        self.assertEqual(command.update["planner_dispatch_status"]["state"], "handoff_ready")
 
     def test_parallel_join_routes_pending_child_delegations_from_top_level(self):
         join_node = build_parallel_delegate_join_node()

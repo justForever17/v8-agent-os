@@ -9,6 +9,7 @@ from typing import Any
 
 
 _ASCII_WORD_RE = re.compile(r"^[a-z0-9_+-]+$", re.IGNORECASE)
+_CJK_SINGLE_CHAR_RE = re.compile(r"^[\u3400-\u9fff\uf900-\ufaff]$")
 
 
 def _lower_text(value: Any) -> str:
@@ -571,6 +572,8 @@ def _find_terms(text: str, terms: tuple[str, ...]) -> list[str]:
 def _term_in_text(text: str, term: str) -> bool:
     lowered = term.lower()
     if not lowered:
+        return False
+    if _CJK_SINGLE_CHAR_RE.match(lowered):
         return False
     if lowered.isascii() and _ASCII_WORD_RE.match(lowered):
         return bool(re.search(rf"(?<![a-z0-9_+-]){re.escape(lowered)}(?![a-z0-9_+-])", text, re.IGNORECASE))

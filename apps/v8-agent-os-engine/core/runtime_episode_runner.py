@@ -584,7 +584,7 @@ class RuntimeEpisodeRunner:
                 f"Engineering work_plan_ready, but no executable worker brief/task was available yet.\n"
                 f"Reason: {reason}\n{_preview(context_summary or digest_text, limit=700)}"
             ),
-            status="waiting",
+            status="ready",
             confidence="medium",
             consumer_hint="Provide workerBriefs/taskBriefs or reroute with blockedToolIntent; Supervisor should not batch-write directly.",
             extra={

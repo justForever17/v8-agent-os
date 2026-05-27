@@ -42,6 +42,7 @@ from core.graph_stream_watchdog import (
 )
 from core.json_safe import to_jsonable
 from core.realtime_protocol import protocol_connected_event
+from core.runtime_episodes import normalize_capability_kind
 from core.scoped_workspace_resource import (
     build_workspace_resource_ref,
     resolve_scoped_workspace_resource,
@@ -82,6 +83,10 @@ from runtimes.memory.scope_resolution import (
 from core.time_truth import utc_now_iso
 from runtimes.network_supervisor.openai_compat import build_external_tool_alias_maps
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
+
+
+PLANNER_MODEL_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_MODEL_TIMEOUT_SECONDS", "20"))
+PLANNER_REPAIR_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_REPAIR_TIMEOUT_SECONDS", "12"))
 
 
 class StreamFilter:
@@ -1553,9 +1558,55 @@ class ChatRuntime:
         if isinstance(raw_plan, BaseModel):
             payload = raw_plan.model_dump(mode="json")
         elif isinstance(raw_plan, list):
+            capability_items = [dict(item) for item in raw_plan if isinstance(item, dict)]
+            capability_plan: list[dict[str, Any]] = []
+            task_briefs: list[dict[str, Any]] = []
+            for index, item in enumerate(capability_items):
+                task_id = str(item.get("taskBriefId") or item.get("id") or f"task-{index + 1}").strip()
+                raw_kind = (
+                    item.get("kind")
+                    or item.get("capability")
+                    or item.get("runtimeKind")
+                    or item.get("runtime")
+                    or item.get("familyHint")
+                )
+                kind = normalize_capability_kind(raw_kind)
+                reason = str(item.get("reason") or item.get("goal") or item.get("title") or raw_kind or "runtime capability required").strip()
+                if kind:
+                    capability_plan.append(
+                        {
+                            "kind": kind,
+                            "source": item.get("source") or "planner_model_repair",
+                            "reason": reason,
+                            "taskBriefId": task_id,
+                            "state": "detected",
+                            **({"requiredRuntimeAccess": item.get("requiredRuntimeAccess")} if item.get("requiredRuntimeAccess") else {}),
+                        }
+                    )
+                task_briefs.append(
+                    normalize_task_brief(
+                        {
+                            "taskBriefId": task_id,
+                            "goal": str(item.get("goal") or item.get("title") or reason or f"Handle {kind or 'runtime'} task").strip(),
+                            "context": item.get("context") if isinstance(item.get("context"), dict) else {"plannerListItem": item},
+                            "writeSet": list(item.get("writeSet") or []),
+                            "behaviorScope": list(item.get("behaviorScope") or ([kind] if kind else [])),
+                            "requiredCapabilities": list(item.get("requiredCapabilities") or ([kind] if kind else [])),
+                            "acceptanceContract": str(item.get("acceptanceContract") or "Return a typed handoff with results, proof, blockers, and residual risk.").strip(),
+                            "dependency": list(item.get("dependency") or []),
+                            "parallelGroup": str(item.get("parallelGroup") or "").strip(),
+                            "executionLaneHint": str(item.get("executionLaneHint") or "auto").strip() or "auto",
+                            "familyHint": str(item.get("familyHint") or ("engineering" if kind == "engineering" else "research" if kind == "research" else "creative_media" if kind == "creative_media" else "")).strip(),
+                            "targetCount": int(item.get("targetCount") or 1),
+                            "workerBriefs": list(item.get("workerBriefs") or []),
+                        },
+                        index=index,
+                    )
+                )
             payload = {
                 "executionStrategy": "mixed" if len(raw_plan) > 1 else "delegate",
-                "taskBriefs": [item for item in raw_plan if isinstance(item, dict)],
+                "capabilityPlan": capability_plan,
+                "taskBriefs": task_briefs,
                 "qualityFlags": ["planner_list_payload_wrapped"],
             }
         elif isinstance(raw_plan, dict):
@@ -1625,6 +1676,73 @@ class ChatRuntime:
             "autoDispatchDecision": payload.get("autoDispatchDecision") if isinstance(payload.get("autoDispatchDecision"), dict) else dict(fallback_plan.get("autoDispatchDecision") or {}),
             "dispatchEligibilityReason": str(payload.get("dispatchEligibilityReason") or fallback_plan.get("dispatchEligibilityReason") or "").strip(),
         }
+
+    @staticmethod
+    def _extract_planner_payload_from_text(value: Any) -> Any | None:
+        text = str(getattr(value, "content", value) or "").strip()
+        if not text:
+            return None
+        candidates = [text]
+        fenced = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.IGNORECASE)
+        candidates.extend(candidate.strip() for candidate in fenced if candidate.strip())
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = text.find(opener)
+            end = text.rfind(closer)
+            if start >= 0 and end > start:
+                candidates.append(text[start : end + 1])
+        for candidate in candidates:
+            stripped = candidate.strip()
+            if not stripped:
+                continue
+            try:
+                return json.loads(stripped)
+            except Exception:
+                continue
+        return None
+
+    async def _try_repair_planner_plan_with_plain_json(
+        self,
+        *,
+        planner_user_message: str,
+        fallback_plan: dict[str, Any],
+        structured_error: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            repair_model = llm_factory.create_for_role(
+                "supervisor",
+                streaming=False,
+                temperature=0,
+                max_tokens=1800,
+                _request_kind="planner",
+            )
+            repair_prompt = (
+                self._planner_system_prompt()
+                + "\n\nStructured-output validation failed. Repair your response by returning ONLY a valid JSON object "
+                "matching the planner contract. Do not return a bare array. If you only know capability rows, wrap them "
+                "inside capabilityPlan and provide matching taskBriefs.\n"
+                f"Validation error: {structured_error[:1200]}"
+            )
+            raw_response = await asyncio.wait_for(
+                repair_model.ainvoke(
+                    [
+                        SystemMessage(content=repair_prompt),
+                        HumanMessage(content=planner_user_message),
+                    ]
+                ),
+                timeout=max(0.1, PLANNER_REPAIR_TIMEOUT_SECONDS),
+            )
+            parsed = self._extract_planner_payload_from_text(raw_response)
+            if parsed is None:
+                return None, "planner_repair_no_json_payload"
+            plan = self._normalize_planner_plan_payload(parsed, fallback_plan=fallback_plan)
+            flags = [str(item).strip() for item in list(plan.get("qualityFlags") or []) if str(item).strip()]
+            flags.append("planner_plain_json_repair_used")
+            plan["qualityFlags"] = list(dict.fromkeys(flags))
+            return plan, None
+        except asyncio.TimeoutError:
+            return None, f"planner_repair_timeout_after_{PLANNER_REPAIR_TIMEOUT_SECONDS:g}s"
+        except Exception as exc:
+            return None, f"planner_repair_failed: {exc}"
 
     async def ensure_planner_plan(self, *, chat_run: ChatRunContext) -> dict[str, Any] | None:
         if not chat_run.prepared.task_planning_mode or str(chat_run.prepared.planner_mode or "off").strip().lower() == "off":
@@ -1696,6 +1814,7 @@ class ChatRuntime:
         fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason="planner_model_unavailable")
         plan = fallback_plan
         planning_error: str | None = None
+        planner_repair_note: str | None = None
         try:
             planner_model = llm_factory.create_for_role(
                 "supervisor",
@@ -1704,15 +1823,18 @@ class ChatRuntime:
                 max_tokens=1400,
                 _request_kind="planner",
             ).with_structured_output(PlannerPlanPayload)
-            raw_plan = await planner_model.ainvoke(
-                [
-                    SystemMessage(content=self._planner_system_prompt()),
-                    HumanMessage(content=planner_user_message),
-                ]
+            raw_plan = await asyncio.wait_for(
+                planner_model.ainvoke(
+                    [
+                        SystemMessage(content=self._planner_system_prompt()),
+                        HumanMessage(content=planner_user_message),
+                    ]
+                ),
+                timeout=max(0.1, PLANNER_MODEL_TIMEOUT_SECONDS),
             )
             plan = self._normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
-        except Exception as exc:
-            planning_error = str(exc)
+        except asyncio.TimeoutError:
+            planning_error = f"planner_model_timeout_after_{PLANNER_MODEL_TIMEOUT_SECONDS:g}s"
             logging.getLogger("v8chat.chat_runtime").warning(
                 "Planner lane fell back to deterministic plan for run '%s': %s",
                 chat_run.active_run_id,
@@ -1720,6 +1842,31 @@ class ChatRuntime:
             )
             fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
             plan = fallback_plan
+        except Exception as exc:
+            planning_error = str(exc)
+            repaired_plan, repair_error = await self._try_repair_planner_plan_with_plain_json(
+                planner_user_message=planner_user_message,
+                fallback_plan=fallback_plan,
+                structured_error=planning_error,
+            )
+            if repaired_plan is not None:
+                planner_repair_note = "plain_json_repair_used"
+                planning_error = None
+                plan = repaired_plan
+                logging.getLogger("v8chat.chat_runtime").info(
+                    "Planner lane repaired structured output for run '%s' via plain JSON retry.",
+                    chat_run.active_run_id,
+                )
+            else:
+                if repair_error:
+                    planning_error = f"{planning_error}; {repair_error}"
+                logging.getLogger("v8chat.chat_runtime").warning(
+                    "Planner lane fell back to deterministic plan for run '%s': %s",
+                    chat_run.active_run_id,
+                    planning_error,
+                )
+                fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
+                plan = fallback_plan
 
         plan = self._validate_and_repair_planner_plan(plan, fallback_plan=fallback_plan)
         plan = engineering_lane_service.enrich_planner_plan_with_engineering_contract(
@@ -1755,6 +1902,7 @@ class ChatRuntime:
                     "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
                     "usedFallback": bool(planning_error),
                     "error": planning_error,
+                    "repair": planner_repair_note,
                     "qualityFlags": list(plan.get("qualityFlags") or []),
                     "repairCount": int(plan.get("repairCount") or 0),
                     "autoDispatchDecision": auto_dispatch_decision,
@@ -1789,14 +1937,42 @@ class ChatRuntime:
             "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
             "usedFallback": bool(planning_error),
             "error": planning_error,
+            "repair": planner_repair_note,
         }
         if planning_error:
+            chat_run.emit_runtime_event(
+                "planner.fallback.used",
+                {
+                    "planId": plan.get("planId"),
+                    "summary": "Planner lane used deterministic fallback.",
+                    "reason": planning_error,
+                    "timeoutSeconds": PLANNER_MODEL_TIMEOUT_SECONDS
+                    if planning_error.startswith("planner_model_timeout_after_")
+                    else None,
+                    "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
+                },
+                agent_id=None,
+                node="planner_lane",
+            )
             chat_run.emit_runtime_event(
                 "planner.plan.failed",
                 {
                     "planId": plan.get("planId"),
                     "summary": "Planner lane failed over to deterministic fallback.",
                     "error": planning_error,
+                    "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
+                },
+                agent_id=None,
+                node="planner_lane",
+            )
+        elif planner_repair_note:
+            chat_run.emit_runtime_event(
+                "planner.output.repaired",
+                {
+                    "planId": plan.get("planId"),
+                    "summary": "Planner lane repaired invalid structured output and kept model-authored plan.",
+                    "repair": planner_repair_note,
+                    "qualityFlags": list(plan.get("qualityFlags") or []),
                     "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
                 },
                 agent_id=None,
@@ -1972,6 +2148,7 @@ class ChatRuntime:
         *,
         transport: str,
         run_id: str | None = None,
+        build_engineering_context: bool = True,
     ) -> ChatRunContext:
         prepared = self.prepare_request(request)
         run_handle = None
@@ -2099,35 +2276,13 @@ class ChatRuntime:
                 "policy": "hint_only_non_authoritative_no_reveal_no_grant",
             }
             run_service.update_metadata(run_handle.run_id, {"taskShapeHint": dict(prepared.task_shape_hint or {})})
-        try:
-            engineering_pack = engineering_lane_service.build_context_pack(
-                user_query=prepared.latest_user_content,
-                mode=prepared.engineering_mode,
-                session_id=prepared.session_id,
-                run_id=run_handle.run_id,
-                project_id=scope_result.binding.project_id,
-                workspace_id=scope_result.binding.workspace_id,
-                workspace_path=scope_result.binding.workspace_path,
-                task_brief=None,
-            )
-            prepared.engineering_trigger_decision = dict(engineering_pack.get("triggerDecision") or {})
-            if prepared.engineering_trigger_decision.get("active"):
-                prepared.engineering_context_pack = engineering_pack
-            run_service.update_metadata(
-                run_handle.run_id,
-                {
-                    "engineeringMode": prepared.engineering_mode,
-                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
-                    **({"engineeringContextPack": dict(engineering_pack)} if prepared.engineering_context_pack else {}),
-                },
-            )
-        except Exception as exc:
+        if not build_engineering_context:
             prepared.engineering_trigger_decision = {
                 "mode": prepared.engineering_mode,
                 "active": False,
                 "matched": False,
-                "reason": "engineering_context_pack_failed",
-                "error": str(exc),
+                "deferred": True,
+                "reason": "deferred_until_background_run_execution",
             }
             run_service.update_metadata(
                 run_handle.run_id,
@@ -2136,6 +2291,44 @@ class ChatRuntime:
                     "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
                 },
             )
+        else:
+            try:
+                engineering_pack = engineering_lane_service.build_context_pack(
+                    user_query=prepared.latest_user_content,
+                    mode=prepared.engineering_mode,
+                    session_id=prepared.session_id,
+                    run_id=run_handle.run_id,
+                    project_id=scope_result.binding.project_id,
+                    workspace_id=scope_result.binding.workspace_id,
+                    workspace_path=scope_result.binding.workspace_path,
+                    task_brief=None,
+                )
+                prepared.engineering_trigger_decision = dict(engineering_pack.get("triggerDecision") or {})
+                if prepared.engineering_trigger_decision.get("active"):
+                    prepared.engineering_context_pack = engineering_pack
+                run_service.update_metadata(
+                    run_handle.run_id,
+                    {
+                        "engineeringMode": prepared.engineering_mode,
+                        "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                        **({"engineeringContextPack": dict(engineering_pack)} if prepared.engineering_context_pack else {}),
+                    },
+                )
+            except Exception as exc:
+                prepared.engineering_trigger_decision = {
+                    "mode": prepared.engineering_mode,
+                    "active": False,
+                    "matched": False,
+                    "reason": "engineering_context_pack_failed",
+                    "error": str(exc),
+                }
+                run_service.update_metadata(
+                    run_handle.run_id,
+                    {
+                        "engineeringMode": prepared.engineering_mode,
+                        "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                    },
+                )
         preflight_decision = safety_guardian.preflight_runtime(
             runtime_kind="chat",
             trigger_source=transport,

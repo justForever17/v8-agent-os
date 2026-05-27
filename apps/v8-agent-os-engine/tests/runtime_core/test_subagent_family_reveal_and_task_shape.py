@@ -107,6 +107,14 @@ def test_output_modality_only_does_not_auto_reveal() -> None:
     assert hint["autoRevealRecommendation"]["eligible"] is False
 
 
+def test_safety_eval_language_does_not_trigger_engineering_or_media_from_single_cjk_terms() -> None:
+    hint = classify_task_shape("如果没有证据，请明确说不知道；不要声称 research/subagent 已成功。")
+
+    assert hint["primaryTaskShape"] not in {"project_coding", "creative_media"}
+    assert "media_output:声" not in hint.get("signals", [])
+    assert "engineering_action:做" not in hint.get("signals", [])
+
+
 def test_family_hint_filters_local_agent_selection() -> None:
     agents = [
         _agent("eng", "engineering", ["implement", "code"]),

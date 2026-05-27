@@ -13,6 +13,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 ```powershell
 E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\safety -q
 E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\creative_media -q
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\agent_quality -q
 ```
 
 ## Pytest 分类
@@ -20,6 +21,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 路径 | 范围 | 说明 |
 | --- | --- | --- |
 | `tests/agents/` | agents/subagents/specialist registry | 默认专家、能力快照、专家族 prompt。 |
+| `tests/agent_quality/` | Agent Quality Matrix | 工具调用、上下文记忆、幻觉抑制、Prompt 注入防护、多智能体协作的 fixture/mock 强制矩阵；默认不调用真实模型。 |
 | `tests/chat_runtime/` | ChatRuntime 与 transcript | supervisor prompt、context、canonical transcript、realtime lane。 |
 | `tests/creative_media/` | Creative Media runtime | provider/job/artifact/recipe/P3/P4 数据面，可能包含 fake ffmpeg。 |
 | `tests/extensions/` | Extensions / Skills / PluginHost | skill 预筛、PluginHost 控制面、候选注入。 |
@@ -52,6 +54,12 @@ Live smoke 必须显式带 live 参数，且不得在无确认时烧额度：
 
 ```powershell
 E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_creative_media_live_smoke.py --live
+```
+
+Agent Quality live audit 同样必须显式带 `--live`，并把整改报告写入内部 reports：
+
+```powershell
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_agent_quality_live_audit.py --live --model-profile mimo --matrix all --write-report
 ```
 
 ## 维护纪律

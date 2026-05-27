@@ -139,7 +139,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Plan ID: plan-123", content)
         self.assertIn("Task Brief ID: task-1", content)
         self.assertIn("[Extensions Runtime]", content)
-        self.assertIn("command_session_broker(mode=start)", content)
+        self.assertIn("run_system_command(mode=auto)", content)
+        self.assertIn('command_session_broker(mode="input"', content)
         self.assertNotIn("render_stalled", content)
 
     def test_task_brief_route_query_omits_acceptance_write_set_and_broad_noise(self):

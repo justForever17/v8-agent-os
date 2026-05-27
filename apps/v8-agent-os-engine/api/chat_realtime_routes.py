@@ -586,7 +586,12 @@ async def chat_submit(request: ChatRequest):
             }
     if not request.resume_run_id:
         try:
-            chat_run = chat_runtime.prepare_run_context(request, transport="submit", run_id=run_id)
+            chat_run = chat_runtime.prepare_run_context(
+                request,
+                transport="submit",
+                run_id=run_id,
+                build_engineering_context=False,
+            )
         except ScopeBindingConflictError as exc:
             raise HTTPException(status_code=409, detail=exc.payload) from exc
         user_message = chat_runtime.record_request_inputs(chat_run)

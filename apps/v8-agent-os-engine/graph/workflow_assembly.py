@@ -1,12 +1,20 @@
 import hashlib
 
+import asyncio
+import os
+import time
+
 from langgraph.graph import StateGraph
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
+from core.database import db
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.delegation_broker import expand_delegation_task_briefs
 from core.runtime_episodes import (
+    ACTIVE_EPISODE_STATES,
+    TERMINAL_EPISODE_STATES,
+    append_handoff_ref,
     build_runtime_episode,
     emit_runtime_episode_event,
     enqueue_runtime_episode,
@@ -18,44 +26,51 @@ from erc.runtime_stability import runtime_stability_service
 from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
 
 
+RUNTIME_EPISODE_WAIT_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_WAIT_SECONDS", "600"))
+RUNTIME_EPISODE_QUEUE_GRACE_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_QUEUE_GRACE_SECONDS", "12"))
+RUNTIME_EPISODE_POLL_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_POLL_SECONDS", "0.8"))
+
+
+def _string_value(*values) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _state_runtime_identity(state: dict | None) -> tuple[str | None, str | None, str | None]:
+    runtime_context = get_runtime_context()
+    state_dict = dict(state or {})
+    route_context = dict(state_dict.get("current_route_context") or {})
+    session_id = _string_value(
+        state_dict.get("session_id"),
+        state_dict.get("sessionId"),
+        route_context.get("session_id"),
+        route_context.get("sessionId"),
+        runtime_context.get("session_id"),
+        runtime_context.get("sessionId"),
+    ) or None
+    run_id = _string_value(
+        state_dict.get("run_id"),
+        state_dict.get("runId"),
+        route_context.get("run_id"),
+        route_context.get("runId"),
+        runtime_context.get("run_id"),
+        runtime_context.get("runId"),
+    ) or None
+    workspace_path = _string_value(
+        state_dict.get("workspace_path"),
+        state_dict.get("workspacePath"),
+        route_context.get("workspace_path"),
+        route_context.get("workspacePath"),
+        runtime_context.get("workspace_path"),
+        runtime_context.get("workspacePath"),
+    ) or None
+    return session_id, run_id, workspace_path
+
+
 def build_planner_auto_dispatch_node():
-    def _string_value(*values) -> str:
-        for value in values:
-            text = str(value or "").strip()
-            if text:
-                return text
-        return ""
-
-    def _state_runtime_identity(state: dict | None) -> tuple[str | None, str | None, str | None]:
-        runtime_context = get_runtime_context()
-        state_dict = dict(state or {})
-        route_context = dict(state_dict.get("current_route_context") or {})
-        session_id = _string_value(
-            state_dict.get("session_id"),
-            state_dict.get("sessionId"),
-            route_context.get("session_id"),
-            route_context.get("sessionId"),
-            runtime_context.get("session_id"),
-            runtime_context.get("sessionId"),
-        ) or None
-        run_id = _string_value(
-            state_dict.get("run_id"),
-            state_dict.get("runId"),
-            route_context.get("run_id"),
-            route_context.get("runId"),
-            runtime_context.get("run_id"),
-            runtime_context.get("runId"),
-        ) or None
-        workspace_path = _string_value(
-            state_dict.get("workspace_path"),
-            state_dict.get("workspacePath"),
-            route_context.get("workspace_path"),
-            route_context.get("workspacePath"),
-            runtime_context.get("workspace_path"),
-            runtime_context.get("workspacePath"),
-        ) or None
-        return session_id, run_id, workspace_path
-
     def _episode_identity(*, session_id: str | None, run_id: str | None, plan: dict, item: dict, kind: str) -> tuple[str, str]:
         seed = "|".join(
             [
@@ -333,9 +348,226 @@ def build_planner_auto_dispatch_node():
                     )
                 )
             )
-        return Command(goto="supervisor", update=update)
+        return Command(goto="runtime_episode", update=update)
 
     return planner_auto_dispatch_node
+
+
+def build_runtime_episode_wait_node():
+    def _route_context_episode_ids(route_context: dict) -> list[str]:
+        ids: list[str] = []
+        for item in list(route_context.get("capabilityEpisodes") or []):
+            if not isinstance(item, dict):
+                continue
+            episode_id = _string_value(item.get("episodeId"), item.get("needId"), item.get("id"))
+            state = str(item.get("state") or "").strip()
+            if episode_id and state in ACTIVE_EPISODE_STATES and episode_id not in ids:
+                ids.append(episode_id)
+        return ids
+
+    def _load_relevant_episodes(*, route_context: dict, session_id: str | None, run_id: str | None) -> list[dict]:
+        by_id: dict[str, dict] = {}
+        for episode_id in _route_context_episode_ids(route_context):
+            try:
+                episode = db.get_runtime_episode(episode_id)
+            except Exception:
+                episode = None
+            if episode:
+                by_id[str(episode.get("episodeId") or episode.get("id") or episode_id)] = dict(episode)
+            else:
+                for item in list(route_context.get("capabilityEpisodes") or []):
+                    if _string_value(item.get("episodeId"), item.get("needId"), item.get("id")) == episode_id:
+                        by_id[episode_id] = dict(item)
+                        break
+        try:
+            db_rows = db.list_runtime_episodes(run_id=run_id, limit=100) if run_id else []
+            if not db_rows and session_id:
+                db_rows = db.list_runtime_episodes(session_id=session_id, limit=100)
+        except Exception:
+            db_rows = []
+        for episode in db_rows:
+            episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+            if episode_id:
+                by_id[episode_id] = dict(episode)
+        return list(by_id.values())
+
+    def _active_episodes(episodes: list[dict]) -> list[dict]:
+        return [
+            episode
+            for episode in episodes
+            if str(episode.get("state") or "").strip() in ACTIVE_EPISODE_STATES
+        ]
+
+    def _terminal_episodes(episodes: list[dict]) -> list[dict]:
+        return [
+            episode
+            for episode in episodes
+            if str(episode.get("state") or "").strip() in TERMINAL_EPISODE_STATES
+        ]
+
+    def _merge_handoffs(route_context: dict, episodes: list[dict]) -> tuple[dict, list[dict]]:
+        updated = dict(route_context or {})
+        existing_ids = {
+            str(item.get("handoffRefId") or item.get("handoffId") or item.get("artifactId") or "").strip()
+            for item in list(updated.get("handoffRefs") or [])
+            if isinstance(item, dict)
+        }
+        merged: list[dict] = []
+        for episode in episodes:
+            episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+            if not episode_id:
+                continue
+            try:
+                handoffs = db.list_runtime_episode_handoffs(episode_id)
+            except Exception:
+                handoffs = []
+            for row in handoffs:
+                payload = dict(row.get("payload") or row.get("handoff") or row)
+                handoff_id = _string_value(payload.get("handoffRefId"), payload.get("handoffId"), payload.get("artifactId"))
+                if handoff_id and handoff_id in existing_ids:
+                    continue
+                updated = append_handoff_ref(updated, payload)
+                if handoff_id:
+                    existing_ids.add(handoff_id)
+                merged.append(payload)
+        return updated, merged
+
+    def _summary_message(*, episodes: list[dict], handoffs: list[dict], status: str, reason: str = "") -> HumanMessage:
+        lines = [f"[Runtime Episode {status}]"]
+        if reason:
+            lines.append(f"Reason: {reason}")
+        if handoffs:
+            lines.append("Typed handoffs:")
+            for handoff in handoffs[:8]:
+                kind = _string_value(handoff.get("kind"), "runtime_handoff")
+                summary = _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:800]
+                lines.append(f"- {kind}: {summary}")
+        else:
+            lines.append("Episodes:")
+            for episode in episodes[:8]:
+                lines.append(
+                    "- "
+                    f"{_string_value(episode.get('kind'), 'runtime')} "
+                    f"{_string_value(episode.get('episodeId'), episode.get('id'), episode.get('needId'))} "
+                    f"state={_string_value(episode.get('state'))}"
+                )
+        lines.append("Supervisor must use these runtime facts and must not retry direct mutating tools while active episodes remain.")
+        return HumanMessage(content="\n".join(lines))
+
+    async def runtime_episode_wait_node(state):
+        session_id, run_id, _workspace_path = _state_runtime_identity(state)
+        route_context = dict((state or {}).get("current_route_context") or {})
+        started_at = time.monotonic()
+        queue_deadline = started_at + max(0.1, RUNTIME_EPISODE_QUEUE_GRACE_SECONDS)
+        deadline = started_at + max(queue_deadline - started_at, RUNTIME_EPISODE_WAIT_SECONDS)
+        last_episodes: list[dict] = []
+
+        while True:
+            episodes = _load_relevant_episodes(route_context=route_context, session_id=session_id, run_id=run_id)
+            if episodes:
+                last_episodes = episodes
+            route_context, handoffs = _merge_handoffs(route_context, episodes)
+            active = _active_episodes(episodes)
+            terminal = _terminal_episodes(episodes)
+            if handoffs or (episodes and not active):
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "current_route_context": route_context,
+                        "planner_dispatch_status": {
+                            "mode": "runtime_episode",
+                            "nextAction": "resume_supervisor",
+                            "state": "handoff_ready" if handoffs else "episode_terminal",
+                            "episodeCount": len(episodes),
+                            "handoffCount": len(handoffs),
+                        },
+                        "messages": [_summary_message(episodes=terminal or episodes, handoffs=handoffs, status="Handoff Ready")],
+                    },
+                )
+
+            if active:
+                active_states = {str(episode.get("state") or "") for episode in active}
+                only_unclaimed_queue = active_states <= {"detected", "routed", "queued"}
+                if only_unclaimed_queue and time.monotonic() >= queue_deadline:
+                    failed_episodes: list[dict] = []
+                    for episode in active:
+                        episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+                        if not episode_id:
+                            continue
+                        try:
+                            failed = db.complete_runtime_episode(
+                                episode_id,
+                                state="failed",
+                                error_code="episode_runner_unavailable",
+                                error_message="Runtime episode stayed queued and was not claimed by EpisodeRunner within the queue grace window.",
+                                metadata={"recoverable": True, "source": "runtime_episode_wait"},
+                            )
+                            failed_episodes.append(dict(failed or episode))
+                            emit_runtime_episode_event("runtime.episode.failed", {"episode": failed or episode})
+                        except Exception:
+                            failed_episodes.append(dict(episode))
+                    return Command(
+                        goto="supervisor",
+                        update={
+                            "current_route_context": route_context,
+                            "planner_dispatch_status": {
+                                "mode": "runtime_episode",
+                                "nextAction": "recoverable_failure",
+                                "state": "episode_runner_unavailable",
+                                "episodeCount": len(failed_episodes),
+                            },
+                            "messages": [
+                                _summary_message(
+                                    episodes=failed_episodes,
+                                    handoffs=[],
+                                    status="Recoverable Failure",
+                                    reason="episode_runner_unavailable",
+                                )
+                            ],
+                        },
+                    )
+                if time.monotonic() >= deadline:
+                    return Command(
+                        goto="supervisor",
+                        update={
+                            "current_route_context": route_context,
+                            "planner_dispatch_status": {
+                                "mode": "runtime_episode",
+                                "nextAction": "recoverable_failure",
+                                "state": "episode_stalled",
+                                "episodeCount": len(active),
+                                "activeEpisodeIds": [
+                                    _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+                                    for episode in active
+                                ],
+                            },
+                            "messages": [
+                                _summary_message(
+                                    episodes=active,
+                                    handoffs=[],
+                                    status="Recoverable Failure",
+                                    reason="episode_stalled",
+                                )
+                            ],
+                        },
+                    )
+                await asyncio.sleep(max(0.1, RUNTIME_EPISODE_POLL_SECONDS))
+                continue
+
+            return Command(
+                goto="supervisor",
+                update={
+                    "current_route_context": route_context,
+                    "planner_dispatch_status": {
+                        "mode": "runtime_episode",
+                        "nextAction": "resume_supervisor",
+                        "state": "no_active_episode",
+                        "episodeCount": len(last_episodes),
+                    },
+                },
+            )
+
+    return runtime_episode_wait_node
 
 
 def compile_supervisor_workflow(
@@ -352,6 +584,7 @@ def compile_supervisor_workflow(
     parallel_join_node = build_parallel_delegate_join_node()
 
     workflow.add_node("planner_auto_dispatch", build_planner_auto_dispatch_node())
+    workflow.add_node("runtime_episode", build_runtime_episode_wait_node())
     workflow.add_node("supervisor", supervisor_node)
     async def supervisor_tools_node(state):
         visible_tools = filter_visible_tools_for_actor(
@@ -360,7 +593,19 @@ def compile_supervisor_workflow(
             route_context=dict((state or {}).get("current_route_context") or {}),
         )
         routed = create_routed_tool_node(visible_tools, name="supervisor_tools", fallback_goto="supervisor")
-        return await routed(state)
+        command = await routed(state)
+        update = dict(getattr(command, "update", None) or {})
+        planner_status = dict(update.get("planner_dispatch_status") or {})
+        messages = list(update.get("messages") or [])
+        should_wait = str(planner_status.get("nextAction") or "").strip() == "wait_episode"
+        for message in messages:
+            additional = dict(getattr(message, "additional_kwargs", None) or {})
+            if str(additional.get("recommendedNextAction") or "").strip() == "wait_episode":
+                should_wait = True
+                break
+        if should_wait:
+            return Command(goto="runtime_episode", update=update)
+        return command
 
     workflow.add_node("supervisor_tools", supervisor_tools_node)
     workflow.add_node("parallel_delegate_task", parallel_task_node)

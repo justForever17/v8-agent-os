@@ -62,6 +62,27 @@ class PluginHostSnapshotRefreshTests(unittest.TestCase):
         self.assertEqual(first["startupState"], "refreshing")
         self.assertEqual(second["startupState"], "refreshing")
 
+    def test_start_schedules_lightweight_refresh_without_registry_scan(self):
+        async def run_case():
+            service = PluginHostService()
+            service.is_enabled = lambda: True  # type: ignore[method-assign]
+            service.is_external_host = lambda: False  # type: ignore[method-assign]
+            service._ensure_managed_local_bridge_extension_link = lambda: None  # type: ignore[method-assign]
+            service._ensure_minimal_managed_local_openclaw_host_config = lambda: None  # type: ignore[method-assign]
+            service._ensure_managed_local_gateway_launcher_handoff = lambda: None  # type: ignore[method-assign]
+            service._ensure_managed_local_gateway_handoff = lambda: None  # type: ignore[attr-defined]
+            service._save_runtime_state = lambda *args, **kwargs: None  # type: ignore[method-assign]
+            scheduled: list[bool] = []
+            service._schedule_background_refresh = lambda *, refresh_registry: scheduled.append(refresh_registry)  # type: ignore[method-assign]
+
+            await service.start()
+
+            self.assertEqual(scheduled, [False])
+
+        import asyncio
+
+        asyncio.run(run_case())
+
 
 if __name__ == "__main__":
     unittest.main()

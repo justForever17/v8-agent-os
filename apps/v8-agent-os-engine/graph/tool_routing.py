@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import ToolNode
@@ -57,6 +58,129 @@ _ENGINEERING_ROUTE_TOOLS = {
     "delete_native_file",
 }
 _RESEARCH_ROUTE_TOOLS = {"web_broker"}
+_PLANNING_WEB_TOOL_LIMIT = 3
+
+
+def _planning_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    planner_mode = str(state_mapping.get("planner_mode") or route_context.get("plannerMode") or "").strip().lower()
+    return bool(
+        state_mapping.get("task_planning_mode")
+        or state_mapping.get("taskPlanningMode")
+        or route_context.get("taskPlanningMode")
+        or route_context.get("task_planning_mode")
+        or planner_mode in {"plan", "planner", "force", "auto"}
+    )
+
+
+def _command_segment_head(segment: str) -> str:
+    text = str(segment or "").strip()
+    text = re.sub(r"^(?:&\s*)+", "", text).strip()
+    if not text:
+        return ""
+    if (text.startswith('"') and '"' in text[1:]) or (text.startswith("'") and "'" in text[1:]):
+        quote = text[0]
+        end = text.find(quote, 1)
+        return text[1:end].strip().lower() if end > 1 else ""
+    return text.split()[0].strip().lower()
+
+
+def _planning_readonly_command_allowed(command: str) -> bool:
+    text = str(command or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    forbidden_patterns = (
+        r"(^|[\s;&|])(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|upgrade|update)\b",
+        r"(^|[\s;&|])(?:npx\s+(?:--yes\s+|-y\s+)?create-|npm\s+create|pnpm\s+create|yarn\s+create)\b",
+        r"(^|[\s;&|])(?:rm|del|erase|move|mv|copy|cp|mkdir|rmdir)\b",
+        r"(^|[\s;&|])(?:new-item|set-content|add-content|out-file|remove-item|move-item|copy-item|rename-item)\b",
+        r"(^|[\s;&|])(?:git\s+(?:checkout|switch|reset|clean|commit|push|pull|merge|rebase|apply|am|stash))\b",
+        r"(^|[\s;&|])(?:python|python3|node|pwsh|powershell|cmd)\b(?!.*\s(?:--version|-v|-h|--help)\b)",
+        r"(^|[\s;&|])(?:curl|wget)\b",
+        r">|>>|\btee\b|\|\s*(?:set-content|add-content|out-file)\b",
+    )
+    if any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in forbidden_patterns):
+        return False
+    # Strip a single leading cwd change; reading from a chosen workspace is okay,
+    # but chained arbitrary writes remain blocked by the forbidden patterns above.
+    normalized = re.sub(
+        r'^\s*cd\s+(?:/d\s+)?(?:"[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)\s*',
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    segments = [
+        part.strip()
+        for part in re.split(r"\s*(?:&&|\|\||;|\|)\s*", normalized)
+        if part.strip()
+    ]
+    if not segments:
+        return False
+    allowed_heads = {
+        "pwd",
+        "cd",
+        "dir",
+        "ls",
+        "cat",
+        "type",
+        "echo",
+        "git",
+        "rg",
+        "grep",
+        "findstr",
+        "get-childitem",
+        "gci",
+        "get-content",
+        "gc",
+        "select-string",
+        "select-object",
+        "sort-object",
+        "measure-object",
+        "test-path",
+        "where.exe",
+        "where",
+        "npm",
+        "pnpm",
+        "yarn",
+        "node",
+    }
+    for segment in segments:
+        head = _command_segment_head(segment)
+        if head not in allowed_heads:
+            return False
+        seg_lower = segment.lower()
+        if head == "git" and not re.search(
+            r"^\s*git\s+(?:status|diff|show|log|branch|rev-parse|ls-files|remote|config\s+--get)\b",
+            seg_lower,
+        ):
+            return False
+        if head in {"npm", "pnpm", "yarn"} and not re.search(r"^\s*(?:npm|pnpm|yarn)\s+(?:view|info|--version|-v)\b", seg_lower):
+            return False
+        if head == "node" and not re.search(r"^\s*node\s+(?:--version|-v)\b", seg_lower):
+            return False
+        if head == "echo" and re.search(r">\s*\S+", seg_lower):
+            return False
+    return True
+
+
+def _planning_fact_gathering_allowed(
+    *,
+    tool_name: str,
+    tool_call: dict[str, Any],
+    state_mapping: dict[str, Any],
+    tool_names: list[str],
+    has_active_episode: bool,
+) -> bool:
+    if has_active_episode or not _planning_fact_gathering_active(state_mapping):
+        return False
+    if tool_name == "web_broker":
+        web_calls = len([name for name in tool_names if name == "web_broker"])
+        return web_calls <= _PLANNING_WEB_TOOL_LIMIT
+    if tool_name == "run_system_command":
+        args = _safe_tool_args(tool_call.get("args"))
+        return _planning_readonly_command_allowed(str(args.get("command") or args.get("_raw") or ""))
+    return False
 
 
 def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
@@ -435,6 +559,24 @@ def _supervisor_direct_scope_hard_block_message(
     tool_names = _supervisor_direct_tool_names(getattr(request, "state", None), tool_call)
     tool_step_count = len([name for name in tool_names if name])
     project_write_count = len([name for name in tool_names if name in SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS])
+    from erc.runtime_context import get_runtime_context
+
+    runtime_context = get_runtime_context()
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
+    has_active_episode = _has_active_runtime_episode(state_mapping, run_id=run_id, session_id=session_id)
+    if _planning_fact_gathering_allowed(
+        tool_name=tool_name,
+        tool_call=tool_call,
+        state_mapping=state_mapping,
+        tool_names=tool_names,
+        has_active_episode=has_active_episode,
+    ):
+        tool_call.setdefault("metadata", {})
+        if isinstance(tool_call.get("metadata"), dict):
+            tool_call["metadata"]["planningFactGathering"] = True
+        return None
+
     hard_reasons: list[str] = []
     if bool(planner_dispatch_status.get("blocked")):
         hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
@@ -446,13 +588,6 @@ def _supervisor_direct_scope_hard_block_message(
         hard_reasons.append("supervisor_project_file_writes_gt_3")
     if not hard_reasons:
         return None
-
-    from erc.runtime_context import get_runtime_context
-
-    runtime_context = get_runtime_context()
-    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
-    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
-    has_active_episode = _has_active_runtime_episode(state_mapping, run_id=run_id, session_id=session_id)
     raw_reasons = ", ".join(hard_reasons)
     if has_active_episode:
         hard_reasons = [reason for reason in hard_reasons if reason != "no_runtime_episode_queued"] or ["runtime_episode_already_queued"]

@@ -1339,6 +1339,12 @@ class PluginHostService:
     def _background_refresh_requested(self) -> bool:
         return bool(self.scan_on_startup())
 
+    def _startup_refresh_registry_requested(self) -> bool:
+        # Startup must not perform a deep plugin registry scan. The public
+        # snapshot can be refreshed from cached/default registry data and Admin
+        # can still trigger explicit rescans through the existing manual paths.
+        return False
+
     def _prepare_registry_for_snapshot(self, *, refresh_registry: bool) -> dict[str, Any]:
         if not self.is_enabled():
             return default_plugin_registry()
@@ -4328,7 +4334,7 @@ class PluginHostService:
             if self._cached_public_snapshot is None:
                 self._set_cached_public_snapshot(self._minimal_public_snapshot())
             self._mark_snapshot_refreshing()
-            self._schedule_background_refresh(refresh_registry=self._background_refresh_requested())
+            self._schedule_background_refresh(refresh_registry=self._startup_refresh_registry_requested())
             return
         try:
             self._ensure_managed_local_bridge_extension_link()
@@ -4346,7 +4352,7 @@ class PluginHostService:
         if self._cached_public_snapshot is None:
             self._set_cached_public_snapshot(self._minimal_public_snapshot())
         self._mark_snapshot_refreshing()
-        self._schedule_background_refresh(refresh_registry=self._background_refresh_requested())
+        self._schedule_background_refresh(refresh_registry=self._startup_refresh_registry_requested())
 
     async def stop(self) -> None:
         for task in list(self._install_tasks.values()):

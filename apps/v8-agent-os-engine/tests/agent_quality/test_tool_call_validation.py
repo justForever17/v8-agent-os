@@ -89,6 +89,68 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enqueue_episode.call_args.kwargs["run_id"], "run_agent_quality_gate")
         self.assertEqual(enqueue_episode.call_args.kwargs["session_id"], "session_agent_quality_gate")
 
+    async def test_planning_mode_allows_bounded_readonly_command_fact_gathering(self) -> None:
+        request = _DummyRequest(
+            "run_system_command",
+            "tool_call_readonly",
+            state={
+                "taskPlanningMode": True,
+                "current_route_context": {"engineeringRequired": True},
+            },
+            args={"command": "rg \"RuntimeEpisode\" apps/v8-agent-os-engine -n"},
+        )
+
+        async def execute(_request):
+            return ToolMessage(content="found RuntimeEpisode", name="run_system_command", tool_call_id="tool_call_readonly")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIn("found RuntimeEpisode", str(result.content))
+        self.assertNotIn("[route required]", str(result.content))
+
+    async def test_planning_mode_still_blocks_mutating_or_install_commands(self) -> None:
+        request = _DummyRequest(
+            "run_system_command",
+            "tool_call_install",
+            state={
+                "taskPlanningMode": True,
+                "current_route_context": {"engineeringRequired": True},
+            },
+            args={"command": "npm install left-pad"},
+        )
+
+        async def execute(_request):
+            raise AssertionError("install command should still be blocked in planning mode")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertIn("[route required]", str(result.content))
+
+    async def test_planning_mode_allows_only_three_web_fact_gathering_calls(self) -> None:
+        request = _DummyRequest(
+            "web_broker",
+            "tool_call_web_4",
+            state={
+                "taskPlanningMode": True,
+                "current_route_context": {"engineeringRequired": True},
+                "messages": [
+                    types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": "a"}]),
+                    types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": "b"}]),
+                    types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": "c"}]),
+                ],
+            },
+            args={"query": "current docs"},
+        )
+
+        async def execute(_request):
+            raise AssertionError("fourth planning web call should route to Research")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIn("[route required]", str(result.content))
+        self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "research")
+
 
 def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -> None:
     command = runtime_broker.func(
@@ -129,4 +191,3 @@ def test_delegation_dispatch_without_tasks_is_single_diagnostic_not_fake_swarm()
     assert payload["missingResult"] is True
     assert payload["exampleTasks"]
     assert "parallel_invocations" not in command.update
-

@@ -444,6 +444,7 @@ class SkillLoader:
     _last_reload_result: dict[str, Any] = {}
     _last_check_at: float = 0.0
     _check_interval_seconds: float = 0.75
+    _background_refresh_timeout_ms: int = 1500
     _dirty_root_paths: set[str] = set()
     _startup_state: str = "cold"
     _snapshot_freshness: str = "cold"
@@ -3449,7 +3450,7 @@ class SkillLoader:
         return cls.refresh_root_descriptors_if_changed(
             descriptors,
             compare_existing=True,
-            timeout_ms=None,
+            timeout_ms=cls._background_refresh_timeout_ms,
         )
 
     @classmethod
@@ -3551,7 +3552,7 @@ class SkillLoader:
 
     @classmethod
     def get_system_prompt_addition(cls) -> str:
-        inventory = cls.get_inventory(force_refresh=True, include_scoped=False)
+        inventory = cls.get_inventory(force_refresh=False, include_scoped=False)
         registry_items = list(inventory.get("items") or [])
         if not registry_items:
             return "No persistent skills available at the moment."

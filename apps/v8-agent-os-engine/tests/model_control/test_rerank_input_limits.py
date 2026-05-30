@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from core.llm_factory import RestReranker
+from core.llm_factory import RestReranker, _safe_log_text
 
 
 class _Response:
@@ -54,3 +54,14 @@ def test_reranker_retries_query_too_long_with_observed_query_limit() -> None:
     assert len(calls) == 2
     assert len(calls[1]["query"]) < len(calls[0]["query"])
 
+
+def test_reranker_log_text_is_safe_for_gbk_stderr(monkeypatch) -> None:
+    class _GbkStderr:
+        encoding = "gbk"
+
+    monkeypatch.setattr("core.llm_factory.sys.stderr", _GbkStderr())
+
+    text = _safe_log_text("provider said ⚠️ retry with emoji ✨")
+
+    text.encode("gbk")
+    assert "\\u26a0" in text or "\\ufe0f" in text

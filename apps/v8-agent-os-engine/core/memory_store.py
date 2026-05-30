@@ -941,16 +941,10 @@ class MemoryStore:
         except Exception as e:
             logger.warning(f"[MemoryStore] DB sync failed (non-fatal): {e}")
 
-        # 同步写入 Vector Store
-        try:
-            from core.vector_store import get_vector_store
-            vs = get_vector_store()
-            metadata = {"category": category, "scope": normalized_scope}
-            if item.get("tags"):
-                metadata["tags"] = ",".join(item["tags"])
-            vs.add_documents([{"id": fact_id, "text": fact, "metadata": metadata}])
-        except Exception as e:
-            logger.warning(f"[MemoryStore] Vector Store sync failed (non-fatal): {e}")
+        metadata = {"category": category, "scope": normalized_scope}
+        if item.get("tags"):
+            metadata["tags"] = ",".join(item["tags"])
+        self._sync_vector_store_document(fact_id, fact, metadata, operation="add_knowledge")
         
         logger.info(f"[MemoryStore] Added knowledge {fact_id} to {path.name} [{normalized_scope}]")
         return fact_id
@@ -1004,15 +998,17 @@ class MemoryStore:
                 )
                 
                 # 更新 Vector Store (通过覆盖同一 ID)
-                try:
-                    from core.vector_store import get_vector_store
-                    vs = get_vector_store()
-                    # We might need the full item for vector store, pull from updated item
-                    updated_item = next((i for i in items if i.get("id") == fact_id), None)
-                    if updated_item:
-                        vs.add_documents([{"id": fact_id, "text": new_fact, "metadata": {"category": updated_item.get("category", "general"), "scope": updated_item.get("scope", "global")}}])
-                except Exception as e:
-                    logger.warning(f"[MemoryStore] Vector Store sync failed (non-fatal): {e}")
+                updated_item = next((i for i in items if i.get("id") == fact_id), None)
+                if updated_item:
+                    self._sync_vector_store_document(
+                        fact_id,
+                        new_fact,
+                        {
+                            "category": updated_item.get("category", "general"),
+                            "scope": updated_item.get("scope", "global"),
+                        },
+                        operation="update_knowledge",
+                    )
 
                 logger.info(f"[MemoryStore] Updated knowledge {fact_id} in {path.name}")
                 return True

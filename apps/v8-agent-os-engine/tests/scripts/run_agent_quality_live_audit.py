@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from typing import Any
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = ENGINE_ROOT.parents[2]
 DEFAULT_ENGINE_URL = "http://127.0.0.1:9530"
+DEFAULT_REPORT_ROOT = Path(os.environ.get("V8_AGENT_OS_REPORTS_ROOT") or (Path.home() / ".v8-agent-os" / "reports"))
 TOKEN_RE = re.compile(
     r"(?i)(bearer\s+)[a-z0-9._\-]+|((?:api[_-]?key|token|cookie|authorization)[\"'\s:=]+)[^\"'\s,;]+"
 )
@@ -945,7 +947,7 @@ def main() -> int:
         return 2
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_dir = Path(args.output_dir) if args.output_dir else ENGINE_ROOT / "reports" / "agent_quality" / timestamp
+    output_dir = Path(args.output_dir).expanduser() if args.output_dir else DEFAULT_REPORT_ROOT / "agent_quality" / timestamp
     pytest_code, pytest_output = _run_pytest(args.matrix)
     findings: list[AuditFinding] = []
     if pytest_code != 0:

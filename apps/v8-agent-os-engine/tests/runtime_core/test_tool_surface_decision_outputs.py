@@ -182,3 +182,145 @@ def test_computer_use_list_apps_limits_aliases_and_windows():
     assert "visual studio code" not in visible
     assert "windows" not in visible
     _assert_not_json_wrapper(visible)
+
+
+def test_web_broker_search_exposes_sources_not_control_json():
+    visible = _visible(
+        "web_broker",
+        {
+            "ok": True,
+            "mode": "search",
+            "query": "V8 Agent OS runtime episode",
+            "resultCount": 2,
+            "sourceQualitySummary": {
+                "quality": "mixed",
+                "recommendedNextAction": "Read the official docs first.",
+            },
+            "results": [
+                {
+                    "title": "Runtime Episodes Guide",
+                    "url": "https://example.com/runtime-episodes",
+                    "snippet": "Canonical episode queue and typed handoff details.",
+                    "sourceQualityHints": {"large": "diagnostic-only"},
+                },
+                {
+                    "title": "Worker Leases",
+                    "url": "https://example.com/leases",
+                    "snippet": "Heartbeat and lease generation behavior.",
+                },
+            ],
+            "trace": {"raw": "diagnostic"},
+        },
+    )
+
+    assert "Web broker (search)" in visible
+    assert "V8 Agent OS runtime episode" in visible
+    assert "Runtime Episodes Guide" in visible
+    assert "https://example.com/runtime-episodes" in visible
+    assert "sourceQualityHints" not in visible
+    assert '"trace"' not in visible
+    _assert_not_json_wrapper(visible)
+
+
+def test_web_broker_read_exposes_content_and_url():
+    visible = _visible(
+        "web_broker",
+        {
+            "ok": True,
+            "mode": "read",
+            "title": "Official API docs",
+            "finalUrl": "https://example.com/api",
+            "textPreview": "Use this endpoint to create durable runtime episodes.",
+            "links": [{"title": "Reference", "url": "https://example.com/ref"}],
+        },
+    )
+
+    assert "Web broker (read)" in visible
+    assert "Official API docs" in visible
+    assert "https://example.com/api" in visible
+    assert "durable runtime episodes" in visible
+    _assert_not_json_wrapper(visible)
+
+
+def test_delegation_broker_exposes_tasks_without_selection_diagnostics():
+    visible = _visible(
+        "delegation_broker",
+        {
+            "ok": True,
+            "mode": "dispatch",
+            "summary": "Dispatched 2 worker tasks.",
+            "tasks": [
+                {
+                    "taskGoal": "Review research evidence.",
+                    "target": "evidence-reviewer",
+                    "status": "started",
+                    "selectionTrace": {"large": "diagnostic-only"},
+                },
+                {
+                    "taskGoal": "Draft implementation risks.",
+                    "target": "engineering-reviewer",
+                    "status": "queued",
+                },
+            ],
+            "traceRef": "diag://trace",
+        },
+    )
+
+    assert "Delegation broker (dispatch)" in visible
+    assert "Review research evidence" in visible
+    assert "engineering-reviewer" in visible
+    assert "selectionTrace" not in visible
+    assert "traceRef" not in visible
+    _assert_not_json_wrapper(visible)
+
+
+def test_fetch_skill_instructions_keeps_method_and_hides_loader_paths():
+    message = ToolMessage(
+        content=(
+            "=== SKILL ENTRYPOINTS ===\n"
+            "Skill Name: huashu-nuwa\n"
+            "Skill Root: C:/Users/sunny/.agents/skills/huashu-nuwa\n"
+            "Directory Structure: very large tree\n"
+            "=== INSTRUCTIONS SUMMARY ===\n"
+            "Read the source material, extract the mental model, and produce a runnable skill.\n"
+            "Never invent citations.\n"
+        ),
+        name="fetch_skill_instructions",
+        tool_call_id="call-fetch-skill",
+    )
+    visible = str(
+        apply_tool_surface_budget(
+            message,
+            {"agentVisibleBudget": 1600},
+            tool_name="fetch_skill_instructions",
+        ).content
+    )
+
+    assert visible.startswith("Skill instructions")
+    assert "huashu-nuwa" in visible
+    assert "extract the mental model" in visible
+    assert "Never invent citations" in visible
+    assert "Skill Root:" not in visible
+    assert "Directory Structure:" not in visible
+    assert "C:/Users/sunny" not in visible
+
+
+def test_unknown_json_defaults_to_minimal_summary_with_detail_tool():
+    visible = _visible(
+        "new_experimental_tool",
+        {
+            "ok": True,
+            "summary": "Created a candidate plan with two sources.",
+            "results": [
+                {"title": "Primary source", "url": "https://example.com/source", "snippet": "Useful fact."}
+            ],
+            "internalControl": {"token": "do-not-show"},
+        },
+    )
+
+    assert visible.startswith("new experimental tool result")
+    assert "Created a candidate plan" in visible
+    assert "https://example.com/source" in visible
+    assert "tool_observation_detail" in visible
+    assert "internalControl" not in visible
+    _assert_not_json_wrapper(visible)

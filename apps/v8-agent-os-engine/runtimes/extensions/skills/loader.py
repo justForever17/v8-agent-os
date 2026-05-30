@@ -3758,11 +3758,11 @@ def _skill_instruction_section(markdown: str, section: str | None, *, limit: int
 
 
 @tool
-def fetch_skill_instructions(skill_name: str, detail_level: str = "summary", section: str | None = None) -> str:
+def fetch_skill_instructions(skill_name: str, detail_level: str = "full", section: str | None = None) -> str:
     """Fetch workflow guidance for a listed Skill.
 
-    Default detail_level='summary' returns entrypoints, safety state, directory hints, and an outline.
-    Use detail_level='section' with section='...' for a specific heading. Use detail_level='full' only when the task truly requires the complete SKILL.md.
+    Default detail_level='full' returns the approved SKILL.md instructions so delegated agents can follow the workflow.
+    Use detail_level='summary' only for browsing/discovery, or detail_level='section' with section='...' for a specific heading.
     """
 
     runtime_kind = "chat"
@@ -3992,8 +3992,8 @@ def fetch_skill_instructions(skill_name: str, detail_level: str = "summary", sec
             f"{intro}\n\n"
             "=== SECTION OUTLINE ===\n"
             f"{outline}\n\n"
-            "Need more detail? Call fetch_skill_instructions(skill_name, detail_level='section', section='<heading>'). "
-            "Use detail_level='full' only when the current task truly needs the complete SKILL.md."
+            "Need execution detail? Call fetch_skill_instructions(skill_name, detail_level='full') "
+            "or fetch_skill_instructions(skill_name, detail_level='section', section='<heading>')."
         )
     return (
         f"{safety_banner}"

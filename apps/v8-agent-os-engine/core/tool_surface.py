@@ -12,7 +12,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 
-DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 15000
+DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000
 MAX_TOOL_OUTPUT_LENGTH = DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32000
 DEFAULT_OUTPUT_RESERVE_TOKENS = 2048
@@ -40,10 +40,13 @@ class ToolSurfaceEnvelope:
         return {key: value for key, value in payload.items() if value not in (None, "", {}, [])}
 
 TOOL_OUTPUT_TARGET_CHARS = {
-    "default": 4000,
+    "default": 6000,
     "catalog": 4000,
-    "diagnostic": 6000,
+    "diagnostic": 10000,
     "operation": 2500,
+    "research": 24000,
+    "web": 16000,
+    "skill_instructions": 24000,
 }
 
 JSON_PRIORITY_KEYS = (
@@ -123,10 +126,14 @@ def runtime_kind_for_tool(tool_name: str) -> str:
         return "rpa"
     if name.startswith("memory_") or name.startswith("mem_"):
         return "memory"
+    if name == "web_broker" or name.startswith("web_"):
+        return "web"
     if name in {"manage_cron", "manage_hook", "list_processes", "read_audit_log"}:
         return "automation"
     if name == "runtime_broker":
         return "runtime_broker"
+    if name == "delegation_broker" or name.startswith("delegation_") or name.startswith("subagent_"):
+        return "subagent_swarm"
     if name == "fetch_skill_instructions":
         return "extensions"
     return "native"
@@ -189,6 +196,12 @@ def _request_config(request: Any) -> dict[str, Any]:
 
 def _tool_output_kind(tool_name: str) -> str:
     normalized = (tool_name or "").lower()
+    if normalized == "fetch_skill_instructions":
+        return "skill_instructions"
+    if normalized == "web_broker" or normalized.startswith("web_"):
+        return "web"
+    if normalized == "research_broker" or normalized.startswith("research_"):
+        return "research"
     if "catalog" in normalized or "list_" in normalized or normalized.endswith("_list"):
         return "catalog"
     if "diagnostic" in normalized or "capabilities" in normalized or "observe" in normalized:
@@ -204,6 +217,33 @@ def _safe_int(value: Any, default: int) -> int:
         return parsed if parsed > 0 else default
     except Exception:
         return default
+
+
+def _scaled_tool_target_chars(kind: str, base_target: int, context_window_tokens: int) -> int:
+    """Let long-context models see more cleaned evidence without expanding mutating tool noise."""
+    if kind == "operation":
+        return base_target
+    if context_window_tokens >= 1_000_000:
+        caps = {
+            "skill_instructions": 80_000,
+            "research": 80_000,
+            "web": 60_000,
+            "diagnostic": 24_000,
+            "default": 16_000,
+            "catalog": 8_000,
+        }
+    elif context_window_tokens >= 200_000:
+        caps = {
+            "skill_instructions": 48_000,
+            "research": 48_000,
+            "web": 32_000,
+            "diagnostic": 18_000,
+            "default": 12_000,
+            "catalog": 6_000,
+        }
+    else:
+        caps = {}
+    return max(base_target, int(caps.get(kind, base_target)))
 
 
 def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, Any]:
@@ -244,7 +284,8 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
     remaining_tokens = max(0, context_window_tokens - used_tokens - output_reserve_tokens - safety_buffer_tokens)
     dynamic_budget_chars = max(MIN_TOOL_OUTPUT_BUDGET_CHARS, remaining_tokens * CHARS_PER_TOKEN_ESTIMATE)
     kind = _tool_output_kind(tool_name)
-    target_chars = TOOL_OUTPUT_TARGET_CHARS.get(kind, TOOL_OUTPUT_TARGET_CHARS["default"])
+    base_target_chars = TOOL_OUTPUT_TARGET_CHARS.get(kind, TOOL_OUTPUT_TARGET_CHARS["default"])
+    target_chars = _scaled_tool_target_chars(kind, base_target_chars, context_window_tokens)
     agent_visible_budget = max(MIN_TOOL_OUTPUT_BUDGET_CHARS, min(dynamic_budget_chars, target_chars, hard_max_chars))
     return {
         "budgetSource": "dynamic_context_budget",
@@ -258,6 +299,7 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
         "estimatedPromptTokens": int(used_tokens),
         "reservedOutputTokens": int(output_reserve_tokens),
         "safetyBufferTokens": int(safety_buffer_tokens),
+        "baseTargetChars": int(base_target_chars),
     }
 
 
@@ -283,13 +325,20 @@ def _line_safe_slice(text: str, limit: int, *, tail: bool = False) -> str:
 def _head_tail_truncate_text(text: str, budget: int, notice: str) -> str:
     if len(text) <= budget:
         return text
+    ref_match = re.search(r"rawRef=(toolobs://[A-Za-z0-9_.:/?=&%+-]+)", notice or "")
+    preserved_ref = ref_match.group(1).rstrip(".,);]") if ref_match else ""
+    preserved_block = (
+        f"\nDetail: tool_observation_detail(raw_ref='{preserved_ref}')\nRaw: {preserved_ref}"
+        if preserved_ref
+        else ""
+    )
     marker = f"\n\n...[{notice}]...\n\n"
-    available = max(0, budget - len(marker))
+    available = max(0, budget - len(marker) - len(preserved_block))
     if available <= 0:
-        return marker[:budget]
+        return (marker + preserved_block)[-budget:]
     head_limit = max(1, int(available * 0.3))
     tail_limit = max(1, available - head_limit)
-    return f"{_line_safe_slice(text, head_limit)}{marker}{_line_safe_slice(text, tail_limit, tail=True)}"
+    return f"{_line_safe_slice(text, head_limit)}{marker}{_line_safe_slice(text, tail_limit, tail=True)}{preserved_block}"
 
 
 def _truncate_worker_result_preserving_marker(text: str, budget: int, notice: str) -> str | None:
@@ -384,6 +433,17 @@ def _tool_json_payload(text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _tool_json_any_payload(text: str) -> Any | None:
+    stripped = str(text or "").strip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        payload = json.loads(stripped)
+    except Exception:
+        return None
+    return payload if isinstance(payload, (dict, list)) else None
+
+
 def _short_text(value: Any, limit: int = 120) -> str:
     text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\s+", " ", text)
@@ -426,6 +486,42 @@ def _surface_ref_lines(raw_ref: str, detail_tool: Any = None, *, include_raw: bo
     if raw_ref and include_raw:
         lines.append(f"Raw: {raw_ref}")
     return lines
+
+
+def _first_text(payload: dict[str, Any], *keys: str, limit: int = 800) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            if isinstance(value, (dict, list)):
+                continue
+            return _short_text(value, limit)
+    return ""
+
+
+def _source_line(item: dict[str, Any], *, title_limit: int = 120, url_limit: int = 190) -> str:
+    title = item.get("title") or item.get("sourceTitle") or item.get("name") or item.get("host") or item.get("url")
+    url = item.get("url") or item.get("href") or item.get("finalUrl") or item.get("sourceUrl")
+    snippet = (
+        item.get("snippet")
+        or item.get("summary")
+        or item.get("text")
+        or item.get("textPreview")
+        or item.get("preview")
+        or item.get("output")
+    )
+    parts = []
+    if title:
+        parts.append(_short_text(title, title_limit))
+    if snippet:
+        parts.append(_short_text(snippet, 220))
+    if parts:
+        line = " - ".join(parts)
+    else:
+        primitive = next((value for value in item.values() if isinstance(value, (str, int, float, bool))), "")
+        line = _short_text(primitive, title_limit) if primitive not in (None, "") else "item"
+    if url:
+        line = f"{line}: {_short_text(url, url_limit)}"
+    return line
 
 
 def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
@@ -1085,6 +1181,293 @@ def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str
     return "\n".join(line for line in lines if line).strip()
 
 
+def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    mode = _short_text(payload.get("mode") or payload.get("kind") or payload.get("operation") or "result", 40)
+    lines = [f"Web broker ({mode})"]
+    summary = _first_text(payload, "summary", "answer", "result", "message", limit=700)
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if payload.get("query"):
+        lines.append(f"Query: {_short_text(payload.get('query'), 220)}")
+
+    if payload.get("ok") is False:
+        failure = _first_text(payload, "error", "failureClass", "reason", "warning", limit=300)
+        if failure:
+            lines.append(f"Failure: {failure}")
+
+    title = payload.get("title")
+    final_url = payload.get("finalUrl") or payload.get("url")
+    if title or final_url:
+        lines.append(f"Page: {_short_text(title or final_url, 180)}")
+        if final_url:
+            lines.append(f"URL: {_short_text(final_url, 220)}")
+
+    page_text = _first_text(payload, "text", "textPreview", "content", "contentPreview", "rawHtmlPreview", "extract", limit=1400)
+    if page_text:
+        content_label = "Raw HTML preview:" if payload.get("rawHtmlPreview") else "Content:"
+        lines.append(content_label)
+        lines.append(page_text)
+    ui_snapshot = payload.get("uiSnapshot")
+    if isinstance(ui_snapshot, list) and ui_snapshot:
+        lines.append("UI snapshot:")
+        for item in ui_snapshot[:8]:
+            if isinstance(item, dict):
+                label = _source_line(item) or _short_text(item, 180)
+                lines.append(f"- {label}")
+        if len(ui_snapshot) > 8:
+            lines.append(f"- … {len(ui_snapshot) - 8} more")
+
+    source_summary = payload.get("sourceQualitySummary")
+    if isinstance(source_summary, dict):
+        quality_bits = []
+        for key in ("quality", "resultCount", "officialCount"):
+            if source_summary.get(key) not in (None, "", [], {}):
+                quality_bits.append(f"{key}={_short_text(source_summary.get(key), 80)}")
+        if quality_bits:
+            lines.append("Source quality: " + " | ".join(quality_bits[:4]))
+    elif payload.get("quality"):
+        lines.append(f"Source quality: {_short_text(payload.get('quality'), 100)}")
+    extraction_bits = []
+    for key in ("extractionQuality", "contentFormat", "contentChars", "htmlChars", "missingContentReason", "usedBrowserProfile"):
+        if payload.get(key) not in (None, "", [], {}):
+            extraction_bits.append(f"{key}={_short_text(payload.get(key), 80)}")
+    if extraction_bits:
+        lines.append("Extraction: " + " | ".join(extraction_bits[:6]))
+
+    results = payload.get("results") or payload.get("sources") or payload.get("items")
+    if isinstance(results, list) and results:
+        lines.append("Sources:")
+        shown = 0
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            line = _source_line(item)
+            if line:
+                lines.append(f"- {line}")
+                shown += 1
+            if shown >= 6:
+                break
+        if len(results) > shown:
+            lines.append(f"- … {len(results) - shown} more")
+
+    links = payload.get("links")
+    if isinstance(links, list) and links and not isinstance(results, list):
+        lines.append("Links:")
+        for item in links[:5]:
+            if isinstance(item, dict):
+                lines.append(f"- {_source_line(item)}")
+            else:
+                lines.append(f"- {_short_text(item, 180)}")
+        if len(links) > 5:
+            lines.append(f"- … {len(links) - 5} more")
+
+    warnings = payload.get("warnings") or payload.get("warning")
+    if isinstance(warnings, list) and warnings:
+        lines.append("Warnings: " + "; ".join(_short_text(item, 120) for item in warnings[:3]))
+    elif warnings:
+        lines.append(f"Warning: {_short_text(warnings, 220)}")
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+    if next_action:
+        lines.append(f"Next: {_short_text(next_action, 220)}")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    mode = _short_text(payload.get("mode") or payload.get("kind") or "dispatch", 40)
+    lines = [f"Delegation broker ({mode})"]
+    summary = _first_text(payload, "summary", "message", "result", "error", limit=500)
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if payload.get("ok") is False and not summary:
+        lines.append("Summary: delegation request did not complete.")
+
+    dispatch_status = payload.get("dispatchStatus") or payload.get("status")
+    if dispatch_status:
+        lines.append(f"Status: {_short_text(dispatch_status, 100)}")
+    missing = payload.get("missingTasks") or payload.get("missing_tasks")
+    if missing:
+        lines.append(f"Missing tasks: {_short_text(missing, 260)}")
+
+    tasks = (
+        payload.get("tasks")
+        or payload.get("taskBriefs")
+        or payload.get("workers")
+        or payload.get("items")
+        or payload.get("results")
+        or []
+    )
+    if isinstance(tasks, list) and tasks:
+        lines.append("Tasks:")
+        for item in tasks[:8]:
+            if not isinstance(item, dict):
+                lines.append(f"- {_short_text(item, 220)}")
+                continue
+            goal = item.get("taskGoal") or item.get("goal") or item.get("brief") or item.get("summary") or item.get("name")
+            target = item.get("target") or item.get("worker") or item.get("subagent") or item.get("member") or item.get("family")
+            status = item.get("status") or item.get("state") or item.get("dispatchStatus")
+            parts = [
+                _short_text(goal, 220),
+                f"target={_short_text(target, 80)}" if target else "",
+                f"status={_short_text(status, 50)}" if status else "",
+            ]
+            lines.append("- " + " | ".join(part for part in parts if part))
+        if len(tasks) > 8:
+            lines.append(f"- … {len(tasks) - 8} more")
+
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction") or payload.get("recommendedAction")
+    if next_action:
+        lines.append(f"Next: {_short_text(next_action, 220)}")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _generic_json_items(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("results", "items", "sources", "artifacts", "tasks", "events", "messages", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _render_generic_json_surface(tool_name: str, payload: Any, raw_ref: str, *, budget: int) -> str | None:
+    if not isinstance(payload, (dict, list)):
+        return None
+    label = _short_text(str(tool_name or "tool_result").replace("_", " "), 80)
+    lines = [f"{label} result"]
+    if isinstance(payload, dict):
+        if payload.get("ok") is False:
+            lines.append("Status: failed")
+        elif payload.get("status"):
+            lines.append(f"Status: {_short_text(payload.get('status'), 90)}")
+        elif payload.get("kind"):
+            lines.append(f"Kind: {_short_text(payload.get('kind'), 90)}")
+        summary = _first_text(
+            payload,
+            "summary",
+            "answer",
+            "result",
+            "resultPreview",
+            "message",
+            "text",
+            "textPreview",
+            "content",
+            "output",
+            "error",
+            limit=1200,
+        )
+        if summary:
+            lines.append("Summary:")
+            lines.append(summary)
+        verification = payload.get("verification")
+        if isinstance(verification, dict):
+            verification_bits = []
+            for key in ("status", "reason", "summary", "result"):
+                if verification.get(key) not in (None, "", [], {}):
+                    verification_bits.append(_short_text(verification.get(key), 120))
+            if verification_bits:
+                lines.append("Verification: " + " | ".join(verification_bits[:3]))
+        elif verification not in (None, "", [], {}):
+            lines.append(f"Verification: {_short_text(verification, 240)}")
+        for key in ("url", "finalUrl", "sourceUrl"):
+            if payload.get(key):
+                lines.append(f"Source: {_short_text(payload.get(key), 220)}")
+                break
+    items = _generic_json_items(payload)
+    if items:
+        lines.append("Items:")
+        for item in items[:6]:
+            if isinstance(item, dict):
+                lines.append(f"- {_source_line(item)}")
+            else:
+                lines.append(f"- {_short_text(item, 260)}")
+        if len(items) > 6:
+            lines.append(f"- … {len(items) - 6} more")
+    if isinstance(payload, dict):
+        next_action = payload.get("recommendedNextAction") or payload.get("nextAction") or payload.get("recommendedAction")
+        if next_action:
+            lines.append(f"Next: {_short_text(next_action, 220)}")
+        detail_tool = payload.get("detailTool")
+    else:
+        detail_tool = None
+    lines.extend(_surface_ref_lines(raw_ref, detail_tool, include_raw=True))
+    rendered = "\n".join(line for line in lines if line).strip()
+    if not rendered:
+        return None
+    if len(rendered) > budget:
+        return _head_tail_truncate_text(rendered, budget, f"generic JSON surface truncated; rawRef={raw_ref}")
+    return rendered
+
+
+def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: int) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return "\n".join(["Skill instructions", *_surface_ref_lines(raw_ref, include_raw=True)])
+    if text.startswith("=== SKILL BLOCKED") or text.startswith("=== SKILL APPROVAL REQUIRED"):
+        visible = _head_tail_truncate_text(text, budget, f"skill notice truncated; rawRef={raw_ref}") if len(text) > budget else text
+        return visible
+
+    skill_name = ""
+    for pattern in (
+        r"(?im)^\s*Skill Name\s*:\s*(.+)$",
+        r"(?im)^\s*Skill ID\s*:\s*(.+)$",
+        r"(?im)^\s*Skill\s*:\s*(.+)$",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            skill_name = _short_text(match.group(1), 120)
+            break
+
+    def _section(*headings: str) -> str:
+        for heading in headings:
+            pattern = re.compile(rf"(?im)^===\s*{re.escape(heading)}\s*===$")
+            match = pattern.search(text)
+            if not match:
+                continue
+            start = match.end()
+            end_match = re.search(r"\n=== [A-Z0-9 _()/-]+ ===", text[start:])
+            end = start + end_match.start() if end_match else len(text)
+            value = text[start:end].strip()
+            if value:
+                return value
+        return ""
+
+    instructions = _section("INSTRUCTIONS (FULL)", "INSTRUCTIONS FULL", "INSTRUCTIONS SECTION", "INSTRUCTIONS SUMMARY")
+    if not instructions:
+        instructions = text
+    cleaned_lines: list[str] = []
+    skip_prefixes = (
+        "Skill Root:",
+        "Skill Path:",
+        "Absolute Path:",
+        "Workspace Root:",
+        "Project Root:",
+        "Directory Structure:",
+        "Source Root:",
+    )
+    for line in instructions.splitlines():
+        stripped = line.strip()
+        if any(stripped.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines).strip()
+
+    lines = ["Skill instructions" + (f": {skill_name}" if skill_name else "")]
+    lines.append("Use these instructions as the method contract; paths and loader diagnostics are kept in raw detail.")
+    if cleaned:
+        lines.append("Instructions:")
+        lines.append(cleaned)
+    lines.extend(_surface_ref_lines(raw_ref, include_raw=True))
+    rendered = "\n".join(line for line in lines if line).strip()
+    if len(rendered) > budget:
+        return _head_tail_truncate_text(rendered, budget, f"skill instructions truncated; rawRef={raw_ref}")
+    return rendered
+
+
 def _decision_agent_visible_surface(
     *,
     tool_name: str,
@@ -1092,9 +1475,10 @@ def _decision_agent_visible_surface(
     raw_ref: str,
     budget: int,
 ) -> str | None:
-    payload = _tool_json_payload(content)
-    if not isinstance(payload, dict):
+    payload_any = _tool_json_any_payload(content)
+    if not isinstance(payload_any, (dict, list)):
         return None
+    payload = payload_any if isinstance(payload_any, dict) else {}
     renderer_result: str | None = None
     if tool_name == "runtime_broker":
         renderer_result = _render_runtime_broker_surface(payload, raw_ref)
@@ -1102,6 +1486,10 @@ def _decision_agent_visible_surface(
         renderer_result = _render_workspace_broker_surface(payload, raw_ref)
     elif tool_name == "research_broker":
         renderer_result = _render_research_broker_surface(payload, raw_ref)
+    elif tool_name == "web_broker" or tool_name.startswith("web_"):
+        renderer_result = _render_web_broker_surface(payload, raw_ref)
+    elif tool_name == "delegation_broker" or tool_name.startswith("delegation_") or tool_name.startswith("subagent_"):
+        renderer_result = _render_delegation_broker_surface(payload, raw_ref)
     elif tool_name.startswith("computer_use_"):
         renderer_result = _render_computer_use_surface(tool_name, payload, raw_ref)
     elif tool_name.startswith("creative_media_"):
@@ -1112,6 +1500,8 @@ def _decision_agent_visible_surface(
         renderer_result = _render_native_json_surface(tool_name, payload, raw_ref)
     elif tool_name.startswith("memory_"):
         renderer_result = _render_memory_surface(tool_name, payload, raw_ref)
+    if renderer_result is None:
+        renderer_result = _render_generic_json_surface(tool_name, payload_any, raw_ref, budget=budget)
     if renderer_result is None:
         return None
     if len(renderer_result) > budget:
@@ -1522,6 +1912,18 @@ def apply_tool_surface_budget(
                 }
             )
             return _copy_tool_message_with_budget(message, command_surface, budget_meta)
+
+    if tool_name == "fetch_skill_instructions":
+        skill_surface = _render_skill_instructions_surface(content_str, raw_ref, budget=budget)
+        budget_meta.update(
+            {
+                "wasBudgetTruncated": len(skill_surface) < len(content_str),
+                "semanticTruncationStrategy": "skill_instructions_surface",
+                "originalChars": len(original_content_str),
+                "visibleChars": len(skill_surface),
+            }
+        )
+        return _copy_tool_message_with_budget(message, skill_surface, budget_meta)
 
     decision_surface = _decision_agent_visible_surface(
         tool_name=tool_name,

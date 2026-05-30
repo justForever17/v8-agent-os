@@ -18,7 +18,7 @@ from core.tool_surface import (
     tool_output_budget_for_request,
 )
 
-DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 15000
+DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000
 DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = float(os.environ.get("V8_AGENT_OS_TOOL_CALL_TIMEOUT_SECONDS", "240").strip() or "240")
 
 SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS = {

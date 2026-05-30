@@ -4844,6 +4844,75 @@ def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str
     return rendered
 
 
+def _render_web_observation_detail(payload: dict[str, Any], *, raw_ref: str, max_chars: int) -> str | None:
+    if not any(key in payload for key in ("text", "textPreview", "rawHtml", "rawHtmlPreview", "uiSnapshot", "links", "media", "extractionQuality")):
+        return None
+
+    def _value(*keys: str) -> str:
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, "", [], {}):
+                return _tool_observation_short_text(value, max_chars)
+        return ""
+
+    lines = ["Web observation detail"]
+    title = _value("title", "summary")
+    final_url = _value("finalUrl", "url")
+    if title:
+        lines.append(f"title: {title}")
+    if final_url:
+        lines.append(f"url: {final_url}")
+    quality = []
+    for key in ("mode", "extract", "extractionQuality", "contentFormat", "contentChars", "htmlChars", "missingContentReason", "usedBrowserProfile"):
+        if payload.get(key) not in (None, "", [], {}):
+            quality.append(f"{key}={_tool_observation_short_text(payload.get(key), 80)}")
+    if quality:
+        lines.append("quality: " + " | ".join(quality))
+
+    content = _value("text", "textPreview", "content", "contentPreview", "rawHtml", "rawHtmlPreview")
+    if content:
+        lines.extend(["", "Content:", content])
+
+    snapshot = payload.get("uiSnapshot")
+    if isinstance(snapshot, list) and snapshot:
+        lines.extend(["", "UI snapshot:"])
+        for item in snapshot[:40]:
+            if not isinstance(item, dict):
+                continue
+            parts = [
+                _tool_observation_short_text(item.get("tag"), 30),
+                _tool_observation_short_text(item.get("role"), 50),
+                _tool_observation_short_text(item.get("text"), 180),
+                _tool_observation_short_text(item.get("href"), 180),
+            ]
+            parts = [part for part in parts if part]
+            if parts:
+                lines.append("- " + " | ".join(parts))
+        if len(snapshot) > 40:
+            lines.append(f"- … {len(snapshot) - 40} more")
+
+    links = payload.get("links")
+    if isinstance(links, list) and links:
+        lines.extend(["", "Links:"])
+        for item in links[:20]:
+            if isinstance(item, dict):
+                label = _tool_observation_short_text(item.get("text") or item.get("title") or item.get("url"), 180)
+                url = _tool_observation_short_text(item.get("url") or item.get("href"), 220)
+                lines.append(f"- {label}: {url}" if url else f"- {label}")
+
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "Warnings:"])
+        for item in warnings[:5]:
+            lines.append(f"- {_tool_observation_short_text(item, 240)}")
+
+    lines.extend(["", f"rawRef: {raw_ref}"])
+    rendered = "\n".join(line for line in lines if line is not None).strip()
+    if len(rendered) > max_chars:
+        rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
+    return rendered
+
+
 @tool
 def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
     """Read a bounded, redacted preview for a previous tool observation rawRef."""
@@ -4855,7 +4924,7 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
         requested_chars = int(max_chars or 6000)
     except Exception:
         requested_chars = 6000
-    requested_chars = max(500, min(requested_chars, 12000))
+    requested_chars = max(500, min(requested_chars, 60000))
 
     try:
         from core.observability_db import observability_db
@@ -4872,6 +4941,10 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
             or any(key in payload for key in ("finalExperiencePack", "researchResult"))
         ):
             rendered = _render_research_observation_detail(payload, raw_ref=normalized_ref, max_chars=requested_chars)
+            if rendered:
+                return rendered
+        if payload and (str(record.get("tool_name") or "").startswith("web_") or str(record.get("tool_name") or "") == "web_broker"):
+            rendered = _render_web_observation_detail(payload, raw_ref=normalized_ref, max_chars=requested_chars)
             if rendered:
                 return rendered
 

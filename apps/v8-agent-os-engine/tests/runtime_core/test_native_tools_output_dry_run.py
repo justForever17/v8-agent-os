@@ -144,3 +144,50 @@ def test_tool_observation_detail_renders_research_pack_without_raw_json(tmp_path
     assert "Use source-backed findings only" in result
     assert "https://docs.example.com/research" in result
     assert '"sourceMatrix"' not in result
+
+
+def test_tool_observation_detail_renders_web_payload_without_raw_json(tmp_path, monkeypatch) -> None:
+    from core.native_tools import tool_observation_detail
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    payload = {
+        "ok": True,
+        "mode": "extract",
+        "extract": "ui_snapshot",
+        "title": "Example form",
+        "finalUrl": "https://example.com/form",
+        "extractionQuality": "usable",
+        "contentFormat": "ui_snapshot",
+        "uiSnapshot": [
+            {"tag": "button", "role": "button", "text": "Submit"},
+            {"tag": "a", "text": "Help", "href": "https://example.com/help"},
+        ],
+        "debug": {"transport": "not for agent"},
+    }
+    temp_db.add_tool_observation_record(
+        {
+            "id": "obs-web",
+            "raw_ref": "toolobs://obs-web",
+            "tool_name": "web_extract",
+            "tool_call_id": "call-web",
+            "runtime_kind": "web",
+            "surface": "tool_node",
+            "raw_chars": 1024,
+            "visible_chars": 256,
+            "raw_sha256": "sha",
+            "raw_body": json.dumps(payload, ensure_ascii=False),
+            "budget": {"agentVisibleBudget": 1000},
+            "metadata": {},
+        }
+    )
+
+    result = tool_observation_detail.invoke({"raw_ref": "toolobs://obs-web", "max_chars": 4000})
+
+    assert "Web observation detail" in result
+    assert "Example form" in result
+    assert "button | button | Submit" in result
+    assert "https://example.com/help" in result
+    assert '"debug"' not in result

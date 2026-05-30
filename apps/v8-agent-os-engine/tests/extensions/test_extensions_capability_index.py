@@ -165,8 +165,7 @@ class ExtensionsCapabilityIndexTests(unittest.TestCase):
             self.assertEqual(approved["user_override"], "approved")
 
             approved_output = fetch_skill_instructions.invoke({"skill_name": "review-skill"})
-            self.assertIn("=== INSTRUCTIONS SUMMARY ===", approved_output)
-            self.assertIn("Need more detail?", approved_output)
+            self.assertIn("=== INSTRUCTIONS (FULL) ===", approved_output)
             self.assertIn("Sensitive payload body should stay hidden before approval.", approved_output)
 
             approved_full_output = fetch_skill_instructions.invoke({"skill_name": "review-skill", "detail_level": "full"})

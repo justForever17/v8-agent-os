@@ -33,7 +33,7 @@ from erc.safety_guardian import safety_guardian
 
 
 WebFetchMode = Literal["auto", "static", "dynamic", "stealth"]
-WebExtractMode = Literal["article", "links", "metadata", "media"]
+WebExtractMode = Literal["article", "links", "metadata", "media", "raw_html", "ui_snapshot"]
 WebRefererMode = Literal["none", "google", "custom"]
 WebFetchIntent = Literal["auto", "read", "extract", "search"]
 WebSearchEngine = Literal["auto", "metaso", "bing", "google", "baidu", "duckduckgo"]
@@ -71,6 +71,18 @@ EXTRACT_CONTAINER_SELECTORS: dict[str, tuple[str, ...]] = {
         ".content",
     ),
     "metadata": (),
+    "raw_html": (
+        "main",
+        "article",
+        "[role='main']",
+        "body",
+    ),
+    "ui_snapshot": (
+        "main",
+        "article",
+        "[role='main']",
+        "body",
+    ),
     "media": (
         "main",
         "article",
@@ -749,12 +761,93 @@ def _build_payload(
 
 def _extract_main_text(soup: BeautifulSoup) -> str:
     candidate = soup.find("main") or soup.find("article") or soup.body or soup
-    for tag in candidate(["script", "style", "noscript", "svg", "canvas"]):
+    for tag in candidate(["script", "style", "noscript", "svg", "canvas", "nav", "footer", "header"]):
         tag.decompose()
-    text = "\n".join(line.strip() for line in candidate.get_text("\n").splitlines() if line.strip())
+    text = _html_to_markdown(candidate)
     if len(text) > MAX_TEXT_CHARS:
         return text[:MAX_TEXT_CHARS] + f"\n\n...[TRUNCATED] ({len(text)} chars total)"
     return text
+
+
+def _html_to_markdown(node: BeautifulSoup) -> str:
+    lines: list[str] = []
+    for child in node.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "blockquote", "tr"], recursive=True):
+        text = _safe_text(child.get_text(" ", strip=True))
+        if not text:
+            continue
+        name = str(child.name or "").lower()
+        if name.startswith("h") and len(name) == 2 and name[1].isdigit():
+            level = max(1, min(6, int(name[1])))
+            lines.append(f"{'#' * level} {text}")
+        elif name == "li":
+            lines.append(f"- {text}")
+        elif name == "pre":
+            lines.extend(["```", text, "```"])
+        elif name == "blockquote":
+            lines.append(f"> {text}")
+        elif name == "tr":
+            cells = [_safe_text(cell.get_text(" ", strip=True)) for cell in child.find_all(["th", "td"], recursive=False)]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                lines.append("| " + " | ".join(cells) + " |")
+        else:
+            lines.append(text)
+    if not lines:
+        lines = [line.strip() for line in node.get_text("\n").splitlines() if line.strip()]
+    deduped: list[str] = []
+    previous = ""
+    for line in lines:
+        if line == previous:
+            continue
+        deduped.append(line)
+        previous = line
+    return "\n".join(deduped)
+
+
+def _html_preview(html: str, *, limit: int = 12000) -> tuple[str, bool]:
+    text = str(html or "").strip()
+    if len(text) <= limit:
+        return text, False
+    return text[:limit] + f"\n\n...[TRUNCATED RAW HTML] ({len(text)} chars total)", True
+
+
+def _ui_snapshot(node: BeautifulSoup, *, limit: int = 80) -> list[dict[str, Any]]:
+    snapshot: list[dict[str, Any]] = []
+    selectors = "main, article, section, header, footer, nav, form, input, textarea, select, button, a, img, h1, h2, h3, [role]"
+    for item in node.select(selectors):
+        label = _safe_text(item.get("aria-label") or item.get("alt") or item.get("title") or item.get_text(" ", strip=True))
+        if not label and item.name not in {"input", "textarea", "select"}:
+            continue
+        entry = {
+            "tag": item.name,
+            "role": _safe_text(item.get("role")),
+            "id": _safe_text(item.get("id")),
+            "class": " ".join(item.get("class") or [])[:120] if isinstance(item.get("class"), list) else _safe_text(item.get("class")),
+            "text": label[:220],
+            "href": _safe_text(item.get("href")),
+        }
+        snapshot.append({key: value for key, value in entry.items() if value})
+        if len(snapshot) >= limit:
+            break
+    return snapshot
+
+
+def _page_quality_fields(page: WebPagePayload, *, text: str = "", html: str = "", mode: str = "read") -> dict[str, Any]:
+    content_chars = len(str(text or ""))
+    html_chars = len(str(html or page.html or ""))
+    missing_reason = ""
+    if content_chars < 120:
+        missing_reason = "low_text_content"
+    elif content_chars < 400 and len(page.media) >= 2:
+        missing_reason = "media_heavy_or_dynamic"
+    return {
+        "extractionQuality": "weak" if missing_reason else "usable",
+        "contentChars": content_chars,
+        "htmlChars": html_chars,
+        "missingContentReason": missing_reason,
+        "contentFormat": "markdown" if mode in {"read", "article"} else mode,
+        "usedBrowserProfile": bool(page.agent_browser_profile_used),
+    }
 
 
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[dict[str, str]]:
@@ -1306,7 +1399,13 @@ def _build_vision_candidates(page: WebPagePayload, *, limit: int = 6) -> list[di
 
 def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
     vision_candidates = _build_vision_candidates(page)
-    return {
+    text = page.text
+    if not text and page.html:
+        try:
+            text = _extract_main_text(BeautifulSoup(page.html, "html.parser"))
+        except Exception:
+            text = page.text
+    result = {
         "ok": True,
         "url": page.url,
         "finalUrl": page.final_url,
@@ -1323,7 +1422,7 @@ def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
         "fallbackUsed": page.requested_mode == "auto" and page.fetch_mode != "static",
         "warnings": page.warnings,
         "title": page.title,
-        "text": page.text,
+        "text": text,
         "metadata": page.metadata,
         "links": page.links,
         "media": page.media,
@@ -1340,6 +1439,8 @@ def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
             else {"used": False}
         ),
     }
+    result.update(_page_quality_fields(page, text=text, html=page.html, mode="read"))
+    return result
 
 
 def _render_error_payload(
@@ -1600,11 +1701,21 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
                     compact["media"] = payload.get("media")
                 if "metadata" in payload:
                     compact["metadata"] = payload.get("metadata")
+                if "rawHtml" in payload:
+                    raw_preview, raw_truncated = _trim_broker_text(payload.get("rawHtml"), limit=3200)
+                    compact["rawHtmlPreview"] = raw_preview
+                    if raw_truncated or payload.get("rawHtmlTruncated"):
+                        compact["rawHtmlTruncated"] = True
+                if "uiSnapshot" in payload:
+                    compact["uiSnapshot"] = payload.get("uiSnapshot")
             else:
                 if "links" in payload:
                     compact["links"] = payload.get("links")
                 if "media" in payload:
                     compact["media"] = payload.get("media")
+        for key in ("extractionQuality", "contentChars", "htmlChars", "missingContentReason", "contentFormat", "usedBrowserProfile"):
+            if payload.get(key) not in (None, "", [], {}):
+                compact[key] = payload.get(key)
         analysis_hints = payload.get("analysisHints")
         if analysis_hints not in (None, "", [], {}):
             compact["analysisHints"] = analysis_hints
@@ -1965,10 +2076,11 @@ def web_read(
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Read a webpage with Scrapling and return a compact, structured article-style result.
+    """Read a webpage with Scrapling and return cleaned Markdown-style page text.
 
     Use this for a known URL. For research questions that need several sources or confidence scoring, request
-    research.core and use research_broker.
+    research.core and use research_broker. If the user needs DOM/UI/code reference instead of reading content,
+    use web_extract(extract="raw_html" or "ui_snapshot").
 
     mode:
     - auto: 先走静态抓取，再按需尝试 dynamic / stealth
@@ -2036,6 +2148,9 @@ def web_extract(
     - article: 提取正文、标题与摘要信息
     - links: 提取页面主要链接
     - metadata: 提取 meta 数据
+    - media: 提取页面图片/视频/音频资源
+    - raw_html: 返回用于 DOM/UI/选择器分析的 HTML 片段；普通阅读不要使用
+    - ui_snapshot: 返回轻量结构快照，适合参考页面 UI/表单/按钮结构
 
     useAgentBrowserProfile 同 web_read：必须显式为 true，且目标域名命中 allowlist。
     """
@@ -2104,6 +2219,17 @@ def web_extract(
                     *payload.warnings,
                     "metadata 提取对 adaptive 的增益有限，当前仅对页面主容器定位做稳定性记录。",
                 ]
+        elif extract == "raw_html":
+            raw_html, truncated = _html_preview(str(container), limit=16000)
+            result["title"] = payload.title
+            result["rawHtml"] = raw_html
+            result["rawHtmlTruncated"] = truncated
+            result["metadata"] = payload.metadata
+        elif extract == "ui_snapshot":
+            result["title"] = payload.title
+            result["uiSnapshot"] = _ui_snapshot(container)
+            result["metadata"] = payload.metadata
+            result["links"] = _extract_links(container, payload.final_url)[:10]
         else:
             title = payload.title
             if not title:
@@ -2113,6 +2239,14 @@ def web_extract(
             result["text"] = _extract_main_text(container)
             result["metadata"] = payload.metadata
             result["media"] = _extract_media(container, payload.final_url)
+        result.update(
+            _page_quality_fields(
+                payload,
+                text=str(result.get("text") or result.get("rawHtml") or result.get("uiSnapshot") or ""),
+                html=payload.html,
+                mode=str(extract),
+            )
+        )
         if adaptive and adaptive_signals.get("adaptiveFallback"):
             result["warnings"] = [
                 *result.get("warnings", []),
@@ -2447,8 +2581,8 @@ def web_fetch(
 
     intent:
     - auto: URL 走 read，非 URL 走 search
-    - read: 返回网页摘要
-    - extract: 返回结构化内容
+    - read: 返回清洗后的 Markdown 页面内容
+    - extract: 返回结构化内容；UI/DOM 参考用 raw_html 或 ui_snapshot
     - search: 返回公开搜索结果；search_vertical 可选择 MetaSo 的全网/文库/学术/图片/视频/播客
 
     useAgentBrowserProfile 必须显式为 true，并且目标域名命中 Admin/System Base 的 allowlist。
@@ -2519,14 +2653,14 @@ def web_broker(
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Unified web broker for public-web work: search finds results, fetch auto-routes URL vs query, read returns cleaned page text, and extract returns structured article/links/metadata/media output; add debug=true only for transport diagnostics.
+    """Unified web broker for public-web work: search finds results, fetch auto-routes URL vs query, read returns cleaned Markdown text, and extract returns article/links/metadata/media/raw_html/ui_snapshot output; add debug=true only for transport diagnostics.
 
     For multi-source facts, fresh provider/API details, source ranking, or complex research, request research.core and use research_broker. web_broker remains the single-page / single-query utility.
 
     mode:
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search
-    - read: read a single page and return compact text/title/link results
-    - extract: 抽取结构化内容，适合 article / links / metadata / media
+    - read: read a single page and return compact cleaned Markdown/title/link results
+    - extract: 抽取结构化内容，适合 article / links / metadata / media / raw_html / ui_snapshot
     - search: 公开搜索，返回搜索结果列表；search_vertical 可选择 MetaSo 的全网/文库/学术/图片/视频/播客
 
     debug:

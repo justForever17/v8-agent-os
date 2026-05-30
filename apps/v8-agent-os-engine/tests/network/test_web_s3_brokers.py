@@ -11,10 +11,83 @@ from core.delegation_broker import (
 )
 from core.native_tools import command_session_broker, delegation_broker, run_system_command
 from core.tools.s3_tools import s3_broker
-from core.tools.web_fetcher import web_broker
+from core.tools.web_fetcher import _WEB_BROKER_CONTEXT_COUNTS, WebPagePayload, web_broker, web_extract, web_read
 
 
 class WebAndS3BrokerTests(unittest.TestCase):
+    def _page(self, *, html: str, url: str = "https://example.com/doc") -> WebPagePayload:
+        return WebPagePayload(
+            url=url,
+            final_url=url,
+            requested_mode="auto",
+            referer_mode="none",
+            referer_url="",
+            fetch_mode="static",
+            attempted_modes=["static"],
+            available_modes={},
+            status=200,
+            tls_strategy="default",
+            ca_bundle_path="",
+            proxy_bypass_used=False,
+            title="",
+            text="",
+            html=html,
+            metadata={},
+            links=[],
+            media=[],
+            warnings=[],
+        )
+
+    def test_web_read_returns_clean_markdown_without_page_chrome(self):
+        html = """
+        <html><head><title>Demo</title><style>.x{}</style><script>bad()</script></head>
+        <body><header>Top nav</header><nav>Menu item</nav><main>
+        <h1>Important Title</h1><p>Useful paragraph.</p><ul><li>First point</li></ul>
+        </main><footer>Legal footer</footer></body></html>
+        """
+        with patch("core.tools.web_fetcher._fetch_with_scrapling_internal", return_value=self._page(html=html)):
+            payload = json.loads(web_read.func(url="https://example.com/doc"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["contentFormat"], "markdown")
+        self.assertIn("# Important Title", payload["text"])
+        self.assertIn("- First point", payload["text"])
+        self.assertNotIn("Top nav", payload["text"])
+        self.assertNotIn("bad()", payload["text"])
+
+    def test_web_extract_raw_html_keeps_dom_preview_for_ui_reference(self):
+        html = "<html><body><main><button id='submit'>Submit</button><form><input name='email'></form></main></body></html>"
+        with patch("core.tools.web_fetcher._fetch_with_scrapling_internal", return_value=self._page(html=html)):
+            payload = json.loads(web_extract.func(url="https://example.com/form", extract="raw_html"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["extract"], "raw_html")
+        self.assertIn("<button", payload["rawHtml"])
+        self.assertEqual(payload["contentFormat"], "raw_html")
+        self.assertIn("htmlChars", payload)
+
+    def test_web_extract_ui_snapshot_exposes_structure_not_full_html(self):
+        html = "<html><body><main><h1>Sign in</h1><button aria-label='Continue'>Go</button><a href='/help'>Help</a></main></body></html>"
+        with patch("core.tools.web_fetcher._fetch_with_scrapling_internal", return_value=self._page(html=html)):
+            payload = json.loads(web_extract.func(url="https://example.com/login", extract="ui_snapshot"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["extract"], "ui_snapshot")
+        labels = " ".join(str(item.get("text", "")) for item in payload["uiSnapshot"])
+        self.assertIn("Continue", labels)
+        self.assertIn("Sign in", labels)
+
+    def test_web_extract_login_wall_reports_needs_login(self):
+        page = self._page(html="<html><body><main>请登录后继续</main></body></html>", url="https://example.com/login")
+        page.title = "账号登录"
+        page.status = 200
+        with patch("core.tools.web_fetcher._fetch_with_scrapling_internal", return_value=page):
+            payload = json.loads(web_extract.func(url="https://example.com/login", extract="article"))
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failureClass"], "needs_login")
+        self.assertIn("Agent 专用浏览器", payload["recommendedNextAction"])
+
     def test_web_broker_fetch_mode_dispatches_to_unified_web_fetch(self):
         with patch(
             "core.tools.web_fetcher.web_fetch.func",
@@ -122,6 +195,28 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["quality"], "weak")
         self.assertLess(payload["sourceQualitySummary"]["averageRelevance"], 20)
         self.assertIn("research_broker", payload["sourceQualitySummary"]["recommendedNextAction"])
+
+    def test_web_broker_warns_after_repeated_single_run_calls(self):
+        _WEB_BROKER_CONTEXT_COUNTS.pop("call-web-repeat", None)
+        with patch(
+            "core.tools.web_fetcher.web_fetch.func",
+            return_value=json.dumps(
+                {
+                    "ok": True,
+                    "query": "v8",
+                    "provider": "duckduckgo",
+                    "results": [{"title": "V8", "url": "https://example.com", "snippet": "demo"}],
+                },
+                ensure_ascii=False,
+            ),
+        ):
+            payload = {}
+            for _ in range(4):
+                payload = json.loads(web_broker.func(target="v8", mode="search", tool_call_id="call-web-repeat"))
+
+        self.assertEqual(payload["webBrokerCallCount"], 4)
+        self.assertIn("researchRuntimeWarning", payload)
+        self.assertIn("research_broker", payload["recommendedNextAction"])
 
     def test_web_search_explicit_metaso_requires_agent_browser_profile_when_not_allowlisted(self):
         with patch(

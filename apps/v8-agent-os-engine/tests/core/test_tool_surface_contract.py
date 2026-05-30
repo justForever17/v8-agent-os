@@ -7,7 +7,7 @@ from langchain_core.messages import ToolMessage
 from core.tool_surface import apply_tool_surface_budget
 
 
-def test_tool_surface_envelope_preserves_refs_and_next_action_for_truncated_json():
+def test_tool_surface_generic_json_preserves_refs_and_next_action_without_raw_json():
     payload = {
         "ok": True,
         "runId": "run_123",
@@ -17,7 +17,7 @@ def test_tool_surface_envelope_preserves_refs_and_next_action_for_truncated_json
     message = ToolMessage(
         content=json.dumps(payload, ensure_ascii=False),
         tool_call_id="call_123",
-        name="creative_media_catalog",
+        name="experimental_json_tool",
     )
 
     result = apply_tool_surface_budget(
@@ -31,11 +31,11 @@ def test_tool_surface_envelope_preserves_refs_and_next_action_for_truncated_json
         },
     )
 
-    rendered = json.loads(str(result.content))
-    envelope = rendered["_v8ToolSurface"]
-    assert envelope["runId"] == "run_123"
-    assert envelope["toolCallId"] == "call_123"
-    assert envelope["runtimeKind"] == "creative_media"
-    assert envelope["refs"]["rawRef"].startswith("toolobs://")
-    assert envelope["omitted"]["wasBudgetTruncated"] is True
-    assert "tool_observation_detail" in envelope["nextAction"]
+    rendered = str(result.content)
+    assert rendered.startswith("experimental json tool result")
+    assert "_v8ToolSurface" not in rendered
+    assert not rendered.lstrip().startswith("{")
+    assert "Items:" in rendered
+    assert "inspect raw evidence" in rendered
+    assert "tool_observation_detail(raw_ref='toolobs://" in rendered
+    assert result.response_metadata["v8_tool_output_budget"]["semanticTruncationStrategy"] == "decision_summary_surface"

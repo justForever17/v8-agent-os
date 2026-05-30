@@ -128,6 +128,7 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     "web_extract",
     "web_search",
 }
+RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_search"}
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_")
 
@@ -327,6 +328,8 @@ def filter_visible_tools_for_actor(
         if name == RUNTIME_BROKER_TOOL_NAME:
             if normalized_actor == "supervisor":
                 visible.append(tool_ref)
+            continue
+        if name in RAW_WEB_INTERNAL_TOOL_NAMES:
             continue
         if name == "memory_broker":
             if normalized_actor == "supervisor" or name in granted_runtime_tools:

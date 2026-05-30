@@ -13,6 +13,7 @@ function buildEnginePath(req: NextRequest) {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     if (view === "evidence") return `/research-runtime/evidence${suffix}`;
     if (view === "experience") return `/research-runtime/experience${suffix}`;
+    if (view === "source-providers") return "/research-runtime/source-providers";
     return `/research-runtime/ledger${suffix}`;
 }
 

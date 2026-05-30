@@ -30,7 +30,7 @@ from core.tools.research_ledger import (
     store_evidence_bundle,
 )
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope, classify_failure
-from core.tools.web_fetcher import web_read, web_search
+from core.tools.web_fetcher import source_router_search, web_read, web_search
 
 
 _EVIDENCE_TTL_SECONDS = 6 * 60 * 60
@@ -588,6 +588,14 @@ def _call_with_deadline(
             executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _source_router_search(**kwargs: Any) -> str:
+    # Keep web_search monkeypatchable in tests while routing production calls
+    # through the internal Source Router primitive.
+    if web_search is not None and getattr(web_search, "func", None):
+        return web_search.func(**kwargs)
+    return source_router_search(**kwargs)
+
+
 def _run_search_shard(
     shard: dict[str, Any],
     *,
@@ -601,7 +609,7 @@ def _run_search_shard(
     query = _safe_text(shard.get("query"))
     video_research = _is_video_research(query, source_policy, shard.get("kind"))
     search_payload = _call_with_deadline(
-        lambda: web_search.func(
+        lambda: _source_router_search(
             query=query,
             limit=5,
             search_engine="auto",
@@ -612,7 +620,7 @@ def _run_search_shard(
             tool_call_id=tool_call_id,
         ),
         deadline_ms=min(_RESEARCH_SHARD_DEADLINE_MS, 45_000),
-        tool_name="web_search",
+        tool_name="source_router_search",
         family="research",
         recommended_next_action="换关键词、限定权威域名，或保留该 shard 为 failed_source。",
     )
@@ -696,6 +704,10 @@ def _run_search_shard(
         **shard,
         "ok": bool(search_payload.get("ok")),
         "provider": search_payload.get("provider"),
+        "networkRoute": search_payload.get("networkRoute"),
+        "sourceCapability": search_payload.get("sourceCapability"),
+        "sourceRouter": search_payload.get("sourceRouter"),
+        "providerAttemptMatrix": search_payload.get("providerAttemptMatrix") or search_payload.get("attemptedProviders"),
         "resultCount": len(results),
         "results": top_results,
         "fetchedTopSources": fetched,
@@ -806,6 +818,9 @@ def _synthesize_bundle(
                     "popularitySignals": quality.get("popularitySignals") or [],
                     "matchedSignals": quality.get("reasons") or [],
                     "snippet": _safe_text(result.get("snippet"))[:240],
+                    "provider": shard.get("provider"),
+                    "networkRoute": shard.get("networkRoute"),
+                    "sourceRouterLocale": ((shard.get("sourceRouter") or {}).get("locale") if isinstance(shard.get("sourceRouter"), dict) else None),
                 }
             )
             citations.append({"title": result.get("title"), "url": url})
@@ -1137,7 +1152,7 @@ def research_broker(
             },
             "shardDefaults": {
                 "contextIsolation": "atomic_brief_only",
-                "allowedTools": ["web_search", "web_read"],
+                "allowedTools": ["source_router_search", "web_read"],
                 "sideEffects": "read_only",
                 "deadlineMs": _RESEARCH_SHARD_DEADLINE_MS,
                 "sourceReadDeadlineMs": _RESEARCH_SOURCE_READ_DEADLINE_MS,

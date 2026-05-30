@@ -10,8 +10,9 @@ from core.delegation_broker import (
     render_external_worker_command,
 )
 from core.native_tools import command_session_broker, delegation_broker, run_system_command
+from core.source_provider_registry import get_source_provider_capabilities, get_source_provider_config_defaults, get_source_router_defaults
 from core.tools.s3_tools import s3_broker
-from core.tools.web_fetcher import _WEB_BROKER_CONTEXT_COUNTS, WebPagePayload, web_broker, web_extract, web_read
+from core.tools.web_fetcher import _WEB_BROKER_CONTEXT_COUNTS, WebPagePayload, web_broker, web_extract, web_read, web_search
 
 
 class WebAndS3BrokerTests(unittest.TestCase):
@@ -37,6 +38,17 @@ class WebAndS3BrokerTests(unittest.TestCase):
             media=[],
             warnings=[],
         )
+
+    def test_source_provider_registry_loads_config_defaults(self):
+        providers = get_source_provider_capabilities()
+        router_defaults = get_source_router_defaults()
+        config_defaults = get_source_provider_config_defaults()
+
+        self.assertIn("brave", providers)
+        self.assertIn("duckduckgo", providers)
+        self.assertIn("globalPreferred", router_defaults)
+        self.assertEqual(config_defaults["brave"]["authEnv"], "BRAVE_SEARCH_API_KEY")
+        self.assertIn("enabled", config_defaults["duckduckgo"])
 
     def test_web_read_returns_clean_markdown_without_page_chrome(self):
         html = """
@@ -230,6 +242,159 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["failureClass"], "needs_agent_browser_login")
         self.assertEqual(payload["attemptedProviders"][0]["status"], "skipped")
         self.assertIn("Agent 专用浏览器", payload["recommendedNextAction"])
+
+    def test_web_search_source_router_prefers_cn_route_for_chinese_query(self):
+        config = {
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+            "sourceRouter": {"cnPreferred": ["bocha", "metaso"], "globalPreferred": ["duckduckgo"]},
+            "providers": {"bocha": {"authEnv": "BOCHA_API_KEY", "enabled": True}},
+        }
+        with patch("core.tools.web_fetcher.get_web_fetch_config", return_value=config), patch.dict(
+            "os.environ",
+            {"BOCHA_API_KEY": ""},
+            clear=False,
+        ), patch(
+            "core.tools.web_fetcher._agent_browser_profile_search_skip",
+            return_value=None,
+        ), patch(
+            "core.tools.web_fetcher._metaso_search_public",
+            return_value={
+                "ok": True,
+                "results": [{"title": "中国象棋规则", "url": "https://example.cn/chess", "snippet": "象棋规则。"}],
+                "resultId": "r1",
+            },
+        ):
+            payload = json.loads(web_search.func(query="中国象棋规则", limit=2, search_engine="auto"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "metaso")
+        self.assertEqual(payload["networkRoute"], "cn_direct")
+        self.assertEqual(payload["sourceRouter"]["locale"], "cn")
+        self.assertEqual(payload["attemptedProviders"][0]["failureClass"], "credential_missing")
+        self.assertEqual(payload["sourceCapability"]["region"], "cn")
+
+    def test_web_search_source_router_skips_missing_global_api_key(self):
+        config = {
+            "sourceRouter": {"globalPreferred": ["brave", "duckduckgo"], "cnPreferred": ["metaso"]},
+            "providers": {"brave": {"authEnv": "BRAVE_SEARCH_API_KEY", "enabled": True}},
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        }
+        html = """
+        <html><body>
+          <div class="result"><a class="result__a" href="https://docs.example.com/api">Official API</a>
+          <a class="result__snippet">Official documentation for the API.</a></div>
+        </body></html>
+        """
+        with patch("core.tools.web_fetcher.get_web_fetch_config", return_value=config), patch.dict(
+            "os.environ",
+            {"BRAVE_SEARCH_API_KEY": ""},
+            clear=False,
+        ), patch(
+            "core.tools.web_fetcher._fetch_with_scrapling_internal",
+            return_value=self._page(html=html, url="https://html.duckduckgo.com/html/?q=api"),
+        ):
+            payload = json.loads(web_search.func(query="official API docs", search_engine="auto"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "duckduckgo")
+        self.assertEqual(payload["sourceRouter"]["locale"], "global")
+        self.assertEqual(payload["networkRoute"], "global_proxy")
+        self.assertEqual(payload["attemptedProviders"][0]["provider"], "brave")
+        self.assertEqual(payload["attemptedProviders"][0]["failureClass"], "credential_missing")
+
+    def test_web_search_explicit_brave_without_key_returns_credential_missing(self):
+        with patch(
+            "core.tools.web_fetcher.get_web_fetch_config",
+            return_value={"providers": {"brave": {"authEnv": "BRAVE_SEARCH_API_KEY", "enabled": True}}},
+        ), patch.dict("os.environ", {"BRAVE_SEARCH_API_KEY": ""}, clear=False):
+            payload = json.loads(web_search.func(query="api docs", search_engine="brave"))
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failureClass"], "credential_missing")
+        self.assertEqual(payload["sourceRouter"]["plannedProviders"], ["brave"])
+
+    def test_web_search_brave_api_adapter_returns_clean_results(self):
+        class _Response:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            def json(self):
+                return {
+                    "web": {
+                        "results": [
+                            {
+                                "title": "Official API",
+                                "url": "https://docs.example.com/api",
+                                "description": "Official documentation for the API.",
+                            }
+                        ]
+                    }
+                }
+
+        with patch(
+            "core.tools.web_fetcher.get_web_fetch_config",
+            return_value={"providers": {"brave": {"authEnv": "BRAVE_SEARCH_API_KEY", "apiKey": "brave-config-key", "enabled": True}}},
+        ), patch.dict("os.environ", {"BRAVE_SEARCH_API_KEY": ""}, clear=False), patch(
+            "core.tools.web_fetcher.requests.get",
+            return_value=_Response(),
+        ) as mocked_get:
+            payload = json.loads(web_search.func(query="api docs", search_engine="brave"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "brave")
+        self.assertEqual(payload["results"][0]["url"], "https://docs.example.com/api")
+        self.assertEqual(payload["results"][0]["source"], "brave")
+        self.assertEqual(payload["sourceCapability"]["role"], "discovery")
+        self.assertEqual(mocked_get.call_args.kwargs["headers"]["X-Subscription-Token"], "brave-config-key")
+
+    def test_web_search_metaso_api_adapter_uses_configured_key_and_scope(self):
+        class _Response:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            def json(self):
+                return {
+                    "results": [
+                        {
+                            "title": "MetaSo API",
+                            "url": "https://metaso.cn/search-api/playground",
+                            "snippet": "Search API playground.",
+                        }
+                    ]
+                }
+
+        with patch(
+            "core.tools.web_fetcher.get_web_fetch_config",
+            return_value={"providers": {"metaso": {"authEnv": "METASO_API_KEY", "apiKey": "metaso-config-key", "enabled": True}}},
+        ), patch("core.tools.web_fetcher.requests.post", return_value=_Response()) as mocked_post:
+            payload = json.loads(web_search.func(query="秘塔 API", search_engine="metaso", search_vertical="image"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "metaso")
+        self.assertEqual(payload["results"][0]["url"], "https://metaso.cn/search-api/playground")
+        self.assertEqual(payload["metaso"]["scope"], "image")
+        self.assertEqual(mocked_post.call_args.kwargs["headers"]["Authorization"], "Bearer metaso-config-key")
+        self.assertEqual(mocked_post.call_args.kwargs["json"]["scope"], "image")
+
+    def test_web_search_searxng_json_disabled_reports_format_unavailable(self):
+        class _Response:
+            status_code = 200
+            headers = {"content-type": "text/html"}
+
+            def json(self):
+                raise ValueError("not json")
+
+        with patch(
+            "core.tools.web_fetcher.get_web_fetch_config",
+            return_value={"providers": {"searxng": {"baseUrl": "https://search.example", "enabled": True}}},
+        ), patch("core.tools.web_fetcher.requests.get", return_value=_Response()):
+            payload = json.loads(web_search.func(query="api docs", search_engine="searxng"))
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failureClass"], "provider_format_unavailable")
+        self.assertEqual(payload["sourceRouter"]["selectedProvider"], "searxng")
 
     def test_web_broker_read_mode_forces_read_intent(self):
         with patch("core.tools.web_fetcher.web_fetch.func", return_value='{"ok": true, "mode": "read"}') as mocked:

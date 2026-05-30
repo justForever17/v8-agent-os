@@ -26,6 +26,7 @@ from core.agent_browser_profile import (
     agent_browser_profile_summary,
     configured_agent_browser_profile_dir,
 )
+from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
 from core.system_base import get_web_fetch_config
 from core.storage import storage
 from erc.runtime_context import get_runtime_context
@@ -36,7 +37,22 @@ WebFetchMode = Literal["auto", "static", "dynamic", "stealth"]
 WebExtractMode = Literal["article", "links", "metadata", "media", "raw_html", "ui_snapshot"]
 WebRefererMode = Literal["none", "google", "custom"]
 WebFetchIntent = Literal["auto", "read", "extract", "search"]
-WebSearchEngine = Literal["auto", "metaso", "bing", "google", "baidu", "duckduckgo"]
+WebSearchEngine = Literal[
+    "auto",
+    "metaso",
+    "bing",
+    "google",
+    "baidu",
+    "duckduckgo",
+    "brave",
+    "tavily",
+    "exa",
+    "jina",
+    "firecrawl",
+    "bocha",
+    "searxng",
+    "perplexity",
+]
 WebSearchVertical = Literal["all", "web", "document", "academic", "image", "video", "podcast"]
 WEB_CONTAINER_SELECTOR = "main, article, [role='main'], body"
 MAX_SELECTOR_CANDIDATES = 12
@@ -99,12 +115,26 @@ WEB_READ_TIMEOUT_SECONDS = 45.0
 WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 20.0
 WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 45.0
 METASO_HOME_URL = "https://metaso.cn/"
+METASO_API_SEARCH_ENDPOINT = "https://metaso.cn/api/v1/search"
 METASO_SEARCH_ENDPOINT = "https://metaso.cn/api/searchV2"
 METASO_VERTICAL_ENGINE_TYPES: dict[str, str] = {
     "all": "",
     "web": "",
+    "webpage": "",
     "document": "pdf",
     "academic": "scholar",
+    "scholar": "scholar",
+    "image": "image",
+    "video": "video",
+    "podcast": "podcast",
+}
+METASO_API_SCOPES: dict[str, str] = {
+    "all": "webpage",
+    "web": "webpage",
+    "webpage": "webpage",
+    "document": "document",
+    "academic": "scholar",
+    "scholar": "scholar",
     "image": "image",
     "video": "video",
     "podcast": "podcast",
@@ -120,6 +150,168 @@ SEARCH_PROVIDER_URLS: dict[str, str] = {
 # frequently unavailable behind some VPN/proxy routes; Google/Baidu may return
 # challenge pages. All providers remain available explicitly or via config override.
 SEARCH_PROVIDER_ORDER = ("metaso", "duckduckgo", "google", "bing", "baidu")
+IMPLEMENTED_SEARCH_PROVIDERS = (
+    "brave",
+    "tavily",
+    "exa",
+    "metaso",
+    "duckduckgo",
+    "google",
+    "bing",
+    "baidu",
+    "searxng",
+)
+SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "brave": {
+        "region": "global",
+        "role": "discovery",
+        "authEnv": "BRAVE_SEARCH_API_KEY",
+        "supports": ["search", "freshness", "safe_search"],
+        "costTier": "low",
+        "latencyTier": "fast",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+    "tavily": {
+        "region": "global",
+        "role": "discovery",
+        "authEnv": "TAVILY_API_KEY",
+        "supports": ["search", "raw_markdown", "country", "time_filter"],
+        "costTier": "medium",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results", "markdown"],
+        "implemented": True,
+    },
+    "exa": {
+        "region": "global",
+        "role": "discovery",
+        "authEnv": "EXA_API_KEY",
+        "supports": ["search", "contents", "neural_search"],
+        "costTier": "medium",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results", "contents"],
+        "implemented": True,
+    },
+    "jina": {
+        "region": "global",
+        "role": "read_extract",
+        "authEnv": "JINA_API_KEY",
+        "supports": ["reader", "search", "rerank", "llm_friendly_text"],
+        "costTier": "low",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["markdown", "text"],
+        "implemented": False,
+    },
+    "firecrawl": {
+        "region": "global",
+        "role": "read_extract",
+        "authEnv": "FIRECRAWL_API_KEY",
+        "supports": ["scrape", "markdown", "html", "raw_html", "screenshot"],
+        "costTier": "medium",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["markdown", "html", "raw_html", "screenshot"],
+        "implemented": False,
+    },
+    "perplexity": {
+        "region": "global",
+        "role": "deep_answer",
+        "authEnv": "PERPLEXITY_API_KEY",
+        "supports": ["grounded_answer", "citations"],
+        "costTier": "medium",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["answer", "citations"],
+        "implemented": False,
+    },
+    "bocha": {
+        "region": "cn",
+        "role": "discovery",
+        "authEnv": "BOCHA_API_KEY",
+        "supports": ["search", "cn_web"],
+        "costTier": "low",
+        "latencyTier": "fast",
+        "requiresProxy": False,
+        "outputFormats": ["search_results"],
+        "implemented": False,
+    },
+    "metaso": {
+        "region": "cn",
+        "role": "discovery",
+        "supports": ["search", "verticals", "cn_web", "documents", "academic", "media"],
+        "costTier": "free_public",
+        "latencyTier": "medium",
+        "requiresProxy": False,
+        "supportsLoginProfile": True,
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+    "baidu": {
+        "region": "cn",
+        "role": "discovery",
+        "supports": ["search", "cn_web"],
+        "costTier": "free_public",
+        "latencyTier": "medium",
+        "requiresProxy": False,
+        "supportsLoginProfile": True,
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+    "duckduckgo": {
+        "region": "global",
+        "role": "discovery",
+        "supports": ["search", "lightweight_html"],
+        "costTier": "free_public",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+    "google": {
+        "region": "global",
+        "role": "discovery",
+        "supports": ["search"],
+        "costTier": "free_public",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+    "bing": {
+        "region": "global",
+        "role": "discovery",
+        "supports": ["search"],
+        "costTier": "free_public",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+    "searxng": {
+        "region": "self_host",
+        "role": "discovery",
+        "supports": ["search", "aggregated_search"],
+        "costTier": "self_host",
+        "latencyTier": "depends",
+        "requiresProxy": "config",
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
+}
+DEFAULT_CN_SOURCE_PROVIDERS = ("bocha", "metaso", "baidu", "duckduckgo", "google", "bing", "searxng")
+DEFAULT_GLOBAL_SOURCE_PROVIDERS = ("brave", "tavily", "exa", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng")
+_SOURCE_PROVIDER_REGISTRY = get_source_provider_capabilities()
+if _SOURCE_PROVIDER_REGISTRY:
+    SOURCE_PROVIDER_CAPABILITIES = _SOURCE_PROVIDER_REGISTRY
+_SOURCE_ROUTER_DEFAULTS = get_source_router_defaults()
+if isinstance(_SOURCE_ROUTER_DEFAULTS.get("cnPreferred"), list):
+    DEFAULT_CN_SOURCE_PROVIDERS = tuple(str(item).strip() for item in _SOURCE_ROUTER_DEFAULTS["cnPreferred"] if str(item).strip())
+if isinstance(_SOURCE_ROUTER_DEFAULTS.get("globalPreferred"), list):
+    DEFAULT_GLOBAL_SOURCE_PROVIDERS = tuple(str(item).strip() for item in _SOURCE_ROUTER_DEFAULTS["globalPreferred"] if str(item).strip())
 WINDOWS_CA_BUNDLE_NAME = "windows-system-ca.pem"
 WINDOWS_CA_BUNDLE_MAX_AGE_SECONDS = 24 * 60 * 60
 PROXY_ENV_KEYS = (
@@ -261,25 +453,317 @@ def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
     return "web_fetch_failed"
 
 
-def _search_provider_order(requested_provider: str) -> list[str]:
-    if requested_provider != "auto":
-        return [requested_provider] if requested_provider in SEARCH_PROVIDER_URLS else []
-
+def _source_provider_config(provider: str) -> dict[str, Any]:
     config = get_web_fetch_config()
-    configured = config.get("searchProviderOrder")
-    if isinstance(configured, list):
-        providers = [_safe_text(item).lower() for item in configured]
-    else:
-        providers = list(SEARCH_PROVIDER_ORDER)
+    providers = config.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get(provider), dict):
+        return dict(providers[provider])
+    return {}
 
+
+def _source_provider_capability(provider: str) -> dict[str, Any]:
+    capability = dict(SOURCE_PROVIDER_CAPABILITIES.get(provider) or {})
+    capability.setdefault("id", provider)
+    provider_config = _source_provider_config(provider)
+    for key in ("region", "role", "authEnv", "costTier", "latencyTier", "requiresProxy", "supportsLoginProfile", "outputFormats", "implemented"):
+        if provider_config.get(key) not in (None, "", [], {}):
+            capability[key] = provider_config.get(key)
+    if provider_config.get("supports") not in (None, "", [], {}):
+        capability["supports"] = provider_config.get("supports")
+    return capability
+
+
+def _source_provider_public_capability(provider: str) -> dict[str, Any]:
+    capability = _source_provider_capability(provider)
+    return {
+        "id": provider,
+        "region": capability.get("region") or "unknown",
+        "role": capability.get("role") or "discovery",
+        "supports": capability.get("supports") or [],
+        "costTier": capability.get("costTier") or "unknown",
+        "latencyTier": capability.get("latencyTier") or "unknown",
+        "requiresProxy": capability.get("requiresProxy", "auto"),
+        "supportsLoginProfile": bool(capability.get("supportsLoginProfile")),
+        "outputFormats": capability.get("outputFormats") or ["search_results"],
+    }
+
+
+def _provider_auth_env(provider: str) -> str:
+    config = _source_provider_config(provider)
+    return _safe_text(config.get("authEnv") or _source_provider_capability(provider).get("authEnv"))
+
+
+def _provider_api_key(provider: str) -> str:
+    config = _source_provider_config(provider)
+    configured_key = _safe_text(config.get("apiKey") or config.get("credential") or config.get("key"))
+    if configured_key:
+        return configured_key
+    auth_env = _provider_auth_env(provider)
+    return _safe_text(os.getenv(auth_env)) if auth_env else ""
+
+
+def _provider_missing_credential(provider: str) -> str:
+    # MetaSo has two valid routes: configured API key via /api/v1/search, or the
+    # existing Agent Browser/public-search fallback. Do not let the generic API
+    # credential gate skip it before those routes can decide.
+    if str(provider or "").strip().lower() == "metaso":
+        return ""
+    auth_env = _provider_auth_env(provider)
+    if auth_env and not _provider_api_key(provider):
+        return auth_env
+    return ""
+
+
+def _provider_enabled(provider: str) -> bool:
+    config = _source_provider_config(provider)
+    if "enabled" in config:
+        return bool(config.get("enabled"))
+    return provider in SOURCE_PROVIDER_CAPABILITIES
+
+
+def _searxng_base_url() -> str:
+    provider_config = _source_provider_config("searxng")
+    return _safe_text(provider_config.get("baseUrl") or provider_config.get("url") or get_web_fetch_config().get("searxngUrl"))
+
+
+def _provider_search_url(provider: str, query: str) -> str:
+    quoted = quote_plus(query)
+    if provider == "brave":
+        return f"https://api.search.brave.com/res/v1/web/search?q={quoted}"
+    if provider == "tavily":
+        return "https://api.tavily.com/search"
+    if provider == "exa":
+        return "https://api.exa.ai/search"
+    if provider == "searxng":
+        base_url = _searxng_base_url()
+        if not base_url:
+            return ""
+        return f"{base_url.rstrip('/')}/search?q={quoted}&format=json"
+    template = SEARCH_PROVIDER_URLS.get(provider)
+    return template.format(query=quoted) if template else ""
+
+
+def _looks_cn_query(value: str) -> bool:
+    text = _safe_text(value).lower()
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return True
+    cn_needles = (
+        ".cn",
+        "china",
+        "chinese",
+        "wechat",
+        "weixin",
+        "bilibili",
+        "zhihu",
+        "douyin",
+        "taobao",
+        "alipay",
+        "qq",
+    )
+    return any(needle in text for needle in cn_needles)
+
+
+def _detect_source_locale(value: str, *, locale_hint: str = "", source_policy: str = "") -> str:
+    hint = _safe_text(locale_hint or source_policy).lower()
+    if hint in {"cn", "zh", "zh-cn", "china", "cn_direct", "domestic"}:
+        return "cn"
+    if hint in {"global", "en", "english", "global_proxy", "international"}:
+        return "global"
+    return "cn" if _looks_cn_query(value) else "global"
+
+
+def _ordered_unique(items: list[str] | tuple[str, ...]) -> list[str]:
     ordered: list[str] = []
-    for provider in providers:
-        if provider in SEARCH_PROVIDER_URLS and provider not in ordered:
-            ordered.append(provider)
-    for provider in SEARCH_PROVIDER_ORDER:
-        if provider not in ordered:
-            ordered.append(provider)
+    for item in items:
+        value = _safe_text(item).lower()
+        if value and value not in ordered:
+            ordered.append(value)
     return ordered
+
+
+def _configured_source_provider_order(locale: str) -> list[str]:
+    config = get_web_fetch_config()
+    router = config.get("sourceRouter") if isinstance(config.get("sourceRouter"), dict) else {}
+    key = "cnPreferred" if locale == "cn" else "globalPreferred"
+    configured = router.get(key) if isinstance(router, dict) else None
+    if isinstance(configured, list) and configured:
+        return _ordered_unique(configured)
+
+    legacy = config.get("searchProviderOrder")
+    legacy_order = _ordered_unique(legacy) if isinstance(legacy, list) else []
+    defaults = list(DEFAULT_CN_SOURCE_PROVIDERS if locale == "cn" else DEFAULT_GLOBAL_SOURCE_PROVIDERS)
+    return _ordered_unique([*legacy_order, *defaults])
+
+
+def _provider_network_route(provider: str, locale: str, *, needs_login: bool = False) -> str:
+    if needs_login:
+        return "agent_browser"
+    capability = _source_provider_capability(provider)
+    region = _safe_text(capability.get("region")).lower()
+    requires_proxy = capability.get("requiresProxy")
+    if region == "cn":
+        return "cn_direct"
+    if region == "self_host":
+        return "auto"
+    if requires_proxy is True:
+        return "global_proxy"
+    return "cn_direct" if locale == "cn" and region == "cn" else "global_proxy"
+
+
+def _source_router_plan(
+    *,
+    query: str,
+    requested_provider: str,
+    locale_hint: str = "",
+    source_policy: str = "",
+    needs_login: bool = False,
+    ui_reference: bool = False,
+    high_stakes: bool = False,
+) -> dict[str, Any]:
+    locale = _detect_source_locale(query, locale_hint=locale_hint, source_policy=source_policy)
+    if requested_provider and requested_provider != "auto":
+        candidates = [requested_provider]
+    else:
+        candidates = _configured_source_provider_order(locale)
+
+    planned = _ordered_unique(candidates)
+    executable: list[str] = []
+    skipped: list[dict[str, Any]] = []
+    for provider in planned:
+        capability = _source_provider_capability(provider)
+        if provider not in SOURCE_PROVIDER_CAPABILITIES:
+            skipped.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "provider_unknown",
+                    "reason": "source_provider_not_registered",
+                }
+            )
+            continue
+        if not _provider_enabled(provider):
+            skipped.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "provider_disabled",
+                    "reason": "provider_disabled_by_config",
+                }
+            )
+            continue
+        missing_env = _provider_missing_credential(provider)
+        if missing_env:
+            skipped.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "credential_missing",
+                    "reason": f"missing_env:{missing_env}",
+                    "authEnv": missing_env,
+                }
+            )
+            continue
+        if provider == "searxng" and not _searxng_base_url():
+            skipped.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "provider_unconfigured",
+                    "reason": "searxng_base_url_missing",
+                }
+            )
+            continue
+        if provider not in IMPLEMENTED_SEARCH_PROVIDERS or not bool(capability.get("implemented")):
+            skipped.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "provider_adapter_unavailable",
+                    "reason": "provider_registered_but_adapter_not_enabled",
+                }
+            )
+            continue
+        executable.append(provider)
+
+    selected_route_provider = executable[0] if executable else (planned[0] if planned else "")
+    return {
+        "locale": locale,
+        "intent": "ui_reference" if ui_reference else ("high_stakes" if high_stakes else "search"),
+        "requestedProvider": requested_provider,
+        "plannedProviders": planned,
+        "providers": executable,
+        "skippedProviders": skipped,
+        "networkRoute": _provider_network_route(selected_route_provider, locale, needs_login=needs_login) if selected_route_provider else "auto",
+    }
+
+
+def _source_router_payload_fields(
+    plan: dict[str, Any],
+    *,
+    selected_provider: str = "",
+    attempted_providers: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    provider = selected_provider or _safe_text((plan.get("providers") or [""])[0] if isinstance(plan.get("providers"), list) else "")
+    locale = plan.get("locale") or "global"
+    network_route = _provider_network_route(provider, str(locale)) if provider else (plan.get("networkRoute") or "auto")
+    return {
+        "sourceCapability": _source_provider_public_capability(provider) if provider else {},
+        "networkRoute": network_route,
+        "providerAttemptMatrix": attempted_providers if attempted_providers is not None else plan.get("skippedProviders") or [],
+        "sourceRouter": {
+            "locale": locale,
+            "intent": plan.get("intent") or "search",
+            "requestedProvider": plan.get("requestedProvider") or "auto",
+            "plannedProviders": plan.get("plannedProviders") or [],
+            "executableProviders": plan.get("providers") or [],
+            "selectedProvider": provider or None,
+            "skippedProviders": plan.get("skippedProviders") or [],
+            "networkRoute": network_route,
+        },
+    }
+
+
+def _web_read_source_fields(url: str, *, used_browser_profile: bool = False) -> dict[str, Any]:
+    locale = _detect_source_locale(url)
+    network_route = "agent_browser" if used_browser_profile else ("cn_direct" if locale == "cn" else "global_proxy")
+    capability = {
+        "id": "builtin_scrapling",
+        "region": "auto",
+        "role": "read_extract",
+        "supports": ["markdown", "article", "links", "metadata", "media", "raw_html", "ui_snapshot"],
+        "costTier": "local",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "supportsLoginProfile": True,
+        "outputFormats": ["markdown", "html", "raw_html", "ui_snapshot"],
+    }
+    return {
+        "sourceCapability": capability,
+        "networkRoute": network_route,
+        "providerAttemptMatrix": [
+            {
+                "provider": "builtin_scrapling",
+                "status": "ok",
+                "networkRoute": network_route,
+                "usedBrowserProfile": bool(used_browser_profile),
+            }
+        ],
+        "sourceRouter": {
+            "locale": locale,
+            "intent": "read_extract",
+            "requestedProvider": "builtin_scrapling",
+            "plannedProviders": ["builtin_scrapling"],
+            "executableProviders": ["builtin_scrapling"],
+            "selectedProvider": "builtin_scrapling",
+            "skippedProviders": [],
+            "networkRoute": network_route,
+        },
+    }
+
+
+def _search_provider_order(requested_provider: str) -> list[str]:
+    plan = _source_router_plan(query="", requested_provider=requested_provider)
+    return list(plan.get("providers") or [])
 
 
 def _is_loopback_sink_proxy(value: str) -> bool:
@@ -313,6 +797,8 @@ def _provider_prefers_agent_browser_profile(provider: str) -> bool:
 
 def _agent_browser_profile_search_skip(provider: str, search_url: str) -> dict[str, Any] | None:
     if not _provider_prefers_agent_browser_profile(provider):
+        return None
+    if str(provider or "").strip().lower() == "metaso" and _provider_api_key("metaso"):
         return None
     allowed, matched_host = _agent_browser_profile_allowed(search_url)
     if allowed:
@@ -1440,6 +1926,7 @@ def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
         ),
     }
     result.update(_page_quality_fields(page, text=text, html=page.html, mode="read"))
+    result.update(_web_read_source_fields(page.final_url or page.url, used_browser_profile=page.agent_browser_profile_used))
     return result
 
 
@@ -1716,6 +2203,9 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
         for key in ("extractionQuality", "contentChars", "htmlChars", "missingContentReason", "contentFormat", "usedBrowserProfile"):
             if payload.get(key) not in (None, "", [], {}):
                 compact[key] = payload.get(key)
+        for key in ("sourceCapability", "providerAttemptMatrix", "networkRoute", "sourceRouter"):
+            if payload.get(key) not in (None, "", [], {}):
+                compact[key] = payload.get(key)
         analysis_hints = payload.get("analysisHints")
         if analysis_hints not in (None, "", [], {}):
             compact["analysisHints"] = analysis_hints
@@ -1756,6 +2246,9 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             compact["query"] = payload.get("query")
         if payload.get("attemptedProviders") not in (None, "", [], {}):
             compact["attemptedProviders"] = payload.get("attemptedProviders")
+        for key in ("sourceCapability", "providerAttemptMatrix", "networkRoute", "sourceRouter"):
+            if payload.get(key) not in (None, "", [], {}):
+                compact[key] = payload.get(key)
         if isinstance(payload.get("agentBrowserProfile"), dict):
             compact["agentBrowserProfile"] = payload.get("agentBrowserProfile")
 
@@ -1774,6 +2267,10 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
         "requestedProvider",
         "attemptedProviders",
         "searchUrl",
+        "sourceCapability",
+        "providerAttemptMatrix",
+        "networkRoute",
+        "sourceRouter",
         "status",
         "fallbackUsed",
         "visionRecommended",
@@ -1828,6 +2325,396 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
         if results:
             return results
     return results
+
+
+def _searxng_search_public(search_url: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
+    try:
+        with _bypass_proxy_env(_should_bypass_proxy_env()):
+            response = requests.get(
+                search_url,
+                headers={"User-Agent": "V8 Agent OS Source Router/1.0"},
+                timeout=max(1.0, timeout_seconds),
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failureClass": _classify_web_fetch_failure(str(exc)),
+            "reason": str(exc)[:1000],
+            "retryable": True,
+        }
+    content_type = _safe_text(response.headers.get("content-type")).lower()
+    if response.status_code in {403, 429}:
+        return {
+            "ok": False,
+            "failureClass": "provider_challenge",
+            "reason": f"http_status_{response.status_code}",
+            "retryable": True,
+        }
+    try:
+        payload = response.json()
+    except Exception:
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": f"searxng_json_format_unavailable content_type={content_type or 'unknown'}",
+            "retryable": False,
+        }
+    raw_results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(raw_results, list):
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "searxng_response_missing_results_array",
+            "retryable": False,
+        }
+    results: list[dict[str, str]] = []
+    for index, item in enumerate(raw_results[: max(1, min(limit, 10))], start=1):
+        if not isinstance(item, dict):
+            continue
+        url = _safe_text(item.get("url"))
+        title = _safe_text(item.get("title") or item.get("content") or url)
+        snippet = _safe_text(item.get("content") or item.get("snippet"))
+        if not url:
+            continue
+        results.append(
+            {
+                "title": title[:300],
+                "url": url,
+                "snippet": snippet[:700],
+                "source": _safe_text(item.get("engine"))[:120],
+                "rank": str(index),
+            }
+        )
+    return {"ok": True, "results": results, "statusCode": response.status_code}
+
+
+def _provider_api_failure(provider: str, response: requests.Response) -> dict[str, Any] | None:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code < 400:
+        return None
+    if status_code in {401, 403}:
+        failure_class = "provider_auth_failed"
+        retryable = False
+    elif status_code == 429:
+        failure_class = "provider_rate_limited"
+        retryable = True
+    elif status_code >= 500:
+        failure_class = "provider_server_error"
+        retryable = True
+    else:
+        failure_class = "provider_http_error"
+        retryable = False
+    return {
+        "ok": False,
+        "failureClass": failure_class,
+        "reason": f"{provider}_http_status_{status_code}",
+        "retryable": retryable,
+        "statusCode": status_code,
+    }
+
+
+def _brave_search_public(query: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
+    api_key = _provider_api_key("brave")
+    try:
+        with _bypass_proxy_env(_should_bypass_proxy_env()):
+            response = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={
+                    "q": query,
+                    "count": max(1, min(limit, 20)),
+                    "safesearch": "moderate",
+                    "spellcheck": "1",
+                },
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": api_key,
+                    "User-Agent": "V8 Agent OS Source Router/1.0",
+                },
+                timeout=max(1.0, timeout_seconds),
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failureClass": _classify_web_fetch_failure(str(exc)),
+            "reason": str(exc)[:1000],
+            "retryable": True,
+        }
+    api_failure = _provider_api_failure("brave", response)
+    if api_failure:
+        return api_failure
+    try:
+        payload = response.json()
+    except Exception:
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "brave_response_not_json",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    raw_results = ((payload.get("web") or {}).get("results") if isinstance(payload, dict) else None) or []
+    results: list[dict[str, str]] = []
+    for index, item in enumerate(raw_results[: max(1, min(limit, 20))], start=1):
+        if not isinstance(item, dict):
+            continue
+        url = _safe_text(item.get("url"))
+        title = _safe_text(item.get("title") or url)
+        snippet = _safe_text(item.get("description") or item.get("extra_snippets") or item.get("page_age"))
+        if not url:
+            continue
+        results.append(
+            {
+                "title": title[:300],
+                "url": url,
+                "snippet": snippet[:700],
+                "source": "brave",
+                "rank": str(index),
+            }
+        )
+    return {"ok": True, "results": results, "statusCode": response.status_code}
+
+
+def _tavily_search_public(query: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
+    api_key = _provider_api_key("tavily")
+    request_payload = {
+        "query": query,
+        "search_depth": "basic",
+        "max_results": max(1, min(limit, 10)),
+        "include_answer": False,
+        "include_raw_content": "markdown",
+    }
+    try:
+        with _bypass_proxy_env(_should_bypass_proxy_env()):
+            response = requests.post(
+                "https://api.tavily.com/search",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "V8 Agent OS Source Router/1.0",
+                },
+                json=request_payload,
+                timeout=max(1.0, timeout_seconds),
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failureClass": _classify_web_fetch_failure(str(exc)),
+            "reason": str(exc)[:1000],
+            "retryable": True,
+        }
+    api_failure = _provider_api_failure("tavily", response)
+    if api_failure:
+        return api_failure
+    try:
+        payload = response.json()
+    except Exception:
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "tavily_response_not_json",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    raw_results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(raw_results, list):
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "tavily_response_missing_results_array",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    results: list[dict[str, str]] = []
+    for index, item in enumerate(raw_results[: max(1, min(limit, 10))], start=1):
+        if not isinstance(item, dict):
+            continue
+        url = _safe_text(item.get("url"))
+        title = _safe_text(item.get("title") or url)
+        snippet = _safe_text(item.get("content") or item.get("raw_content") or "")
+        if not url:
+            continue
+        results.append(
+            {
+                "title": title[:300],
+                "url": url,
+                "snippet": snippet[:900],
+                "source": "tavily",
+                "score": _safe_text(item.get("score")),
+                "rank": str(index),
+            }
+        )
+    return {"ok": True, "results": results, "statusCode": response.status_code}
+
+
+def _exa_search_public(query: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
+    api_key = _provider_api_key("exa")
+    try:
+        with _bypass_proxy_env(_should_bypass_proxy_env()):
+            response = requests.post(
+                "https://api.exa.ai/search",
+                headers={
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "User-Agent": "V8 Agent OS Source Router/1.0",
+                },
+                json={
+                    "query": query,
+                    "numResults": max(1, min(limit, 10)),
+                    "contents": {"text": {"maxCharacters": 900}},
+                },
+                timeout=max(1.0, timeout_seconds),
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failureClass": _classify_web_fetch_failure(str(exc)),
+            "reason": str(exc)[:1000],
+            "retryable": True,
+        }
+    api_failure = _provider_api_failure("exa", response)
+    if api_failure:
+        return api_failure
+    try:
+        payload = response.json()
+    except Exception:
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "exa_response_not_json",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    raw_results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(raw_results, list):
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "exa_response_missing_results_array",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    results: list[dict[str, str]] = []
+    for index, item in enumerate(raw_results[: max(1, min(limit, 10))], start=1):
+        if not isinstance(item, dict):
+            continue
+        url = _safe_text(item.get("url"))
+        title = _safe_text(item.get("title") or url)
+        snippet = _safe_text(item.get("text") or item.get("summary") or item.get("highlights") or "")
+        if not url:
+            continue
+        results.append(
+            {
+                "title": title[:300],
+                "url": url,
+                "snippet": snippet[:900],
+                "source": "exa",
+                "score": _safe_text(item.get("score")),
+                "rank": str(index),
+            }
+        )
+    return {"ok": True, "results": results, "statusCode": response.status_code}
+
+
+def _api_search_public(provider: str, query: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
+    if provider == "brave":
+        return _brave_search_public(query, limit=limit, timeout_seconds=timeout_seconds)
+    if provider == "tavily":
+        return _tavily_search_public(query, limit=limit, timeout_seconds=timeout_seconds)
+    if provider == "exa":
+        return _exa_search_public(query, limit=limit, timeout_seconds=timeout_seconds)
+    return {
+        "ok": False,
+        "failureClass": "provider_adapter_unavailable",
+        "reason": f"{provider}_api_adapter_unavailable",
+        "retryable": False,
+    }
+
+
+def _metaso_api_search(query: str, *, limit: int, vertical: str, timeout_seconds: float) -> dict[str, Any]:
+    api_key = _provider_api_key("metaso")
+    if not api_key:
+        return {
+            "ok": False,
+            "failureClass": "credential_missing",
+            "reason": "missing_METASO_API_KEY",
+            "retryable": False,
+        }
+    scope = METASO_API_SCOPES.get(_normalize_search_vertical(vertical), "webpage")
+    size = max(1, min(int(limit or 5), 20))
+    try:
+        response = requests.post(
+            METASO_API_SEARCH_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={
+                "q": query,
+                "scope": scope,
+                "size": str(size),
+                "includeSummary": False,
+                "includeRawContent": False,
+                "conciseSnippet": False,
+            },
+            timeout=max(1.0, timeout_seconds),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failureClass": _classify_web_fetch_failure(str(exc)),
+            "reason": str(exc)[:1000],
+            "retryable": True,
+        }
+    api_failure = _provider_api_failure("metaso", response)
+    if api_failure:
+        return api_failure
+    try:
+        payload = response.json()
+    except Exception:
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "metaso_api_response_not_json",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        for key in ("webPages", "webpages", "results", "data", "items", "documents"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidates = value
+                break
+            if isinstance(value, dict):
+                nested = value.get("value") or value.get("items") or value.get("results") or value.get("webPages")
+                if isinstance(nested, list):
+                    candidates = nested
+                    break
+    if not isinstance(candidates, list):
+        return {
+            "ok": False,
+            "failureClass": "provider_format_unavailable",
+            "reason": "metaso_api_response_missing_results_array",
+            "retryable": False,
+            "statusCode": response.status_code,
+        }
+    results: list[dict[str, str]] = []
+    for index, item in enumerate(candidates[:size], start=1):
+        if not isinstance(item, dict):
+            continue
+        normalized = _metaso_result_from_item(item, rank=index, vertical=scope)
+        if normalized.get("url") or normalized.get("title"):
+            normalized.setdefault("source", "metaso")
+            normalized["rank"] = str(index)
+            results.append(normalized)
+    return {
+        "ok": True,
+        "results": results,
+        "statusCode": response.status_code,
+        "scope": scope,
+        "apiEndpoint": METASO_API_SEARCH_ENDPOINT,
+    }
 
 
 def _search_page_failure(payload: WebPagePayload, soup: BeautifulSoup, *, provider: str, result_count: int) -> dict[str, Any] | None:
@@ -2247,6 +3134,7 @@ def web_extract(
                 mode=str(extract),
             )
         )
+        result.update(_web_read_source_fields(payload.final_url or payload.url, used_browser_profile=payload.agent_browser_profile_used))
         if adaptive and adaptive_signals.get("adaptiveFallback"):
             result["warnings"] = [
                 *result.get("warnings", []),
@@ -2278,7 +3166,7 @@ def web_search(
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Search the public web with a lightweight search provider and return structured results.
+    """Internal/raw search primitive behind Source Router. Product agents should normally use web_broker or research_broker.
 
     For multi-source research, current facts, source confidence, or parallel query decomposition, request
     research.core and use research_broker instead of doing ad-hoc one-shot searches.
@@ -2293,12 +3181,24 @@ def web_search(
     """
     requested_provider = str(search_engine or "auto").strip().lower()
     requested_vertical = _normalize_search_vertical(str(search_vertical or "all"))
-    providers = _search_provider_order(requested_provider)
-    attempted_providers: list[dict[str, Any]] = []
+    router_plan = _source_router_plan(
+        query=query,
+        requested_provider=requested_provider,
+        needs_login=bool(useAgentBrowserProfile),
+    )
+    providers = list(router_plan.get("providers") or [])
+    attempted_providers: list[dict[str, Any]] = list(router_plan.get("skippedProviders") or [])
     started_at = time.monotonic()
     last_error = ""
 
     if not providers:
+        first_failure = attempted_providers[0] if attempted_providers else {}
+        failure_class = _safe_text(first_failure.get("failureClass")) or "unsupported_operation"
+        recommended = (
+            "该 provider 需要配置 API key 或启用适配器；请检查 systemBase.webFetch.providers，或使用 search_engine=auto 让 Source Router 自动降级。"
+            if failure_class in {"credential_missing", "provider_adapter_unavailable", "provider_unconfigured"}
+            else "使用 search_engine=auto，或选择 metaso/duckduckgo/baidu/bing/google/searxng 中的一个。"
+        )
         return json.dumps(
             {
                 "ok": False,
@@ -2306,10 +3206,11 @@ def web_search(
                 "requestedProvider": requested_provider,
                 "searchVertical": requested_vertical,
                 "attemptedProviders": attempted_providers,
-                "failureClass": "unsupported_operation",
+                "failureClass": failure_class,
                 "retryable": False,
-                "recommendedNextAction": "使用 search_engine=auto，或选择 metaso/duckduckgo/baidu/bing/google 中的一个。",
-                "error": f"Unsupported search provider: {requested_provider}",
+                "recommendedNextAction": recommended,
+                "error": _safe_text(first_failure.get("reason")) or f"Unsupported search provider: {requested_provider}",
+                **_source_router_payload_fields(router_plan, attempted_providers=attempted_providers),
             },
             ensure_ascii=False,
             indent=2,
@@ -2329,7 +3230,18 @@ def web_search(
                 }
             )
             break
-        search_url = SEARCH_PROVIDER_URLS[provider].format(query=quote_plus(query))
+        search_url = _provider_search_url(provider, query)
+        if not search_url:
+            attempted_providers.append(
+                {
+                    "provider": provider,
+                    "status": "skipped",
+                    "failureClass": "provider_unconfigured",
+                    "reason": "search_url_not_configured",
+                }
+            )
+            last_error = "search_url_not_configured"
+            continue
         allowed, error_message = _guard_url(search_url, tool_call_id=tool_call_id)
         if not allowed:
             attempted_providers.append({"provider": provider, "status": "blocked", "reason": error_message or "blocked"})
@@ -2353,6 +3265,11 @@ def web_search(
                     "retryable": True,
                     "recommendedNextAction": profile_skip["recommendedNextAction"],
                     "error": last_error,
+                    **_source_router_payload_fields(
+                        router_plan,
+                        selected_provider=provider,
+                        attempted_providers=attempted_providers,
+                    ),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -2360,15 +3277,132 @@ def web_search(
 
         try:
             provider_timeout = max(1.0, min(WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS, remaining))
+            if provider in {"brave", "tavily", "exa"}:
+                api_result = _api_search_public(provider, query, limit=limit, timeout_seconds=provider_timeout)
+                if not bool(api_result.get("ok")):
+                    attempted_providers.append(
+                        {
+                            "provider": provider,
+                            "status": "error",
+                            "failureClass": api_result.get("failureClass") or "search_failed",
+                            "reason": api_result.get("reason") or f"{provider}_api_search_failed",
+                            "statusCode": api_result.get("statusCode"),
+                        }
+                    )
+                    last_error = _safe_text(api_result.get("reason") or api_result.get("failureClass"))
+                    if requested_provider == "auto":
+                        continue
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "query": query,
+                            "requestedProvider": requested_provider,
+                            "searchVertical": requested_vertical,
+                            "attemptedProviders": attempted_providers,
+                            "failureClass": api_result.get("failureClass") or "search_failed",
+                            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                            "retryable": bool(api_result.get("retryable")),
+                            "recommendedNextAction": "检查 provider API key、配额或网络 route；也可以用 search_engine=auto 让 Source Router 自动降级。",
+                            "error": last_error,
+                            **_source_router_payload_fields(
+                                router_plan,
+                                selected_provider=provider,
+                                attempted_providers=attempted_providers,
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                results = api_result.get("results") if isinstance(api_result.get("results"), list) else []
+                attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
+                response = {
+                    "ok": True,
+                    "query": query,
+                    "provider": provider,
+                    "requestedProvider": requested_provider,
+                    "searchVertical": requested_vertical,
+                    "attemptedProviders": attempted_providers,
+                    "searchUrl": search_url,
+                    "resultCount": len(results),
+                    "results": results,
+                    **_source_router_payload_fields(
+                        router_plan,
+                        selected_provider=provider,
+                        attempted_providers=attempted_providers,
+                    ),
+                }
+                return json.dumps(response, ensure_ascii=False, indent=2)
+            if provider == "searxng":
+                searxng_result = _searxng_search_public(search_url, limit=limit, timeout_seconds=provider_timeout)
+                if not bool(searxng_result.get("ok")):
+                    attempted_providers.append(
+                        {
+                            "provider": provider,
+                            "status": "error",
+                            "failureClass": searxng_result.get("failureClass") or "search_failed",
+                            "reason": searxng_result.get("reason") or "searxng_search_failed",
+                        }
+                    )
+                    last_error = _safe_text(searxng_result.get("reason") or searxng_result.get("failureClass"))
+                    if requested_provider == "auto":
+                        continue
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "query": query,
+                            "requestedProvider": requested_provider,
+                            "searchVertical": requested_vertical,
+                            "attemptedProviders": attempted_providers,
+                            "failureClass": searxng_result.get("failureClass") or "search_failed",
+                            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                            "retryable": bool(searxng_result.get("retryable")),
+                            "recommendedNextAction": "SearXNG 实例需要启用 JSON format；否则换 provider 或改用 research_broker。",
+                            "error": last_error,
+                            **_source_router_payload_fields(
+                                router_plan,
+                                selected_provider=provider,
+                                attempted_providers=attempted_providers,
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                results = searxng_result.get("results") if isinstance(searxng_result.get("results"), list) else []
+                attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
+                response = {
+                    "ok": True,
+                    "query": query,
+                    "provider": provider,
+                    "requestedProvider": requested_provider,
+                    "searchVertical": requested_vertical,
+                    "attemptedProviders": attempted_providers,
+                    "searchUrl": search_url,
+                    "resultCount": len(results),
+                    "results": results,
+                    **_source_router_payload_fields(
+                        router_plan,
+                        selected_provider=provider,
+                        attempted_providers=attempted_providers,
+                    ),
+                }
+                return json.dumps(response, ensure_ascii=False, indent=2)
             if provider == "metaso":
                 use_browser_for_provider = bool(useAgentBrowserProfile) or bool(_agent_browser_profile_allowed(search_url)[0])
                 if not use_browser_for_provider:
-                    metaso_result = _metaso_search_public(
-                        query,
-                        limit=limit,
-                        vertical=requested_vertical,
-                        timeout_seconds=provider_timeout,
-                    )
+                    if _provider_api_key("metaso"):
+                        metaso_result = _metaso_api_search(
+                            query,
+                            limit=limit,
+                            vertical=requested_vertical,
+                            timeout_seconds=provider_timeout,
+                        )
+                    else:
+                        metaso_result = _metaso_search_public(
+                            query,
+                            limit=limit,
+                            vertical=requested_vertical,
+                            timeout_seconds=provider_timeout,
+                        )
                     if not bool(metaso_result.get("ok")):
                         attempted_providers.append(
                             {
@@ -2395,6 +3429,11 @@ def web_search(
                                 "retryable": metaso_result.get("failureClass") in {"provider_rate_limited", "network_timeout", "deadline_exceeded", "no_results"},
                                 "recommendedNextAction": "MetaSo 公共搜索当前限流或无结果；请启用 Agent 浏览器登录态、稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。",
                                 "error": last_error,
+                                **_source_router_payload_fields(
+                                    router_plan,
+                                    selected_provider=provider,
+                                    attempted_providers=attempted_providers,
+                                ),
                             },
                             ensure_ascii=False,
                             indent=2,
@@ -2406,6 +3445,7 @@ def web_search(
                             "status": "ok",
                             "resultCount": len(results),
                             "searchVertical": requested_vertical,
+                            "scope": metaso_result.get("scope"),
                             "resultId": metaso_result.get("resultId"),
                         }
                     )
@@ -2421,10 +3461,17 @@ def web_search(
                         "results": results,
                         "metaso": {
                             "engineType": metaso_result.get("engineType"),
+                            "scope": metaso_result.get("scope"),
+                            "apiEndpoint": metaso_result.get("apiEndpoint"),
                             "resultId": metaso_result.get("resultId"),
                             "groupId": metaso_result.get("groupId"),
                             "eventsSeen": metaso_result.get("eventsSeen"),
                         },
+                        **_source_router_payload_fields(
+                            router_plan,
+                            selected_provider=provider,
+                            attempted_providers=attempted_providers,
+                        ),
                     }
                     return json.dumps(response, ensure_ascii=False, indent=2)
             effective_use_agent_browser_profile = bool(useAgentBrowserProfile) or bool(
@@ -2469,6 +3516,11 @@ def web_search(
                         "retryable": page_failure["failureClass"] in {"provider_challenge", "no_results"},
                         "recommendedNextAction": "该搜索源返回验证页或没有可抽取结果；请换 provider、换关键词，或使用 research_broker 多源调研。",
                         "error": str(page_failure["reason"]),
+                        **_source_router_payload_fields(
+                            router_plan,
+                            selected_provider=provider,
+                            attempted_providers=attempted_providers,
+                        ),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -2508,6 +3560,11 @@ def web_search(
                 ),
                 "resultCount": len(results),
                 "results": results,
+                **_source_router_payload_fields(
+                    router_plan,
+                    selected_provider=provider,
+                    attempted_providers=attempted_providers,
+                ),
             }
             return json.dumps(response, ensure_ascii=False, indent=2)
         except Exception as exc:
@@ -2553,9 +3610,41 @@ def web_search(
                 else "检查工具配置/安全审批上下文；不要继续盲等 watchdog。"
             ),
             "error": last_error or "No search provider returned usable results.",
+            **_source_router_payload_fields(router_plan, attempted_providers=attempted_providers),
         },
         ensure_ascii=False,
         indent=2,
+    )
+
+
+def source_router_search(
+    *,
+    query: str,
+    limit: int = 5,
+    search_engine: WebSearchEngine = "auto",
+    search_vertical: WebSearchVertical = "all",
+    mode: WebFetchMode = "auto",
+    referer_mode: WebRefererMode = "none",
+    referer_url: str = "",
+    useAgentBrowserProfile: bool = False,
+    tool_call_id: str = "",
+) -> str:
+    """Internal Source Router search primitive used by Research/Web runtimes.
+
+    This deliberately is not a public LangChain tool surface. Product-facing
+    agents should prefer web_broker for one-off use and research_broker for
+    multi-source evidence work.
+    """
+    return web_search.func(
+        query=query,
+        limit=limit,
+        search_engine=search_engine,
+        search_vertical=search_vertical,
+        mode=mode,
+        referer_mode=referer_mode,
+        referer_url=referer_url,
+        useAgentBrowserProfile=useAgentBrowserProfile,
+        tool_call_id=tool_call_id,
     )
 
 
@@ -2583,7 +3672,7 @@ def web_fetch(
     - auto: URL 走 read，非 URL 走 search
     - read: 返回清洗后的 Markdown 页面内容
     - extract: 返回结构化内容；UI/DOM 参考用 raw_html 或 ui_snapshot
-    - search: 返回公开搜索结果；search_vertical 可选择 MetaSo 的全网/文库/学术/图片/视频/播客
+    - search: 通过 Source Router 选择国内/海外 provider，并返回清洗后的搜索结果
 
     useAgentBrowserProfile 必须显式为 true，并且目标域名命中 Admin/System Base 的 allowlist。
     """
@@ -2661,7 +3750,7 @@ def web_broker(
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search
     - read: read a single page and return compact cleaned Markdown/title/link results
     - extract: 抽取结构化内容，适合 article / links / metadata / media / raw_html / ui_snapshot
-    - search: 公开搜索，返回搜索结果列表；search_vertical 可选择 MetaSo 的全网/文库/学术/图片/视频/播客
+    - search: Source Router 公开搜索，返回清洗后的搜索结果列表和 provider/网络路由质量信号
 
     debug:
     - 默认 false，只返回对 agent 真正有价值的精简结果

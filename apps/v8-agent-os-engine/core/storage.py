@@ -11,6 +11,7 @@ from core.context_policy import DEFAULT_CONTEXT_POLICY, normalize_context_policy
 from core.delegation_broker import default_external_worker_descriptors, normalize_external_worker_descriptors
 from core.agents import DEFAULT_SPECIALIST_FAMILIES, normalize_specialist_families_config
 from core.runtime.supervisor_tool_policy import sanitize_supervisor_allowed_tools
+from core.source_provider_registry import get_source_provider_config_defaults, get_source_router_defaults
 from core.v8_agent_os_identity import default_system_identity, normalize_system_identity
 from core.v8_agent_os_paths import (
     COMPUTER_USE_JSON_PATH,
@@ -1068,6 +1069,8 @@ class StorageManager:
             "http://127.0.0.1:9528/api",
         )
         cache_dir = str(self.base_dir / "web_fetch")
+        source_router_defaults = get_source_router_defaults()
+        source_provider_defaults = get_source_provider_config_defaults()
         return {
             "identity": default_system_identity(),
             "bridge": {
@@ -1095,6 +1098,8 @@ class StorageManager:
                 ),
                 "useAgentBrowserProfile": False,
                 "agentBrowserProfileAllowlist": [],
+                "sourceRouter": source_router_defaults,
+                "providers": source_provider_defaults,
             },
             "desktopTools": {
                 "tesseractPath": str(os.getenv("TESSERACT_PATH") or ""),
@@ -2542,6 +2547,10 @@ class StorageManager:
         )
         normalized["webFetch"].setdefault("useAgentBrowserProfile", False)
         normalized["webFetch"].setdefault("agentBrowserProfileAllowlist", [])
+        normalized["webFetch"].setdefault("sourceRouter", get_source_router_defaults())
+        normalized["webFetch"].setdefault("providers", {})
+        for provider, provider_defaults in get_source_provider_config_defaults().items():
+            normalized["webFetch"]["providers"].setdefault(provider, provider_defaults)
         normalized.setdefault("desktopTools", {})
         normalized.pop("channels", None)
         normalized.setdefault("desktopLive", {})

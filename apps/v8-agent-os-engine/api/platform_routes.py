@@ -21,6 +21,7 @@ from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
 from core.storage import storage
+from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
 from core.realtime_protocol import build_runtime_event
 from erc.command_service import command_service
 from erc.models import ApprovalRequest
@@ -1245,6 +1246,49 @@ async def get_research_runtime_experience(query: str = "", scope: str = "global"
             include_archived=includeArchived,
         )
         return {"ok": True, "scope": scope or "global", "query": query, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/research-runtime/source-providers")
+async def get_research_runtime_source_providers():
+    try:
+        system_base = storage.get_system_base_config()
+        web_fetch = dict(system_base.get("webFetch") or {})
+        configured_providers = web_fetch.get("providers") if isinstance(web_fetch.get("providers"), dict) else {}
+        registry = get_source_provider_capabilities()
+        providers: list[dict[str, Any]] = []
+        for provider_id, capability in registry.items():
+            if not isinstance(capability, dict):
+                continue
+            configured = configured_providers.get(provider_id) if isinstance(configured_providers.get(provider_id), dict) else {}
+            auth_env = str(configured.get("authEnv") or capability.get("authEnv") or "").strip()
+            api_key = str(configured.get("apiKey") or "").strip()
+            providers.append(
+                {
+                    "id": provider_id,
+                    "displayName": capability.get("displayName") or provider_id,
+                    "region": capability.get("region") or "unknown",
+                    "role": capability.get("role") or "discovery",
+                    "supports": capability.get("supports") or [],
+                    "costTier": capability.get("costTier") or "unknown",
+                    "latencyTier": capability.get("latencyTier") or "unknown",
+                    "requiresProxy": capability.get("requiresProxy", "auto"),
+                    "supportsLoginProfile": bool(capability.get("supportsLoginProfile")),
+                    "outputFormats": capability.get("outputFormats") or ["search_results"],
+                    "implemented": bool(capability.get("implemented")),
+                    "enabled": bool(configured.get("enabled", capability.get("enabledByDefault", True))),
+                    "authEnv": auth_env,
+                    "hasConfiguredKey": bool(api_key),
+                    "baseUrl": str(configured.get("baseUrl") or capability.get("baseUrl") or "").strip(),
+                    "credentialHelp": capability.get("credentialHelp") or {},
+                }
+            )
+        return {
+            "ok": True,
+            "sourceRouter": web_fetch.get("sourceRouter") or get_source_router_defaults(),
+            "providers": providers,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

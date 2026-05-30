@@ -5,6 +5,7 @@ import { Activity, ArrowRight, Search } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ResearchRuntimeLedgerPanel } from "@/components/research/ResearchRuntimeLedgerPanel";
+import { ResearchSourceProviderPanel } from "@/components/research/ResearchSourceProviderPanel";
 import { RuntimeConfigWorkbench } from "@/components/runtime/RuntimeConfigWorkbench";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { parseLocale, resolveText } from "@/lib/locale";
@@ -39,6 +40,7 @@ export default async function ResearchRuntimePage() {
                     fallbackDisplayName={resolveText(locale, "lib.runtime.admin.researchRuntime")}
                     governanceHref="/admin/runtime-governance?kind=research"
                 />
+                <ResearchSourceProviderPanel />
                 <ResearchRuntimeLedgerPanel />
                 <div className="grid gap-4 lg:grid-cols-2">
                     {RESEARCH_RUNTIME_LINKS.map((item) => (

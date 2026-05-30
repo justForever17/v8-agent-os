@@ -384,6 +384,7 @@ def test_research_runtime_group_is_brokered_and_not_raw_web_tools():
     supervisor_default_names = {tool.name for tool in supervisor_default}
     assert {"runtime_broker", "web_broker"}.issubset(supervisor_default_names)
     assert "research_broker" not in supervisor_default_names
+    assert {"web_search", "web_read"}.isdisjoint(supervisor_default_names)
 
     supervisor_granted = filter_visible_tools_for_actor(
         tools,

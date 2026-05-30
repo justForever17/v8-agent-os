@@ -1,0 +1,219 @@
+{
+  "version": 1,
+  "sourceRouterDefaults": {
+    "enabled": true,
+    "defaultNetworkRoute": "auto",
+    "cnPreferred": ["bocha", "metaso", "baidu", "duckduckgo", "google", "bing", "searxng"],
+    "globalPreferred": ["brave", "tavily", "exa", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng"]
+  },
+  "providers": {
+    "brave": {
+      "displayName": "Brave Search",
+      "region": "global",
+      "role": "discovery",
+      "authEnv": "BRAVE_SEARCH_API_KEY",
+      "supports": ["search", "freshness", "safe_search"],
+      "costTier": "low",
+      "latencyTier": "fast",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Brave Search API key",
+        "url": "https://brave.com/search/api/"
+      }
+    },
+    "tavily": {
+      "displayName": "Tavily Search",
+      "region": "global",
+      "role": "discovery",
+      "authEnv": "TAVILY_API_KEY",
+      "supports": ["search", "raw_markdown", "country", "time_filter"],
+      "costTier": "medium",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results", "markdown"],
+      "implemented": true,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Tavily API key",
+        "url": "https://app.tavily.com/home"
+      }
+    },
+    "exa": {
+      "displayName": "Exa",
+      "region": "global",
+      "role": "discovery",
+      "authEnv": "EXA_API_KEY",
+      "supports": ["search", "contents", "neural_search"],
+      "costTier": "medium",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results", "contents"],
+      "implemented": true,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Exa API key",
+        "url": "https://dashboard.exa.ai/api-keys"
+      }
+    },
+    "jina": {
+      "displayName": "Jina Reader/Search",
+      "region": "global",
+      "role": "read_extract",
+      "authEnv": "JINA_API_KEY",
+      "supports": ["reader", "search", "rerank", "llm_friendly_text"],
+      "costTier": "low",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["markdown", "text"],
+      "implemented": false,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Jina AI API key",
+        "url": "https://jina.ai/"
+      }
+    },
+    "firecrawl": {
+      "displayName": "Firecrawl",
+      "region": "global",
+      "role": "read_extract",
+      "authEnv": "FIRECRAWL_API_KEY",
+      "supports": ["scrape", "markdown", "html", "raw_html", "screenshot"],
+      "costTier": "medium",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["markdown", "html", "raw_html", "screenshot"],
+      "implemented": false,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Firecrawl API key",
+        "url": "https://www.firecrawl.dev/app/api-keys"
+      }
+    },
+    "perplexity": {
+      "displayName": "Perplexity Sonar",
+      "region": "global",
+      "role": "deep_answer",
+      "authEnv": "PERPLEXITY_API_KEY",
+      "supports": ["grounded_answer", "citations"],
+      "costTier": "medium",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["answer", "citations"],
+      "implemented": false,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Perplexity API key",
+        "url": "https://www.perplexity.ai/settings/api"
+      }
+    },
+    "bocha": {
+      "displayName": "Bocha AI Search",
+      "region": "cn",
+      "role": "discovery",
+      "authEnv": "BOCHA_API_KEY",
+      "supports": ["search", "cn_web"],
+      "costTier": "low",
+      "latencyTier": "fast",
+      "requiresProxy": false,
+      "outputFormats": ["search_results"],
+      "implemented": false,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get Bocha API key",
+        "url": "https://open.bochaai.com/"
+      }
+    },
+    "metaso": {
+      "displayName": "MetaSo",
+      "region": "cn",
+      "role": "discovery",
+      "authEnv": "METASO_API_KEY",
+      "supports": ["search", "verticals", "cn_web", "document", "webpage", "scholar", "image", "video", "podcast"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": false,
+      "supportsLoginProfile": true,
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true,
+      "credentialHelp": {
+        "label": "Get MetaSo API key",
+        "url": "https://metaso.cn/search-api/api-keys"
+      },
+      "apiDocs": {
+        "playground": "https://metaso.cn/search-api/playground",
+        "endpoint": "https://metaso.cn/api/v1/search",
+        "scopes": ["document", "webpage", "scholar", "image", "video", "podcast"]
+      }
+    },
+    "baidu": {
+      "displayName": "Baidu Search",
+      "region": "cn",
+      "role": "discovery",
+      "supports": ["search", "cn_web"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": false,
+      "supportsLoginProfile": true,
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
+    "duckduckgo": {
+      "displayName": "DuckDuckGo HTML",
+      "region": "global",
+      "role": "discovery",
+      "supports": ["search", "lightweight_html"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
+    "google": {
+      "displayName": "Google Search HTML",
+      "region": "global",
+      "role": "discovery",
+      "supports": ["search"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
+    "bing": {
+      "displayName": "Bing Search HTML",
+      "region": "global",
+      "role": "discovery",
+      "supports": ["search"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
+    "searxng": {
+      "displayName": "SearXNG",
+      "region": "self_host",
+      "role": "discovery",
+      "supports": ["search", "aggregated_search"],
+      "costTier": "self_host",
+      "latencyTier": "depends",
+      "requiresProxy": "config",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true,
+      "baseUrl": "",
+      "credentialHelp": {
+        "label": "SearXNG Search API docs",
+        "url": "https://docs.searxng.org/dev/search_api.html"
+      }
+    }
+  }
+}

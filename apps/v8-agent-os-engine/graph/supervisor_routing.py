@@ -46,7 +46,7 @@ def create_robust_invoke(
         resolved_config = model_control_plane.get_config()
         target_model_id = preferred_model_id or sup_model_name
         model_builder = build_model or (
-            lambda candidate_model_id: llm_factory.create_chat_model(candidate_model_id, streaming=True, _role=role)
+            lambda candidate_model_id: llm_factory.create_chat_model(candidate_model_id, streaming=False, timeout=180, _role=role)
         )
 
         logger.info(

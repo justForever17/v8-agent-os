@@ -83,14 +83,57 @@ def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
     chunks: list[str] = []
     for message in messages:
         text = _compact_message_text(message, limit=700)
-        if not text:
+        tool_names = _extract_tool_names_from_message(message)
+        if not text and not tool_names:
             continue
         role = getattr(message, "type", None) or getattr(message, "role", None) or message.__class__.__name__
+        if tool_names:
+            tool_line = "使用工具: " + ", ".join(tool_names)
+            text = f"{tool_line}\n{text}" if text else tool_line
         chunks.append(f"{role}: {text}")
     compact = "\n\n".join(chunks)
     if len(compact) > limit:
         return compact[: limit - 3].rstrip() + "..."
     return compact
+
+
+def _extract_tool_names_from_message(message: Any) -> list[str]:
+    names: list[str] = []
+
+    def _add(value: Any) -> None:
+        name = str(value or "").strip()
+        if not name:
+            return
+        if name not in names:
+            names.append(name)
+
+    for call in list(getattr(message, "tool_calls", None) or []):
+        if isinstance(call, dict):
+            _add(call.get("name"))
+        else:
+            _add(getattr(call, "name", None))
+
+    additional = getattr(message, "additional_kwargs", None)
+    if isinstance(additional, dict):
+        for call in list(additional.get("tool_calls") or []):
+            if not isinstance(call, dict):
+                continue
+            _add(call.get("name"))
+            function = call.get("function")
+            if isinstance(function, dict):
+                _add(function.get("name"))
+
+    _add(getattr(message, "name", None))
+    return names
+
+
+def _extract_tool_names(messages: list[Any]) -> list[str]:
+    names: list[str] = []
+    for message in messages:
+        for name in _extract_tool_names_from_message(message):
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def _child_request_from_send_state(
@@ -119,6 +162,8 @@ def _child_request_from_send_state(
         "sourceDelegationId": seed.get("sourceDelegationId") or source_branch.get("delegationId"),
         "sourceAgentId": seed.get("sourceAgentId") or source_agent_id,
         "sourceAgentName": seed.get("sourceAgentName") or source_branch.get("agentName") or source_agent_id,
+        "sourceAllowChildDelegation": bool(source_branch.get("allowChildDelegation")),
+        "sourceChildDelegationBudget": dict(source_branch.get("childDelegationBudget") or {}),
         "childInvocationId": child_invocation_id or seed.get("childInvocationId"),
         "childDelegationId": child_delegation_id or seed.get("childDelegationId"),
         "childTaskBriefId": seed.get("childTaskBriefId") or child_branch.get("taskBriefId"),
@@ -262,6 +307,72 @@ def _extract_child_delegation_requests(
     return _dedupe_child_requests(requests)
 
 
+def _child_delegation_block_reason(branch: dict[str, Any], child_requests: list[dict[str, Any]]) -> str | None:
+    if not child_requests:
+        return None
+    if not bool(branch.get("allowChildDelegation")):
+        return "child_delegation_not_allowed"
+    budget = branch.get("childDelegationBudget") if isinstance(branch.get("childDelegationBudget"), dict) else {}
+    max_depth = budget.get("maxDepth")
+    if max_depth is not None:
+        try:
+            current_depth = int(branch.get("delegationDepth") or 0)
+            if current_depth > int(max_depth):
+                return "child_delegation_depth_exceeded"
+        except Exception:
+            pass
+    max_children = budget.get("maxChildren")
+    if max_children is not None:
+        try:
+            if len(child_requests) > int(max_children):
+                return "child_delegation_children_exceeded"
+        except Exception:
+            pass
+    return None
+
+
+def _child_delegation_block_summary(
+    *,
+    branch: dict[str, Any],
+    agent_id: str,
+    child_requests: list[dict[str, Any]],
+    reason: str,
+    delta_messages: list[Any],
+    delta_todos: list[Any],
+    tool_mode: Any,
+) -> dict[str, Any]:
+    return {
+        "invocationId": branch.get("invocationId"),
+        "taskBriefId": branch.get("taskBriefId"),
+        "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+        "taskGoal": branch.get("reason"),
+        "agentId": agent_id,
+        "agentName": branch.get("agentName") or agent_id,
+        "delegationId": branch.get("delegationId"),
+        "lane": branch.get("lane") or "subagent",
+        "targetId": agent_id,
+        "targetLabel": branch.get("agentName") or agent_id,
+        "branchIndex": branch.get("branchIndex"),
+        "status": "blocked",
+        "error": reason,
+        "dispatchStatus": "dispatch_missing_child_budget" if reason == "child_delegation_not_allowed" else reason,
+        "blockedChildDelegationCount": len(child_requests),
+        "childDelegationCount": 0,
+        "childDelegationRequestIds": [],
+        "completedAt": _now_iso(),
+        "messageCount": len(delta_messages),
+        "todoDeltaCount": len(delta_todos),
+        "toolMode": tool_mode,
+        "toolsUsed": _extract_tool_names(delta_messages),
+        "compactTranscript": _compact_transcript(delta_messages),
+        "localSelfCheck": (
+            "Subagent requested child delegation, but this branch did not have explicit child delegation budget. "
+            "The nested dispatch was blocked to avoid recursive branch explosion."
+        ),
+        "acceptanceHint": "Route a new delegation episode with explicit allowChildDelegation and childDelegationBudget if child work is still required.",
+    }
+
+
 async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str, Any]) -> tuple[list[Any], list[Any], dict[str, Any], list[dict[str, Any]]]:
     branch = dict(state.get("parallel_branch") or {})
     agent_id = str(branch.get("agentId") or "")
@@ -272,7 +383,7 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
     initial_message_count = int(branch.get("initialMessageCount") or len(local_state["messages"]))
     initial_todo_count = int(branch.get("initialTodoCount") or len(local_state["todos"]))
 
-    max_steps = 24
+    max_steps = 36
     for _ in range(max_steps):
         if current_node == agent_id:
             runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
@@ -311,6 +422,17 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 source_agent_id=agent_id,
             )
             nested_count = len([item for item in result if isinstance(item, (Command, Send))])
+            block_reason = _child_delegation_block_reason(branch, child_requests)
+            if block_reason:
+                return delta_messages, delta_todos, _child_delegation_block_summary(
+                    branch=branch,
+                    agent_id=agent_id,
+                    child_requests=child_requests,
+                    reason=block_reason,
+                    delta_messages=delta_messages,
+                    delta_todos=delta_todos,
+                    tool_mode=agent_data.get("tool_mode"),
+                ), []
             return delta_messages, delta_todos, {
                 "invocationId": branch.get("invocationId"),
                 "taskBriefId": branch.get("taskBriefId"),
@@ -332,6 +454,7 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 "messageCount": len(delta_messages),
                 "todoDeltaCount": len(delta_todos),
                 "toolMode": agent_data.get("tool_mode"),
+                "toolsUsed": _extract_tool_names(delta_messages),
                 "compactTranscript": _compact_transcript(delta_messages),
                 "localSelfCheck": "Subagent requested child delegation. The top-level router must schedule it as a child Runtime episode instead of running nested Send inside this branch.",
                 "acceptanceHint": "Route the child delegation through runtime_broker/delegation_broker with explicit child budget; do not assume the child work completed.",
@@ -355,6 +478,17 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 source_agent_id=agent_id,
             )
             if child_requests:
+                block_reason = _child_delegation_block_reason(branch, child_requests)
+                if block_reason:
+                    return delta_messages, delta_todos, _child_delegation_block_summary(
+                        branch=branch,
+                        agent_id=agent_id,
+                        child_requests=child_requests,
+                        reason=block_reason,
+                        delta_messages=delta_messages,
+                        delta_todos=delta_todos,
+                        tool_mode=agent_data.get("tool_mode"),
+                    ), []
                 return delta_messages, delta_todos, {
                     "invocationId": branch.get("invocationId"),
                     "taskBriefId": branch.get("taskBriefId"),
@@ -376,6 +510,7 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                     "messageCount": len(delta_messages),
                     "todoDeltaCount": len(delta_todos),
                     "toolMode": agent_data.get("tool_mode"),
+                    "toolsUsed": _extract_tool_names(delta_messages),
                     "compactTranscript": _compact_transcript(delta_messages),
                     "localSelfCheck": "Subagent requested child delegation. The top-level router will schedule it as a child Runtime episode instead of running nested Send inside this branch.",
                     "acceptanceHint": "Wait for the child delegation completion event before merging or judging this branch.",
@@ -403,6 +538,7 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         "messageCount": len(delta_messages),
         "todoDeltaCount": len(delta_todos),
         "toolMode": agent_data.get("tool_mode"),
+        "toolsUsed": _extract_tool_names(delta_messages),
         "compactTranscript": _compact_transcript(delta_messages),
         "localSelfCheck": "Subagent branch completed; supervisor must still accept, retry, or ignore the result.",
         "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
@@ -667,6 +803,8 @@ def build_parallel_delegate_join_node():
                     "agentId": item.get("agentId"),
                     "agentName": item.get("agentName"),
                     "delegationId": item.get("delegationId"),
+                    "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
+                    "compactTranscript": compact,
                 },
             )
             route_context = append_handoff_ref(route_context, handoff)

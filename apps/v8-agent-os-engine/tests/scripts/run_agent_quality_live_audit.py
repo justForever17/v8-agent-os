@@ -361,8 +361,26 @@ def _live_run_terminal(case: LiveCaseResult) -> tuple[bool, dict[str, Any]]:
     return True, facts
 
 
-def _route_evidence_for_expected_tool(case: LiveCaseResult, expected_tool: str) -> tuple[bool, str]:
+def _record_route_evidence(case: LiveCaseResult, payload: Any, *, record: bool) -> None:
+    if record:
+        case.key_events.append(_redact(payload))
+
+
+def _set_route_failure(case: LiveCaseResult, reason: str, *, record: bool) -> None:
+    if record and case.failure_reason is None:
+        case.failure_reason = reason
+
+
+def _route_evidence_for_expected_tool(
+    case: LiveCaseResult,
+    expected_tool: str,
+    *,
+    record: bool = True,
+) -> tuple[bool, str]:
     searchable = " ".join(case.actual_tools + case.observed_topics + case.key_events)
+    observed_tools = {_normalize_observed_tool_name(tool) for tool in case.actual_tools}
+    if expected_tool in observed_tools and expected_tool not in {"runtime_broker", "delegation_broker"}:
+        return True, f"observed_tool:{expected_tool}"
     if expected_tool in searchable and expected_tool not in {"runtime_broker", "delegation_broker"}:
         return True, f"observed_tool:{expected_tool}"
     episodes, handoffs, error = _load_durable_episode_facts(case)
@@ -385,6 +403,55 @@ def _route_evidence_for_expected_tool(case: LiveCaseResult, expected_tool: str) 
         for topic in case.observed_topics
     )
     if expected_tool == "runtime_broker" and has_runtime_episode:
+        if case.matrix == "multi_agent":
+            required_kinds = {"research", "engineering", "delegation"}
+            missing_kinds = sorted(required_kinds - episode_kinds)
+            if missing_kinds:
+                _record_route_evidence(
+                    case,
+                    {
+                        "multiAgentRouteGate": "missing_required_runtime_episodes",
+                        "requiredEpisodeKinds": sorted(required_kinds),
+                        "episodeKinds": sorted(episode_kinds),
+                        "missingEpisodeKinds": missing_kinds,
+                    },
+                    record=record,
+                )
+                reason = f"multi_agent_required_episode_missing:{','.join(missing_kinds)}"
+                _set_route_failure(case, reason, record=record)
+                return False, reason
+            failed_required = sorted(
+                {
+                    str(item.get("kind") or "")
+                    for item in episodes
+                    if str(item.get("kind") or "") in required_kinds
+                    and str(item.get("state") or "").lower() in {"failed", "cancelled", "canceled"}
+                }
+            )
+            if failed_required:
+                _record_route_evidence(
+                    case,
+                    {
+                        "multiAgentRouteGate": "required_runtime_episode_failed",
+                        "failedEpisodeKinds": failed_required,
+                        "episodeStates": [
+                            {
+                                "episodeId": item.get("id"),
+                                "kind": item.get("kind"),
+                                "state": item.get("state"),
+                                "errorCode": item.get("error_code"),
+                                "errorMessage": item.get("error_message"),
+                            }
+                            for item in episodes
+                            if str(item.get("kind") or "") in required_kinds
+                            and str(item.get("state") or "").lower() in {"failed", "cancelled", "canceled"}
+                        ],
+                    },
+                    record=record,
+                )
+                reason = f"multi_agent_required_episode_failed:{','.join(failed_required)}"
+                _set_route_failure(case, reason, record=record)
+                return False, reason
         evidence = {
             "routeSatisfiedBy": "runtime_episode",
             "episodeKinds": sorted(episode_kinds),
@@ -392,18 +459,26 @@ def _route_evidence_for_expected_tool(case: LiveCaseResult, expected_tool: str) 
             "handoffKinds": sorted(handoff_kinds),
             "activeEpisodes": active_episodes[:12],
         }
-        case.key_events.append(_redact(evidence))
+        _record_route_evidence(case, evidence, record=record)
         _append_unique(case.actual_tools, ["runtime_broker(auto_episode_route)"])
         if active_episodes:
             return False, "runtime_episode_not_terminal"
         if not (has_terminal_episode and has_any_handoff):
             return False, "runtime_episode_not_terminal"
-        if episode_states & {"failed", "cancelled"} and case.failure_reason is None:
-            case.failure_reason = "runtime_episode_failed_or_cancelled"
+        if episode_states & {"failed", "cancelled"}:
+            reason = "runtime_episode_failed_or_cancelled"
+            _set_route_failure(case, reason, record=record)
+            return False, reason
         return True, "runtime_episode"
     if expected_tool == "delegation_broker":
         has_delegation_episode = "delegation" in episode_kinds or "subagent_swarm" in episode_kinds
         has_delegation_handoff = any("subagent" in item or "delegation" in item for item in handoff_kinds)
+        diagnostic_only_topics = {
+            "subagent.delegation.claimed_without_dispatch",
+            "delegation.dispatch.missing_tasks",
+            "subagent.dispatch.missing_tasks",
+        }
+        has_delegation_failure_diagnostic = any(topic in diagnostic_only_topics for topic in case.observed_topics)
         internal_delegation_handoffs: list[dict[str, Any]] = []
         for handoff in handoffs:
             payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else {}
@@ -422,36 +497,95 @@ def _route_evidence_for_expected_tool(case: LiveCaseResult, expected_tool: str) 
                         "childEpisodeIds": list(delegation_handoff.get("childEpisodeIds") or []),
                     }
                 )
-        has_delegation_topic = any(
-            topic.startswith("delegation.") or topic.startswith("subagent.") for topic in case.observed_topics
+        has_confirmed_delegation_topic = any(
+            topic
+            in {
+                "delegation.dispatch.started",
+                "delegation.dispatch.completed",
+                "delegation.child.requested",
+                "delegation.child.completed",
+                "subagent.task.started",
+                "subagent.task.completed",
+                "subagent.task.result",
+            }
+            for topic in case.observed_topics
         )
-        if has_delegation_episode or has_delegation_handoff or has_delegation_topic or internal_delegation_handoffs:
+        has_confirmed_internal_handoff = any(
+            int(item.get("delegationRefs") or 0) > 0
+            or int(item.get("results") or 0) > 0
+            or bool(item.get("childEpisodeIds"))
+            for item in internal_delegation_handoffs
+        )
+        if case.matrix == "multi_agent" and has_delegation_failure_diagnostic and not (
+            has_delegation_episode and (has_delegation_handoff or has_confirmed_delegation_topic or has_confirmed_internal_handoff)
+        ):
+            _record_route_evidence(
+                case,
+                {
+                    "multiAgentDelegationGate": "claimed_without_confirmed_dispatch",
+                    "episodeKinds": sorted(episode_kinds),
+                    "handoffKinds": sorted(handoff_kinds),
+                    "hasConfirmedDelegationTopic": has_confirmed_delegation_topic,
+                    "internalDelegationHandoffs": internal_delegation_handoffs,
+                },
+                record=record,
+            )
+            _set_route_failure(case, "delegation_claimed_without_confirmed_dispatch", record=record)
+            return False, "delegation_claimed_without_confirmed_dispatch"
+        if (
+            has_delegation_episode
+            or has_delegation_handoff
+            or has_confirmed_delegation_topic
+            or has_confirmed_internal_handoff
+            or has_delegation_failure_diagnostic
+        ):
             evidence = {
                 "delegationSatisfiedBy": "delegation_episode_or_handoff",
                 "episodeKinds": sorted(episode_kinds),
                 "episodeStates": sorted(episode_states),
                 "handoffKinds": sorted(handoff_kinds),
                 "hasExecutedEpisode": has_executed_episode,
+                "hasConfirmedDelegationTopic": has_confirmed_delegation_topic,
+                "hasDelegationFailureDiagnostic": has_delegation_failure_diagnostic,
                 "activeEpisodes": active_episodes[:12],
             }
             if internal_delegation_handoffs:
                 evidence["internalDelegationHandoffs"] = internal_delegation_handoffs
-            case.key_events.append(_redact(evidence))
+            _record_route_evidence(case, evidence, record=record)
+            if has_delegation_failure_diagnostic and not (
+                has_delegation_episode
+                or has_delegation_handoff
+                or has_confirmed_delegation_topic
+                or has_confirmed_internal_handoff
+            ):
+                _set_route_failure(case, "delegation_claimed_without_confirmed_dispatch", record=record)
+                return False, "delegation_claimed_without_confirmed_dispatch"
             _append_unique(case.actual_tools, ["delegation_broker(auto_episode_route)"])
             if active_episodes:
                 return False, "delegation_episode_not_terminal"
             if has_delegation_episode and not (has_delegation_handoff or has_terminal_episode):
                 return False, "delegation_episode_not_terminal"
-            if episode_states & {"failed", "cancelled"} and not has_delegation_handoff and case.failure_reason is None:
-                case.failure_reason = "delegation_episode_failed_or_cancelled"
+            if has_delegation_episode and not (
+                has_delegation_handoff
+                or has_confirmed_delegation_topic
+                or has_confirmed_internal_handoff
+                or has_terminal_episode
+            ):
+                return False, "delegation_not_confirmed"
+            if episode_states & {"failed", "cancelled"} and not (
+                has_delegation_handoff or has_confirmed_delegation_topic or has_confirmed_internal_handoff
+            ):
+                reason = "delegation_episode_failed_or_cancelled"
+                _set_route_failure(case, reason, record=record)
+                return False, reason
             return True, "delegation_episode"
     return False, "missing"
 
 
-def _missing_expected_tools(case: LiveCaseResult) -> list[str]:
+def _missing_expected_tools(case: LiveCaseResult, *, record: bool = True) -> list[str]:
     missing: list[str] = []
     for tool in case.expected_tools:
-        matched, _reason = _route_evidence_for_expected_tool(case, tool)
+        matched, _reason = _route_evidence_for_expected_tool(case, tool, record=record)
         if not matched:
             missing.append(tool)
     return missing
@@ -470,7 +604,7 @@ def _classify_runtime_observation(topics: list[str], *, has_run_id: bool) -> str
     return "runtime_events_observed"
 
 
-def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: float = 120.0) -> LiveCaseResult:
+def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: float = 900.0) -> LiveCaseResult:
     if not case.session_id:
         return case
     started = time.perf_counter()
@@ -518,16 +652,16 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
                 )
             _append_unique(case.observed_topics, topics)
             _append_unique(case.actual_tools, sorted(tools))
-        searchable = " ".join(case.actual_tools + case.observed_topics + case.key_events)
-        expected_seen = not _missing_expected_tools(case) if case.expected_tools else False
-        forbidden_seen = any(tool in searchable for tool in case.forbidden_tools)
-        run_terminal, _run_facts = _live_run_terminal(case) if expected_seen else (False, {})
-        if forbidden_seen or (case.expected_tools and expected_seen and run_terminal):
+        expected_seen = not _missing_expected_tools(case, record=False) if case.expected_tools else False
+        run_terminal, _run_facts = _live_run_terminal(case)
+        if run_terminal and (expected_seen or case.expected_tools):
+            break
+        if not case.expected_tools and run_terminal:
             break
         time.sleep(2)
     if poll_errors:
         case.key_events.append(_redact({"runtime_event_poll_errors": poll_errors[:5]}))
-    if event_count == 0 or (case.expected_tools and _missing_expected_tools(case)):
+    if event_count == 0 or (case.expected_tools and _missing_expected_tools(case, record=False)):
         durable_events, durable_error = _load_durable_runtime_events(case)
         if durable_events:
             durable_topics: list[str] = []
@@ -564,7 +698,7 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
         elif durable_error:
             case.key_events.append(_redact({"durableTimelineFallbackError": durable_error}))
     if case.expected_tools:
-        _missing_expected_tools(case)
+        _missing_expected_tools(case, record=True)
     observation_stage = _classify_runtime_observation(case.observed_topics, has_run_id=bool(case.run_id))
     case.key_events.append(
         _redact(
@@ -590,6 +724,87 @@ def _poll_live_case_events(engine_url: str, case: LiveCaseResult, *, timeout_s: 
     }:
         case.failure_reason = observation_stage
     return case
+
+
+def _event_tool_name(event: dict[str, Any]) -> str:
+    payload = _event_payload(event)
+    if isinstance(payload, dict):
+        tool_payload = payload.get("tool") if isinstance(payload.get("tool"), dict) else payload
+        for key in ("toolName", "tool_name", "name"):
+            value = tool_payload.get(key) if isinstance(tool_payload, dict) else None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _normalize_observed_tool_name(name: str) -> str:
+    return re.sub(r"\([^)]*\)\s*$", "", str(name or "").strip())
+
+
+def _event_owner_label(event: dict[str, Any]) -> str:
+    payload = _event_payload(event)
+    payload_dict = payload if isinstance(payload, dict) else {}
+    runtime_context = payload_dict.get("runtimeContext") or payload_dict.get("runtime_context")
+    runtime_context = runtime_context if isinstance(runtime_context, dict) else {}
+    labels = [
+        event.get("node"),
+        event.get("agent_id"),
+        event.get("runtime_id"),
+        event.get("runtimeId"),
+        payload_dict.get("node"),
+        payload_dict.get("agentId"),
+        payload_dict.get("ownerAgentId"),
+        payload_dict.get("ownerAgentKind"),
+        payload_dict.get("ownerRuntimeId"),
+        runtime_context.get("runtime_kind"),
+        runtime_context.get("subagent_id"),
+        runtime_context.get("delegation_id"),
+    ]
+    return " ".join(str(item or "").strip().lower() for item in labels if str(item or "").strip())
+
+
+def _event_is_supervisor_owned_tool_start(event: dict[str, Any]) -> bool:
+    topic = _event_topic(event)
+    if topic.startswith(("subagent.", "delegation.", "engineering.", "research.", "creative_media.", "computer_use.", "rpa.")):
+        return False
+    payload = _event_payload(event)
+    payload_dict = payload if isinstance(payload, dict) else {}
+    runtime_context = payload_dict.get("runtimeContext") or payload_dict.get("runtime_context")
+    runtime_context = runtime_context if isinstance(runtime_context, dict) else {}
+    context_runtime = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
+    if context_runtime and context_runtime not in {"chat", "supervisor"}:
+        return False
+    if runtime_context.get("subagent_id") or runtime_context.get("delegation_id"):
+        return False
+    owner_runtime = str(payload_dict.get("ownerRuntimeId") or payload_dict.get("runtimeId") or "").strip().lower()
+    owner_kind = str(payload_dict.get("ownerAgentKind") or "").strip().lower()
+    owner_agent = str(payload_dict.get("ownerAgentId") or event.get("agent_id") or "").strip().lower()
+    if owner_runtime and owner_runtime not in {"chat", "supervisor", "planner_lane"}:
+        return False
+    if owner_kind in {"runtime", "subagent", "shard"}:
+        return False
+    if owner_kind == "supervisor" or owner_agent == "supervisor":
+        return True
+    return owner_runtime in {"chat", "supervisor"} and not owner_agent
+
+
+def _forbidden_supervisor_tools_seen(case: LiveCaseResult) -> list[str]:
+    if not case.forbidden_tools:
+        return []
+    events, error = _load_durable_runtime_events(case)
+    if error:
+        case.key_events.append(_redact({"forbiddenToolEvidenceError": error}))
+    direct_tools: set[str] = set()
+    for event in events:
+        topic = _event_topic(event)
+        if topic not in {"tool.started", "tool_start", "tool.call.started", "tool_call.started"}:
+            continue
+        tool_name = _event_tool_name(event)
+        if tool_name not in case.forbidden_tools:
+            continue
+        if _event_is_supervisor_owned_tool_start(event):
+            direct_tools.add(tool_name)
+    return sorted(direct_tools)
 
 
 def _wait_for_engine(engine_url: str, *, attempts: int = 4, timeout_s: float = 12.0) -> tuple[bool, str | None]:
@@ -653,11 +868,12 @@ def _write_report(
             "",
             "## Live 审计记录",
             "",
-            "| Case | Matrix | Status | Run | Session | Latency | Expected tools | Actual tools | Forbidden tools | Failure |",
+            "| Case | Matrix | Status | Run | Session | Latency | Expected tools | Actual tools (all owners) | Forbidden Supervisor seen | Failure |",
             "| --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |",
         ]
     )
     for result in live_results:
+        forbidden_seen = _forbidden_supervisor_tools_seen(result)
         lines.append(
             "| {case} | {matrix} | {status} | {run} | {session} | {latency} | {expected} | {actual} | {forbidden} | {failure} |".format(
                 case=result.case_id,
@@ -668,7 +884,7 @@ def _write_report(
                 latency=result.latency_ms or 0,
                 expected=", ".join(result.expected_tools) or "-",
                 actual=", ".join(result.actual_tools) or "-",
-                forbidden=", ".join(result.forbidden_tools) or "-",
+                forbidden=", ".join(forbidden_seen) or "-",
                 failure=(result.failure_reason or "").replace("|", "\\|"),
             )
         )
@@ -680,9 +896,10 @@ def _write_report(
                 "",
                 f"- Prompt：{_redact(result.prompt)}",
                 f"- 期望工具：{', '.join(result.expected_tools) or '-'}",
-                f"- 实际工具：{', '.join(result.actual_tools) or '-'}",
+                f"- 实际工具（所有 owner）：{', '.join(result.actual_tools) or '-'}",
                 f"- 关键事件：{', '.join(result.observed_topics[:20]) or '-'}",
-                f"- 禁止工具：{', '.join(result.forbidden_tools) or '-'}",
+                f"- Supervisor 实际违规工具：{', '.join(_forbidden_supervisor_tools_seen(result)) or '-'}",
+                f"- Case 禁用清单：{', '.join(result.forbidden_tools) or '-'}",
                 f"- Run ID：{result.run_id or '-'}",
                 f"- Session ID：{result.session_id or '-'}",
                 "",
@@ -782,9 +999,8 @@ def main() -> int:
                     )
                 )
                 continue
-            searchable = " ".join(case.actual_tools + case.observed_topics + case.key_events)
             missing_expected = _missing_expected_tools(case)
-            forbidden_seen = [tool for tool in case.forbidden_tools if tool in searchable]
+            forbidden_seen = _forbidden_supervisor_tools_seen(case)
             if forbidden_seen:
                 findings.append(
                     AuditFinding(

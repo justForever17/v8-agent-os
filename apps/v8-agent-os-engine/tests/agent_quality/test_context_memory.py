@@ -9,6 +9,12 @@ import api.chat_realtime_routes as routes
 from api.models import ChatMessage, ChatRequest, ChatRequestData
 from core.database import DatabaseManager
 from core.native_tools import memory_broker
+from graph.supervisor_turn import _memory_broker_first_guidance, _should_force_memory_broker_first
+
+
+class _Tool:
+    def __init__(self, name: str) -> None:
+        self.name = name
 
 
 def _install_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DatabaseManager:
@@ -97,3 +103,22 @@ def test_memory_broker_explain_injection_preserves_read_only_boundary() -> None:
     assert "memory_broker(recall/get_item/read_day/graph_neighbors)" in payload
     assert "mutation" not in payload.lower()
 
+
+def test_recall_cue_forces_memory_broker_before_workspace_tools() -> None:
+    assert _should_force_memory_broker_first(
+        user_query="继续上一轮上下文：说明当前工作区和队列消息应该如何保持在同一个 session。",
+        passive_rag_diagnostics={"has_recall_cue": True, "reject_reason": "no_recall_results"},
+        selected_tools=[_Tool("workspace_broker"), _Tool("memory_broker"), _Tool("read_native_file")],
+    )
+
+    guidance = _memory_broker_first_guidance("继续上一轮上下文")
+    assert "first tool call MUST be `memory_broker`" in guidance.content
+    assert "Do not call `workspace_broker`" in guidance.content
+
+
+def test_recall_cue_does_not_force_memory_when_tool_is_not_available() -> None:
+    assert not _should_force_memory_broker_first(
+        user_query="继续上一轮上下文",
+        passive_rag_diagnostics={"has_recall_cue": True},
+        selected_tools=[_Tool("workspace_broker")],
+    )

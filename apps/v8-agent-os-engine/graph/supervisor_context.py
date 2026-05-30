@@ -1183,6 +1183,34 @@ def build_supervisor_system_content(
     if not task_shape_hint:
         task_shape_hint = classify_task_shape(user_query, planner_plan=state.get("planner_plan") if isinstance(state.get("planner_plan"), dict) else None)
     task_shape_context = render_task_shape_hint(task_shape_hint)
+    writing_route_context = ""
+    writing_route = task_shape_hint.get("writingRoute") if isinstance(task_shape_hint.get("writingRoute"), dict) else {}
+    if writing_route.get("present"):
+        mode = str(writing_route.get("mode") or "").strip()
+        lines = [
+            "[Writing Route Discipline]",
+            f"- Detected writingRoute={mode or 'unknown'}; reason={writing_route.get('reason') or 'unspecified'}.",
+            "- Supervisor todos must stay at orchestration level: clarify route, dispatch runtime/subagent, wait handoff, merge, verify, deliver.",
+            "- Do not expand runtime-internal writing/research/file steps into Supervisor todos.",
+        ]
+        if writing_route.get("needsClarification"):
+            lines.append("- This writing request is ambiguous. Ask the user to choose: direct body text, research-backed writing, or saved file/artifact before drafting or routing.")
+        if mode == "direct_supervisor":
+            lines.append("- Direct Supervisor writing is allowed for this bounded prose task; do not delegate merely because the output is text.")
+        elif mode == "research_then_write":
+            lines.append("- Route Research first, wait for a compact evidence bundle/source matrix, then draft or delegate final writing from those refs only.")
+        elif mode == "artifact_runtime":
+            lines.append("- This writing requires file/repository side effects. Route to Engineering/document artifact discipline; do not directly write files from Supervisor.")
+        elif mode == "skill_subagent":
+            skill_name = str(writing_route.get("skillName") or "").strip()
+            if skill_name:
+                lines.append(f"- Delegate with a WritingExecutionBrief naming skill={skill_name!r}; the subagent's first action must be fetch_skill_instructions(skill_name={skill_name!r}).")
+            else:
+                lines.append("- Delegate with a WritingExecutionBrief; the subagent must fetch exact skill instructions before drafting and ask if the skill name is missing.")
+            lines.append("- Skill is a method package, not a permission grant; it cannot bypass runtime gates, workspace boundaries, or safety policy.")
+        elif mode == "writing_subagent":
+            lines.append("- Use a writing-family subagent only for complex writing, independent review, or specialist drafting; simple prose remains direct.")
+        writing_route_context = "\n".join(lines) + "\n\n"
     language_context = _render_language_context(user_query)
     specialist_agents_context = _render_specialist_agents_context(plan=state.get("planner_plan"), task_shape_hint=task_shape_hint)
     artifact_awareness_context, artifact_awareness_diagnostics = _build_artifact_awareness_context(
@@ -1284,6 +1312,7 @@ def build_supervisor_system_content(
         *_split_runtime_registry_prompt_parts(runtime_registry_context),
         _prompt_part("capability_registry.separator", "scoped_static", "\n\n", scope="capability_registry"),
         _prompt_part("task_shape.hint", "dynamic", task_shape_context, scope="task_shape"),
+        _prompt_part("writing.route", "dynamic", writing_route_context, scope="task_shape"),
         _prompt_part("workspace.state_digest", "dynamic", workspace_state_context, scope="workspace_state"),
         _prompt_part("language.context", "dynamic", language_context, scope="language"),
         _prompt_part("specialist_registry.visible_family", "dynamic", specialist_agents_context, scope="specialist_registry"),
@@ -1311,6 +1340,7 @@ def build_supervisor_system_content(
         "runtime_registry_context": runtime_registry_context,
         "task_shape_hint": task_shape_hint,
         "task_shape_context": task_shape_context,
+        "writing_route_context": writing_route_context,
         "language_context": language_context,
         "specialist_agents_context": specialist_agents_context,
         "available_tools_context": available_tools_context,

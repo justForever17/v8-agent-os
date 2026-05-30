@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from erc.runtime_context import bind_runtime_context
 from core.database import db
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
@@ -30,6 +31,46 @@ def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(
     assert stored["state"] == "failed"
     assert stored["resultRef"]
     assert stored["recoverable"] is True
+
+
+def test_runtime_episode_build_inherits_runtime_context_binding():
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT s.id AS session_id, r.id AS run_id
+            FROM sessions s
+            JOIN run_records r ON r.session_id = s.id
+            ORDER BY r.started_at DESC
+            LIMIT 1
+            """
+        )
+        binding_row = cur.fetchone()
+    assert binding_row is not None
+    session_id = binding_row["session_id"]
+    run_id = binding_row["run_id"]
+    with bind_runtime_context(session_id=session_id, run_id=run_id, rootRunId=run_id):
+        episode = build_runtime_episode(
+            need={"kind": "engineering", "source": "test", "reason": "binding"},
+            kind="engineering",
+            state="queued",
+            continuation_target="runtime_episode_runner",
+        )
+    assert episode["sessionId"] == session_id
+    assert episode["session_id"] == session_id
+    assert episode["runId"] == run_id
+    assert episode["run_id"] == run_id
+    assert episode["rootRunId"] == run_id
+    persisted = db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    assert persisted["session_id"] == session_id
+    assert persisted["run_id"] == run_id
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT session_id, run_id FROM runtime_episode_queue WHERE episode_id = ?", (episode["episodeId"],))
+        queue_row = cur.fetchone()
+    assert queue_row is not None
+    assert queue_row["session_id"] == session_id
+    assert queue_row["run_id"] == run_id
 
 
 def test_runtime_episode_retry_policy_requeues_before_final_failure():
@@ -409,6 +450,8 @@ def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
                     }
                 ],
                 "targetCount": 1,
+                "allowChildDelegation": True,
+                "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
             }
         },
     )
@@ -511,6 +554,8 @@ def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkey
                             "invocationId": "invoke-parent-1",
                             "taskBriefId": "brief-parent",
                             "reason": "Review evidence",
+                            "allowChildDelegation": True,
+                            "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
                         },
                         "messages": [],
                         "todos": [],
@@ -575,6 +620,312 @@ def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkey
     assert payload["childEpisodeIds"] == [child_episodes[0]["episodeId"]]
 
 
+def test_failed_grandchild_delegation_unblocks_parent_episode_chain():
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "parent waiting for delegation"},
+        kind="engineering",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "child delegation",
+            "parentEpisodeId": parent["episodeId"],
+        },
+        kind="delegation",
+        state="waiting_child",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(child, enqueue=False)
+    grandchild = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "grandchild delegation failed",
+            "parentEpisodeId": child["episodeId"],
+        },
+        kind="delegation",
+        state="failed",
+        parent_episode_id=child["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(grandchild, enqueue=False)
+    db.add_runtime_episode_handoff(
+        episode_id=grandchild["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=grandchild["episodeId"],
+            kind="delegation",
+            compact_summary="grandchild worker failed with recoverable error",
+            status="failed",
+            confidence="low",
+            extra={"errorCode": "subagent_failed"},
+        ),
+    )
+
+    RuntimeEpisodeRunner()._maybe_resume_parent_episode(grandchild, session_id=None, run_id=None)
+
+    failed_child = db.get_runtime_episode(child["episodeId"])
+    failed_parent = db.get_runtime_episode(parent["episodeId"])
+    assert failed_child is not None
+    assert failed_parent is not None
+    assert failed_child["state"] == "failed"
+    assert failed_child["error_code"] == "child_episode_failed"
+    child_resume = failed_child["metadata"]["resumeToken"]
+    assert child_resume["failedChildCount"] == 1
+    assert child_resume["childHandoffs"][0]["compactSummary"] == "grandchild worker failed with recoverable error"
+    assert failed_parent["state"] == "failed"
+    assert failed_parent["error_code"] == "child_episode_failed"
+
+
+def test_child_delegation_budget_boundary_requeues_parent_without_failure():
+    parent = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent delegation waiting for child"},
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "child hit delegation budget",
+            "parentEpisodeId": parent["episodeId"],
+        },
+        kind="delegation",
+        state="failed",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(child, enqueue=False)
+    db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="child requested deeper delegation but budget stopped it",
+            status="ready",
+            confidence="medium",
+            extra={
+                "budgetBlockedChildDelegations": [
+                    {
+                        "delegationId": "delegation-child-budget",
+                        "targetLabel": "Verification Engineer",
+                        "error": "child_delegation_not_allowed",
+                        "dispatchStatus": "dispatch_missing_child_budget",
+                    }
+                ],
+                "results": [
+                    {
+                        "delegationId": "delegation-child-budget",
+                        "targetLabel": "Verification Engineer",
+                        "status": "blocked",
+                        "error": "child_delegation_not_allowed",
+                        "dispatchStatus": "dispatch_missing_child_budget",
+                    }
+                ],
+            },
+        ),
+    )
+
+    RuntimeEpisodeRunner()._maybe_resume_parent_episode(child, session_id=None, run_id=None)
+
+    resumed_parent = db.get_runtime_episode(parent["episodeId"])
+    assert resumed_parent is not None
+    assert resumed_parent["state"] == "queued"
+    assert resumed_parent["error_code"] is None
+    resume = resumed_parent["resumeToken"]
+    assert resume["failedChildCount"] == 0
+    assert resume["budgetBoundaryChildCount"] == 1
+    assert resume["childHandoffs"][0]["budgetBlockedChildDelegations"][0]["dispatchStatus"] == "dispatch_missing_child_budget"
+
+
+def test_child_delegation_retargets_research_goal_away_from_source_agent():
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "creative worker asks for research"},
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=False)
+
+    child_ids = RuntimeEpisodeRunner()._enqueue_child_delegation_requests(
+        [
+            {
+                "requestId": "child-research-request",
+                "sourceDelegationId": "delegation-parent-creative",
+                "sourceInvocationId": "invoke-creative-parent",
+                "sourceAgentId": "creative-media-director",
+                "sourceAgentName": "Creative Media Director",
+                "childInvocationId": "invoke-child-research",
+                "childDelegationId": "delegation-child-research",
+                "childTaskBriefId": "brief-child-research",
+                "childTaskGoal": "为 V8 Agent OS 宣传视频提供调研支持，收集来源、证据和引用。",
+                "childAgentId": "creative-media-director",
+                "childAgentName": "Creative Media Director",
+                "childDepth": 2,
+                "send": {
+                    "node": "parallel_delegate_task",
+                    "arg": {
+                        "parallel_branch": {
+                            "agentId": "creative-media-director",
+                            "agentName": "Creative Media Director",
+                            "reason": "为 V8 Agent OS 宣传视频提供调研支持，收集来源、证据和引用。",
+                            "runtimeAccess": ["delegation.recursive"],
+                            "delegationDepth": 2,
+                        }
+                    },
+                },
+            }
+        ],
+        episode=episode,
+    )
+
+    assert len(child_ids) == 1
+    child = db.get_runtime_episode(child_ids[0])
+    assert child is not None
+    brief = child["inputs"]["workerBriefs"][0]
+    assert brief["agentId"] == "web-research-architect"
+    assert brief["agentName"] == "Web Research Architect"
+    assert brief["targetRepairReason"] == "research_goal"
+    assert brief["originalAgentId"] == "creative-media-director"
+    assert child["metadata"]["targetRepairReason"] == "research_goal"
+
+
+def test_child_delegation_retargets_runtime_verification_away_from_skill_curator():
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "verification child target repair"},
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=False)
+
+    child_ids = RuntimeEpisodeRunner()._enqueue_child_delegation_requests(
+        [
+            {
+                "requestId": "child-verification-request",
+                "sourceDelegationId": "delegation-parent-verification",
+                "sourceInvocationId": "invoke-verification-parent",
+                "sourceAgentId": "verification-engineer",
+                "sourceAgentName": "Verification Engineer",
+                "childInvocationId": "invoke-child-verification",
+                "childDelegationId": "delegation-child-verification",
+                "childTaskBriefId": "brief-child-verification",
+                "childTaskGoal": "Independent verification of V8 Agent OS runtime handoff behavior and child delegation recovery.",
+                "childAgentId": "skill-workflow-curator",
+                "childAgentName": "Skill Workflow Curator",
+                "childDepth": 2,
+                "send": {
+                    "node": "parallel_delegate_task",
+                    "arg": {
+                        "parallel_branch": {
+                            "agentId": "skill-workflow-curator",
+                            "agentName": "Skill Workflow Curator",
+                            "reason": "Independent verification of V8 Agent OS runtime handoff behavior and child delegation recovery.",
+                            "runtimeAccess": ["delegation.recursive"],
+                            "delegationDepth": 2,
+                        }
+                    },
+                },
+            }
+        ],
+        episode=episode,
+    )
+
+    assert len(child_ids) == 1
+    child = db.get_runtime_episode(child_ids[0])
+    assert child is not None
+    brief = child["inputs"]["workerBriefs"][0]
+    assert brief["agentId"] == "verification-engineer"
+    assert brief["agentName"] == "Verification Engineer"
+    assert brief["targetRepairReason"] == "verification_goal"
+    assert brief["originalAgentId"] == "skill-workflow-curator"
+
+
+def test_completed_child_delegation_requeues_parent_with_handoff_bundle():
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "parent waiting for child handoff"},
+        kind="engineering",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    child = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "child completed", "parentEpisodeId": parent["episodeId"]},
+        kind="delegation",
+        state="completed",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(child, enqueue=False)
+    db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="child produced implementation proof",
+            status="ready",
+            confidence="medium",
+        ),
+    )
+
+    RuntimeEpisodeRunner()._maybe_resume_parent_episode(child, session_id=None, run_id=None)
+
+    resumed_parent = db.get_runtime_episode(parent["episodeId"])
+    assert resumed_parent is not None
+    assert resumed_parent["state"] == "queued"
+    assert resumed_parent["resumeToken"]["resumedFrom"] == "child_handoffs"
+    assert resumed_parent["resumeToken"]["childHandoffs"][0]["compactSummary"] == "child produced implementation proof"
+
+
+def test_delegation_resume_merges_child_handoffs_without_redispatching(monkeypatch):
+    child_handoff = build_handoff_ref(
+        producer_episode_id="child-delegation-episode",
+        kind="delegation",
+        compact_summary="child delegation produced independent verification proof",
+        status="ready",
+        confidence="medium",
+        extra={"results": [{"delegationId": "delegation-child", "status": "ok"}]},
+    )
+    parent = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent delegation resume"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [{"id": "task-parent", "goal": "should not be dispatched again"}],
+                "targetCount": 1,
+            },
+            "resumeToken": {
+                "resumedFrom": "child_handoffs",
+                "childEpisodeIds": ["child-delegation-episode"],
+                "childHandoffs": [child_handoff],
+                "handoffBundle": [child_handoff],
+            },
+        },
+    )
+
+    from core.native_tools import delegation_broker
+
+    def _should_not_dispatch(**_kwargs):
+        raise AssertionError("delegation_broker should not be called when child handoffs are already available")
+
+    monkeypatch.setattr(delegation_broker, "func", _should_not_dispatch)
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(parent))
+
+    assert handoff["status"] == "ready"
+    assert handoff["delegationState"] == "handoff_ready"
+    assert handoff["childHandoffs"][0]["compactSummary"] == "child delegation produced independent verification proof"
+    assert "handoff_ready" in handoff["compactSummary"]
+
+
 def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch):
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},
@@ -592,6 +943,8 @@ def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch
                     }
                 ],
                 "targetCount": 1,
+                "allowChildDelegation": True,
+                "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
             }
         },
     )
@@ -613,6 +966,8 @@ def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch
                             "invocationId": "invoke-parent-malformed",
                             "taskBriefId": "brief-parent",
                             "reason": "Implement feature",
+                            "allowChildDelegation": True,
+                            "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
                         },
                         "messages": [],
                         "todos": [],
@@ -673,6 +1028,7 @@ def test_parallel_branch_extracts_child_delegation_from_command_update_list():
             "invocationId": "invoke-parent-1",
             "taskBriefId": "brief-parent",
             "reason": "Review evidence",
+            "allowChildDelegation": True,
         },
     }
     child_arg = {
@@ -715,3 +1071,47 @@ def test_parallel_branch_extracts_child_delegation_from_command_update_list():
     assert child_requests[0]["requestId"] == "child-request-from-update"
     assert child_requests[0]["childAgentId"] == "verification_worker"
     assert child_requests[0]["send"]["arg"]["parallel_branch"]["invocationId"] == "invoke-child-1"
+
+
+def test_parallel_branch_blocks_child_delegation_without_explicit_budget():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langgraph.types import Send
+
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "review_worker",
+            "agentName": "Review Worker",
+            "delegationId": "delegation-parent-no-child",
+            "invocationId": "invoke-parent-no-child",
+            "taskBriefId": "brief-parent",
+            "reason": "Review evidence",
+            "allowChildDelegation": False,
+        },
+    }
+    child_arg = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "verification_worker",
+            "agentName": "Verification Worker",
+            "delegationId": "delegation-child-blocked",
+            "invocationId": "invoke-child-blocked",
+            "taskBriefId": "brief-child",
+            "reason": "Run child verification",
+            "delegationDepth": 2,
+        },
+    }
+
+    def _node_func(_state):
+        return [Send("parallel_delegate_task", child_arg)]
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(parent_state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert child_requests == []
+    assert summary["status"] == "blocked"
+    assert summary["error"] == "child_delegation_not_allowed"
+    assert summary["blockedChildDelegationCount"] == 1

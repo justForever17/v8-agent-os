@@ -355,6 +355,21 @@ def test_normalize_task_brief_preserves_runtime_access():
     assert brief["runtimeAccess"] == ["creative_media.core"]
 
 
+def test_normalize_task_brief_preserves_child_delegation_policy():
+    brief = normalize_task_brief(
+        {
+            "taskBriefId": "task-1",
+            "allow_child_delegation": "true",
+            "child_delegation_budget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
+            "write_set_partitions": [{"path": "src/**", "owner": "worker-a"}],
+        }
+    )
+
+    assert brief["allowChildDelegation"] is True
+    assert brief["childDelegationBudget"] == {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3}
+    assert brief["writeSetPartitions"] == [{"path": "src/**", "owner": "worker-a"}]
+
+
 def test_research_runtime_group_is_brokered_and_not_raw_web_tools():
     assert RUNTIME_TOOL_GROUPS["research.core"]["toolNames"] == ["research_broker"]
     tools = [

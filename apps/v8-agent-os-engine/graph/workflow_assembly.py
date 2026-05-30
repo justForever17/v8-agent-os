@@ -3,6 +3,7 @@ import hashlib
 import asyncio
 import os
 import time
+from datetime import datetime, timezone
 
 from langgraph.graph import StateGraph
 from langchain_core.messages import HumanMessage
@@ -126,6 +127,166 @@ def build_planner_auto_dispatch_node():
             return briefs
         return briefs[:1] if briefs else []
 
+    def _capability_items(plan: dict) -> list[dict]:
+        explicit_items = [dict(item) for item in list(plan.get("capabilityPlan") or []) if isinstance(item, dict)]
+        if explicit_items:
+            return explicit_items
+        synthesized: list[dict] = []
+        task_briefs = [dict(brief) for brief in list(plan.get("taskBriefs") or []) if isinstance(brief, dict)]
+        if not task_briefs:
+            return synthesized
+        selected_by_task: dict[str, dict] = {}
+        decision = dict(plan.get("autoDispatchDecision") or {})
+        for target in list(decision.get("selectedTargets") or []):
+            if not isinstance(target, dict):
+                continue
+            task_id = str(target.get("taskBriefId") or target.get("taskId") or "").strip()
+            if task_id:
+                selected_by_task[task_id] = dict(target)
+        for index, brief in enumerate(task_briefs):
+            task_id = str(brief.get("taskBriefId") or brief.get("id") or f"task-{index + 1}").strip()
+            target = selected_by_task.get(task_id, {})
+            family_hint = str(
+                brief.get("familyHint")
+                or brief.get("executionLaneHint")
+                or target.get("runtimeKind")
+                or target.get("targetId")
+                or ""
+            ).lower()
+            kind = "engineering"
+            if "research" in family_hint:
+                kind = "research"
+            elif "delegation" in family_hint or "subagent" in family_hint or "worker" in family_hint:
+                kind = "delegation"
+            synthesized.append(
+                {
+                    "kind": kind,
+                    "source": "planner",
+                    "reason": str(brief.get("goal") or brief.get("title") or plan.get("planSummary") or "planner task").strip(),
+                    "taskBriefId": task_id,
+                    "inputs": {
+                        "taskBriefs": [brief],
+                        "workerBriefs": [brief] if kind in {"engineering", "delegation"} else [],
+                        "targetCount": int(brief.get("targetCount") or 1),
+                        "proofExpectations": brief.get("proofExpectations") or [],
+                    },
+                    "requiredRuntimeAccess": list(brief.get("runtimeAccess") or []),
+                    "synthetic": True,
+                }
+            )
+        return synthesized
+
+    def _truthy(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on", "allow", "allowed"}
+        return bool(value)
+
+    def _merge_budget_values(existing: dict, incoming: dict) -> dict:
+        merged = dict(existing or {})
+        for key, value in dict(incoming or {}).items():
+            if key in {"maxChildren", "maxDepth", "maxTotalNodes"}:
+                try:
+                    merged[key] = max(int(merged.get(key) or 0), int(value))
+                    continue
+                except Exception:
+                    pass
+            merged.setdefault(key, value)
+        return merged
+
+    def _inherit_child_delegation_policy(inputs: dict, matching_briefs: list[dict]) -> dict:
+        updated = dict(inputs or {})
+        allow = _truthy(updated.get("allowChildDelegation") or updated.get("allow_child_delegation"))
+        budget = (
+            dict(updated.get("childDelegationBudget") or updated.get("child_delegation_budget") or {})
+            if isinstance(updated.get("childDelegationBudget") or updated.get("child_delegation_budget") or {}, dict)
+            else {}
+        )
+        partitions = list(updated.get("writeSetPartitions") or updated.get("write_set_partitions") or [])
+        for brief in matching_briefs:
+            if not isinstance(brief, dict):
+                continue
+            allow = allow or _truthy(brief.get("allowChildDelegation") or brief.get("allow_child_delegation"))
+            brief_budget = brief.get("childDelegationBudget") or brief.get("child_delegation_budget") or {}
+            if isinstance(brief_budget, dict):
+                budget = _merge_budget_values(budget, brief_budget)
+            brief_partitions = brief.get("writeSetPartitions") or brief.get("write_set_partitions") or []
+            if isinstance(brief_partitions, list):
+                partitions.extend(item for item in brief_partitions if item not in partitions)
+        if allow:
+            updated["allowChildDelegation"] = True
+        if budget:
+            updated["childDelegationBudget"] = budget
+        if partitions:
+            updated["writeSetPartitions"] = partitions
+        return updated
+
+    def _plan_requests_child_delegation(plan: dict, capability_items: list[dict]) -> tuple[bool, dict]:
+        text_chunks = [
+            str(plan.get("planSummary") or ""),
+            " ".join(str(item or "") for item in list(plan.get("qualityFlags") or [])),
+        ]
+        task_briefs = [dict(brief) for brief in list(plan.get("taskBriefs") or []) if isinstance(brief, dict)]
+        for brief in task_briefs:
+            text_chunks.extend(
+                [
+                    str(brief.get("goal") or ""),
+                    str(brief.get("acceptanceContract") or ""),
+                    str(brief.get("familyHint") or ""),
+                    str(brief.get("executionLaneHint") or ""),
+                    " ".join(str(item or "") for item in list(brief.get("behaviorScope") or [])),
+                    " ".join(str(item or "") for item in list(brief.get("runtimeAccess") or [])),
+                ]
+            )
+        for item in capability_items:
+            text_chunks.extend(
+                [
+                    str(item.get("kind") or ""),
+                    str(item.get("reason") or ""),
+                    str(item.get("source") or ""),
+                    " ".join(str(entry or "") for entry in list(item.get("requiredRuntimeAccess") or [])),
+                ]
+            )
+            inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
+            if _truthy(inputs.get("allowChildDelegation") or inputs.get("allow_child_delegation")):
+                return True, dict(inputs.get("childDelegationBudget") or inputs.get("child_delegation_budget") or {})
+        text = " ".join(text_chunks).lower()
+        explicit = any(
+            token in text
+            for token in (
+                "delegation.recursive",
+                "child_delegation",
+                "child delegation",
+                "child agent",
+                "nested delegation",
+                "孙 agent",
+                "孙agent",
+                "子 agent",
+                "子agent",
+                "递归委派",
+                "孙代理",
+            )
+        )
+        has_delegation_lane = any(
+            str(item.get("kind") or "").strip() in {"delegation", "subagent_swarm"}
+            for item in capability_items
+        )
+        if explicit or ("delegation_required_by_task_shape" in set(str(item or "") for item in list(plan.get("qualityFlags") or [])) and has_delegation_lane):
+            budget: dict = {}
+            for brief in task_briefs:
+                if not isinstance(brief, dict):
+                    continue
+                brief_budget = brief.get("childDelegationBudget") or brief.get("child_delegation_budget") or {}
+                if isinstance(brief_budget, dict):
+                    budget = _merge_budget_values(budget, brief_budget)
+            if not budget:
+                budget = {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3}
+            return True, budget
+        return False, {}
+
     def _with_capability_episodes(
         route_context: dict,
         plan: dict,
@@ -145,7 +306,9 @@ def build_planner_auto_dispatch_node():
         if workspace_path:
             updated.setdefault("workspacePath", workspace_path)
             updated.setdefault("workspace_path", workspace_path)
-        for item in list(plan.get("capabilityPlan") or []):
+        capability_items = _capability_items(plan)
+        plan_allows_child_delegation, plan_child_delegation_budget = _plan_requests_child_delegation(plan, capability_items)
+        for item in capability_items:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("kind") or "").strip()
@@ -160,6 +323,15 @@ def build_planner_auto_dispatch_node():
                 if kind == "delegation":
                     inputs.setdefault("workerBriefs", matching_briefs)
                     inputs.setdefault("targetCount", len(matching_briefs))
+                inputs = _inherit_child_delegation_policy(inputs, matching_briefs)
+            if kind == "engineering" and plan_allows_child_delegation:
+                inputs["allowChildDelegation"] = True
+                existing_budget = (
+                    dict(inputs.get("childDelegationBudget") or inputs.get("child_delegation_budget") or {})
+                    if isinstance(inputs.get("childDelegationBudget") or inputs.get("child_delegation_budget") or {}, dict)
+                    else {}
+                )
+                inputs["childDelegationBudget"] = _merge_budget_values(existing_budget, plan_child_delegation_budget)
             if workspace_path:
                 inputs.setdefault("workspacePath", workspace_path)
             episode_id, idempotency_key = _episode_identity(
@@ -169,6 +341,16 @@ def build_planner_auto_dispatch_node():
                 item=item,
                 kind=kind,
             )
+            existing_state = ""
+            for existing_item in list(updated.get("capabilityEpisodes") or []):
+                if not isinstance(existing_item, dict):
+                    continue
+                existing_id = str(existing_item.get("episodeId") or existing_item.get("needId") or "").strip()
+                if existing_id == str(episode_id or "").strip():
+                    existing_state = str(existing_item.get("state") or "").strip()
+                    break
+            if not enqueue and existing_state in (ACTIVE_EPISODE_STATES | TERMINAL_EPISODE_STATES):
+                state = existing_state
             need_payload.setdefault("episodeId", episode_id)
             need_payload.setdefault("needId", episode_id)
             need_payload.setdefault("idempotencyKey", idempotency_key)
@@ -235,7 +417,7 @@ def build_planner_auto_dispatch_node():
 
     def _mark_plan_episodes(route_context: dict, plan: dict, *, state: str, reason: str | None = None) -> dict:
         updated = dict(route_context or {})
-        for item in list(plan.get("capabilityPlan") or []):
+        for item in _capability_items(plan):
             if not isinstance(item, dict):
                 continue
             episode_id = str(item.get("episodeId") or item.get("needId") or "").strip()
@@ -326,7 +508,16 @@ def build_planner_auto_dispatch_node():
                 goto="supervisor",
                 update=update,
             )
-        if dict((state or {}).get("planner_dispatch_status") or {}).get("dispatched"):
+        existing_dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+        if str(existing_dispatch_status.get("nextAction") or "").strip() == "wait_episode":
+            return Command(
+                goto="runtime_episode",
+                update={
+                    "current_route_context": route_context,
+                    "planner_dispatch_status": existing_dispatch_status,
+                },
+            )
+        if existing_dispatch_status.get("dispatched"):
             return Command(goto="supervisor", update={"current_route_context": route_context})
         route_context = _with_capability_episodes(
             route_context,
@@ -428,6 +619,23 @@ def build_runtime_episode_wait_node():
             if str(episode.get("state") or "").strip() in TERMINAL_EPISODE_STATES
         ]
 
+    def _episode_queue_age_seconds(episode: dict, *, default_started_wall: float) -> float:
+        raw_value = _string_value(
+            episode.get("updatedAt"),
+            episode.get("updated_at"),
+            episode.get("createdAt"),
+            episode.get("created_at"),
+        )
+        if raw_value:
+            try:
+                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, time.time() - parsed.timestamp())
+            except Exception:
+                pass
+        return max(0.0, time.time() - default_started_wall)
+
     def _merge_handoffs(route_context: dict, episodes: list[dict]) -> tuple[dict, list[dict]]:
         updated = dict(route_context or {})
         existing_ids = {
@@ -495,6 +703,7 @@ def build_runtime_episode_wait_node():
             **({"workspace_path": workspace_path, "workspacePath": workspace_path} if workspace_path else {}),
         }
         started_at = time.monotonic()
+        wait_started_wall = time.time()
         queue_deadline = started_at + max(0.1, RUNTIME_EPISODE_QUEUE_GRACE_SECONDS)
         deadline = started_at + max(queue_deadline - started_at, RUNTIME_EPISODE_WAIT_SECONDS)
         last_episodes: list[dict] = []
@@ -526,7 +735,11 @@ def build_runtime_episode_wait_node():
             if active:
                 active_states = {str(episode.get("state") or "") for episode in active}
                 only_unclaimed_queue = active_states <= {"detected", "routed", "queued"}
-                if only_unclaimed_queue and time.monotonic() >= queue_deadline:
+                queue_grace_elapsed = all(
+                    _episode_queue_age_seconds(episode, default_started_wall=wait_started_wall) >= RUNTIME_EPISODE_QUEUE_GRACE_SECONDS
+                    for episode in active
+                )
+                if only_unclaimed_queue and queue_grace_elapsed:
                     if _has_live_bound_episode_lease() and time.monotonic() < deadline:
                         await asyncio.sleep(max(0.1, RUNTIME_EPISODE_POLL_SECONDS))
                         continue

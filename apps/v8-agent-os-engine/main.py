@@ -327,10 +327,12 @@ async def lifespan(app: FastAPI):
         _start_skill_refresh(app)
     await _reconcile_orphaned_workflows()
     await _reconcile_session_lanes()
-    try:
-        retention_config = storage.get_storage_retention_config()
-        if retention_config.get("enabled", True):
-            result = storage_retention_service.enforce(dry_run=False, reason="engine_startup")
+    async def _run_startup_retention_check() -> None:
+        try:
+            retention_config = storage.get_storage_retention_config()
+            if not retention_config.get("enabled", True):
+                return
+            result = await asyncio.to_thread(storage_retention_service.enforce, dry_run=False, reason="engine_startup")
             if result.get("actions"):
                 print(
                     "[Engine] Storage retention applied:",
@@ -341,8 +343,10 @@ async def lifespan(app: FastAPI):
                         "actions": len(result.get("actions") or []),
                     },
                 )
-    except Exception as exc:
-        print(f"[Engine] Storage retention startup check failed (non-fatal): {exc}")
+        except Exception as exc:
+            print(f"[Engine] Storage retention startup check failed (non-fatal): {exc}")
+
+    app.state.storage_retention_startup_task = asyncio.create_task(_run_startup_retention_check())
 
     if service_flags["mcp"]:
         await _safe_initialize_mcp(app)
@@ -384,6 +388,13 @@ async def lifespan(app: FastAPI):
         init_task.cancel()
         try:
             await init_task
+        except asyncio.CancelledError:
+            pass
+    retention_task = getattr(app.state, "storage_retention_startup_task", None)
+    if retention_task and not retention_task.done():
+        retention_task.cancel()
+        try:
+            await retention_task
         except asyncio.CancelledError:
             pass
     # MCP cleanup with timeout — prevents Lark WebSocket from blocking shutdown

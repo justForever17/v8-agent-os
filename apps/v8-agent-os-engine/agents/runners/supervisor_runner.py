@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import dataclass
 from typing import AsyncIterator, Any
 
@@ -30,7 +31,8 @@ class SupervisorAgentRunner:
 
     def __init__(self) -> None:
         self._graph_cache: dict[str, object] = {}
-        self._graph_cache_lock = asyncio.Lock()
+        self._thread_lock = threading.Lock()
+        self._graph_cache_locks: dict[int, asyncio.Lock] = {}
 
     def _graph_signature(self, config: EngineConfig) -> str:
         payload = config.model_dump(mode="json", by_alias=True)
@@ -38,14 +40,21 @@ class SupervisorAgentRunner:
 
     async def build_graph(self, config: EngineConfig):
         signature = self._graph_signature(config)
+        loop_id = id(asyncio.get_running_loop())
+        cache_key = f"{loop_id}:{signature}"
         started_at = asyncio.get_running_loop().time()
-        async with self._graph_cache_lock:
-            cached = self._graph_cache.get(signature)
+        with self._thread_lock:
+            graph_lock = self._graph_cache_locks.get(loop_id)
+            if graph_lock is None:
+                graph_lock = asyncio.Lock()
+                self._graph_cache_locks[loop_id] = graph_lock
+        async with graph_lock:
+            cached = self._graph_cache.get(cache_key)
             if cached is not None:
                 return cached, {"graphCacheHit": True, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
             checkpointer = await checkpoint_store.get_async_sqlite_saver()
             graph = create_supervisor_graph(config, checkpointer=checkpointer)
-            self._graph_cache[signature] = graph
+            self._graph_cache[cache_key] = graph
             return graph, {"graphCacheHit": False, "graphBuildMs": round((asyncio.get_running_loop().time() - started_at) * 1000, 2)}
 
     def runtime_metadata(self) -> dict[str, str | bool]:
@@ -62,6 +71,7 @@ class SupervisorAgentRunner:
         *,
         current_route_context: dict[str, Any] | None = None,
         planner_plan: dict[str, Any] | None = None,
+        planner_dispatch_status: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
         task_shape_hint: dict[str, Any] | None = None,
         explicit_subagent_families: list[str] | None = None,
@@ -91,6 +101,8 @@ class SupervisorAgentRunner:
                     state[state_key] = value
         if isinstance(planner_plan, dict) and planner_plan:
             state["planner_plan"] = planner_plan
+        if isinstance(planner_dispatch_status, dict) and planner_dispatch_status:
+            state["planner_dispatch_status"] = planner_dispatch_status
         if isinstance(engineering_context, dict) and engineering_context:
             state["engineering_context"] = engineering_context
         if isinstance(task_shape_hint, dict) and task_shape_hint:
@@ -112,6 +124,7 @@ class SupervisorAgentRunner:
         session_id: str,
         current_route_context: dict[str, Any] | None = None,
         planner_plan: dict[str, Any] | None = None,
+        planner_dispatch_status: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
         task_shape_hint: dict[str, Any] | None = None,
         explicit_subagent_families: list[str] | None = None,
@@ -126,6 +139,7 @@ class SupervisorAgentRunner:
                 messages,
                 current_route_context=current_route_context,
                 planner_plan=planner_plan,
+                planner_dispatch_status=planner_dispatch_status,
                 engineering_context=engineering_context,
                 task_shape_hint=task_shape_hint,
                 explicit_subagent_families=explicit_subagent_families,

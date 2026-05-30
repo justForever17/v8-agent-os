@@ -136,6 +136,14 @@ class VectorStore:
         # by falling back to the first-pass vector scores instead of failing the turn.
         try:
             results = self.reranker_model.rerank(query, docs, top_k=top_k)
+        except UnicodeEncodeError as exc:
+            logger.debug("Reranker logging encoding failed; falling back to vector search results: %s", exc)
+            top_k_results = {
+                "documents": [docs[:top_k]],
+                "ids": [ids[:top_k]],
+                "metadatas": [metadatas[:top_k] if metadatas else [{} for _ in docs[:top_k]]],
+            }
+            return self._format_chroma_results(top_k_results)
         except Exception as exc:
             logger.warning("Reranker failed; falling back to vector search results: %s", exc)
             top_k_results = {

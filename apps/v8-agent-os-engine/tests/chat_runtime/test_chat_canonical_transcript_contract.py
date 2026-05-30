@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 import importlib.machinery
+import importlib.util
 from pathlib import Path
 from unittest import mock
 from types import SimpleNamespace
@@ -47,11 +48,16 @@ if "scrapling.parser" not in sys.modules:
     fake_scrapling_parser.__spec__ = importlib.machinery.ModuleSpec("scrapling.parser", loader=None)
     sys.modules["scrapling.parser"] = fake_scrapling_parser
 
-if "langgraph.checkpoint.sqlite.aio" not in sys.modules:
-    fake_langgraph_aio = ModuleType("langgraph.checkpoint.sqlite.aio")
-    fake_langgraph_aio.AsyncSqliteSaver = object
-    fake_langgraph_aio.__spec__ = importlib.machinery.ModuleSpec("langgraph.checkpoint.sqlite.aio", loader=None)
-    sys.modules["langgraph.checkpoint.sqlite.aio"] = fake_langgraph_aio
+if "langgraph.checkpoint.sqlite" not in sys.modules and importlib.util.find_spec("langgraph.checkpoint.sqlite") is None:
+    fake_langgraph_sqlite = ModuleType("langgraph.checkpoint.sqlite")
+    fake_langgraph_sqlite.__spec__ = importlib.machinery.ModuleSpec("langgraph.checkpoint.sqlite", loader=None)
+    sys.modules["langgraph.checkpoint.sqlite"] = fake_langgraph_sqlite
+
+if "langgraph.checkpoint.sqlite.aio" not in sys.modules and importlib.util.find_spec("langgraph.checkpoint.sqlite.aio") is None:
+    fake_langgraph_sqlite_aio = ModuleType("langgraph.checkpoint.sqlite.aio")
+    fake_langgraph_sqlite_aio.AsyncSqliteSaver = object
+    fake_langgraph_sqlite_aio.__spec__ = importlib.machinery.ModuleSpec("langgraph.checkpoint.sqlite.aio", loader=None)
+    sys.modules["langgraph.checkpoint.sqlite.aio"] = fake_langgraph_sqlite_aio
 
 from api.models import ChatRequest
 from core.computer_use_tool_surface import select_supervisor_native_tools

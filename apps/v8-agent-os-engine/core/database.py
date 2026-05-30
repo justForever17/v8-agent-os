@@ -2497,6 +2497,45 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
 
+    def backfill_runtime_episode_binding(
+        self,
+        episode_id: str,
+        *,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> None:
+        resolved_session_id = str(session_id or "").strip() or None
+        resolved_run_id = str(run_id or "").strip() or None
+        if not resolved_session_id and not resolved_run_id:
+            return
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE runtime_episodes
+                    SET session_id = COALESCE(session_id, ?),
+                        run_id = COALESCE(run_id, ?),
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (resolved_session_id, resolved_run_id, now_iso, episode_id),
+                )
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_queue
+                    SET session_id = COALESCE(session_id, ?),
+                        run_id = COALESCE(run_id, ?),
+                        updated_at = ?
+                    WHERE episode_id = ?
+                    ''',
+                    (resolved_session_id, resolved_run_id, now_iso, episode_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+
     def claim_runtime_episode(
         self,
         *,

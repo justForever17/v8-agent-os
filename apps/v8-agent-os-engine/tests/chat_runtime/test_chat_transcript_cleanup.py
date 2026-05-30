@@ -9,6 +9,7 @@ from unittest import mock
 
 
 import runtimes.chat.runtime as chat_runtime_module
+from erc.runtime_context import bind_runtime_context
 from runtimes.chat.runtime import ChatRuntime, ChatStreamState
 
 
@@ -331,6 +332,69 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(add_message_mock.called)
         self.assertEqual(add_message_mock.call_args.kwargs["content"], "干净正文")
 
+    async def test_runtime_handoff_reconciliation_replaces_early_supervisor_text(self):
+        self.chat_run.active_run_id = f"run_test_{uuid.uuid4().hex}"
+        chat_runtime_module.db.create_run_record(
+            self.chat_run.active_run_id,
+            self.chat_run.session_id,
+            run_type="chat",
+            status="running",
+        )
+        message_id = self.runtime._ensure_assistant_canonical_message(self.chat_run, self.stream_state)
+        profile = self.runtime._get_agent_profile(self.stream_state.current_agent)
+        self.runtime._append_canonical_node(
+            self.chat_run,
+            self.stream_state,
+            node={
+                "id": f"{message_id}:narrative:early",
+                "kind": "narrative",
+                "role": "assistant",
+                "content": "开始跑调研通道啦！",
+                "timestamp": self.runtime._now_timestamp_ms(),
+                "agentName": profile["name"],
+                "agentAvatar": profile["avatar"],
+                "agentRoleLabel": profile["roleLabel"],
+            },
+        )
+        final_state = {
+            "planner_dispatch_status": {
+                "mode": "runtime_episode",
+                "nextAction": "resume_supervisor",
+                "state": "handoff_ready",
+                "handoffCount": 2,
+            },
+            "current_route_context": {
+                "handoffRefs": [
+                    {
+                        "kind": "research_evidence_bundle",
+                        "status": "ready",
+                        "compactSummary": "Research Runtime 已生成证据包。",
+                    },
+                    {
+                        "kind": "engineering_patch_bundle",
+                        "status": "ready",
+                        "compactSummary": "Engineering Runtime 已消费证据并产出 work plan。",
+                    },
+                ]
+            },
+            "messages": [],
+        }
+
+        async def _fake_state(_bundle):
+            return final_state
+
+        with mock.patch.object(chat_runtime_module.supervisor_runner, "get_state_snapshot", side_effect=_fake_state):
+            await self.runtime.reconcile_final_assistant_message(
+                self.chat_run,
+                self.stream_state,
+                SimpleNamespace(runner_bundle=object()),
+            )
+
+        row = chat_runtime_module.db.get_chat_canonical_message(message_id)
+        self.assertIn("运行时链路已经完成并回流", row["content_text"])
+        self.assertIn("Research Runtime 已生成证据包", row["content_text"])
+        self.assertNotIn("开始跑调研通道啦", row["content_text"])
+
     async def test_tool_start_sanitizes_runtime_internal_input(self):
         await self.runtime.handle_stream_event(
             self.chat_run,
@@ -361,6 +425,43 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             self.stream_state.tool_calls_buffer,
             [{"id": tool_call_id, "name": "generate_image", "args": {"params": {"prompt": "雷电将军", "size": "1:1"}}}],
         )
+
+    async def test_subagent_runtime_context_owns_tool_events(self):
+        with bind_runtime_context(
+            runtime_kind="subagent",
+            trigger_source="delegation_broker",
+            session_id=self.chat_run.session_id,
+            run_id="run-subagent-owner",
+            delegation_id="delegation-test",
+            subagent_id="implementation-engineer",
+            workspace_path="E:\\Projects\\v8chat",
+        ):
+            emitted = await self.runtime.handle_stream_event(
+                self.chat_run,
+                self.stream_state,
+                {
+                    "event": "on_tool_start",
+                    "run_id": "tool_run_subagent_write",
+                    "name": "write_native_file",
+                    "data": {
+                        "input": {
+                            "path": "demo.txt",
+                            "content": "hello",
+                        }
+                    },
+                },
+            )
+
+        self.assertEqual(self.chat_run.events[-1]["topic"], "subagent.tool.started")
+        self.assertEqual(self.chat_run.events[-1]["agent_id"], "implementation-engineer")
+        payload = self.chat_run.events[-1]["payload"]
+        self.assertEqual(payload["ownerRuntimeId"], "subagent_swarm")
+        self.assertEqual(payload["ownerAgentKind"], "subagent")
+        self.assertEqual(payload["ownerAgentId"], "implementation-engineer")
+        self.assertFalse(payload["displayInMessage"])
+        self.assertEqual(payload["runtimeContext"]["runtime_kind"], "subagent")
+        self.assertEqual(emitted[0]["ownerRuntimeId"], "subagent_swarm")
+        self.assertEqual(emitted[0]["ownerAgentId"], "implementation-engineer")
 
     async def test_tool_result_reuses_start_tool_call_id_from_raw_input(self):
         await self.runtime.handle_stream_event(

@@ -688,7 +688,11 @@ class V8ChatModelAdapter(BaseChatModel):
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "astream"})
 
     def bind_tools(self, tools: Sequence[Any], *, tool_choice: str | None = None, **kwargs: Any):  # type: ignore[override]
-        clone = self.model_copy(deep=True)
+        # Do not deep-copy provider runtime clients here. LangChain/OpenAI
+        # clients keep httpx clients and thread locks in private attrs; deep
+        # copying them can crash long supervisor runs with
+        # `cannot pickle '_thread.RLock' object`.
+        clone = self.model_copy(deep=False)
         clone._meta = dict(self._meta)
         clone._model_kwargs = dict(self._model_kwargs)
         clone._builder = self._builder

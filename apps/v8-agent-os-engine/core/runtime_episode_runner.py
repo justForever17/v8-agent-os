@@ -48,6 +48,7 @@ class RuntimeEpisodeRunner:
         self._thread_loop: asyncio.AbstractEventLoop | None = None
         self._lease_seconds = 75
         self._poll_seconds = 0.8
+        self._max_concurrent = max(1, int(os.getenv("V8_RUNTIME_EPISODE_CONCURRENCY", "4") or 4))
         self._agent_nodes_map_cache: dict[str, Any] | None = None
 
     async def start(self) -> None:
@@ -95,22 +96,47 @@ class RuntimeEpisodeRunner:
 
     async def _run_loop(self) -> None:
         assert self._stop_event is not None
+        active_tasks: set[asyncio.Task] = set()
         while not self._stop_event.is_set():
             try:
-                episode = db.claim_runtime_episode(
-                    worker_id=self.worker_id,
-                    lease_seconds=self._lease_seconds,
-                    require_bound_run=True,
-                )
-                if not episode:
+                completed_tasks = {task for task in active_tasks if task.done()}
+                active_tasks.difference_update(completed_tasks)
+                for task in completed_tasks:
+                    try:
+                        task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        print(f"[EpisodeRunner] Episode task error: {type(exc).__name__}: {exc}")
+
+                claimed_any = False
+                while len(active_tasks) < self._max_concurrent:
+                    episode = db.claim_runtime_episode(
+                        worker_id=self.worker_id,
+                        lease_seconds=self._lease_seconds,
+                        require_bound_run=True,
+                    )
+                    if not episode:
+                        break
+                    episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+                    task = asyncio.create_task(
+                        self._execute_episode(episode),
+                        name=f"runtime-episode:{episode_id or 'unknown'}",
+                    )
+                    active_tasks.add(task)
+                    claimed_any = True
+                if not claimed_any:
                     await asyncio.sleep(self._poll_seconds)
                     continue
-                await self._execute_episode(episode)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 print(f"[EpisodeRunner] Loop error: {type(exc).__name__}: {exc}")
                 await asyncio.sleep(1.0)
+        for task in active_tasks:
+            task.cancel()
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
 
     async def _execute_episode(self, episode: dict[str, Any]) -> None:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
@@ -201,8 +227,7 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
-            if final_state == "completed":
-                self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
+            self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             if self._can_retry(episode):
@@ -233,6 +258,7 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._maybe_resume_parent_episode(failed or {**episode, "state": "failed"}, session_id=session_id, run_id=run_id)
 
     def _heartbeat(self, episode_id: str, progress: str) -> None:
         db.heartbeat_runtime_episode(
@@ -432,7 +458,7 @@ class RuntimeEpisodeRunner:
         completed_children = [child for child in children if str(child.get("state") or "") in {"completed", "merged"}]
         failed_children = [child for child in children if str(child.get("state") or "") in {"failed", "cancelled"}]
         child_handoffs: list[dict[str, Any]] = []
-        for child in completed_children:
+        for child in [*completed_children, *failed_children]:
             for handoff in db.list_runtime_episode_handoffs(str(child.get("episodeId") or child.get("id") or "")):
                 payload = dict(handoff.get("payload") or {})
                 if payload:
@@ -446,6 +472,43 @@ class RuntimeEpisodeRunner:
             "failedChildCount": len(failed_children),
         }
         if failed_children:
+            def _is_budget_boundary_handoff(payload: dict[str, Any]) -> bool:
+                if not isinstance(payload, dict):
+                    return False
+                if payload.get("budgetBlockedChildDelegations"):
+                    return True
+                results = payload.get("results")
+                if not isinstance(results, list) or not results:
+                    return False
+                return all(
+                    str(item.get("error") or "").strip() == "child_delegation_not_allowed"
+                    or str(item.get("dispatchStatus") or "").strip() == "dispatch_missing_child_budget"
+                    for item in results
+                    if isinstance(item, dict)
+                )
+
+            budget_boundary_only = bool(child_handoffs) and all(
+                _is_budget_boundary_handoff(item)
+                for item in child_handoffs
+                if isinstance(item, dict)
+            )
+            if budget_boundary_only:
+                resume_token["failedChildCount"] = 0
+                resume_token["budgetBoundaryChildCount"] = len(failed_children)
+                resumed = db.resume_runtime_episode(parent_id, resume_token=resume_token) or parent
+                self._emit(
+                    "runtime.episode.resumed",
+                    episode=resumed,
+                    session_id=session_id,
+                    run_id=run_id,
+                    handoffBundle=child_handoffs,
+                    resumeToken=resume_token,
+                    warning={
+                        "code": "child_delegation_budget_boundary",
+                        "message": "Child delegation reached its recursion budget; parent episode can continue with a warning.",
+                    },
+                )
+                return
             updated = db.complete_runtime_episode(
                 parent_id,
                 state="failed",
@@ -454,6 +517,7 @@ class RuntimeEpisodeRunner:
                 metadata={"resumeToken": resume_token, "childHandoffs": child_handoffs, "recoverable": True},
             ) or parent
             self._emit("runtime.episode.failed", episode=updated, session_id=session_id, run_id=run_id, resumeToken=resume_token)
+            self._maybe_resume_parent_episode(updated, session_id=session_id, run_id=run_id)
             return
         resumed = db.resume_runtime_episode(parent_id, resume_token=resume_token) or parent
         self._emit(
@@ -960,6 +1024,52 @@ class RuntimeEpisodeRunner:
     async def _execute_delegation(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "delegation: dispatch")
         inputs = dict(episode.get("inputs") or {})
+        resume_token = dict(episode.get("resumeToken") or episode.get("resume_token") or {})
+        child_handoffs = list(resume_token.get("handoffBundle") or resume_token.get("childHandoffs") or [])
+        if not child_handoffs and str(resume_token.get("resumedFrom") or "") == "child_handoffs":
+            child_handoffs = self._load_child_handoffs_from_resume_token(resume_token)
+        if not child_handoffs and str(resume_token.get("resumedFrom") or "") == "child_handoffs":
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary="Delegation could not resume because completed child handoffs were not available.",
+                status="failed",
+                confidence="low",
+                consumer_hint="Retry the parent delegation episode after child handoff recovery; do not dispatch new child work blindly.",
+                extra={
+                    "delegationState": "recoverable_failed",
+                    "recoverable": True,
+                    "errorCode": "child_handoff_missing",
+                    "resumeToken": resume_token,
+                },
+            )
+        if child_handoffs:
+            ready_count = len(child_handoffs)
+            budget_blocked = [
+                item
+                for item in child_handoffs
+                if isinstance(item, dict) and item.get("budgetBlockedChildDelegations")
+            ]
+            summary = (
+                f"Delegation handoff_ready after {ready_count} child delegation handoff(s).\n"
+                f"{_preview('; '.join(str(item.get('compactSummary') or item.get('summary') or item.get('kind') or '') for item in child_handoffs if isinstance(item, dict)), limit=900)}"
+            )
+            if budget_blocked:
+                summary += f" child_budget_boundary={len(budget_blocked)}"
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="delegation",
+                compact_summary=summary,
+                status="ready",
+                confidence="medium",
+                consumer_hint="Merge child delegation handoffs into Supervisor route context and continue orchestration.",
+                extra={
+                    "delegationState": "handoff_ready",
+                    "childHandoffs": child_handoffs,
+                    "handoffRefs": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs if isinstance(item, dict)],
+                    "budgetBoundaryChildCount": int(resume_token.get("budgetBoundaryChildCount") or len(budget_blocked) or 0),
+                },
+            )
         worker_briefs = list(inputs.get("workerBriefs") or inputs.get("tasks") or [])
         target_count = int(inputs.get("targetCount") or len(worker_briefs) or 1)
         if target_count > int(inputs.get("maxChildren") or 10):
@@ -1020,6 +1130,9 @@ class RuntimeEpisodeRunner:
                     mode="dispatch",
                     tasks=worker_briefs,
                     target_count=target_count,
+                    allow_child_delegation=bool(inputs.get("allowChildDelegation") or inputs.get("allow_child_delegation")),
+                    child_delegation_budget=inputs.get("childDelegationBudget") or inputs.get("child_delegation_budget") or {},
+                    write_set_partitions=inputs.get("writeSetPartitions") or inputs.get("write_set_partitions") or [],
                     state={
                         "run_id": run_id,
                         "session_id": session_id,
@@ -1040,17 +1153,26 @@ class RuntimeEpisodeRunner:
             if local_results:
                 results.extend(local_results)
             failed = [item for item in results if str(item.get("status") or "").lower() in {"error", "failed", "blocked"}]
+            budget_blocked = [
+                item
+                for item in failed
+                if str(item.get("error") or "").strip() == "child_delegation_not_allowed"
+                or str(item.get("dispatchStatus") or "").strip() == "dispatch_missing_child_budget"
+            ]
+            hard_failed = [item for item in failed if item not in budget_blocked]
             waiting_child = [
                 item
                 for item in results
                 if str(item.get("status") or "").lower() in {"waiting_child_delegation", "waiting_child", "waiting"}
             ]
-            status = "waiting" if waiting_child else ("failed" if results and len(failed) == len(results) else "ready")
+            status = "waiting" if waiting_child else ("failed" if results and len(hard_failed) == len(results) and not budget_blocked else "ready")
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
             if local_results:
                 summary = f"Delegation executed {len(local_results)} local subagent worker(s)."
-            if failed:
-                summary += f" failed={len(failed)}"
+            if hard_failed:
+                summary += f" failed={len(hard_failed)}"
+            if budget_blocked:
+                summary += f" child_budget_blocked={len(budget_blocked)}"
             if waiting_child:
                 summary += f" waiting_child={len(waiting_child)}"
             if not results:
@@ -1066,12 +1188,23 @@ class RuntimeEpisodeRunner:
                 extra={
                     "delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)],
                     "childEpisodeIds": child_episode_ids,
+                    "budgetBlockedChildDelegations": [
+                        {
+                            "delegationId": item.get("delegationId") or item.get("id"),
+                            "targetLabel": item.get("targetLabel") or item.get("agentName"),
+                            "error": item.get("error"),
+                            "dispatchStatus": item.get("dispatchStatus"),
+                        }
+                        for item in budget_blocked[:8]
+                        if isinstance(item, dict)
+                    ],
                     "results": [
                         {
                             "delegationId": item.get("delegationId") or item.get("id"),
                             "targetLabel": item.get("targetLabel") or item.get("agentName"),
                             "status": item.get("status"),
                             "error": item.get("error"),
+                            "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
                             "compactTranscript": _preview(item.get("compactTranscript"), limit=900),
                         }
                         for item in results[:8]
@@ -1200,18 +1333,33 @@ class RuntimeEpisodeRunner:
                     interval_seconds=8.0,
                 )
                 if not child_requests and self._summary_indicates_unrouted_child_delegation(summary):
-                    child_requests = [self._fallback_child_delegation_request(branch=branch, summary=summary)]
-                    summary = {
-                        **dict(summary or {}),
-                        "status": "waiting_child_delegation",
-                        "error": "delegation_child_requested",
-                        "childDelegationCount": 1,
-                        "childDelegationRequestIds": [child_requests[0]["requestId"]],
-                        "localSelfCheck": (
-                            "Subagent requested child delegation but returned an incomplete nested dispatch payload. "
-                            "RuntimeEpisodeRunner promoted a conservative child delegation episode instead of failing the parent."
-                        ),
-                    }
+                    if not bool(branch.get("allowChildDelegation")):
+                        summary = {
+                            **dict(summary or {}),
+                            "status": "blocked",
+                            "error": "child_delegation_not_allowed",
+                            "dispatchStatus": "dispatch_missing_child_budget",
+                            "childDelegationCount": 0,
+                            "blockedChildDelegationCount": int(summary.get("nestedDispatchCount") or 1),
+                            "localSelfCheck": (
+                                "Subagent requested child delegation, but its delegationPolicy.allowChildDelegation "
+                                "was false. RuntimeEpisodeRunner blocked the nested dispatch instead of spawning "
+                                "an unbounded child episode."
+                            ),
+                        }
+                    else:
+                        child_requests = [self._fallback_child_delegation_request(branch=branch, summary=summary)]
+                        summary = {
+                            **dict(summary or {}),
+                            "status": "waiting_child_delegation",
+                            "error": "delegation_child_requested",
+                            "childDelegationCount": 1,
+                            "childDelegationRequestIds": [child_requests[0]["requestId"]],
+                            "localSelfCheck": (
+                                "Subagent requested child delegation but returned an incomplete nested dispatch payload. "
+                                "RuntimeEpisodeRunner promoted a conservative child delegation episode instead of failing the parent."
+                            ),
+                        }
                 results.append(dict(summary or {}))
                 child_episode_ids.extend(self._enqueue_child_delegation_requests(child_requests, episode=episode))
             except Exception as exc:
@@ -1294,6 +1442,130 @@ class RuntimeEpisodeRunner:
             },
         }
 
+    @staticmethod
+    def _infer_child_delegation_target(text: str) -> tuple[str, str, str] | None:
+        normalized = (text or "").lower()
+        research_tokens = (
+            "research",
+            "web research",
+            "source",
+            "sources",
+            "evidence",
+            "fact",
+            "facts",
+            "citation",
+            "citations",
+            "调研",
+            "资料",
+            "来源",
+            "证据",
+            "搜索",
+            "查证",
+            "检索",
+            "事实",
+        )
+        engineering_tokens = (
+            "implement",
+            "implementation",
+            "coding",
+            "code",
+            "patch",
+            "build",
+            "file",
+            "workspace",
+            "工程",
+            "实现",
+            "代码",
+            "修复",
+            "补丁",
+            "文件",
+            "构建",
+        )
+        verification_tokens = (
+            "verify",
+            "verification",
+            "test",
+            "review",
+            "audit",
+            "validate",
+            "proof",
+            "handoff",
+            "runtime handoff",
+            "runtime",
+            "delegation",
+            "delegate",
+            "orchestration",
+            "验证",
+            "测试",
+            "复核",
+            "审计",
+            "校验",
+            "证明",
+            "回流",
+            "派发",
+            "委派",
+            "编排",
+            "主链",
+        )
+        if any(token in normalized for token in research_tokens):
+            return ("web-research-architect", "Web Research Architect", "research_goal")
+        if any(token in normalized for token in verification_tokens):
+            return ("verification-engineer", "Verification Engineer", "verification_goal")
+        if any(token in normalized for token in engineering_tokens):
+            return ("implementation-engineer", "Implementation Engineer", "engineering_goal")
+        return None
+
+    @classmethod
+    def _repair_child_worker_target(
+        cls,
+        worker_brief: dict[str, Any],
+        *,
+        request: dict[str, Any],
+        child_branch: dict[str, Any],
+    ) -> dict[str, Any]:
+        text = " ".join(
+            str(value or "")
+            for value in (
+                request.get("childTaskGoal"),
+                worker_brief.get("title"),
+                worker_brief.get("goal"),
+                worker_brief.get("brief"),
+                child_branch.get("reason"),
+                child_branch.get("acceptanceHint"),
+            )
+        )
+        inferred = cls._infer_child_delegation_target(text)
+        if inferred is None:
+            return worker_brief
+        inferred_id, inferred_name, reason = inferred
+        current_id = str(worker_brief.get("agentId") or "").strip()
+        current_norm = current_id.lower()
+        source_norm = str(request.get("sourceAgentId") or "").strip().lower()
+        conflict_targets = {
+            "web-research-architect": {"creative-media-director", "implementation-engineer", "skill-workflow-curator"},
+            "implementation-engineer": {"creative-media-director", "web-research-architect", "skill-workflow-curator"},
+            "verification-engineer": {
+                "creative-media-director",
+                "implementation-engineer",
+                "web-research-architect",
+                "skill-workflow-curator",
+            },
+        }
+        should_repair = (
+            not current_norm
+            or bool(source_norm and current_norm == source_norm)
+            or current_norm in conflict_targets.get(inferred_id, set())
+        )
+        if not should_repair:
+            return worker_brief
+        repaired = dict(worker_brief)
+        repaired["agentId"] = inferred_id
+        repaired["agentName"] = inferred_name
+        repaired["targetRepairReason"] = reason
+        repaired["originalAgentId"] = current_id or request.get("childAgentId")
+        repaired["originalAgentName"] = worker_brief.get("agentName") or request.get("childAgentName")
+        return repaired
+
     def _enqueue_child_delegation_requests(self, child_requests: list[dict[str, Any]], *, episode: dict[str, Any]) -> list[str]:
         if not child_requests:
             return []
@@ -1327,6 +1599,7 @@ class RuntimeEpisodeRunner:
                 "writeSet": child_branch.get("writeSet"),
                 "acceptanceHint": child_branch.get("acceptanceHint"),
             }
+            worker_brief = self._repair_child_worker_target(worker_brief, request=item, child_branch=child_branch)
             if workspace_path:
                 worker_brief["workspacePath"] = workspace_path
             child_inputs = {
@@ -1342,10 +1615,19 @@ class RuntimeEpisodeRunner:
                 "sourceInvocationId": item.get("sourceInvocationId"),
                 "childInvocationId": item.get("childInvocationId"),
                 "childTaskBriefId": item.get("childTaskBriefId"),
-                "childAgentId": item.get("childAgentId"),
-                "childAgentName": item.get("childAgentName"),
+                "childAgentId": worker_brief.get("agentId") or item.get("childAgentId"),
+                "childAgentName": worker_brief.get("agentName") or item.get("childAgentName"),
                 "childDepth": item.get("childDepth"),
             }
+            if worker_brief.get("targetRepairReason"):
+                extra["targetRepairReason"] = worker_brief.get("targetRepairReason")
+                extra["originalChildAgentId"] = worker_brief.get("originalAgentId")
+                extra["originalChildAgentName"] = worker_brief.get("originalAgentName")
+                extra["metadata"] = {
+                    "targetRepairReason": worker_brief.get("targetRepairReason"),
+                    "originalChildAgentId": worker_brief.get("originalAgentId"),
+                    "originalChildAgentName": worker_brief.get("originalAgentName"),
+                }
             if workspace_path:
                 extra["workspacePath"] = workspace_path
             child_episode = build_runtime_episode(

@@ -14,6 +14,7 @@ import re
 import json
 import uuid
 import logging
+import time
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
@@ -22,10 +23,28 @@ from core.memory_canonicalization import canonicalize_preference_key
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 logger = logging.getLogger("v8_agent_os.memory")
+_VECTOR_SYNC_WARNING_INTERVAL_SECONDS = 300.0
+_vector_sync_warning_last_at: dict[str, float] = {}
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _classify_vector_sync_error(exc: Exception) -> str:
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    transient_markers = (
+        "remotedisconnected",
+        "connectionreseterror",
+        "connection aborted",
+        "connection reset",
+        "read timed out",
+        "timeout",
+        "temporarily unavailable",
+    )
+    if any(marker in text for marker in transient_markers):
+        return "transient_connection"
+    return "vector_sync_error"
 
 # === 配置 ===
 CONFIG_DIR = V8_AGENT_OS_HOME
@@ -108,7 +127,65 @@ class MemoryStore:
         self._preferences_cache: Optional[Dict[str, Dict[str, str]]] = None
         self._cache_mtime: float = 0.0
         self._last_session_context_diagnostics: Dict[str, Any] = {}
+        self._last_vector_sync_status: Dict[str, Any] = {
+            "state": "unknown",
+            "lastErrorKind": "",
+            "lastError": "",
+            "pendingRetry": False,
+            "nextRetryAt": "",
+        }
         self._ensure_structure()
+
+    def _record_vector_sync_ok(self, fact_id: str, operation: str) -> None:
+        self._last_vector_sync_status = {
+            "state": "ok",
+            "factId": fact_id,
+            "operation": operation,
+            "lastErrorKind": "",
+            "lastError": "",
+            "pendingRetry": False,
+            "nextRetryAt": "",
+            "updatedAt": _utc_now_iso(),
+        }
+
+    def _record_vector_sync_failure(self, exc: Exception, *, fact_id: str, operation: str) -> None:
+        error_kind = _classify_vector_sync_error(exc)
+        next_retry = datetime.now(timezone.utc) + timedelta(minutes=5)
+        self._last_vector_sync_status = {
+            "state": "queued_retry" if error_kind == "transient_connection" else "degraded",
+            "factId": fact_id,
+            "operation": operation,
+            "lastErrorKind": error_kind,
+            "lastError": str(exc),
+            "pendingRetry": error_kind == "transient_connection",
+            "nextRetryAt": next_retry.isoformat().replace("+00:00", "Z") if error_kind == "transient_connection" else "",
+            "updatedAt": _utc_now_iso(),
+        }
+        now = time.monotonic()
+        warning_key = f"{operation}:{error_kind}"
+        last_at = _vector_sync_warning_last_at.get(warning_key, 0.0)
+        if now - last_at < _VECTOR_SYNC_WARNING_INTERVAL_SECONDS:
+            logger.debug("[MemoryStore] Vector Store sync still degraded (%s): %s", error_kind, exc)
+            return
+        _vector_sync_warning_last_at[warning_key] = now
+        logger.warning(
+            "[MemoryStore] Vector Store sync degraded (%s, non-fatal; canonical memory saved): %s",
+            error_kind,
+            exc,
+        )
+
+    def _sync_vector_store_document(self, fact_id: str, fact: str, metadata: dict[str, Any], *, operation: str) -> None:
+        try:
+            from core.vector_store import get_vector_store
+
+            vs = get_vector_store()
+            vs.add_documents([{"id": fact_id, "text": fact, "metadata": metadata}])
+            self._record_vector_sync_ok(fact_id, operation)
+        except Exception as exc:
+            self._record_vector_sync_failure(exc, fact_id=fact_id, operation=operation)
+
+    def get_vector_sync_status(self) -> Dict[str, Any]:
+        return dict(self._last_vector_sync_status)
     
     # ==========================================
     # 目录结构初始化

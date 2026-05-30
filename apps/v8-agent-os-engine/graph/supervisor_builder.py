@@ -47,6 +47,7 @@ def build_supervisor_runtime_bundle(
         caller_kwargs["api_key"] = config.api_key
     if config.base_url:
         caller_kwargs["base_url"] = config.base_url
+    caller_kwargs.setdefault("timeout", 180)
 
     sup_config = storage.get_supervisor_config()
     supervisor_resolution = resolve_engine_config_for_role("supervisor")
@@ -59,12 +60,12 @@ def build_supervisor_runtime_bundle(
     if not sup_model_name:
         sup_model_name = default_role_model or config.model_name
 
-    supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=True, **caller_kwargs)
+    supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=False, **caller_kwargs)
     default_agent_model_id = storage.get_default_agent_model_id() or sup_model_name
     default_agent_llm = (
         supervisor_base_llm
         if not default_agent_model_id or default_agent_model_id == sup_model_name
-        else llm_factory.create_chat_model(default_agent_model_id, streaming=True, **caller_kwargs)
+        else llm_factory.create_chat_model(default_agent_model_id, streaming=False, **caller_kwargs)
     )
 
     all_mcp_tools = extensions_runtime_service.get_mcp_tools()

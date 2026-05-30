@@ -6582,6 +6582,21 @@ def write_todos(task_name: str, plan_markdown: str, todos: list[str], tool_call_
     ✅ WHEN to call this tool:
     - User says "开始吧", "执行", "就这样做" or gives explicit go-ahead
     - All parameters/preferences have been discussed and agreed upon
+
+    ✅ Allowed todo categories:
+    - Clarify user goal and delivery format
+    - Route Research / Engineering / Creative Media / Computer Use / RPA / Delegation
+    - Wait for typed handoff refs
+    - Merge runtime/subagent outputs
+    - Verify acceptance
+    - Deliver final response or artifact summary
+
+    ❌ Forbidden todo categories:
+    - Runtime-internal Engineering steps such as "read file X", "edit component Y", "run test Z"
+    - Runtime-internal Research steps such as "read the third source" or "rank source 2"
+    - Runtime-internal Creative steps such as "generate the second image" or "render frame N"
+    - Computer Use/RPA internal trace steps such as "click coordinate X/Y"
+    - Subagent private reasoning or skill-internal checklist steps
     
     Arguments:
         task_name: A short, english, dash-separated folder name for the task (e.g. 'crawler-feature')
@@ -9123,6 +9138,14 @@ def _with_recursive_delegation_access(task_brief: dict[str, Any]) -> dict[str, A
     return normalized
 
 
+def _delegation_policy_from_task(task_brief: dict[str, Any]) -> dict[str, Any]:
+    policy = task_brief.get("delegationPolicy")
+    if isinstance(policy, dict):
+        return dict(policy)
+    policy = task_brief.get("delegation_policy")
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
 def _delegation_acceptance_hint(value: Any = None) -> str:
     normalized = str(value or "").strip()
     return normalized or "Supervisor must explicitly accept, retry, or ignore this delegated result."
@@ -10142,6 +10165,7 @@ def delegation_broker(
                 branch_state["todos"] = list(base_todos)
                 branch_state["delegation_contexts"] = base_contexts + [branch_context]
                 branch_state["current_route_context"] = branch_context
+                delegation_policy = _delegation_policy_from_task(branch_task_brief)
                 branch_state["parallel_branch"] = {
                     "invocationId": invocation_id,
                     "branchIndex": index,
@@ -10155,6 +10179,9 @@ def delegation_broker(
                     "delegationDepth": current_depth + 1,
                     "lane": "subagent",
                     "acceptanceHint": _delegation_acceptance_hint(branch_task_brief.get("acceptanceContract")),
+                    "allowChildDelegation": bool(delegation_policy.get("allowChildDelegation")),
+                    "childDelegationBudget": dict(delegation_policy.get("childDelegationBudget") or {}),
+                    "writeSetPartitions": list(delegation_policy.get("writeSetPartitions") or []),
                     "initialMessageCount": len(base_messages) + 1,
                     "initialTodoCount": len(base_todos),
                 }

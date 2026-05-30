@@ -3,36 +3,12 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from core.v8_agent_os_paths import CHECKPOINT_DB_PATH
-
-
-def _patch_aiosqlite_destructor() -> None:
-    # aiosqlite 在连接初始化被取消时，偶发留下未完整构造的 Connection 对象，
-    # 其 __del__ 读取 _connection 会抛 AttributeError，导致 engine 日志刷屏。
-    if getattr(aiosqlite.Connection, "__v8_safe_destructor__", False):
-        return
-
-    original_del = getattr(aiosqlite.Connection, "__del__", None)
-
-    def _safe_del(self: aiosqlite.Connection) -> None:
-        if not hasattr(self, "_connection"):
-            return
-        if original_del is None:
-            return
-        try:
-            original_del(self)
-        except AttributeError:
-            return
-
-    setattr(aiosqlite.Connection, "__del__", _safe_del)
-    setattr(aiosqlite.Connection, "__v8_safe_destructor__", True)
-
-
-_patch_aiosqlite_destructor()
 
 
 class CheckpointStore:
@@ -44,51 +20,61 @@ class CheckpointStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._thread_lock = threading.Lock()
-        self._async_lock: asyncio.Lock | None = None
-        self._conn: aiosqlite.Connection | None = None
-        self._saver: AsyncSqliteSaver | None = None
-
-    def _ensure_async_lock(self) -> asyncio.Lock:
-        with self._thread_lock:
-            if self._async_lock is None:
-                self._async_lock = asyncio.Lock()
-            return self._async_lock
+        self._state_by_loop: dict[int, dict[str, object | None]] = {}
 
     async def get_async_sqlite_saver(self) -> AsyncSqliteSaver:
-        lock = self._ensure_async_lock()
-        async with lock:
-            if self._saver is None:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                conn: aiosqlite.Connection | None = None
-                saver: AsyncSqliteSaver | None = None
-                try:
-                    conn = await aiosqlite.connect(self._path, timeout=5)
-                    await conn.execute("PRAGMA foreign_keys=ON;")
-                    saver = AsyncSqliteSaver(conn)
-                    await saver.setup()
-                except BaseException:
-                    if conn is not None:
-                        try:
-                            await conn.close()
-                        except Exception:
-                            pass
-                    raise
+        loop_id = id(asyncio.get_running_loop())
+        with self._thread_lock:
+            state = self._state_by_loop.get(loop_id)
+            if state is None:
+                state = {"conn": None, "saver": None}
+                self._state_by_loop[loop_id] = state
+            saver = state.get("saver")
+            if isinstance(saver, AsyncSqliteSaver):
+                return saver
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(self._path, timeout=120)
+        await conn.execute("PRAGMA journal_mode=WAL;")
+        await conn.execute("PRAGMA synchronous=NORMAL;")
+        await conn.execute("PRAGMA busy_timeout=120000;")
+        await conn.execute("PRAGMA wal_autocheckpoint=1000;")
+        await conn.execute("PRAGMA foreign_keys=ON;")
+        await conn.commit()
+        base_saver = AsyncSqliteSaver(conn)
+        await base_saver.setup()
+        saver = self._install_write_lock(base_saver)
+        with self._thread_lock:
+            state = self._state_by_loop.setdefault(loop_id, {"conn": None, "saver": None})
+            state["conn"] = conn
+            state["saver"] = saver
+        return saver
 
-                self._conn = conn
-                self._saver = saver
-            return self._saver
+    @staticmethod
+    def _install_write_lock(saver: AsyncSqliteSaver) -> AsyncSqliteSaver:
+        write_lock = asyncio.Lock()
+        original_aput = saver.aput
+        original_aput_writes = saver.aput_writes
+
+        async def locked_aput(*args: Any, **kwargs: Any) -> Any:
+            async with write_lock:
+                return await original_aput(*args, **kwargs)
+
+        async def locked_aput_writes(*args: Any, **kwargs: Any) -> Any:
+            async with write_lock:
+                return await original_aput_writes(*args, **kwargs)
+
+        saver.aput = locked_aput  # type: ignore[method-assign]
+        saver.aput_writes = locked_aput_writes  # type: ignore[method-assign]
+        return saver
 
     async def close(self) -> None:
-        lock = self._ensure_async_lock()
-        async with lock:
-            conn = self._conn
-            self._saver = None
-            self._conn = None
-            if conn is not None:
-                try:
-                    await conn.close()
-                except Exception:
-                    pass
+        with self._thread_lock:
+            states = list(self._state_by_loop.values())
+            self._state_by_loop.clear()
+        for state in states:
+            conn = state.get("conn")
+            if isinstance(conn, aiosqlite.Connection):
+                await conn.close()
 
 
 checkpoint_store = CheckpointStore(CHECKPOINT_DB_PATH)

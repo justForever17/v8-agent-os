@@ -66,12 +66,13 @@ from erc.canonical_model_events import LangChainCanonicalModelEventAdapter
 from erc.kernel import erc_kernel
 from erc.models import RuntimeSource
 from erc.runtime_registry import runtime_registry
-from erc.runtime_context import bind_runtime_context
+from erc.runtime_context import bind_runtime_context, get_runtime_context
 from erc.runtime_stability import runtime_stability_service
 from erc.run_service import run_service
 from erc.session_admission_service import session_admission_service
 from erc.safety_guardian import safety_guardian
 from erc.workflow_ledger import workflow_ledger_service
+from graph.workflow_assembly import build_planner_auto_dispatch_node
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field, model_validator
@@ -86,30 +87,32 @@ from runtimes.network_supervisor.openai_compat import build_external_tool_alias_
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
 
-PLANNER_MODEL_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_MODEL_TIMEOUT_SECONDS", "45"))
+PLANNER_MODEL_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_MODEL_TIMEOUT_SECONDS", "240"))
 PLANNER_REPAIR_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_REPAIR_TIMEOUT_SECONDS", "18"))
+PLANNER_MODEL_MAX_TOKENS = int(os.getenv("V8_PLANNER_MODEL_MAX_TOKENS", "6000"))
+PLANNER_REPAIR_MAX_TOKENS = int(os.getenv("V8_PLANNER_REPAIR_MAX_TOKENS", "4000"))
+PLANNER_MAX_REGISTRY_AGENTS = int(os.getenv("V8_PLANNER_MAX_REGISTRY_AGENTS", "8"))
+PLANNER_MAX_SKILL_REFERENCES = int(os.getenv("V8_PLANNER_MAX_SKILL_REFERENCES", "6"))
+PLANNER_MAX_DESCRIPTION_CHARS = int(os.getenv("V8_PLANNER_MAX_DESCRIPTION_CHARS", "160"))
+PLANNER_OUTPUT_MODE = os.getenv("V8_PLANNER_OUTPUT_MODE", "json").strip().lower()
 
 
 async def _ainvoke_model_off_event_loop(model: Any, messages: list[Any], *, timeout_seconds: float) -> Any:
-    """Run provider calls away from FastAPI's event loop.
+    """Invoke a planner model with a bounded wait in the current event loop.
 
-    Some provider adapters expose an async `ainvoke` method but still perform
-    blocking network work internally. A plain `asyncio.wait_for(model.ainvoke())`
-    cannot preempt that kind of implementation and can freeze unrelated submit
-    requests. The planner is advisory, so isolating it in a worker thread is the
-    safer failure mode: the run can fall back while the server stays responsive.
+    This helper used to run `ainvoke` inside `asyncio.to_thread()` and then call
+    `asyncio.run()` there. LangChain/OpenAI clients keep httpx/asyncio locks in
+    their instances, and crossing event loops made later model calls fail with
+    errors such as `cannot pickle '_thread.RLock' object` or `Lock ... is bound
+    to a different event loop`. The chat submit path is already lightweight and
+    the planner executes inside the background run, so same-loop invocation is
+    the least surprising and most recoverable behavior.
     """
 
-    def _invoke() -> Any:
-        result = model.ainvoke(messages)
-        if inspect.isawaitable(result):
-            return asyncio.run(result)
-        return result
-
-    return await asyncio.wait_for(
-        asyncio.to_thread(_invoke),
-        timeout=max(0.1, timeout_seconds),
-    )
+    result = model.ainvoke(messages)
+    if inspect.isawaitable(result):
+        return await asyncio.wait_for(result, timeout=max(0.1, timeout_seconds))
+    return result
 
 
 class StreamFilter:
@@ -278,6 +281,53 @@ class PlannerTaskBriefPayload(BaseModel):
     targetCount: int = 1
     workerBriefs: list[dict[str, Any]] = Field(default_factory=list)
     fanoutReason: str = ""
+    allowChildDelegation: bool = False
+    childDelegationBudget: dict[str, Any] = Field(default_factory=dict)
+    writeSetPartitions: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_common_model_shapes(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if data.get("engineeringTaskCapsule") is None:
+            data["engineeringTaskCapsule"] = {}
+        if data.get("childDelegationBudget") is None:
+            data["childDelegationBudget"] = {}
+        if data.get("writeSetPartitions") is None:
+            data["writeSetPartitions"] = []
+        for key in ("taskBriefId", "goal", "acceptanceContract", "parallelGroup", "familyHint", "preferredAgentId", "preferredWorkerType", "fanoutReason"):
+            if data.get(key) is None:
+                data[key] = ""
+        if data.get("executionLaneHint") is None:
+            data["executionLaneHint"] = "auto"
+        if data.get("targetCount") is None:
+            data["targetCount"] = 1
+        if "allow_child_delegation" in data and "allowChildDelegation" not in data:
+            data["allowChildDelegation"] = data.get("allow_child_delegation")
+        if "child_delegation_budget" in data and "childDelegationBudget" not in data:
+            data["childDelegationBudget"] = data.get("child_delegation_budget")
+        if "write_set_partitions" in data and "writeSetPartitions" not in data:
+            data["writeSetPartitions"] = data.get("write_set_partitions")
+        acceptance = data.get("acceptanceContract")
+        if isinstance(acceptance, (dict, list)):
+            data["acceptanceContract"] = json.dumps(acceptance, ensure_ascii=False, separators=(",", ":"))
+        for key in (
+            "writeSet",
+            "criticalFiles",
+            "readSet",
+            "verificationMatrix",
+            "proofExpectations",
+            "behaviorScope",
+            "requiredCapabilities",
+            "dependency",
+        ):
+            field_value = data.get(key)
+            if isinstance(field_value, str):
+                stripped = field_value.strip()
+                data[key] = [stripped] if stripped else []
+        return data
 
 
 class PlannerTaskNodePayload(BaseModel):
@@ -312,6 +362,28 @@ class PlannerPlanPayload(BaseModel):
                 "capabilityPlan": [item for item in value if isinstance(item, dict)],
                 "qualityFlags": ["planner_list_payload_wrapped"],
             }
+        if isinstance(value, dict):
+            data = dict(value)
+            for key in ("globalAcceptanceContract", "planSummary", "dispatchEligibilityReason"):
+                field_value = data.get(key)
+                if isinstance(field_value, (dict, list)):
+                    data[key] = json.dumps(field_value, ensure_ascii=False, separators=(",", ":"))
+                elif field_value is None:
+                    data[key] = ""
+            for key in ("riskFlags", "qualityFlags"):
+                field_value = data.get(key)
+                if isinstance(field_value, str):
+                    stripped = field_value.strip()
+                    data[key] = [stripped] if stripped else []
+                elif field_value is None:
+                    data[key] = []
+            if data.get("codingPlannerContract") is None:
+                data["codingPlannerContract"] = {}
+            if data.get("autoDispatchDecision") is None:
+                data["autoDispatchDecision"] = {}
+            elif not isinstance(data.get("autoDispatchDecision"), dict):
+                data["autoDispatchDecision"] = {"raw": data.get("autoDispatchDecision")}
+            return data
         return value
 
 
@@ -815,7 +887,44 @@ class ChatRuntime:
             r"用\s*工程模式",
             r"进入\s*工程模式",
         )
-        return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                if not self._is_negated_phrase_match(text, match.start()):
+                    return True
+        return False
+
+    @staticmethod
+    def _is_negated_phrase_match(text: str, start_index: int) -> bool:
+        left = text[max(0, start_index - 32) : start_index]
+        last_separator = max((left.rfind(separator) for separator in "，。；;,.!?！？、\n\r"), default=-1)
+        if last_separator >= 0:
+            left = left[last_separator + 1 :]
+        compact = re.sub(r"\s+", " ", left.strip().lower())
+        if not compact:
+            return False
+        negation_markers = (
+            "不要直接",
+            "不要调用",
+            "不调用",
+            "不需要",
+            "无需",
+            "无须",
+            "不必",
+            "不要",
+            "不得",
+            "禁止",
+            "不能",
+            "别",
+            "不",
+            "without",
+            "do not",
+            "don't",
+            "dont",
+            "no need to",
+            "not",
+            "never",
+        )
+        return any(marker in compact for marker in negation_markers)
 
     def _detect_planner_intent(self, user_content: str) -> dict[str, Any]:
         text = str(user_content or "").strip().lower()
@@ -1127,32 +1236,59 @@ class ChatRuntime:
         }
 
     @staticmethod
+    def _planner_clip_text(value: Any, *, limit: int = PLANNER_MAX_DESCRIPTION_CHARS) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)].rstrip() + "…"
+
+    @classmethod
+    def _planner_compact_specialist_entry(cls, item: dict[str, Any], *, external: bool = False) -> dict[str, Any]:
+        snapshot = item.get("capabilitySnapshot") if isinstance(item.get("capabilitySnapshot"), dict) else {}
+        capability = summarize_capability_snapshot(snapshot)
+        entry: dict[str, Any] = {
+            "id": str(item.get("id") or "").strip(),
+            "name": cls._planner_clip_text(item.get("name") or item.get("id") or ("external-worker" if external else "subagent"), limit=80),
+            "description": cls._planner_clip_text(item.get("description") or "", limit=PLANNER_MAX_DESCRIPTION_CHARS),
+        }
+        if capability:
+            entry["capabilitySummary"] = cls._planner_clip_text(capability, limit=PLANNER_MAX_DESCRIPTION_CHARS)
+        family = item.get("familyId") or item.get("family") or item.get("family_id")
+        if family:
+            entry["familyHint"] = cls._planner_clip_text(family, limit=80)
+        return {key: value for key, value in entry.items() if value}
+
+    @staticmethod
     def _planner_registry_lines(registry: dict[str, Any]) -> list[str]:
         lines: list[str] = []
         subagents = list(registry.get("subagents") or [])
         external_workers = list(registry.get("externalWorkers") or [])
         if subagents:
             lines.append("[Local Subagents]")
-            for agent in subagents[:12]:
+            for agent in subagents[: min(PLANNER_MAX_REGISTRY_AGENTS, 12)]:
                 snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
                 capability = summarize_capability_snapshot(snapshot)
                 lines.append(
-                    f"- {str(agent.get('name') or agent.get('id') or 'unknown-agent').strip()} "
+                    f"- {ChatRuntime._planner_clip_text(agent.get('name') or agent.get('id') or 'unknown-agent', limit=80)} "
                     f"({str(agent.get('id') or '').strip()}): "
-                    f"{str(agent.get('description') or 'No description').strip()}"
-                    f"{' | ' + capability if capability else ''}"
+                    f"{ChatRuntime._planner_clip_text(agent.get('description') or 'No description')}"
+                    f"{' | ' + ChatRuntime._planner_clip_text(capability) if capability else ''}"
                 )
+            if len(subagents) > min(PLANNER_MAX_REGISTRY_AGENTS, 12):
+                lines.append(f"- … {len(subagents) - min(PLANNER_MAX_REGISTRY_AGENTS, 12)} more local subagents omitted from planner prompt.")
         if external_workers:
             lines.append("[External Workers]")
-            for worker in external_workers[:12]:
+            for worker in external_workers[: min(PLANNER_MAX_REGISTRY_AGENTS, 12)]:
                 snapshot = worker.get("capabilitySnapshot") if isinstance(worker.get("capabilitySnapshot"), dict) else {}
                 capability = summarize_capability_snapshot(snapshot)
                 lines.append(
-                    f"- {str(worker.get('name') or worker.get('id') or 'external-worker').strip()} "
+                    f"- {ChatRuntime._planner_clip_text(worker.get('name') or worker.get('id') or 'external-worker', limit=80)} "
                     f"({str(worker.get('id') or '').strip()}): "
-                    f"{str(worker.get('description') or 'No description').strip()}"
-                    f"{' | ' + capability if capability else ''}"
+                    f"{ChatRuntime._planner_clip_text(worker.get('description') or 'No description')}"
+                    f"{' | ' + ChatRuntime._planner_clip_text(capability) if capability else ''}"
                 )
+            if len(external_workers) > min(PLANNER_MAX_REGISTRY_AGENTS, 12):
+                lines.append(f"- … {len(external_workers) - min(PLANNER_MAX_REGISTRY_AGENTS, 12)} more external workers omitted from planner prompt.")
         if not lines:
             lines.append("- No local subagents or external workers are currently registered.")
         return lines
@@ -1178,6 +1314,8 @@ class ChatRuntime:
             "- handoffPlan should describe refs passed between runtime episodes, e.g. research evidence refs into engineering implementation.\n"
             "- taskBriefs must align with executionStrategy.\n"
             "- direct may still include one compact task brief for governance and verification.\n"
+            "- Keep output compact: at most 6 capabilityPlan rows, 6 taskBriefs, 6 handoffPlan rows, and 8 short strings in any list unless the user explicitly requested more.\n"
+            "- Never include long prose, copied registry text, source dumps, or implementation details in planner fields; use concise broker-ready phrases.\n"
             "- preferredAgentId and preferredWorkerType are optional hints, not guesses.\n"
             "- familyHint may name a specialist family such as engineering or creative_media; it guides delegation_broker selection but does not reveal members or grant runtime tools.\n"
             "- executionLaneHint must be one of: subagent, external_worker, auto.\n"
@@ -1190,12 +1328,308 @@ class ChatRuntime:
             "- Put the implementation task in the engineering family when it creates or changes project files, with an explicit tentative writeSet and proof expectations.\n"
             "- Project scaffolding, dependency installs, and dev servers should be session-observed commands, not blocking sync commands.\n"
             "- If a plan would need scaffolding + dependencies + implementation + verification, it should not be one direct supervisor task.\n"
+            "Writing and skill execution discipline:\n"
+            "- Supervisor todos only track orchestration milestones: clarify goal, route runtimes/subagents, wait for typed handoff, merge, verify, deliver.\n"
+            "- Runtime-internal plans belong to their runtime ledgers/cards/artifacts, not supervisor todos.\n"
+            "- Simple bounded prose such as a short reply, one-paragraph explanation, or quick summary may remain direct with the supervisor.\n"
+            "- Ambiguous deliverables such as 'write a document/proposal/report' must ask the user whether they want direct body text, research-backed writing, or a saved file before routing.\n"
+            "- Source-backed writing must route Research first and pass compact researchRefs/evidenceBundle into the final writing step.\n"
+            "- File/repository writing such as README/docs/*.md/docx/pdf/save-to-path is Engineering or future Document Runtime work because it mutates artifacts.\n"
+            "- Skill-driven writing must delegate to a writing-family subagent with a WritingExecutionBrief; the delegated subagent's first action is fetch_skill_instructions(skill_name).\n"
+            "- For skill design/review/curation tasks, prefer preferredAgentId=skill-workflow-curator. Do not create durable subagents for ordinary short prose.\n"
             "Engineering lane discipline when EngineeringEvidenceGraph is provided:\n"
             "- Prefer evidenceGraphDigest over raw guessing for critical files, writeSet, and verification choices.\n"
             "- Populate codingPlannerContract with criticalFiles, readSet, writeSet, ownershipPlan, verificationMatrix, mergeOrder, riskFlags, and proofExpectations.\n"
             "- Add engineeringTaskCapsule to each task brief when the task touches code; keep it compact and do not copy full repo evidence.\n"
             "- If writeSet cannot be proven, say so in riskFlags instead of pretending certainty.\n"
         )
+
+    def _planner_json_contract_prompt(self) -> str:
+        return (
+            self._planner_system_prompt()
+            + "\n\nReturn ONLY one compact JSON object. Do not wrap it in Markdown.\n"
+            "Required shape:\n"
+            "{"
+            "\"planId\":\"plan_short_id\","
+            "\"executionStrategy\":\"direct|delegate|mixed\","
+            "\"planSummary\":\"one compact sentence\","
+            "\"capabilityPlan\":[{\"kind\":\"research|engineering|creative_media|computer_use|rpa|delegation\",\"reason\":\"short reason\",\"taskBriefId\":\"task-1\",\"state\":\"detected\"}],"
+            "\"taskBriefs\":[{\"taskBriefId\":\"task-1\",\"goal\":\"atomic broker-ready task\",\"context\":\"compact context\",\"writeSet\":[],\"readSet\":[],\"behaviorScope\":[],\"requiredCapabilities\":[],\"acceptanceContract\":\"concrete proof or blocker\",\"dependency\":[],\"executionLaneHint\":\"auto\",\"familyHint\":\"\"}],"
+            "\"handoffPlan\":[{\"fromTaskBriefId\":\"task-1\",\"toTaskBriefId\":\"task-2\",\"refs\":[\"handoffRef\"],\"reason\":\"short handoff reason\"}],"
+            "\"globalAcceptanceContract\":\"one compact acceptance contract\","
+            "\"riskFlags\":[],"
+            "\"qualityFlags\":[],"
+            "\"codingPlannerContract\":{}"
+            "}\n"
+            "If you need only capability rows, still wrap them inside this object and create matching taskBriefs.\n"
+        )
+
+    @staticmethod
+    def _writing_execution_brief(
+        *,
+        user_request: str,
+        route: dict[str, Any],
+        research_refs: list[str] | None = None,
+        workspace_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        skill_name = str(route.get("skillName") or "").strip()
+        return {
+            "schema": "v8.writing_execution_brief.v1",
+            "userOriginalRequest": user_request,
+            "audience": "unspecified",
+            "tone": "follow user request; otherwise clear and practical",
+            "length": "unspecified",
+            "outputFormat": "chat_body unless a runtime handoff or file target says otherwise",
+            "skill": {
+                "idOrName": skill_name,
+                "selectionReason": str(route.get("reason") or "").strip(),
+                "firstActionRequired": "fetch_skill_instructions" if route.get("requiresSkillExecution") else "",
+            },
+            "authorizedRefs": {
+                "memoryRefs": [],
+                "researchRefs": list(research_refs or []),
+                "workspaceRefs": list(workspace_refs or []),
+            },
+            "knownFacts": [],
+            "forbiddenInventions": [
+                "Do not invent sources, memories, implementation results, tests, dates, or user preferences.",
+                "If a fact is missing, mark it as an assumption or ask the supervisor for clarification.",
+            ],
+            "acceptanceCriteria": [
+                "Follow the user request and delegated brief exactly.",
+                "Return final draft plus brief execution notes.",
+                "Separate verified facts from assumptions.",
+            ],
+            "allowedRuntimeUse": {
+                "research": bool(route.get("requiresResearch")),
+                "engineering": bool(route.get("requiresArtifact")),
+                "memory": False,
+            },
+            "subagentFirstAction": "fetch_skill_instructions" if route.get("requiresSkillExecution") else "",
+            "subagentCreationPolicy": {
+                "allowAiCreatedWritingSubagentOnClearMismatch": bool(route.get("allowCreateSubagentOnMismatch")),
+                "requiredMetadata": ["family=writing", "createdBy=ai", "sourceTask", "capabilityGap", "boundaries"],
+                "doNotCreateForOrdinaryShortText": True,
+            },
+        }
+
+    def _fallback_writing_planner_plan(
+        self,
+        *,
+        chat_run: ChatRunContext,
+        reason: str,
+        writing_route: dict[str, Any],
+        fallback_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
+        mode = str(writing_route.get("mode") or "direct_supervisor").strip()
+        plan_id = f"plan_{uuid.uuid4().hex[:10]}"
+        common_quality = ["planner_fallback_used", f"writing_route:{mode}"]
+
+        if mode == "ask_user_clarify":
+            brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-1",
+                    "goal": "Clarify the writing deliverable before execution.",
+                    "context": {
+                        **fallback_context,
+                        "writingRoute": writing_route,
+                        "askUserOptions": ["只要正文", "先调研再写", "保存为文件/仓库文档"],
+                    },
+                    "behaviorScope": ["clarification", "writing_intake"],
+                    "requiredCapabilities": ["ask_user", "requirements_clarification"],
+                    "acceptanceContract": "Ask the user whether they want direct body text, research-backed writing, or a saved file before drafting or delegating.",
+                    "executionLaneHint": "auto",
+                }
+            )
+            return {
+                "planId": plan_id,
+                "executionStrategy": "direct",
+                "planSummary": "Clarify the ambiguous writing deliverable before routing.",
+                "capabilityPlan": [],
+                "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": ""}],
+                "taskBriefs": [brief],
+                "handoffPlan": [],
+                "globalAcceptanceContract": "Do not draft, research, or save files until the user chooses the writing route.",
+                "riskFlags": ["writing_clarification_required"],
+                "qualityFlags": common_quality + ["ask_user_required"],
+                "repairCount": 0,
+                "autoDispatchDecision": {},
+                "dispatchEligibilityReason": "",
+            }
+
+        if mode == "research_then_write":
+            research_brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-1",
+                    "goal": "Collect source-backed evidence for the requested writing.",
+                    "context": {**fallback_context, "writingRoute": writing_route},
+                    "writeSet": [],
+                    "behaviorScope": ["research", "read_only", "evidence_collection"],
+                    "requiredCapabilities": ["web_research", "source_quality", "citations", "evidence_bundle"],
+                    "acceptanceContract": "Produce a compact evidence bundle with source matrix, conflicts, confidence, citations, and raw refs.",
+                    "executionLaneHint": "auto",
+                    "familyHint": "research",
+                    "runtimeAccess": ["research.core"],
+                }
+            )
+            writing_brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-2",
+                    "goal": latest_user_content or "Draft source-backed writing from research evidence.",
+                    "context": {
+                        **fallback_context,
+                        "writingRoute": writing_route,
+                        "writingExecutionBrief": self._writing_execution_brief(
+                            user_request=latest_user_content,
+                            route=writing_route,
+                            research_refs=["task-1:evidenceBundleId", "task-1:sourceMatrix"],
+                        ),
+                    },
+                    "writeSet": [],
+                    "behaviorScope": ["writing", "synthesis", "source_grounded"],
+                    "requiredCapabilities": ["writing", "summarize", "source_grounded_synthesis"],
+                    "acceptanceContract": "Draft from research evidence only; cite/attribute source-backed claims and mark assumptions.",
+                    "dependency": ["task-1"],
+                    "executionLaneHint": "subagent",
+                    "familyHint": "writing",
+                    "researchRefs": ["task-1:evidenceBundleId"],
+                },
+                index=1,
+            )
+            return {
+                "planId": plan_id,
+                "executionStrategy": "mixed",
+                "planSummary": "Research first, then draft source-backed writing.",
+                "capabilityPlan": [
+                    {"kind": "research", "source": "planner_fallback", "reason": "source_backed_writing_requires_evidence", "taskBriefId": "task-1", "requiredRuntimeAccess": ["research.core"], "state": "detected"},
+                    {"kind": "delegation", "source": "planner_fallback", "reason": "writing_synthesis_after_research", "taskBriefId": "task-2", "state": "detected"},
+                ],
+                "taskGraph": [
+                    {"taskBriefId": "task-1", "title": research_brief["goal"], "dependency": [], "parallelGroup": "research"},
+                    {"taskBriefId": "task-2", "title": writing_brief["goal"], "dependency": ["task-1"], "parallelGroup": "writing"},
+                ],
+                "taskBriefs": [research_brief, writing_brief],
+                "handoffPlan": [
+                    {"fromTaskBriefId": "task-1", "toTaskBriefId": "task-2", "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"], "reason": "Writing must consume compact research evidence."}
+                ],
+                "globalAcceptanceContract": "Produce source-backed writing or report missing evidence without fabrication.",
+                "riskFlags": ["source_quality_required"],
+                "qualityFlags": common_quality + ["research_before_writing"],
+                "repairCount": 0,
+                "autoDispatchDecision": {},
+                "dispatchEligibilityReason": "",
+            }
+
+        if mode == "artifact_runtime":
+            brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-1",
+                    "goal": latest_user_content or "Create or update the requested writing artifact.",
+                    "context": {
+                        **fallback_context,
+                        "writingRoute": writing_route,
+                        "writingExecutionBrief": self._writing_execution_brief(user_request=latest_user_content, route=writing_route),
+                    },
+                    "writeSet": ["<requested-writing-artifact>"],
+                    "behaviorScope": ["artifact_writing", "file_mutation", "verification"],
+                    "requiredCapabilities": ["document_artifact", "file_write", "verification"],
+                    "acceptanceContract": "Create/update the requested document artifact, report path, touched files, verification, and residual risks.",
+                    "executionLaneHint": "auto",
+                    "familyHint": "engineering",
+                    "engineeringTaskCapsule": {
+                        "writeSet": ["<requested-writing-artifact>"],
+                        "proofExpectations": ["Report exact artifact path and verification status."],
+                        "riskFlags": ["writing_artifact_path_may_need_clarification"],
+                    },
+                }
+            )
+            return {
+                "planId": plan_id,
+                "executionStrategy": "mixed",
+                "planSummary": "Route file-backed writing through Engineering/document artifact discipline.",
+                "capabilityPlan": [
+                    {"kind": "engineering", "source": "planner_fallback", "reason": "writing_requires_file_or_repository_side_effect", "taskBriefId": "task-1", "state": "detected"}
+                ],
+                "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": "engineering"}],
+                "taskBriefs": [brief],
+                "handoffPlan": [],
+                "globalAcceptanceContract": "Deliver the requested artifact or a recoverable blocker with exact path/format questions.",
+                "riskFlags": ["artifact_side_effect_requires_runtime"],
+                "qualityFlags": common_quality + ["engineering_or_document_runtime_required"],
+                "repairCount": 0,
+                "autoDispatchDecision": {},
+                "dispatchEligibilityReason": "",
+            }
+
+        if mode in {"skill_subagent", "writing_subagent"}:
+            preferred_agent = str(writing_route.get("preferredAgentId") or "").strip()
+            required = ["writing", "follow_skill_workflow", "fetch_skill_instructions"] if mode == "skill_subagent" else ["writing", "document", "explain"]
+            behavior = ["skill_driven_writing", "isolated_context"] if mode == "skill_subagent" else ["writing", "independent_review"]
+            brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-1",
+                    "goal": latest_user_content or "Complete the delegated writing task.",
+                    "context": {
+                        **fallback_context,
+                        "writingRoute": writing_route,
+                        "writingExecutionBrief": self._writing_execution_brief(user_request=latest_user_content, route=writing_route),
+                    },
+                    "writeSet": [],
+                    "behaviorScope": behavior,
+                    "requiredCapabilities": required,
+                    "acceptanceContract": "Read any named skill instructions first, then return final draft plus execution notes, assumptions, and blockers.",
+                    "executionLaneHint": "subagent",
+                    "familyHint": str(writing_route.get("recommendedFamily") or "writing").strip() or "writing",
+                    "preferredAgentId": preferred_agent,
+                    "routeQuery": "skill workflow writing" if mode == "skill_subagent" else "writing document handoff",
+                }
+            )
+            return {
+                "planId": plan_id,
+                "executionStrategy": "delegate",
+                "planSummary": "Delegate specialized writing execution with a bounded WritingExecutionBrief.",
+                "capabilityPlan": [
+                    {"kind": "delegation", "source": "planner_fallback", "reason": "writing_subagent_execution_required", "taskBriefId": "task-1", "state": "detected"}
+                ],
+                "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": "writing"}],
+                "taskBriefs": [brief],
+                "handoffPlan": [],
+                "globalAcceptanceContract": "Use the delegated writing result only if it follows the brief, skill boundary, and no-fabrication contract.",
+                "riskFlags": ["writing_subagent_required"],
+                "qualityFlags": common_quality + (["skill_first_action_required"] if mode == "skill_subagent" else []),
+                "repairCount": 0,
+                "autoDispatchDecision": {},
+                "dispatchEligibilityReason": "",
+            }
+
+        brief = normalize_task_brief(
+            {
+                "taskBriefId": "task-1",
+                "goal": latest_user_content or "Write the requested response directly.",
+                "context": {**fallback_context, "writingRoute": writing_route},
+                "writeSet": [],
+                "behaviorScope": ["direct_writing"],
+                "requiredCapabilities": ["writing"],
+                "acceptanceContract": "Produce the requested text directly; do not invent sources, files, tests, or memories.",
+                "executionLaneHint": "auto",
+            }
+        )
+        return {
+            "planId": plan_id,
+            "executionStrategy": "direct",
+            "planSummary": "Simple writing can remain with the supervisor.",
+            "capabilityPlan": [],
+            "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": ""}],
+            "taskBriefs": [brief],
+            "handoffPlan": [],
+            "globalAcceptanceContract": "Deliver bounded prose directly and mark assumptions instead of fabricating facts.",
+            "riskFlags": [],
+            "qualityFlags": common_quality + ["simple_writing_direct"],
+            "repairCount": 0,
+            "autoDispatchDecision": {},
+            "dispatchEligibilityReason": "",
+        }
 
     def _fallback_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
         latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
@@ -1226,6 +1660,20 @@ class ChatRuntime:
             for item in list(task_shape_hint.get("suggestedFamilies") or [])
             if str(item or "").strip()
         ]
+        wants_delegation = bool(
+            "delegation" in set(secondary_shapes)
+            or "delegation.recursive" in set(optional_grants)
+            or any(item in {"delegation", "subagent", "subagent_swarm"} for item in suggested_families)
+            or any(signal in {"delegation_or_parallel", "large_implementation"} for signal in signals)
+        )
+        writing_route = task_shape_hint.get("writingRoute") if isinstance(task_shape_hint.get("writingRoute"), dict) else {}
+        if writing_route.get("present"):
+            return self._fallback_writing_planner_plan(
+                chat_run=chat_run,
+                reason=reason,
+                writing_route=writing_route,
+                fallback_context=fallback_context,
+            )
         if primary_shape == "project_coding" and ("research" in secondary_shapes or "research.core" in optional_grants):
             research_brief = normalize_task_brief(
                 {
@@ -1271,28 +1719,82 @@ class ChatRuntime:
                 index=1,
             )
             briefs = [research_brief, implementation_brief]
+            if wants_delegation:
+                delegation_brief = normalize_task_brief(
+                    {
+                        "taskBriefId": "task-3",
+                        "goal": "Delegate an independent review or child-agent verification of the runtime handoff.",
+                        "context": {
+                            **fallback_context,
+                            "delegationPrerequisite": "Use task-1 evidence and task-2 engineering proof; do not claim subagent work without confirmed tasks.",
+                        },
+                        "writeSet": [],
+                        "behaviorScope": ["delegated_execution", "verification", "child_delegation"],
+                        "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
+                        "acceptanceContract": "Return confirmed subagent task results or a recoverable missing-target diagnostic; do not report fake delegation.",
+                        "dependency": ["task-2"],
+                        "parallelGroup": "delegation",
+                        "executionLaneHint": "subagent",
+                        "familyHint": "engineering",
+                        "runtimeAccess": ["delegation.recursive"],
+                        "targetCount": 1,
+                        "allowChildDelegation": True,
+                        "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
+                    },
+                    index=2,
+                )
+                briefs.append(delegation_brief)
+            capability_plan = [
+                {
+                    "kind": "research",
+                    "source": "planner_fallback",
+                    "reason": "research_required_before_implementation",
+                    "taskBriefId": "task-1",
+                    "requiredRuntimeAccess": ["research.core"],
+                    "state": "detected",
+                },
+                {
+                    "kind": "engineering",
+                    "source": "planner_fallback",
+                    "reason": "project_creation_or_implementation_required",
+                    "taskBriefId": "task-2",
+                    "requiredRuntimeAccess": [],
+                    "state": "detected",
+                },
+            ]
+            if wants_delegation:
+                capability_plan.append(
+                    {
+                        "kind": "delegation",
+                        "source": "planner_fallback",
+                        "reason": "confirmed_subagent_or_child_delegation_required",
+                        "taskBriefId": "task-3",
+                        "requiredRuntimeAccess": ["delegation.recursive"],
+                        "state": "detected",
+                    }
+                )
+            handoff_plan = [
+                {
+                    "fromTaskBriefId": "task-1",
+                    "toTaskBriefId": "task-2",
+                    "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"],
+                    "reason": "Implementation must consume source-backed research evidence.",
+                }
+            ]
+            if wants_delegation:
+                handoff_plan.append(
+                    {
+                        "fromTaskBriefId": "task-2",
+                        "toTaskBriefId": "task-3",
+                        "refs": ["patchBundleId", "proofRefs", "engineeringHandoff"],
+                        "reason": "Subagent review must consume the engineering handoff instead of inventing work.",
+                    }
+                )
             return {
                 "planId": f"plan_{uuid.uuid4().hex[:10]}",
                 "executionStrategy": "mixed",
                 "planSummary": latest_user_content or "Research first, then implement with engineering proof discipline.",
-                "capabilityPlan": [
-                    {
-                        "kind": "research",
-                        "source": "planner_fallback",
-                        "reason": "research_required_before_implementation",
-                        "taskBriefId": "task-1",
-                        "requiredRuntimeAccess": ["research.core"],
-                        "state": "detected",
-                    },
-                    {
-                        "kind": "engineering",
-                        "source": "planner_fallback",
-                        "reason": "project_creation_or_implementation_required",
-                        "taskBriefId": "task-2",
-                        "requiredRuntimeAccess": [],
-                        "state": "detected",
-                    },
-                ],
+                "capabilityPlan": capability_plan,
                 "taskGraph": [
                     {
                         "taskBriefId": brief["taskBriefId"],
@@ -1303,17 +1805,10 @@ class ChatRuntime:
                     for brief in briefs
                 ],
                 "taskBriefs": briefs,
-                "handoffPlan": [
-                    {
-                        "fromTaskBriefId": "task-1",
-                        "toTaskBriefId": "task-2",
-                        "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"],
-                        "reason": "Implementation must consume source-backed research evidence.",
-                    }
-                ],
+                "handoffPlan": handoff_plan,
                 "globalAcceptanceContract": "Complete the user request through source-backed research, project implementation, and observable verification, or report the exact recoverable blocker.",
                 "riskFlags": ["planner_fallback_used", "mixed_research_engineering_fallback", "tentative_project_write_set"],
-                "qualityFlags": ["planner_fallback_used", "source_quality_required"],
+                "qualityFlags": ["planner_fallback_used", "source_quality_required"] + (["delegation_required_by_task_shape"] if wants_delegation else []),
                 "repairCount": 0,
                 "autoDispatchDecision": {},
                 "dispatchEligibilityReason": "",
@@ -1402,6 +1897,383 @@ class ChatRuntime:
         return False
 
     @staticmethod
+    def _is_read_only_review_task_brief(brief: Any) -> bool:
+        if not isinstance(brief, dict):
+            return False
+        review_signals = {
+            "review",
+            "reviewer",
+            "reviewing",
+            "verification",
+            "verify",
+            "verifier",
+            "audit",
+            "auditor",
+            "inspect",
+            "inspection",
+            "checker",
+            "checker",
+            "subagent_collaboration",
+            "child_delegation",
+            "复核",
+            "验证",
+            "审查",
+            "审计",
+            "检查",
+            "评审",
+            "校验",
+        }
+        text_chunks = [
+            str(brief.get("goal") or "").strip().lower(),
+            str(brief.get("acceptanceContract") or "").strip().lower(),
+            str(brief.get("fanoutReason") or "").strip().lower(),
+            str(brief.get("parallelGroup") or "").strip().lower(),
+            str(brief.get("familyHint") or "").strip().lower(),
+            str(brief.get("executionLaneHint") or "").strip().lower(),
+        ]
+        for key in ("behaviorScope", "requiredCapabilities", "verificationMatrix", "proofExpectations"):
+            values = brief.get(key) or []
+            if isinstance(values, str):
+                values = [values]
+            text_chunks.extend(str(item).strip().lower() for item in list(values) if str(item).strip())
+        text = " ".join(text_chunks)
+        return any(signal in text for signal in review_signals)
+
+    @staticmethod
+    def _planner_brief_search_text(brief: dict[str, Any]) -> str:
+        chunks = [
+            str(brief.get("goal") or ""),
+            str(brief.get("acceptanceContract") or ""),
+            str(brief.get("familyHint") or ""),
+            str(brief.get("executionLaneHint") or ""),
+            str(brief.get("parallelGroup") or ""),
+        ]
+        for key in ("behaviorScope", "requiredCapabilities", "runtimeAccess", "writeSet", "readSet"):
+            value = brief.get(key)
+            if isinstance(value, list):
+                chunks.extend(str(item or "") for item in value)
+            elif value:
+                chunks.append(str(value))
+        return " ".join(chunks).lower()
+
+    @staticmethod
+    def _planner_brief_kind(brief: dict[str, Any]) -> str:
+        text = ChatRuntime._planner_brief_search_text(brief)
+        family_hint = normalize_capability_kind(brief.get("familyHint"))
+        lane = str(brief.get("executionLaneHint") or "").strip().lower()
+        try:
+            target_count = int(brief.get("targetCount") or 1)
+        except Exception:
+            target_count = 1
+        if (
+            family_hint in {"delegation", "subagent_swarm"}
+            or lane == "subagent"
+            or bool(brief.get("workerBriefs"))
+            or target_count > 1
+            or bool(brief.get("allowChildDelegation"))
+            or "delegation.recursive" in text
+            or "child_delegation" in text
+            or "child delegation" in text
+            or "subagent" in text
+            or "子 agent" in text
+            or "子agent" in text
+            or "委派" in text
+            or "孙 agent" in text
+            or "孙agent" in text
+        ):
+            return "delegation"
+        if (
+            family_hint == "research"
+            or "research" in text
+            or "web_research" in text
+            or "evidence_collection" in text
+            or "citations" in text
+            or "source_quality" in text
+            or "调研" in text
+            or "证据" in text
+            or "来源" in text
+        ):
+            return "research"
+        if (
+            family_hint == "engineering"
+            or bool(brief.get("writeSet"))
+            or "project_scaffold" in text
+            or "software_engineering" in text
+            or "frontend_implementation" in text
+            or "implementation" in text
+            or "工程" in text
+            or "实现" in text
+            or "代码" in text
+        ):
+            return "engineering"
+        if family_hint in {"creative_media", "computer_use", "rpa"}:
+            return family_hint
+        return ""
+
+    @staticmethod
+    def _planner_chain_requirements(
+        *,
+        plan_summary: str,
+        quality_flags: list[str],
+        task_briefs: list[dict[str, Any]],
+    ) -> tuple[bool, bool, bool]:
+        text = " ".join(
+            [
+                plan_summary,
+                " ".join(quality_flags),
+                " ".join(ChatRuntime._planner_brief_search_text(brief) for brief in task_briefs),
+            ]
+        ).lower()
+        wants_research = (
+            "source_quality_required" in quality_flags
+            or "research" in text
+            or "web_research" in text
+            or "调研" in text
+            or "证据" in text
+            or "来源" in text
+        )
+        wants_engineering = (
+            any(brief.get("writeSet") for brief in task_briefs)
+            or "engineering" in text
+            or "project_coding" in text
+            or "project_scaffold" in text
+            or "implementation" in text
+            or "工程" in text
+            or "实现" in text
+            or "代码" in text
+        )
+        wants_delegation = (
+            "delegation_required_by_task_shape" in quality_flags
+            or "delegation.recursive" in text
+            or "child_delegation" in text
+            or "child delegation" in text
+            or "subagent" in text
+            or "子 agent" in text
+            or "子agent" in text
+            or "孙 agent" in text
+            or "孙agent" in text
+            or "委派" in text
+            or any(ChatRuntime._planner_brief_kind(brief) == "delegation" for brief in task_briefs)
+        )
+        return wants_research, wants_engineering, wants_delegation
+
+    @staticmethod
+    def _find_or_create_planner_task_for_kind(
+        *,
+        kind: str,
+        task_briefs: list[dict[str, Any]],
+        plan_summary: str,
+        fallback_context: dict[str, Any],
+        dependency: list[str],
+    ) -> tuple[str, bool]:
+        for brief in task_briefs:
+            if ChatRuntime._planner_brief_kind(brief) == kind:
+                return str(brief.get("taskBriefId") or "").strip(), False
+        task_id = f"task-{len(task_briefs) + 1}"
+        if kind == "research":
+            raw = {
+                "taskBriefId": task_id,
+                "goal": "Research source-backed facts before implementation.",
+                "context": fallback_context,
+                "writeSet": [],
+                "behaviorScope": ["research", "read_only", "evidence_collection"],
+                "requiredCapabilities": ["web_research", "source_quality", "citations"],
+                "acceptanceContract": "Return a compact evidence bundle with source URLs, conflicts, confidence, and raw refs.",
+                "dependency": dependency,
+                "parallelGroup": "research",
+                "executionLaneHint": "auto",
+                "familyHint": "research",
+                "runtimeAccess": ["research.core"],
+            }
+        elif kind == "engineering":
+            raw = {
+                "taskBriefId": task_id,
+                "goal": plan_summary or "Implement the requested project work through Engineering Runtime.",
+                "context": fallback_context,
+                "writeSet": ["<project-workspace>/"],
+                "behaviorScope": ["implementation", "project_scaffold", "verification"],
+                "requiredCapabilities": ["project_scaffold", "software_engineering", "verification"],
+                "acceptanceContract": "Return a work plan, patch/proof bundle, or recoverable no-target diagnostic.",
+                "dependency": dependency,
+                "parallelGroup": "",
+                "executionLaneHint": "auto",
+                "familyHint": "engineering",
+                "engineeringTaskCapsule": {
+                    "writeSet": ["<project-workspace>/"],
+                    "proofExpectations": ["Report touched files and the narrowest verification command/result."],
+                    "riskFlags": ["planner_repair_write_set_tentative"],
+                },
+            }
+        else:
+            raw = {
+                "taskBriefId": task_id,
+                "goal": "Delegate independent review or child-agent verification of the runtime handoff.",
+                "context": fallback_context,
+                "writeSet": [],
+                "behaviorScope": ["delegated_execution", "verification", "child_delegation"],
+                "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
+                "acceptanceContract": "Return confirmed subagent task results or a recoverable missing-target diagnostic.",
+                "dependency": dependency,
+                "parallelGroup": "delegation",
+                "executionLaneHint": "subagent",
+                "familyHint": "engineering",
+                "runtimeAccess": ["delegation.recursive"],
+                "targetCount": 1,
+                "allowChildDelegation": True,
+                "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
+            }
+        task_briefs.append(normalize_task_brief(raw, index=len(task_briefs)))
+        return task_id, True
+
+    @staticmethod
+    def _repair_planner_runtime_chain(
+        *,
+        plan_summary: str,
+        quality_flags: list[str],
+        task_briefs: list[dict[str, Any]],
+        capability_plan: list[dict[str, Any]],
+        handoff_plan: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str], int]:
+        existing_kinds = {
+            normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability"))
+            for item in capability_plan
+            if isinstance(item, dict)
+        }
+        wants_research, wants_engineering, wants_delegation = ChatRuntime._planner_chain_requirements(
+            plan_summary=plan_summary,
+            quality_flags=quality_flags,
+            task_briefs=task_briefs,
+        )
+        fallback_context = {
+            "source": "planner_contract_repair",
+            "planSummary": plan_summary,
+            "qualityFlags": list(quality_flags),
+        }
+        repair_count = 0
+        chain: list[tuple[str, str]] = []
+        if wants_research and "research" not in existing_kinds:
+            task_id, created = ChatRuntime._find_or_create_planner_task_for_kind(
+                kind="research",
+                task_briefs=task_briefs,
+                plan_summary=plan_summary,
+                fallback_context=fallback_context,
+                dependency=[],
+            )
+            capability_plan.append(
+                {
+                    "kind": "research",
+                    "source": "planner_contract_repair",
+                    "reason": "source_quality_required",
+                    "taskBriefId": task_id,
+                    "requiredRuntimeAccess": ["research.core"],
+                    "state": "detected",
+                }
+            )
+            chain.append(("research", task_id))
+            quality_flags.append("capability_plan_research_repaired")
+            repair_count += 1 + int(created)
+        elif wants_research:
+            for item in capability_plan:
+                if normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability")) == "research":
+                    chain.append(("research", str(item.get("taskBriefId") or item.get("taskId") or "").strip()))
+                    break
+        if wants_engineering and "engineering" not in existing_kinds:
+            dependency = [chain[-1][1]] if chain else []
+            task_id, created = ChatRuntime._find_or_create_planner_task_for_kind(
+                kind="engineering",
+                task_briefs=task_briefs,
+                plan_summary=plan_summary,
+                fallback_context=fallback_context,
+                dependency=dependency,
+            )
+            capability_plan.append(
+                {
+                    "kind": "engineering",
+                    "source": "planner_contract_repair",
+                    "reason": "project_creation_or_implementation_required",
+                    "taskBriefId": task_id,
+                    "requiredRuntimeAccess": [],
+                    "state": "detected",
+                }
+            )
+            chain.append(("engineering", task_id))
+            quality_flags.append("capability_plan_engineering_repaired")
+            repair_count += 1 + int(created)
+        elif wants_engineering:
+            for item in capability_plan:
+                if normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability")) == "engineering":
+                    chain.append(("engineering", str(item.get("taskBriefId") or item.get("taskId") or "").strip()))
+                    break
+        if wants_delegation and "delegation" not in existing_kinds:
+            dependency = [chain[-1][1]] if chain else []
+            task_id, created = ChatRuntime._find_or_create_planner_task_for_kind(
+                kind="delegation",
+                task_briefs=task_briefs,
+                plan_summary=plan_summary,
+                fallback_context=fallback_context,
+                dependency=dependency,
+            )
+            capability_plan.append(
+                {
+                    "kind": "delegation",
+                    "source": "planner_contract_repair",
+                    "reason": "confirmed_subagent_or_child_delegation_required",
+                    "taskBriefId": task_id,
+                    "requiredRuntimeAccess": ["delegation.recursive"],
+                    "state": "detected",
+                }
+            )
+            chain.append(("delegation", task_id))
+            quality_flags.append("capability_plan_delegation_repaired")
+            repair_count += 1 + int(created)
+        elif wants_delegation:
+            for item in capability_plan:
+                if normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability")) == "delegation":
+                    chain.append(("delegation", str(item.get("taskBriefId") or item.get("taskId") or "").strip()))
+                    break
+        task_lookup = {str(item.get("taskBriefId") or "").strip(): item for item in task_briefs}
+        for index, (_kind, task_id) in enumerate(chain):
+            if not task_id or task_id not in task_lookup:
+                continue
+            if index > 0:
+                prev_task_id = chain[index - 1][1]
+                deps = [str(dep).strip() for dep in list(task_lookup[task_id].get("dependency") or []) if str(dep).strip()]
+                if prev_task_id and prev_task_id != task_id and prev_task_id not in deps:
+                    deps.append(prev_task_id)
+                    task_lookup[task_id]["dependency"] = deps
+                    quality_flags.append("runtime_chain_dependency_repaired")
+                    repair_count += 1
+        existing_handoffs = {
+            (
+                str(item.get("fromTaskBriefId") or "").strip(),
+                str(item.get("toTaskBriefId") or "").strip(),
+            )
+            for item in handoff_plan
+            if isinstance(item, dict)
+        }
+        for index in range(1, len(chain)):
+            from_kind, from_task_id = chain[index - 1]
+            to_kind, to_task_id = chain[index]
+            if not from_task_id or not to_task_id or (from_task_id, to_task_id) in existing_handoffs:
+                continue
+            refs = ["handoffRef"]
+            if from_kind == "research" and to_kind == "engineering":
+                refs = ["researchRefs", "evidenceBundleId", "sourceMatrix"]
+            elif from_kind == "engineering" and to_kind == "delegation":
+                refs = ["patchBundleId", "proofRefs", "engineeringHandoff"]
+            handoff_plan.append(
+                {
+                    "fromTaskBriefId": from_task_id,
+                    "toTaskBriefId": to_task_id,
+                    "refs": refs,
+                    "reason": f"{to_kind} must consume {from_kind} typed handoff before claiming completion.",
+                }
+            )
+            quality_flags.append("runtime_chain_handoff_repaired")
+            repair_count += 1
+        return task_briefs, capability_plan, handoff_plan, quality_flags, repair_count
+
+    @staticmethod
     def _validate_and_repair_planner_plan(plan: dict[str, Any], *, fallback_plan: dict[str, Any]) -> dict[str, Any]:
         repaired = dict(plan or {})
         quality_flags = [str(item).strip() for item in list(repaired.get("qualityFlags") or []) if str(item).strip()]
@@ -1418,6 +2290,35 @@ class ChatRuntime:
         repaired_briefs: list[dict[str, Any]] = []
         for index, brief in enumerate(task_briefs):
             item = normalize_task_brief(brief, index=index)
+            if ChatRuntime._is_read_only_review_task_brief(brief) or ChatRuntime._is_read_only_review_task_brief(item):
+                write_set = [str(path).strip() for path in list(item.get("writeSet") or []) if str(path).strip()]
+                critical_files = [str(path).strip() for path in list(item.get("criticalFiles") or []) if str(path).strip()]
+                if write_set:
+                    merged_read_set = [
+                        *[
+                            str(path).strip()
+                            for path in list(item.get("readSet") or [])
+                            if str(path).strip()
+                        ],
+                        *write_set,
+                    ]
+                    item["readSet"] = list(dict.fromkeys(merged_read_set))
+                    item["writeSet"] = []
+                    quality_flags.append("review_task_write_set_cleared")
+                    repair_count += 1
+                if critical_files:
+                    merged_read_set = [
+                        *[
+                            str(path).strip()
+                            for path in list(item.get("readSet") or [])
+                            if str(path).strip()
+                        ],
+                        *critical_files,
+                    ]
+                    item["readSet"] = list(dict.fromkeys(merged_read_set))
+                    item["criticalFiles"] = []
+                    quality_flags.append("review_task_critical_files_cleared")
+                    repair_count += 1
             if not str(item.get("taskBriefId") or "").strip() or item["taskBriefId"] in task_ids:
                 item["taskBriefId"] = f"task-{index + 1}"
                 quality_flags.append("task_id_repaired")
@@ -1479,20 +2380,73 @@ class ChatRuntime:
             }
             for index, item in enumerate(repaired_briefs)
         ]
-        repaired["capabilityPlan"] = [
+        capability_plan = [
             dict(item)
             for item in list(repaired.get("capabilityPlan") or fallback_plan.get("capabilityPlan") or [])
             if isinstance(item, dict)
         ]
-        repaired["handoffPlan"] = [
+        handoff_plan = [
             dict(item)
             for item in list(repaired.get("handoffPlan") or fallback_plan.get("handoffPlan") or [])
             if isinstance(item, dict)
         ]
+        (
+            repaired_briefs,
+            capability_plan,
+            handoff_plan,
+            quality_flags,
+            chain_repair_count,
+        ) = ChatRuntime._repair_planner_runtime_chain(
+            plan_summary=plan_summary,
+            quality_flags=quality_flags,
+            task_briefs=repaired_briefs,
+            capability_plan=capability_plan,
+            handoff_plan=handoff_plan,
+        )
+        repair_count += chain_repair_count
+        repaired["taskBriefs"] = repaired_briefs
+        repaired["taskGraph"] = [
+            {
+                "taskBriefId": str(item.get("taskBriefId") or f"task-{index + 1}").strip(),
+                "title": str(item.get("goal") or item.get("taskBriefId") or f"Task {index + 1}").strip(),
+                "dependency": list(item.get("dependency") or []),
+                "parallelGroup": str(item.get("parallelGroup") or "").strip(),
+            }
+            for index, item in enumerate(repaired_briefs)
+        ]
+        repaired["capabilityPlan"] = capability_plan
+        repaired["handoffPlan"] = handoff_plan
         repaired["globalAcceptanceContract"] = global_acceptance
         repaired["qualityFlags"] = list(dict.fromkeys(quality_flags))
         repaired["repairCount"] = repair_count
         return repaired
+
+    @staticmethod
+    def _planner_plan_violates_skill_execution_contract(chat_run: ChatRunContext, plan: dict[str, Any]) -> bool:
+        skill_refs = list(getattr(chat_run.prepared, "skill_references", None) or [])
+        if not skill_refs:
+            return False
+        hint = getattr(chat_run.prepared, "task_shape_hint", None)
+        writing_route = hint.get("writingRoute") if isinstance(hint, dict) and isinstance(hint.get("writingRoute"), dict) else {}
+        if str(writing_route.get("mode") or "").strip() != "skill_subagent" and not bool(writing_route.get("requiresSkillExecution")):
+            return False
+        for brief in list((plan or {}).get("taskBriefs") or []):
+            if not isinstance(brief, dict):
+                continue
+            required = {
+                str(item or "").strip()
+                for item in list(brief.get("requiredCapabilities") or [])
+                if str(item or "").strip()
+            }
+            if "fetch_skill_instructions" in required:
+                return False
+            context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
+            writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
+            skill = writing_brief.get("skill") if isinstance(writing_brief.get("skill"), dict) else {}
+            first_action = str(writing_brief.get("subagentFirstAction") or skill.get("firstActionRequired") or "").strip()
+            if first_action == "fetch_skill_instructions":
+                return False
+        return True
 
     @staticmethod
     def _decide_planner_auto_dispatch(
@@ -1522,8 +2476,7 @@ class ChatRuntime:
                 "macroTaskCount": len(task_briefs),
                 "taskCount": len(expanded_task_briefs),
             }
-        if ChatRuntime._has_parallel_write_conflict(expanded_task_briefs):
-            return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "write_set_conflict"}
+        has_write_conflict = ChatRuntime._has_parallel_write_conflict(expanded_task_briefs)
         quality_flags = {str(item).strip() for item in list(plan.get("qualityFlags") or []) if str(item).strip()}
         hard_quality_flags = {"invalid_dependency_removed", "delegation_without_tasks_repaired"}
         if quality_flags & hard_quality_flags:
@@ -1537,9 +2490,35 @@ class ChatRuntime:
 
         subagents = list(registry.get("subagents") or [])
         external_workers = list(registry.get("externalWorkers") or [])
+        capability_by_task_id: dict[str, str] = {}
+        for item in list(plan.get("capabilityPlan") or []):
+            if not isinstance(item, dict):
+                continue
+            task_id = str(item.get("taskBriefId") or item.get("taskId") or "").strip()
+            kind = str(item.get("kind") or item.get("runtimeKind") or item.get("capability") or "").strip().lower()
+            if task_id and kind:
+                capability_by_task_id[task_id] = normalize_capability_kind(kind)
+        local_runtime_kinds = {"research", "engineering", "creative_media", "computer_use", "rpa"}
+        if has_write_conflict and not any(kind in local_runtime_kinds or kind == "delegation" for kind in capability_by_task_id.values()):
+            return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "write_set_conflict"}
         selections: list[dict[str, Any]] = []
         for brief in expanded_task_briefs:
             lane = str(brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
+            task_id = str(brief.get("taskBriefId") or brief.get("id") or "").strip()
+            family_hint = str(brief.get("familyHint") or "").strip().lower()
+            capability_kind = capability_by_task_id.get(task_id) or family_hint
+            if lane == "auto" and capability_kind in local_runtime_kinds:
+                selections.append(
+                    {
+                        "taskBriefId": brief.get("taskBriefId"),
+                        "targetId": f"local_runtime:{capability_kind}",
+                        "targetLabel": f"{capability_kind} runtime",
+                        "selectionReason": "local_runtime_episode",
+                        "selectionConfidence": 1.0,
+                        "matchSignals": [f"capability:{capability_kind}", "episode_runner"],
+                    }
+                )
+                continue
             selected = None
             diagnostics: dict[str, Any] = {}
             if lane in {"subagent", "auto"}:
@@ -1622,6 +2601,17 @@ class ChatRuntime:
                             "familyHint": str(item.get("familyHint") or ("engineering" if kind == "engineering" else "research" if kind == "research" else "creative_media" if kind == "creative_media" else "")).strip(),
                             "targetCount": int(item.get("targetCount") or 1),
                             "workerBriefs": list(item.get("workerBriefs") or []),
+                            "allowChildDelegation": bool(item.get("allowChildDelegation") or item.get("allow_child_delegation") or False),
+                            "childDelegationBudget": (
+                                dict(item.get("childDelegationBudget") or item.get("child_delegation_budget") or {})
+                                if isinstance(item.get("childDelegationBudget") or item.get("child_delegation_budget") or {}, dict)
+                                else {}
+                            ),
+                            "writeSetPartitions": (
+                                list(item.get("writeSetPartitions") or item.get("write_set_partitions") or [])
+                                if isinstance(item.get("writeSetPartitions") or item.get("write_set_partitions") or [], list)
+                                else []
+                            ),
                         },
                         index=index,
                     )
@@ -1735,7 +2725,7 @@ class ChatRuntime:
                 "supervisor",
                 streaming=False,
                 temperature=0,
-                max_tokens=1800,
+                max_tokens=PLANNER_REPAIR_MAX_TOKENS,
                 _request_kind="planner",
             )
             repair_prompt = (
@@ -1766,6 +2756,13 @@ class ChatRuntime:
         except Exception as exc:
             return None, f"planner_repair_failed: {exc}"
 
+    @staticmethod
+    def _compact_planner_error(error: Any, *, limit: int = 700) -> str:
+        text = re.sub(r"\s+", " ", str(error or "").strip())
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)].rstrip() + "…"
+
     async def ensure_planner_plan(self, *, chat_run: ChatRunContext) -> dict[str, Any] | None:
         if not chat_run.prepared.task_planning_mode or str(chat_run.prepared.planner_mode or "off").strip().lower() == "off":
             chat_run.prepared.planner_plan = None
@@ -1789,11 +2786,11 @@ class ChatRuntime:
             },
             "skillReferences": [
                 {
-                    "name": item.get("name"),
-                    "description": item.get("description"),
+                    "name": self._planner_clip_text(item.get("name"), limit=80),
+                    "description": self._planner_clip_text(item.get("description"), limit=180),
                     "path": item.get("path"),
                 }
-                for item in list(chat_run.prepared.skill_references or [])
+                for item in list(chat_run.prepared.skill_references or [])[:PLANNER_MAX_SKILL_REFERENCES]
             ],
             "engineering": {
                 "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
@@ -1810,15 +2807,13 @@ class ChatRuntime:
             },
             "specialists": {
                 "localSubagents": [
-                    {
-                        "id": str(agent.get("id") or "").strip(),
-                        "name": str(agent.get("name") or "").strip(),
-                        "description": str(agent.get("description") or "").strip(),
-                        "capabilitySnapshot": agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {},
-                    }
-                    for agent in list(registry.get("subagents") or [])
+                    self._planner_compact_specialist_entry(agent)
+                    for agent in list(registry.get("subagents") or [])[:PLANNER_MAX_REGISTRY_AGENTS]
                 ],
-                "externalWorkers": list(registry.get("externalWorkers") or []),
+                "externalWorkers": [
+                    self._planner_compact_specialist_entry(worker, external=True)
+                    for worker in list(registry.get("externalWorkers") or [])[:PLANNER_MAX_REGISTRY_AGENTS]
+                ],
             },
         }
         planner_user_message = (
@@ -1830,7 +2825,7 @@ class ChatRuntime:
             "[Specialist Registry]\n"
             + "\n".join(self._planner_registry_lines(registry))
             + "\n\n[Planner Input JSON]\n"
-            + json.dumps(planner_request, ensure_ascii=False, indent=2)
+            + json.dumps(planner_request, ensure_ascii=False, separators=(",", ":"))
         )
 
         fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason="planner_model_unavailable")
@@ -1838,21 +2833,38 @@ class ChatRuntime:
         planning_error: str | None = None
         planner_repair_note: str | None = None
         try:
-            planner_model = llm_factory.create_for_role(
+            base_planner_model = llm_factory.create_for_role(
                 "supervisor",
                 streaming=False,
                 temperature=0,
-                max_tokens=1400,
+                max_tokens=PLANNER_MODEL_MAX_TOKENS,
                 _request_kind="planner",
-            ).with_structured_output(PlannerPlanPayload)
-            raw_plan = await _ainvoke_model_off_event_loop(
-                planner_model,
-                [
-                    SystemMessage(content=self._planner_system_prompt()),
-                    HumanMessage(content=planner_user_message),
-                ],
-                timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS,
             )
+            if PLANNER_OUTPUT_MODE in {"native", "structured", "structured_output"}:
+                planner_model = base_planner_model.with_structured_output(PlannerPlanPayload)
+                raw_plan = await _ainvoke_model_off_event_loop(
+                    planner_model,
+                    [
+                        SystemMessage(content=self._planner_system_prompt()),
+                        HumanMessage(content=planner_user_message),
+                    ],
+                    timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS,
+                )
+            else:
+                raw_response = await _ainvoke_model_off_event_loop(
+                    base_planner_model,
+                    [
+                        SystemMessage(content=self._planner_json_contract_prompt()),
+                        HumanMessage(content=planner_user_message),
+                    ],
+                    timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS,
+                )
+                if isinstance(raw_response, (BaseModel, dict, list)):
+                    raw_plan = raw_response
+                else:
+                    raw_plan = self._extract_planner_payload_from_text(raw_response)
+                    if raw_plan is None:
+                        raise ValueError("planner_json_no_parseable_payload")
             plan = self._normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
         except asyncio.TimeoutError:
             planning_error = f"planner_model_timeout_after_{PLANNER_MODEL_TIMEOUT_SECONDS:g}s"
@@ -1864,7 +2876,7 @@ class ChatRuntime:
             fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
             plan = fallback_plan
         except Exception as exc:
-            planning_error = str(exc)
+            planning_error = self._compact_planner_error(exc)
             repaired_plan, repair_error = await self._try_repair_planner_plan_with_plain_json(
                 planner_user_message=planner_user_message,
                 fallback_plan=fallback_plan,
@@ -1880,7 +2892,7 @@ class ChatRuntime:
                 )
             else:
                 if repair_error:
-                    planning_error = f"{planning_error}; {repair_error}"
+                    planning_error = self._compact_planner_error(f"{planning_error}; {repair_error}")
                 logging.getLogger("v8chat.chat_runtime").warning(
                     "Planner lane fell back to deterministic plan for run '%s': %s",
                     chat_run.active_run_id,
@@ -1890,6 +2902,20 @@ class ChatRuntime:
                 plan = fallback_plan
 
         plan = self._validate_and_repair_planner_plan(plan, fallback_plan=fallback_plan)
+        if self._planner_plan_violates_skill_execution_contract(chat_run, plan):
+            repaired_fallback = self._fallback_planner_plan(
+                chat_run=chat_run,
+                reason="planner_skill_execution_contract_violation",
+            )
+            flags = [
+                str(item).strip()
+                for item in list(repaired_fallback.get("qualityFlags") or [])
+                if str(item).strip()
+            ]
+            flags.append("planner_skill_execution_contract_enforced")
+            repaired_fallback["qualityFlags"] = list(dict.fromkeys(flags))
+            repaired_fallback["repairCount"] = int(repaired_fallback.get("repairCount") or 0) + 1
+            plan = self._validate_and_repair_planner_plan(repaired_fallback, fallback_plan=repaired_fallback)
         plan = engineering_lane_service.enrich_planner_plan_with_engineering_contract(
             plan,
             engineering_context=chat_run.prepared.engineering_context_pack,
@@ -2259,6 +3285,63 @@ class ChatRuntime:
                     "resolvedScope": scope_result.binding.resolved_scope,
                 },
             )
+            if prepared.skill_references:
+                first_skill = dict(prepared.skill_references[0])
+                skill_name = str(first_skill.get("name") or first_skill.get("id") or "").strip()
+                hint = dict(prepared.task_shape_hint or {})
+                signals_before_skill = [str(item or "") for item in list(hint.get("signals") or [])]
+                if skill_name:
+                    try:
+                        confidence_floor = max(float(hint.get("confidence") or 0.0), 0.78)
+                    except (TypeError, ValueError):
+                        confidence_floor = 0.78
+                    secondary = [
+                        str(item or "").strip()
+                        for item in list(hint.get("secondaryTaskShapes") or [])
+                        if str(item or "").strip()
+                    ]
+                    if "delegation" not in secondary:
+                        secondary.append("delegation")
+                    suggested = [
+                        str(item or "").strip()
+                        for item in list(hint.get("suggestedFamilies") or [])
+                        if str(item or "").strip()
+                    ]
+                    suggested = ["writing", *[item for item in suggested if item != "writing"]]
+                    grants = [
+                        str(item or "").strip()
+                        for item in list(hint.get("optionalRuntimeGrants") or [])
+                        if str(item or "").strip()
+                    ]
+                    if "delegation.recursive" not in grants:
+                        grants.append("delegation.recursive")
+                    hint.update(
+                        {
+                            "primaryTaskShape": "writing",
+                            "secondaryTaskShapes": secondary[:4],
+                            "confidence": confidence_floor,
+                            "reason": "selected_skill_requires_writing_subagent_execution",
+                            "suggestedFamilies": suggested[:6],
+                            "optionalRuntimeGrants": grants[:6],
+                            "topFamily": "writing",
+                            "writingRoute": {
+                                "present": True,
+                                "mode": "skill_subagent",
+                                "reason": "selected_skill_reference_must_be_executed_by_writing_subagent",
+                                "needsClarification": False,
+                                "requiresResearch": "research" in secondary,
+                                "requiresArtifact": False,
+                                "requiresSkillExecution": True,
+                                "recommendedFamily": "writing",
+                                "preferredAgentId": "",
+                                "skillName": skill_name,
+                                "firstActionTool": "fetch_skill_instructions",
+                                "allowCreateSubagentOnMismatch": True,
+                            },
+                            "signals": [*signals_before_skill, "writing_route:skill_subagent"][:12],
+                        }
+                    )
+                    prepared.task_shape_hint = hint
             primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
             shape_reason = str(prepared.task_shape_hint.get("reason") or "").strip()
             secondary_shapes = {
@@ -2270,7 +3353,20 @@ class ChatRuntime:
                 primary_shape == "project_coding"
                 and ("research" in secondary_shapes or shape_reason == "research_plus_project_build_intent")
             )
-            if prepared.explicit_engineering_requested or primary_shape == "project_coding" or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"}):
+            writing_route_current = (
+                prepared.task_shape_hint.get("writingRoute")
+                if isinstance(prepared.task_shape_hint.get("writingRoute"), dict)
+                else {}
+            )
+            skill_subagent_required = (
+                str(writing_route_current.get("mode") or "").strip() == "skill_subagent"
+                and bool(writing_route_current.get("requiresSkillExecution"))
+            )
+            if skill_subagent_required:
+                prepared.task_planning_mode = True
+                prepared.planner_mode = "force"
+                prepared.planner_dispatch_mode = "auto"
+            elif prepared.explicit_engineering_requested or primary_shape == "project_coding" or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"}):
                 prepared.task_planning_mode = True
                 prepared.planner_mode = "force"
                 prepared.planner_dispatch_mode = "auto"
@@ -2814,12 +3910,62 @@ class ChatRuntime:
                 "taskShapeHint": task_shape_hint,
                 "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
             }
+        planner_dispatch_status: dict[str, Any] | None = None
+        planner_plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
+        planner_decision = dict((planner_plan or {}).get("autoDispatchDecision") or {})
+        if planner_plan and bool(planner_decision.get("willDispatch")):
+            try:
+                with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
+                    dispatch_command = build_planner_auto_dispatch_node()(
+                        {
+                            "session_id": chat_run.session_id,
+                            "sessionId": chat_run.session_id,
+                            "run_id": chat_run.active_run_id,
+                            "runId": chat_run.active_run_id,
+                            "workspace_path": chat_run.scope_result.binding.workspace_path,
+                            "workspacePath": chat_run.scope_result.binding.workspace_path,
+                            "current_route_context": current_route_context,
+                            "planner_plan": planner_plan,
+                        }
+                    )
+                dispatch_update = dict(getattr(dispatch_command, "update", None) or {})
+                if isinstance(dispatch_update.get("current_route_context"), dict):
+                    current_route_context = dict(dispatch_update.get("current_route_context") or current_route_context)
+                if isinstance(dispatch_update.get("planner_dispatch_status"), dict):
+                    planner_dispatch_status = dict(dispatch_update.get("planner_dispatch_status") or {})
+                    if str(getattr(dispatch_command, "goto", "") or "").strip() == "runtime_episode":
+                        planner_dispatch_status.setdefault("nextAction", "wait_episode")
+                if planner_dispatch_status:
+                    chat_run.emit_runtime_event(
+                        "planner.auto_dispatch.prequeued",
+                        {
+                            "planId": planner_plan.get("planId"),
+                            "nextAction": planner_dispatch_status.get("nextAction"),
+                            "state": planner_dispatch_status.get("state"),
+                            "episodeCount": planner_dispatch_status.get("episodeCount"),
+                            "blocked": planner_dispatch_status.get("blocked"),
+                        },
+                        agent_id=None,
+                        node="planner_auto_dispatch",
+                    )
+            except Exception as exc:
+                chat_run.emit_runtime_event(
+                    "planner.auto_dispatch.prequeue_failed",
+                    {
+                        "planId": planner_plan.get("planId"),
+                        "error": str(exc),
+                        "errorType": exc.__class__.__name__,
+                    },
+                    agent_id=None,
+                    node="planner_auto_dispatch",
+                )
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
             messages=chat_run.lc_messages,
             session_id=chat_run.session_id,
             current_route_context=current_route_context,
             planner_plan=chat_run.prepared.planner_plan,
+            planner_dispatch_status=planner_dispatch_status,
             engineering_context=chat_run.prepared.engineering_context_pack,
             task_shape_hint=chat_run.prepared.task_shape_hint,
             explicit_subagent_families=chat_run.prepared.explicit_subagent_families,
@@ -2883,6 +4029,7 @@ class ChatRuntime:
             messages=state_messages,
             session_id=chat_run.session_id,
             planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
+            planner_dispatch_status=snapshot.get("planner_dispatch_status") if isinstance(snapshot.get("planner_dispatch_status"), dict) else None,
             engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -2934,6 +4081,7 @@ class ChatRuntime:
             messages=state_messages,
             session_id=chat_run.session_id,
             planner_plan=snapshot_dict.get("planner_plan") if isinstance(snapshot_dict.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
+            planner_dispatch_status=snapshot_dict.get("planner_dispatch_status") if isinstance(snapshot_dict.get("planner_dispatch_status"), dict) else None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -3335,34 +4483,69 @@ class ChatRuntime:
 
     def _resolve_event_owner(self, stream_state: ChatStreamState, *, tool_name: str | None = None) -> dict[str, Any]:
         normalized_tool = str(tool_name or "").strip().lower()
-        current_agent = str(stream_state.current_agent or "supervisor").strip() or "supervisor"
+        runtime_context = get_runtime_context()
+        context_runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
+        context_subagent_id = str(runtime_context.get("subagent_id") or runtime_context.get("subagentId") or "").strip()
+        context_delegation_id = str(runtime_context.get("delegation_id") or runtime_context.get("delegationId") or "").strip()
+        context_agent_id = str(runtime_context.get("agent_id") or runtime_context.get("agentId") or context_subagent_id or "").strip()
+        current_agent = str(context_agent_id or stream_state.current_agent or "supervisor").strip() or "supervisor"
         owner_kind = self._owner_kind_for_agent(current_agent)
         owner_runtime_id = "chat" if owner_kind == "supervisor" else "subagent_swarm"
 
+        if context_runtime_kind in {"subagent", "delegation"} or context_subagent_id or context_delegation_id:
+            owner_runtime_id = "subagent_swarm"
+            owner_kind = "subagent"
+        elif context_runtime_kind and context_runtime_kind not in {"chat", "supervisor"}:
+            normalized_runtime_kind = normalize_capability_kind(context_runtime_kind) or context_runtime_kind
+            if normalized_runtime_kind == "delegation":
+                owner_runtime_id = "subagent_swarm"
+                owner_kind = "subagent"
+            else:
+                owner_runtime_id = normalized_runtime_kind
+                owner_kind = "runtime"
+
         if normalized_tool:
             if normalized_tool == "research_broker" or normalized_tool.startswith("research_"):
-                owner_runtime_id = "research"
-                owner_kind = "runtime"
+                if owner_kind != "subagent":
+                    owner_runtime_id = "research"
+                    owner_kind = "runtime"
             elif normalized_tool.startswith("creative_media_"):
-                owner_runtime_id = "creative_media"
-                owner_kind = "runtime"
+                if owner_kind != "subagent":
+                    owner_runtime_id = "creative_media"
+                    owner_kind = "runtime"
             elif normalized_tool.startswith("computer_use_"):
-                owner_runtime_id = "computer_use"
-                owner_kind = "runtime"
+                if owner_kind != "subagent":
+                    owner_runtime_id = "computer_use"
+                    owner_kind = "runtime"
             elif normalized_tool.startswith("rpa_"):
-                owner_runtime_id = "rpa"
-                owner_kind = "runtime"
+                if owner_kind != "subagent":
+                    owner_runtime_id = "rpa"
+                    owner_kind = "runtime"
             elif normalized_tool in {"delegation_broker", "subagent_broker"} or normalized_tool.startswith("subagent_"):
                 owner_runtime_id = "subagent_swarm"
                 owner_kind = "subagent"
             elif owner_kind != "supervisor":
                 owner_runtime_id = "subagent_swarm"
 
+        runtime_context_summary = {
+            key: runtime_context.get(key)
+            for key in (
+                "runtime_kind",
+                "trigger_source",
+                "session_id",
+                "run_id",
+                "delegation_id",
+                "subagent_id",
+                "workspace_path",
+            )
+            if runtime_context.get(key) is not None
+        }
         return {
             "ownerRuntimeId": owner_runtime_id,
             "ownerAgentKind": owner_kind,
             "ownerAgentId": current_agent,
             "displayInMessage": owner_runtime_id == "chat" and owner_kind == "supervisor",
+            "runtimeContext": runtime_context_summary,
         }
 
     def _event_targets_for_owner(self, owner: dict[str, Any], *, event_kind: str) -> list[str]:
@@ -3397,6 +4580,7 @@ class ChatRuntime:
             "ownerRuntimeId": owner.get("ownerRuntimeId"),
             "ownerAgentKind": owner.get("ownerAgentKind"),
             "ownerAgentId": owner.get("ownerAgentId"),
+            "runtimeContext": owner.get("runtimeContext") or {},
             "ownerStreamKey": stream_key,
             "surfaceTargets": targets,
             "targets": targets,
@@ -3436,6 +4620,7 @@ class ChatRuntime:
                 "ownerRuntimeId": owner.get("ownerRuntimeId"),
                 "ownerAgentKind": owner.get("ownerAgentKind"),
                 "ownerAgentId": owner.get("ownerAgentId"),
+                "runtimeContext": owner.get("runtimeContext") or {},
                 "ownerStreamKey": stream_key,
                 "displayInMessage": bool(owner.get("displayInMessage")),
             }
@@ -4179,7 +5364,7 @@ class ChatRuntime:
             recommended_next_action = (
                 "Runtime episode 长时间没有进展；请查看 active child episode / handoff refs，必要时继续、重试或拆分该 episode。"
                 if failure_class == "episode_stalled"
-                else "模型流 45 秒没有新事件；可重试本轮、检查 provider streaming，若后台命令仍在运行请先查看 Command card。"
+                else f"模型流 {int(idle_timeout)} 秒没有新事件；可重试本轮、检查 provider streaming，若后台命令仍在运行请先查看 Command card。"
             )
             payload = {
                 "idleTimeoutSeconds": idle_timeout,
@@ -5901,7 +7086,7 @@ class ChatRuntime:
                 },
                 "timestamp": 0,
             }
-            profile = self._get_agent_profile(stream_state.current_agent)
+            profile = self._get_agent_profile(str(owner.get("ownerAgentId") or stream_state.current_agent))
             owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
             stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:tool:{tool_call_id or name}"
             topic = "tool.started" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.tool.started"
@@ -5944,6 +7129,7 @@ class ChatRuntime:
                         "ownerRuntimeId": payload.get("ownerRuntimeId"),
                         "ownerAgentKind": payload.get("ownerAgentKind"),
                         "ownerAgentId": payload.get("ownerAgentId"),
+                        "runtimeContext": payload.get("runtimeContext"),
                         "ownerStreamKey": payload.get("ownerStreamKey"),
                         "targets": payload.get("targets"),
                         "surfaceTargets": payload.get("surfaceTargets"),
@@ -6043,9 +7229,9 @@ class ChatRuntime:
                 **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
                 "timestamp": 0,
             }
-            stream_state.watchdog.note_tool_end(tool_call_id)
-            profile = self._get_agent_profile(stream_state.current_agent)
             owner = self._resolve_event_owner(stream_state, tool_name=str(name or ""))
+            stream_state.watchdog.note_tool_end(tool_call_id)
+            profile = self._get_agent_profile(str(owner.get("ownerAgentId") or stream_state.current_agent))
             owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
             stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:tool:{tool_call_id or name}"
             topic = "tool.finished" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.tool.finished"
@@ -6091,6 +7277,7 @@ class ChatRuntime:
                         "ownerRuntimeId": payload.get("ownerRuntimeId"),
                         "ownerAgentKind": payload.get("ownerAgentKind"),
                         "ownerAgentId": payload.get("ownerAgentId"),
+                        "runtimeContext": payload.get("runtimeContext"),
                         "ownerStreamKey": payload.get("ownerStreamKey"),
                         "targets": payload.get("targets"),
                         "surfaceTargets": payload.get("surfaceTargets"),
@@ -6198,14 +7385,51 @@ class ChatRuntime:
                 return raw_text
         return ""
 
+    @staticmethod
+    def _runtime_handoff_summary_from_state(state: dict[str, Any] | None) -> str:
+        if not isinstance(state, dict):
+            return ""
+        dispatch_status = state.get("planner_dispatch_status")
+        if not isinstance(dispatch_status, dict):
+            return ""
+        if str(dispatch_status.get("mode") or "").strip() != "runtime_episode":
+            return ""
+        if str(dispatch_status.get("nextAction") or "").strip() != "resume_supervisor":
+            return ""
+        if str(dispatch_status.get("state") or "").strip() not in {"handoff_ready", "episode_terminal"}:
+            return ""
+        route_context = state.get("current_route_context")
+        if not isinstance(route_context, dict):
+            return ""
+        handoffs = [dict(item) for item in list(route_context.get("handoffRefs") or []) if isinstance(item, dict)]
+        if not handoffs:
+            return ""
+
+        lines = ["运行时链路已经完成并回流，当前可见结果如下："]
+        for handoff in handoffs[:8]:
+            kind = str(handoff.get("kind") or handoff.get("type") or "runtime_handoff").strip()
+            status = str(handoff.get("status") or "").strip()
+            summary = str(handoff.get("compactSummary") or handoff.get("summary") or "").strip()
+            if not summary:
+                refs = handoff.get("refs") if isinstance(handoff.get("refs"), list) else []
+                summary = f"已生成 {len(refs)} 个引用。" if refs else "已生成 typed handoff。"
+            label = kind if not status else f"{kind} / {status}"
+            lines.append(f"- {label}: {summary[:900]}")
+        if len(handoffs) > 8:
+            lines.append(f"- 另有 {len(handoffs) - 8} 个 handoff 已进入执行图/诊断面板。")
+        lines.append("我会基于这些 runtime 结果继续作答；本轮不会绕过 runtime 直接执行受管控的文件或命令操作。")
+        return "\n".join(lines)
+
     @classmethod
-    def _should_reconcile_final_text(cls, *, current_text: str, final_text: str) -> bool:
+    def _should_reconcile_final_text(cls, *, current_text: str, final_text: str, force: bool = False) -> bool:
         current = str(current_text or "").strip()
         final = str(final_text or "").strip()
         if not final or final == current:
             return False
         if any(marker in final for marker in ("ToolRuntime(", "PregelScratchpad", "__pregel_", "stream_writer=")):
             return False
+        if force:
+            return True
         if not current:
             return True
         if len(current) <= 4:
@@ -6333,15 +7557,18 @@ class ChatRuntime:
                 chat_run.active_run_id,
             )
             return
-        final_text = self._extract_final_assistant_text_from_state(state)
-        if not final_text:
-            return
         if self._owner_kind_for_agent(stream_state.current_agent) != "supervisor":
             return
         message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
         row = db.get_chat_canonical_message(message_id) or {}
         current_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")
-        if not self._should_reconcile_final_text(current_text=current_text, final_text=final_text):
+        final_text = self._extract_final_assistant_text_from_state(state)
+        force_reconcile = False
+        if not self._should_reconcile_final_text(
+            current_text=current_text,
+            final_text=final_text,
+            force=force_reconcile,
+        ):
             return
         profile = self._get_agent_profile(stream_state.current_agent)
         final_node = {
@@ -7147,6 +8374,41 @@ class ChatRuntime:
                     yield preflight_event
                 return
 
+            writing_route = (
+                chat_run.prepared.task_shape_hint.get("writingRoute")
+                if isinstance(chat_run.prepared.task_shape_hint, dict)
+                else None
+            )
+            if isinstance(writing_route, dict) and str(writing_route.get("mode") or "") == "ask_user_clarify":
+                chat_run.emit_runtime_event(
+                    "writing.clarification.required",
+                    {
+                        "reason": writing_route.get("reason") or "ambiguous_writing_deliverable_needs_choice",
+                        "options": list(writing_route.get("clarificationOptions") or ["direct_body", "research_backed", "save_as_file"]),
+                        "summary": "写作需求缺少交付边界，先询问用户选择正文、调研或文件保存。",
+                    },
+                    agent_id="supervisor",
+                    node="writing_route_gate",
+                )
+                clarification_text = (
+                    "这篇文档我先确认一下交付方式，避免写偏：\n"
+                    "1. 只在聊天里直接写正文\n"
+                    "2. 先调研并保留来源，再写成稿\n"
+                    "3. 保存为文件或仓库文档（请告诉我路径、格式或文件名）"
+                )
+                for text_event in await self._emit_text_delta(
+                    chat_run,
+                    stream_state,
+                    clarification_text,
+                    model_run_id="writing_clarification_gate",
+                ):
+                    yield text_event
+                for flushed_event in await self.flush_stream_state(chat_run, stream_state):
+                    yield flushed_event
+                self.persist_final_assistant_message(chat_run, stream_state)
+                yield self.finalize_success_run(chat_run)
+                return
+
             await self.ensure_planner_plan(chat_run=chat_run)
 
             continuation_count = 0
@@ -7333,6 +8595,10 @@ class ChatRuntime:
             self.emit_task_planning_mode_decision(chat_run, stream_state)
             yield self.finalize_success_run(chat_run)
         except Exception as exc:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Chat run '%s' failed during stream execution",
+                chat_run.active_run_id if chat_run else "<unknown>",
+            )
             self._emit_delegation_claim_diagnostic(chat_run, stream_state)
             for failed_event in self.finalize_failed_run(chat_run, exc):
                 yield failed_event

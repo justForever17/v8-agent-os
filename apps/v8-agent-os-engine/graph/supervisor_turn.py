@@ -1,7 +1,7 @@
 import time
 from types import SimpleNamespace
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from .supervisor_context import (
     apply_passive_rag_injection,
@@ -51,6 +51,51 @@ def _estimate_memory_context_chars(diagnostics: dict) -> int:
         if isinstance(value, list):
             total += sum(len(str(item)) for item in value[:20])
     return total
+
+
+def _has_tool(tools, tool_name: str) -> bool:
+    expected = str(tool_name or "").strip()
+    return any(_tool_ref_name(tool) == expected for tool in list(tools or []))
+
+
+def _should_force_memory_broker_first(*, user_query: str, passive_rag_diagnostics: dict, selected_tools) -> bool:
+    if not _has_tool(selected_tools, "memory_broker"):
+        return False
+    if passive_rag_diagnostics.get("has_recall_cue") is True:
+        return True
+    normalized = str(user_query or "").lower()
+    recall_terms = (
+        "上一轮",
+        "上一次",
+        "上次",
+        "之前",
+        "前面",
+        "刚才",
+        "历史",
+        "记忆",
+        "记得",
+        "继续上下文",
+        "队列消息",
+        "同一个 session",
+        "same session",
+        "previous context",
+        "prior context",
+    )
+    return any(term.lower() in normalized for term in recall_terms)
+
+
+def _memory_broker_first_guidance(user_query: str) -> SystemMessage:
+    query_preview = str(user_query or "").strip().replace("\n", " ")[:220]
+    return SystemMessage(
+        content=(
+            "[Memory Recall Gate]\n"
+            "The latest user request depends on previous context, history, memory, queue state, or same-session continuity. "
+            "Your first tool call MUST be `memory_broker`, normally `memory_broker(mode=\"recall\", query=\"...\")`. "
+            "Do not call `workspace_broker`, `grep_search`, or `read_native_file` before memory_broker for this turn. "
+            "If memory_broker returns no matching facts, say that explicitly, then use workspace/session tools only if still needed.\n"
+            f"User query preview: {query_preview}"
+        )
+    )
 
 
 def _is_network_supervisor_compat_transport(state) -> bool:
@@ -367,6 +412,12 @@ def execute_supervisor_turn(
             scope_chain=scope_chain,
             remaining_steps=state.get("remaining_steps", 100),
         )
+        if _should_force_memory_broker_first(
+            user_query=user_query,
+            passive_rag_diagnostics=passive_rag_diagnostics,
+            selected_tools=filtered_supervisor_tools,
+        ):
+            prepared_messages.append(_memory_broker_first_guidance(user_query))
         if _runtime_episode_handoff_ready(state):
             filtered_supervisor_tools = []
             prepared_messages.append(_runtime_handoff_final_message())
@@ -396,7 +447,7 @@ def execute_supervisor_turn(
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                 candidate_model_id,
-                streaming=True,
+                streaming=False,
                 _role="supervisor",
                 **caller_kwargs,
             ),

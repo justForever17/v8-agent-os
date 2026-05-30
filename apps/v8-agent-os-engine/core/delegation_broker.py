@@ -63,6 +63,16 @@ def _safe_target_count(value: Any, *, default: int = 1, maximum: int = 1000) -> 
     return max(1, min(count, maximum))
 
 
+def _safe_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on", "allow", "allowed"}
+    return bool(value)
+
+
 def _normalize_worker_briefs(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -100,6 +110,9 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "targetCount": 1,
         "workerBriefs": [],
         "fanoutReason": "",
+        "allowChildDelegation": False,
+        "childDelegationBudget": {},
+        "writeSetPartitions": [],
     }
 
 
@@ -130,6 +143,8 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     )
     if worker_briefs:
         target_count = max(target_count, len(worker_briefs))
+    child_delegation_budget = _first_present(payload, ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"))
+    write_set_partitions = _first_present(payload, ("writeSetPartitions", "write_set_partitions", "writePartitions", "write_partitions"))
     normalized = {
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
         "goal": str(payload.get("goal") or "").strip(),
@@ -150,6 +165,20 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "targetCount": target_count,
         "workerBriefs": worker_briefs,
         "fanoutReason": str(payload.get("fanoutReason") or payload.get("fanout_reason") or payload.get("parallelismReason") or payload.get("parallelism_reason") or "").strip(),
+        "allowChildDelegation": _safe_bool(
+            _first_present(payload, ("allowChildDelegation", "allow_child_delegation", "allowNestedDelegation", "allow_nested_delegation"))
+        ),
+        "childDelegationBudget": (
+            dict(child_delegation_budget or {})
+            if isinstance(child_delegation_budget, dict)
+            else {}
+        ),
+        "writeSetPartitions": [
+            dict(item) if isinstance(item, dict) else item
+            for item in list(write_set_partitions or [])
+        ]
+        if isinstance(write_set_partitions, list)
+        else [],
     }
     for key in ("criticalFiles", "readSet", "verificationMatrix", "proofExpectations"):
         normalized[key] = _normalize_scope_values(payload.get(key) or payload.get(key[0].lower() + key[1:]))

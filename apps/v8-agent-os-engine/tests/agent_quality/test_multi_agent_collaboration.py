@@ -5,6 +5,7 @@ import asyncio
 from core.database import db
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
+from tests.scripts.run_agent_quality_live_audit import LiveCaseResult, _route_evidence_for_expected_tool
 
 
 def test_research_to_engineering_to_delegation_handoff_chain(monkeypatch) -> None:
@@ -140,3 +141,23 @@ def test_child_capability_need_promotes_and_parent_resumes(monkeypatch) -> None:
     assert resumed is not None
     asyncio.run(runner._execute_episode(resumed))
     assert db.get_runtime_episode(parent["episodeId"])["state"] == "completed"
+
+
+def test_claimed_without_dispatch_does_not_satisfy_delegation_expected_tool() -> None:
+    case = LiveCaseResult(
+        case_id="delegation-claimed-without-dispatch",
+        matrix="multi_agent",
+        prompt="演示一次调研 + 工程 + 子 agent + child delegation 的主链调度。",
+        expected_tools=["delegation_broker"],
+        forbidden_tools=[],
+        status="live",
+        actual_tools=[],
+        observed_topics=["subagent.delegation.claimed_without_dispatch"],
+        key_events=[],
+    )
+
+    matched, reason = _route_evidence_for_expected_tool(case, "delegation_broker")
+
+    assert matched is False
+    assert reason == "delegation_claimed_without_confirmed_dispatch"
+    assert case.failure_reason == "delegation_claimed_without_confirmed_dispatch"

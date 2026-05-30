@@ -1,4 +1,6 @@
 from typing import Dict, Any, Optional, Type, List
+import logging
+import sys
 import time
 import re
 from datetime import datetime, timezone
@@ -40,6 +42,19 @@ from langchain_core.embeddings import Embeddings
 _EMBEDDING_OBSERVED_LIMITS: Dict[str, int] = {}
 _RERANK_OBSERVED_QUERY_LIMITS: Dict[str, int] = {}
 _TOKEN_LIMIT_RE = re.compile(r"(?:maximum token length|max(?:imum)?(?: input)? tokens?|token limit)[^\d]{0,40}(\d{3,7})", re.IGNORECASE)
+logger = logging.getLogger(__name__)
+
+
+def _safe_log_text(value: Any, *, limit: int = 1200) -> str:
+    text = str(value or "")
+    if len(text) > limit:
+        text = text[: limit - 3].rstrip() + "..."
+    encoding = getattr(sys.stderr, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+        return text
+    except UnicodeEncodeError:
+        return text.encode(encoding, errors="backslashreplace").decode(encoding, errors="replace")
 
 
 def _extract_observed_token_limit(error_text: str) -> int | None:
@@ -440,7 +455,10 @@ class RestReranker(BaseReranker):
             config["providers"] = providers
             model_control_plane.save_config(config)
         except Exception as exc:
-            print(f"[Reranker] ⚠️ Failed to persist observed query token limit: {exc}")
+            logger.warning(
+                "[Reranker] Failed to persist observed query token limit: %s",
+                _safe_log_text(exc),
+            )
 
     def _effective_query_token_limit(self) -> int:
         if not self.max_tokens:
@@ -528,7 +546,10 @@ class RestReranker(BaseReranker):
                     retry_payload = dict(payload)
                     retry_payload["query"] = retry_query
                     retry_payload["documents"] = retry_documents
-                    print(f"[Reranker] ℹ️ Retrying with smaller query token limit {retry_query_limit}.")
+                    logger.info(
+                        "[Reranker] Retrying with smaller query token limit %s.",
+                        retry_query_limit,
+                    )
                     retry_res = self._post_rerank(endpoint, retry_payload, headers)
                     if retry_res.status_code == 200:
                         res = retry_res
@@ -540,7 +561,11 @@ class RestReranker(BaseReranker):
             last_error = (res.status_code, res.text, endpoint)
         else:
             status_code, error_text, failed_endpoint = last_error or (500, "Unknown rerank error", resolved_endpoint)
-            print(f"[Reranker Error] {status_code}: {error_text}")
+            logger.warning(
+                "[Reranker Error] %s: %s",
+                status_code,
+                _safe_log_text(error_text),
+            )
             error_kind = _classify_rerank_provider_error(int(status_code or 0), error_text)
             model_telemetry_service.record_aux_model_invocation(
                 model_id=self.model_name,

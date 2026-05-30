@@ -122,6 +122,80 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual([item.get("kind") for item in plan.get("capabilityPlan") or []], ["research", "engineering"])
         self.assertIn("planner_plain_json_repair_used", plan.get("qualityFlags") or [])
 
+    def test_planner_model_prompt_uses_compact_registry_context(self):
+        class CapturingPlanner:
+            messages = []
+
+            def with_structured_output(self, _schema):
+                return self
+
+            async def ainvoke(self, messages):
+                CapturingPlanner.messages = list(messages)
+                return PlannerPlanPayload(
+                    planId="plan_compact",
+                    executionStrategy="delegate",
+                    planSummary="Compact plan",
+                    capabilityPlan=[{"kind": "engineering", "reason": "implementation"}],
+                    taskBriefs=[{"taskBriefId": "task-1", "goal": "Implement with proof"}],
+                )
+
+        long_description = "long-description " * 80
+        registry = {
+            "subagents": [
+                {
+                    "id": f"agent-{index}",
+                    "name": f"Agent {index}",
+                    "description": long_description,
+                    "capabilitySnapshot": {
+                        "huge": "capability-detail " * 80,
+                        "tools": ["write_native_file", "run_system_command"],
+                    },
+                }
+                for index in range(24)
+            ],
+            "externalWorkers": [],
+        }
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            active_run_id="run-planner-compact",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_intent_diagnostics={"reason": "test"},
+                latest_user_content="请规划一次调研和工程实现",
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="suggest",
+                task_shape_hint={},
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path="E:/Projects/v8chat",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda *_args, **_kwargs: None,
+        )
+
+        with (
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=CapturingPlanner()),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step", lambda *_, **__: None),
+            patch("runtimes.chat.runtime.engineering_lane_service.enrich_planner_plan_with_engineering_contract", lambda plan, **_: plan),
+            patch.object(runtime, "_planner_registry_snapshot", return_value=registry),
+        ):
+            plan = asyncio.run(runtime.ensure_planner_plan(chat_run=chat_run))
+
+        prompt = "\n".join(str(getattr(message, "content", message) or "") for message in CapturingPlanner.messages)
+        self.assertEqual(plan.get("planId"), "plan_compact")
+        self.assertIn("more local subagents omitted", prompt)
+        self.assertNotIn("capabilitySnapshot", prompt)
+        self.assertLess(prompt.count("long-description"), 160)
+
     def test_planner_payload_wraps_bare_capability_plan_list(self):
         payload = PlannerPlanPayload.model_validate(
             [
@@ -137,6 +211,106 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(payload.executionStrategy, "delegate")
         self.assertEqual(payload.capabilityPlan[0]["kind"], "research")
         self.assertIn("planner_list_payload_wrapped", payload.qualityFlags)
+
+    def test_planner_payload_coerces_plan_level_object_fields(self):
+        payload = PlannerPlanPayload.model_validate(
+            {
+                "executionStrategy": "mixed",
+                "globalAcceptanceContract": {
+                    "proof": ["handoff returned"],
+                    "blocker": "report exact failed episode",
+                },
+                "riskFlags": "planner_contract_shape_drift",
+                "qualityFlags": None,
+                "autoDispatchDecision": "auto",
+            }
+        )
+
+        self.assertIn("handoff returned", payload.globalAcceptanceContract)
+        self.assertEqual(payload.riskFlags, ["planner_contract_shape_drift"])
+        self.assertEqual(payload.qualityFlags, [])
+        self.assertEqual(payload.autoDispatchDecision, {"raw": "auto"})
+
+    def test_planner_primary_path_uses_compact_json_contract(self):
+        class JsonPlanner:
+            messages = []
+
+            def with_structured_output(self, _schema):
+                raise AssertionError("Planner primary path should not use native structured output by default.")
+
+            async def ainvoke(self, messages):
+                JsonPlanner.messages = list(messages)
+                return SimpleNamespace(
+                    content='{"planId":"plan-json","executionStrategy":"mixed","planSummary":"Research then implement.","capabilityPlan":[{"kind":"research","reason":"collect evidence","taskBriefId":"task-1"},{"kind":"engineering","reason":"implement","taskBriefId":"task-2"}],"taskBriefs":[{"taskBriefId":"task-1","goal":"Collect source-backed evidence.","acceptanceContract":"Return evidence refs."},{"taskBriefId":"task-2","goal":"Implement with proof.","dependency":["task-1"],"acceptanceContract":"Return proof."}],"globalAcceptanceContract":"Return evidence and proof."}'
+                )
+
+        emitted: list[tuple[str, dict]] = []
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            active_run_id="run-planner-json-primary",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_intent_diagnostics={"reason": "test"},
+                latest_user_content="请先调研再实现",
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="suggest",
+                task_shape_hint={},
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path="E:/Projects/v8chat",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda topic, payload, **_: emitted.append((topic, payload)),
+        )
+
+        with (
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=JsonPlanner()),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step", lambda *_, **__: None),
+            patch("runtimes.chat.runtime.engineering_lane_service.enrich_planner_plan_with_engineering_contract", lambda plan, **_: plan),
+            patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
+        ):
+            plan = asyncio.run(runtime.ensure_planner_plan(chat_run=chat_run))
+
+        topics = [topic for topic, _payload in emitted]
+        prompt = "\n".join(str(getattr(message, "content", message) or "") for message in JsonPlanner.messages)
+        self.assertEqual(plan.get("planId"), "plan-json")
+        self.assertIn("Return ONLY one compact JSON object", prompt)
+        self.assertIn("research", [item.get("kind") for item in plan.get("capabilityPlan") or []])
+        self.assertNotIn("planner.fallback.used", topics)
+
+    def test_planner_task_brief_coerces_object_acceptance_contract(self):
+        payload = PlannerPlanPayload.model_validate(
+            {
+                "executionStrategy": "delegate",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "Implement the runtime handoff",
+                        "engineeringTaskCapsule": None,
+                        "writeSet": "apps/v8-agent-os-engine",
+                        "acceptanceContract": {
+                            "requiredProof": ["episode completed", "handoff returned"],
+                            "risk": "do not let Supervisor bypass runtime",
+                        },
+                    }
+                ],
+            }
+        )
+
+        brief = payload.taskBriefs[0]
+        self.assertEqual(brief.engineeringTaskCapsule, {})
+        self.assertEqual(brief.writeSet, ["apps/v8-agent-os-engine"])
+        self.assertIn("requiredProof", brief.acceptanceContract)
+        self.assertIn("handoff returned", brief.acceptanceContract)
 
     def test_task_planning_mode_maps_to_force_planner_mode(self):
         runtime = ChatRuntime()
@@ -414,6 +588,176 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertFalse(decision["willDispatch"])
         self.assertEqual(decision["reason"], "write_set_conflict")
 
+    def test_planner_repair_synthesizes_runtime_chain_from_bad_model_plan(self):
+        plan = ChatRuntime._validate_and_repair_planner_plan(
+            {
+                "planId": "plan-bad-model",
+                "executionStrategy": "delegate",
+                "planSummary": "演示一次调研 + 工程 + 子 agent + child delegation 的主链调度。",
+                "qualityFlags": ["planner_fallback_used", "source_quality_required", "delegation_required_by_task_shape"],
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "实现演示工程。",
+                        "writeSet": ["demo/app.py"],
+                        "behaviorScope": ["implementation"],
+                        "familyHint": "engineering",
+                    },
+                    {
+                        "taskBriefId": "task-2",
+                        "goal": "继续实现演示工程。",
+                        "writeSet": ["demo/app.py"],
+                        "behaviorScope": ["implementation"],
+                        "familyHint": "engineering",
+                    },
+                ],
+            },
+            fallback_plan={"planSummary": "fallback"},
+        )
+
+        kinds = [item.get("kind") for item in plan["capabilityPlan"]]
+        self.assertIn("research", kinds)
+        self.assertIn("engineering", kinds)
+        self.assertIn("delegation", kinds)
+        self.assertIn("capability_plan_research_repaired", plan["qualityFlags"])
+        self.assertIn("capability_plan_delegation_repaired", plan["qualityFlags"])
+        delegation_task_id = next(item["taskBriefId"] for item in plan["capabilityPlan"] if item["kind"] == "delegation")
+        delegation_task = next(item for item in plan["taskBriefs"] if item["taskBriefId"] == delegation_task_id)
+        self.assertTrue(delegation_task["allowChildDelegation"])
+        self.assertEqual(delegation_task["childDelegationBudget"]["maxDepth"], 1)
+        self.assertTrue(plan["handoffPlan"])
+
+    def test_planner_auto_dispatch_routes_capability_plan_despite_write_conflict(self):
+        plan = ChatRuntime._validate_and_repair_planner_plan(
+            {
+                "planId": "plan-conflict-runtime",
+                "executionStrategy": "delegate",
+                "planSummary": "调研、工程实现并让子 agent 复核。",
+                "qualityFlags": ["source_quality_required", "delegation_required_by_task_shape"],
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "实现核心文件。",
+                        "writeSet": ["same/file.py"],
+                        "familyHint": "engineering",
+                        "executionLaneHint": "auto",
+                    },
+                    {
+                        "taskBriefId": "task-2",
+                        "goal": "实现同一核心文件的另一部分。",
+                        "writeSet": ["same/file.py"],
+                        "familyHint": "engineering",
+                        "executionLaneHint": "auto",
+                    },
+                ],
+            },
+            fallback_plan={"planSummary": "fallback"},
+        )
+        decision = ChatRuntime._decide_planner_auto_dispatch(
+            plan,
+            registry={
+                "subagents": [
+                    {
+                        "id": "engineering-reviewer",
+                        "name": "Engineering Reviewer",
+                        "isEnabled": True,
+                        "description": "review specialist",
+                        "capabilitySnapshot": {
+                            "specialistFamily": "engineering",
+                            "agentClass": "reviewer",
+                            "domainTags": ["engineering"],
+                            "operationCapabilities": ["review", "verification", "subagent_collaboration"],
+                            "plannerSuitability": "high",
+                        },
+                    }
+                ],
+                "externalWorkers": [],
+            },
+            planner_mode="force",
+            planner_dispatch_mode="auto",
+        )
+
+        self.assertTrue(decision["willDispatch"])
+        self.assertEqual(decision["reason"], "eligible")
+        target_ids = [item["targetId"] for item in decision["selectedTargets"]]
+        self.assertIn("local_runtime:engineering", target_ids)
+        self.assertIn("engineering-reviewer", target_ids)
+
+    def test_planner_auto_dispatch_repairs_review_task_write_set_and_unblocks_subagent(self):
+        plan = ChatRuntime._validate_and_repair_planner_plan(
+            {
+                "planId": "plan-review",
+                "executionStrategy": "mixed",
+                "planSummary": "Research, implement, then delegate an independent review.",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "Collect evidence for the implementation plan.",
+                        "writeSet": ["docs/research-notes.md"],
+                        "behaviorScope": ["research"],
+                        "requiredCapabilities": ["research"],
+                    },
+                    {
+                        "taskBriefId": "task-2",
+                        "goal": "Implement the runtime route and episode handoff.",
+                        "writeSet": ["src/runtime.py"],
+                        "behaviorScope": ["implementation"],
+                        "requiredCapabilities": ["software_engineering"],
+                    },
+                    {
+                        "taskBriefId": "task-3",
+                        "goal": "Delegate an independent review of the runtime handoff.",
+                        "writeSet": ["docs/research-notes.md", "src/runtime.py"],
+                        "criticalFiles": ["docs/research-notes.md"],
+                        "behaviorScope": ["delegated_execution", "verification", "child_delegation"],
+                        "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
+                        "acceptanceContract": "Return confirmed subagent task results or a recoverable missing-target diagnostic; do not report fake delegation.",
+                        "dependency": ["task-2"],
+                        "parallelGroup": "delegation",
+                        "executionLaneHint": "subagent",
+                        "familyHint": "engineering",
+                    },
+                ],
+            },
+            fallback_plan={"planSummary": "Research, implement, then delegate an independent review."},
+        )
+
+        review_task = plan["taskBriefs"][2]
+        self.assertEqual(review_task["writeSet"], [])
+        self.assertIn("docs/research-notes.md", review_task["readSet"])
+        self.assertIn("src/runtime.py", review_task["readSet"])
+        self.assertEqual(review_task["criticalFiles"], [])
+        self.assertIn("review_task_write_set_cleared", plan["qualityFlags"])
+        self.assertIn("review_task_critical_files_cleared", plan["qualityFlags"])
+
+        decision = ChatRuntime._decide_planner_auto_dispatch(
+            plan,
+            registry={
+                "subagents": [
+                    {
+                        "id": "engineering-reviewer",
+                        "name": "Engineering Reviewer",
+                        "isEnabled": True,
+                        "description": "review specialist",
+                        "capabilitySnapshot": {
+                            "specialistFamily": "engineering",
+                            "agentClass": "reviewer",
+                            "domainTags": ["engineering"],
+                            "operationCapabilities": ["review", "verification", "subagent_collaboration"],
+                            "plannerSuitability": "high",
+                        },
+                    }
+                ],
+                "externalWorkers": [],
+            },
+            planner_mode="force",
+            planner_dispatch_mode="auto",
+        )
+
+        self.assertTrue(decision["willDispatch"])
+        self.assertEqual(decision["reason"], "eligible")
+        self.assertEqual(decision["selectedTargets"][2]["targetId"], "engineering-reviewer")
+
     def test_planner_auto_dispatch_blocks_disabled_external_worker(self):
         decision = ChatRuntime._decide_planner_auto_dispatch(
             {
@@ -483,6 +827,183 @@ class ChatPlannerModeTests(unittest.TestCase):
         episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
         self.assertEqual(episode["kind"], "engineering")
         self.assertEqual(episode["state"], "queued")
+
+    def test_planner_auto_dispatch_node_synthesizes_episode_from_task_briefs(self):
+        node = build_planner_auto_dispatch_node()
+        command = node(
+            {
+                "session_id": "session-synth",
+                "run_id": "run-synth",
+                "workspace_path": r"E:\Projects\demo",
+                "planner_plan": {
+                    "planId": "plan-synth",
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "task-1",
+                            "goal": "Create a tiny demo file through runtime routing.",
+                            "familyHint": "engineering",
+                            "writeSet": ["<workspace_root>/hello_demo.txt"],
+                        }
+                    ],
+                    "autoDispatchDecision": {
+                        "mode": "auto",
+                        "willDispatch": True,
+                        "reason": "eligible",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "runtime_episode")
+        self.assertNotIn("messages", command.update)
+        self.assertEqual(command.update["planner_dispatch_status"]["episodeCount"], 1)
+        episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+        self.assertEqual(episode["kind"], "engineering")
+        self.assertEqual(episode["state"], "queued")
+        self.assertEqual(episode["session_id"], "session-synth")
+        self.assertEqual(episode["run_id"], "run-synth")
+        self.assertEqual(episode["inputs"]["workspacePath"], r"E:\Projects\demo")
+
+    def test_planner_auto_dispatch_node_preserves_child_delegation_policy(self):
+        node = build_planner_auto_dispatch_node()
+        command = node(
+            {
+                "session_id": "session-child-policy",
+                "run_id": "run-child-policy",
+                "planner_plan": {
+                    "planId": "plan-child-policy",
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "task-1",
+                            "goal": "Dispatch review workers and allow one child verification hop.",
+                            "familyHint": "delegation",
+                            "targetCount": 1,
+                            "allowChildDelegation": True,
+                            "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
+                            "writeSetPartitions": [{"path": "docs/**", "owner": "reviewer"}],
+                        }
+                    ],
+                    "autoDispatchDecision": {
+                        "mode": "auto",
+                        "willDispatch": True,
+                        "reason": "eligible",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "runtime_episode")
+        episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+        self.assertEqual(episode["kind"], "delegation")
+        self.assertTrue(episode["inputs"]["allowChildDelegation"])
+        self.assertEqual(episode["inputs"]["childDelegationBudget"], {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3})
+        self.assertEqual(episode["inputs"]["writeSetPartitions"], [{"path": "docs/**", "owner": "reviewer"}])
+
+    def test_planner_auto_dispatch_node_allows_engineering_child_delegation_when_plan_requires_it(self):
+        node = build_planner_auto_dispatch_node()
+        command = node(
+            {
+                "session_id": "session-engineering-child-policy",
+                "run_id": "run-engineering-child-policy",
+                "planner_plan": {
+                    "planId": "plan-engineering-child-policy",
+                    "planSummary": "Research, implement, then use subagent child delegation to verify the work.",
+                    "qualityFlags": ["delegation_required_by_task_shape"],
+                    "capabilityPlan": [
+                        {
+                            "kind": "engineering",
+                            "source": "planner",
+                            "reason": "implementation_required",
+                            "taskBriefId": "task-1",
+                        },
+                        {
+                            "kind": "delegation",
+                            "source": "planner",
+                            "reason": "child_delegation_required",
+                            "taskBriefId": "task-2",
+                            "requiredRuntimeAccess": ["delegation.recursive"],
+                        },
+                    ],
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "task-1",
+                            "goal": "Implement the project change.",
+                            "writeSet": ["apps/demo/**"],
+                            "familyHint": "engineering",
+                        },
+                        {
+                            "taskBriefId": "task-2",
+                            "goal": "Verify with a child delegation hop.",
+                            "familyHint": "delegation",
+                            "runtimeAccess": ["delegation.recursive"],
+                            "allowChildDelegation": True,
+                            "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
+                        },
+                    ],
+                    "autoDispatchDecision": {
+                        "mode": "auto",
+                        "willDispatch": True,
+                        "reason": "eligible",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "runtime_episode")
+        episodes = command.update["current_route_context"]["capabilityEpisodes"]
+        engineering = next(item for item in episodes if item["kind"] == "engineering")
+        self.assertTrue(engineering["inputs"]["allowChildDelegation"])
+        self.assertEqual(engineering["inputs"]["childDelegationBudget"]["maxDepth"], 1)
+
+    def test_planner_auto_dispatch_node_enters_wait_for_prequeued_episode(self):
+        node = build_planner_auto_dispatch_node()
+        command = node(
+            {
+                "session_id": "session-prequeued",
+                "run_id": "run-prequeued",
+                "current_route_context": {
+                    "capabilityEpisodes": [
+                        {
+                            "episodeId": "episode-prequeued",
+                            "needId": "episode-prequeued",
+                            "kind": "engineering",
+                            "state": "queued",
+                        }
+                    ]
+                },
+                "planner_dispatch_status": {
+                    "mode": "auto",
+                    "dispatched": True,
+                    "nextAction": "wait_episode",
+                    "episodeCount": 1,
+                },
+                "planner_plan": {
+                    "planId": "plan-prequeued",
+                    "capabilityPlan": [
+                        {
+                            "episodeId": "episode-prequeued",
+                            "kind": "engineering",
+                            "source": "planner",
+                            "reason": "implementation_required",
+                            "taskBriefId": "task-1",
+                        }
+                    ],
+                    "taskBriefs": [{"taskBriefId": "task-1", "goal": "Do work"}],
+                    "autoDispatchDecision": {
+                        "mode": "auto",
+                        "willDispatch": True,
+                        "reason": "eligible",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "runtime_episode")
+        self.assertEqual(command.update["planner_dispatch_status"]["nextAction"], "wait_episode")
+        episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+        self.assertEqual(episode["episodeId"], "episode-prequeued")
+        self.assertEqual(episode["state"], "queued")
+        self.assertEqual(episode["inputs"]["taskBriefs"][0]["taskBriefId"], "task-1")
 
     def test_runtime_episode_wait_node_merges_completed_handoff(self):
         node = build_runtime_episode_wait_node()

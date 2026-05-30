@@ -72,6 +72,40 @@ def _normalize_runtime_access(items: Any) -> list[str]:
     return normalized
 
 
+def _resolve_runtime_binding(
+    episode: dict[str, Any] | None = None,
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    runtime_context = get_runtime_context()
+    payload = dict(episode or {})
+
+    resolved_session_id = str(
+        session_id
+        or payload.get("sessionId")
+        or payload.get("session_id")
+        or runtime_context.get("session_id")
+        or runtime_context.get("sessionId")
+        or ""
+    ).strip() or None
+    resolved_run_id = str(
+        run_id
+        or payload.get("runId")
+        or payload.get("run_id")
+        or runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or ""
+    ).strip() or None
+    root_run_id = str(
+        runtime_context.get("root_run_id")
+        or runtime_context.get("rootRunId")
+        or resolved_run_id
+        or ""
+    ).strip() or None
+    return resolved_session_id, resolved_run_id, root_run_id
+
+
 def build_runtime_episode(
     *,
     need: dict[str, Any] | None = None,
@@ -85,6 +119,7 @@ def build_runtime_episode(
     payload = dict(need or {})
     episode_id = episode_id_from(payload.get("episodeId") or payload.get("needId"))
     normalized_kind = normalize_capability_kind(kind or payload.get("kind"))
+    session_id, run_id, root_run_id = _resolve_runtime_binding(payload)
     episode = {
         "needId": episode_id,
         "episodeId": episode_id,
@@ -100,6 +135,14 @@ def build_runtime_episode(
         "createdAt": str(payload.get("createdAt") or utc_now_iso()),
         "updatedAt": utc_now_iso(),
     }
+    if session_id:
+        episode["sessionId"] = session_id
+        episode["session_id"] = session_id
+    if run_id:
+        episode["runId"] = run_id
+        episode["run_id"] = run_id
+    if root_run_id:
+        episode["rootRunId"] = root_run_id
     for source_key, target_key in (
         ("retryPolicy", "retryPolicy"),
         ("cancelPolicy", "cancelPolicy"),
@@ -151,14 +194,25 @@ def persist_runtime_episode(
     enqueue: bool = False,
 ) -> dict[str, Any]:
     """Persist a RuntimeEpisode into the canonical SQLite queue tables."""
+    session_binding, run_binding, _ = _resolve_runtime_binding(episode, session_id=session_id, run_id=run_id)
     try:
-        return db.upsert_runtime_episode_record(
+        persisted = db.upsert_runtime_episode_record(
             episode,
-            session_id=session_id,
-            run_id=run_id,
+            session_id=session_binding,
+            run_id=run_binding,
             priority=priority,
             enqueue=enqueue,
         )
+        if session_binding or run_binding:
+            try:
+                db.backfill_runtime_episode_binding(
+                    str(episode.get("episodeId") or episode.get("needId") or ""),
+                    session_id=session_binding,
+                    run_id=run_binding,
+                )
+            except Exception:
+                pass
+        return persisted
     except Exception:
         return dict(episode)
 
@@ -322,6 +376,15 @@ def emit_runtime_episode_event(topic: str, payload: dict[str, Any], *, source: d
         ).strip()
         state = str((episode_payload or {}).get("state") or payload.get("state") or "").strip() or None
         if episode_id:
+            if session_id or run_id:
+                try:
+                    db.backfill_runtime_episode_binding(
+                        episode_id,
+                        session_id=session_id or None,
+                        run_id=run_id or None,
+                    )
+                except Exception:
+                    pass
             db.add_runtime_episode_event_record(
                 episode_id=episode_id,
                 topic=topic,

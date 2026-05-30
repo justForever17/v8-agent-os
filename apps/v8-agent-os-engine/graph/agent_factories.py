@@ -290,6 +290,33 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             rendered = _compact_prompt_value(task_brief.get(key))
             if rendered:
                 lines.append(f"- {label}: {rendered}")
+        context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
+        if writing_brief:
+            skill = writing_brief.get("skill") if isinstance(writing_brief.get("skill"), dict) else {}
+            authorized_refs = writing_brief.get("authorizedRefs") if isinstance(writing_brief.get("authorizedRefs"), dict) else {}
+            first_action = str(writing_brief.get("subagentFirstAction") or skill.get("firstActionRequired") or "").strip()
+            skill_name = str(skill.get("idOrName") or skill.get("name") or "").strip()
+            lines.append("")
+            lines.append("Writing Execution Brief:")
+            if skill_name:
+                lines.append(f"- Skill Name: {skill_name}")
+            if skill.get("selectionReason"):
+                lines.append(f"- Skill Selection Reason: {_compact_prompt_value(skill.get('selectionReason'))}")
+            if first_action == "fetch_skill_instructions":
+                if skill_name:
+                    lines.append(f"- First Action: You MUST call fetch_skill_instructions(skill_name={skill_name!r}) before drafting or editing.")
+                else:
+                    lines.append("- First Action: You MUST call fetch_skill_instructions with the exact delegated skill name before drafting; ask the supervisor if the skill name is missing.")
+            if authorized_refs:
+                lines.append(f"- Authorized Refs Only: {_compact_prompt_value(authorized_refs)}")
+            forbidden = _compact_prompt_value(writing_brief.get("forbiddenInventions"))
+            if forbidden:
+                lines.append(f"- Forbidden Inventions: {forbidden}")
+            acceptance = _compact_prompt_value(writing_brief.get("acceptanceCriteria"))
+            if acceptance:
+                lines.append(f"- Writing Acceptance: {acceptance}")
+            lines.append("- Missing facts must be labeled as assumptions or blockers; do not invent memory, sources, files, tests, or user preferences.")
         capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
         role = infer_engineering_task_role(task_brief)
         if capsule or role:
@@ -504,7 +531,7 @@ def build_agent_node(
     sanitize_response_tool_calls: Callable,
 ):
     agent_specific_llm = (
-        llm_factory.create_chat_model(agent_model_id, streaming=True)
+        llm_factory.create_chat_model(agent_model_id, streaming=False, timeout=180)
         if agent_model_id
         else default_agent_llm
     )
@@ -731,7 +758,8 @@ def build_agent_node(
                     preferred_model_id=agent_model_id or supervisor_model_id,
                     build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                         candidate_model_id,
-                        streaming=True,
+                        streaming=False,
+                        timeout=180,
                         _role=f"agent:{agent_id}",
                     ),
                 )
@@ -837,7 +865,7 @@ def build_reviewer_node(
     sanitize_message_chain: Callable,
 ):
     agent_specific_llm = (
-        llm_factory.create_chat_model(agent_model_id, streaming=True)
+        llm_factory.create_chat_model(agent_model_id, streaming=False, timeout=180)
         if agent_model_id
         else default_agent_llm
     )
@@ -877,7 +905,8 @@ def build_reviewer_node(
                 preferred_model_id=agent_model_id or supervisor_model_id,
                 build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                     candidate_model_id,
-                    streaming=True,
+                    streaming=False,
+                    timeout=180,
                     _role=f"reviewer:{agent_id}",
                 ),
             )

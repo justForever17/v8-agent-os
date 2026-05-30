@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from core.runtime_tool_access import filter_visible_tools_for_actor
+from core.task_shape_classifier import classify_task_shape
 from graph.workflow_assembly import build_planner_auto_dispatch_node
 from runtimes.chat.runtime import ChatRuntime
 from runtimes.engineering.service import engineering_lane_service
@@ -15,6 +16,7 @@ def test_explicit_engineering_request_is_detected() -> None:
     assert runtime._detect_explicit_engineering_runtime_request("这次必须进入工程运行时，不要主管盲写")
     assert runtime._detect_explicit_engineering_runtime_request("用工程模式做前端实现")
     assert not runtime._detect_explicit_engineering_runtime_request("做一个小的文字说明")
+    assert not runtime._detect_explicit_engineering_runtime_request("只写正文，不调用工程运行时")
 
 
 def test_planner_list_payload_is_wrapped_as_valid_plan() -> None:
@@ -53,6 +55,108 @@ def test_project_research_fallback_includes_runtime_capability_plan() -> None:
     assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "engineering"]
     assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"
     assert plan["handoffPlan"][0]["toTaskBriefId"] == "task-2"
+
+
+def _chat_run_for_query(query: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        prepared=SimpleNamespace(
+            latest_user_content=query,
+            planner_intent_diagnostics={"signals": []},
+            task_shape_hint=classify_task_shape(query),
+            planner_mode="auto",
+        )
+    )
+
+
+def test_writing_fallback_ambiguous_document_asks_user_before_routing() -> None:
+    runtime = ChatRuntime()
+    plan = runtime._fallback_planner_plan(chat_run=_chat_run_for_query("帮我写一篇文档"), reason="structured_empty")
+
+    assert plan["executionStrategy"] == "direct"
+    assert plan["taskBriefs"][0]["requiredCapabilities"] == ["ask_user", "requirements_clarification"]
+    assert plan["taskBriefs"][0]["context"]["askUserOptions"] == ["只要正文", "先调研再写", "保存为文件/仓库文档"]
+    assert "writing_clarification_required" in plan["riskFlags"]
+
+
+def test_writing_fallback_skill_task_delegates_with_execution_brief() -> None:
+    runtime = ChatRuntime()
+    plan = runtime._fallback_planner_plan(
+        chat_run=_chat_run_for_query("用 doc-coauthoring skill 写一篇技术方案"),
+        reason="structured_empty",
+    )
+
+    task = plan["taskBriefs"][0]
+    brief = task["context"]["writingExecutionBrief"]
+    assert plan["executionStrategy"] == "delegate"
+    assert plan["capabilityPlan"][0]["kind"] == "delegation"
+    assert task["familyHint"] == "writing"
+    assert "fetch_skill_instructions" in task["requiredCapabilities"]
+    assert brief["skill"]["idOrName"] == "doc-coauthoring"
+    assert brief["subagentFirstAction"] == "fetch_skill_instructions"
+    assert "skill_first_action_required" in plan["qualityFlags"]
+
+
+def test_writing_fallback_selected_skill_overrides_false_engineering_signals() -> None:
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(
+            latest_user_content="使用已选择的 huashu-nuwa skill，蒸馏一个测试人物视角，只输出计划，不写文件、不创建 skill。",
+            planner_intent_diagnostics={"signals": []},
+            planner_mode="force",
+            task_shape_hint={
+                "primaryTaskShape": "project_coding",
+                "secondaryTaskShapes": ["creative_media"],
+                "signals": ["code_action:测试", "media_output:测试"],
+                "writingRoute": {
+                    "present": True,
+                    "mode": "skill_subagent",
+                    "requiresSkillExecution": True,
+                    "requiresResearch": False,
+                    "requiresArtifact": False,
+                    "recommendedFamily": "writing",
+                    "skillName": "huashu-nuwa",
+                    "firstActionTool": "fetch_skill_instructions",
+                    "allowCreateSubagentOnMismatch": True,
+                },
+            },
+        )
+    )
+
+    plan = runtime._fallback_planner_plan(chat_run=chat_run, reason="structured_empty")
+
+    task = plan["taskBriefs"][0]
+    assert plan["executionStrategy"] == "delegate"
+    assert plan["capabilityPlan"][0]["kind"] == "delegation"
+    assert task["familyHint"] == "writing"
+    assert "fetch_skill_instructions" in task["requiredCapabilities"]
+    assert task["context"]["writingExecutionBrief"]["skill"]["idOrName"] == "huashu-nuwa"
+
+
+def test_writing_fallback_research_then_write_has_handoff_dependency() -> None:
+    runtime = ChatRuntime()
+    plan = runtime._fallback_planner_plan(
+        chat_run=_chat_run_for_query("先调研官方资料，然后写一份报告，带来源"),
+        reason="structured_empty",
+    )
+
+    assert plan["executionStrategy"] == "mixed"
+    assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "delegation"]
+    assert plan["taskBriefs"][1]["dependency"] == ["task-1"]
+    assert plan["taskBriefs"][1]["context"]["writingExecutionBrief"]["authorizedRefs"]["researchRefs"]
+    assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"
+
+
+def test_writing_fallback_file_artifact_routes_engineering() -> None:
+    runtime = ChatRuntime()
+    plan = runtime._fallback_planner_plan(
+        chat_run=_chat_run_for_query("写一篇方案并保存到 docs/plan.md"),
+        reason="structured_empty",
+    )
+
+    assert plan["executionStrategy"] == "mixed"
+    assert plan["capabilityPlan"][0]["kind"] == "engineering"
+    assert plan["taskBriefs"][0]["familyHint"] == "engineering"
+    assert "document_artifact" in plan["taskBriefs"][0]["requiredCapabilities"]
 
 
 def test_engineering_project_creation_workspace_activates_without_git(tmp_path, monkeypatch) -> None:

@@ -10,6 +10,29 @@ from typing import Any
 
 _ASCII_WORD_RE = re.compile(r"^[a-z0-9_+-]+$", re.IGNORECASE)
 _CJK_SINGLE_CHAR_RE = re.compile(r"^[\u3400-\u9fff\uf900-\ufaff]$")
+_NEGATION_CLAUSE_SEPARATORS = "，。；;,.!?！？、\n\r"
+_NEGATION_MARKERS = (
+    "不要直接",
+    "不要调用",
+    "不调用",
+    "不需要",
+    "无需",
+    "无须",
+    "不必",
+    "不要",
+    "不得",
+    "禁止",
+    "不能",
+    "别",
+    "不",
+    "without",
+    "do not",
+    "don't",
+    "dont",
+    "no need to",
+    "not",
+    "never",
+)
 
 
 def _lower_text(value: Any) -> str:
@@ -55,7 +78,6 @@ _BASE_TERMS: dict[str, tuple[str, ...]] = {
         "script",
         "repo",
         "repository",
-        "workspace",
         "patch",
         "test",
         "debug",
@@ -64,6 +86,10 @@ _BASE_TERMS: dict[str, tuple[str, ...]] = {
         "代码",
         "项目",
         "仓库",
+        "创建文件",
+        "新建文件",
+        "写文件",
+        "保存文件",
         "组件",
         "前端",
         "前端界面",
@@ -77,6 +103,50 @@ _BASE_TERMS: dict[str, tuple[str, ...]] = {
         "修复",
         "测试",
         "构建",
+        "工程",
+        "工程实现",
+        "工程任务",
+    ),
+    "delegation_action": (
+        "delegate",
+        "delegation",
+        "delegated",
+        "subagent",
+        "sub-agent",
+        "sub agent",
+        "agent swarm",
+        "worker",
+        "workerbrief",
+        "workerbriefs",
+        "child delegation",
+        "child agent",
+        "grandchild agent",
+        "multi-agent",
+        "multi agent",
+        "runtime orchestration",
+        "runtime coordination",
+        "委派",
+        "派发",
+        "分派",
+        "子代理",
+        "子 agent",
+        "子agent",
+        "孙代理",
+        "孙 agent",
+        "孙agent",
+        "多智能体",
+        "多 agent",
+        "多agent",
+        "agent 蜂群",
+        "子代理蜂群",
+        "蜂群",
+        "协作",
+        "编排",
+        "运行时编排",
+        "runtime 编排",
+        "主链调度",
+        "调度",
+        "分工",
     ),
     "media_output": (
         "image",
@@ -182,6 +252,255 @@ _TASK_SHAPE_ALIAS_DIR = (
     / "task_shape"
 )
 
+_NON_ACTION_CONTEXT_TERMS: dict[str, set[str]] = {
+    "code_action": {"workspace", "工作区"},
+}
+
+_WRITING_SIMPLE_TERMS = (
+    "写一段",
+    "写个简短",
+    "简单写",
+    "帮我回复",
+    "回复一下",
+    "总结一下",
+    "说明一下",
+    "一段说明",
+    "short reply",
+    "brief reply",
+    "summarize",
+)
+
+_WRITING_AMBIGUOUS_DELIVERABLE_TERMS = (
+    "写一篇文档",
+    "写一份文档",
+    "写个文档",
+    "写一篇方案",
+    "写一份方案",
+    "写个方案",
+    "写一篇报告",
+    "写一份报告",
+    "写个报告",
+    "写篇文章",
+    "写一篇文章",
+    "write a document",
+    "write a proposal",
+    "write a report",
+    "write an article",
+)
+
+_WRITING_ARTIFACT_TERMS = (
+    "保存",
+    "写入",
+    "生成文件",
+    "导出",
+    "放到",
+    "修改 readme",
+    "写到 docs",
+    "docs/",
+    "readme",
+    ".md",
+    ".markdown",
+    ".docx",
+    ".pdf",
+    "save to",
+    "write to",
+    "export as",
+)
+
+_WRITING_SKILL_TERMS = (
+    "skill",
+    "技能",
+)
+
+_WRITING_SKILL_CURATOR_TERMS = (
+    "skill 设计",
+    "skill设计",
+    "skill 审查",
+    "skill审查",
+    "skill 优化",
+    "skill优化",
+    "创建 skill",
+    "创建skill",
+    "更新 skill",
+    "更新skill",
+    "设计技能",
+    "审查技能",
+    "优化技能",
+    "创建技能",
+    "更新技能",
+    "skill workflow",
+)
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = _lower_text(text)
+    return any(_term_in_text(normalized, term) for term in terms if term)
+
+
+def _extract_skill_name_hint(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    patterns = (
+        r"(?:使用|用|按照|按)\s*[`\"'“”]?([A-Za-z0-9_.:-]+)[`\"'“”]?\s*(?:skill|技能)",
+        r"(?:skill|技能)\s*[`\"'“”]?([A-Za-z0-9_.:-]+)[`\"'“”]?",
+        r"\$([A-Za-z0-9_.:-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
+
+
+def _classify_writing_route(
+    *,
+    text: str,
+    writing_actions: list[str],
+    research_actions: list[str],
+    code_actions: list[str],
+    delegation_actions: list[str],
+) -> dict[str, Any]:
+    """Return non-authoritative writing routing metadata for planner/supervisor use."""
+
+    has_skill = _contains_any(text, _WRITING_SKILL_TERMS)
+    has_skill_writing_verb = has_skill and any(term in str(text or "").lower() for term in ("write", "draft", "写", "撰写"))
+    has_writing = bool(writing_actions) or _contains_any(text, _WRITING_AMBIGUOUS_DELIVERABLE_TERMS) or has_skill_writing_verb
+    has_artifact = _contains_any(text, _WRITING_ARTIFACT_TERMS)
+    has_source = bool(research_actions)
+    if not any((has_writing, has_skill, has_artifact)):
+        return {}
+
+    skill_name = _extract_skill_name_hint(text)
+    is_skill_curator = has_skill and _contains_any(text, _WRITING_SKILL_CURATOR_TERMS)
+    if is_skill_curator:
+        return {
+            "present": True,
+            "mode": "skill_subagent",
+            "reason": "skill_design_or_review_requires_curator",
+            "needsClarification": False,
+            "requiresResearch": False,
+            "requiresArtifact": False,
+            "requiresSkillExecution": True,
+            "recommendedFamily": "engineering",
+            "preferredAgentId": "skill-workflow-curator",
+            "skillName": skill_name,
+            "firstActionTool": "fetch_skill_instructions",
+            "allowCreateSubagentOnMismatch": False,
+        }
+
+    if has_skill and has_writing:
+        return {
+            "present": True,
+            "mode": "skill_subagent",
+            "reason": "named_or_implied_skill_should_be_executed_by_writing_subagent",
+            "needsClarification": False,
+            "requiresResearch": has_source,
+            "requiresArtifact": has_artifact,
+            "requiresSkillExecution": True,
+            "recommendedFamily": "writing",
+            "preferredAgentId": "",
+            "skillName": skill_name,
+            "firstActionTool": "fetch_skill_instructions",
+            "allowCreateSubagentOnMismatch": True,
+        }
+
+    if has_artifact and has_writing:
+        return {
+            "present": True,
+            "mode": "artifact_runtime",
+            "reason": "writing_requires_file_or_repository_side_effect",
+            "needsClarification": False,
+            "requiresResearch": has_source,
+            "requiresArtifact": True,
+            "requiresSkillExecution": False,
+            "recommendedFamily": "engineering",
+            "preferredAgentId": "",
+            "skillName": "",
+            "firstActionTool": "",
+            "allowCreateSubagentOnMismatch": False,
+        }
+
+    if has_source and has_writing:
+        return {
+            "present": True,
+            "mode": "research_then_write",
+            "reason": "source_backed_writing_requires_research_evidence_first",
+            "needsClarification": False,
+            "requiresResearch": True,
+            "requiresArtifact": False,
+            "requiresSkillExecution": False,
+            "recommendedFamily": "writing",
+            "preferredAgentId": "",
+            "skillName": "",
+            "firstActionTool": "",
+            "allowCreateSubagentOnMismatch": False,
+        }
+
+    if has_writing and _contains_any(text, _WRITING_SIMPLE_TERMS):
+        return {
+            "present": True,
+            "mode": "direct_supervisor",
+            "reason": "simple_bounded_text_generation",
+            "needsClarification": False,
+            "requiresResearch": False,
+            "requiresArtifact": False,
+            "requiresSkillExecution": False,
+            "recommendedFamily": "",
+            "preferredAgentId": "",
+            "skillName": "",
+            "firstActionTool": "",
+            "allowCreateSubagentOnMismatch": False,
+        }
+
+    if has_writing and _contains_any(text, _WRITING_AMBIGUOUS_DELIVERABLE_TERMS):
+        return {
+            "present": True,
+            "mode": "ask_user_clarify",
+            "reason": "ambiguous_writing_deliverable_needs_body_research_or_file_choice",
+            "needsClarification": True,
+            "clarificationOptions": ["direct_body", "research_backed", "save_as_file"],
+            "requiresResearch": False,
+            "requiresArtifact": False,
+            "requiresSkillExecution": False,
+            "recommendedFamily": "",
+            "preferredAgentId": "",
+            "skillName": "",
+            "firstActionTool": "",
+            "allowCreateSubagentOnMismatch": False,
+        }
+
+    if has_writing and (delegation_actions or "审稿" in text or "独立审" in text or "复核" in text):
+        return {
+            "present": True,
+            "mode": "writing_subagent",
+            "reason": "writing_needs_independent_review_or_specialist_execution",
+            "needsClarification": False,
+            "requiresResearch": False,
+            "requiresArtifact": False,
+            "requiresSkillExecution": False,
+            "recommendedFamily": "writing",
+            "preferredAgentId": "",
+            "skillName": "",
+            "firstActionTool": "",
+            "allowCreateSubagentOnMismatch": True,
+        }
+
+    return {
+        "present": True,
+        "mode": "direct_supervisor",
+        "reason": "plain_writing_can_remain_with_supervisor",
+        "needsClarification": False,
+        "requiresResearch": False,
+        "requiresArtifact": False,
+        "requiresSkillExecution": False,
+        "recommendedFamily": "",
+        "preferredAgentId": "",
+        "skillName": "",
+        "firstActionTool": "",
+        "allowCreateSubagentOnMismatch": False,
+    }
+
 
 def classify_task_shape(
     user_query: str,
@@ -199,8 +518,11 @@ def classify_task_shape(
 
     text = _lower_text(user_query)
     plan_text = _lower_text(planner_plan)
-    workspace_text = _lower_text(workspace_descriptor)
-    combined = "\n".join(part for part in (text, plan_text, workspace_text) if part)
+    # Workspace descriptors contain paths/scopes such as "workspace:main" for
+    # almost every request.  They are execution context, not user intent; using
+    # them for keyword matching made ordinary context questions look like
+    # engineering work and blocked memory/context flows.
+    combined = "\n".join(part for part in (text, plan_text) if part)
     term_sets = _task_shape_term_sets()
 
     code_frameworks = _find_terms(combined, term_sets["code_media_framework"])
@@ -209,12 +531,22 @@ def classify_task_shape(
     media_providers = _find_terms(combined, term_sets["media_provider"])
     writing_actions = _find_terms(combined, term_sets["writing_action"])
     research_actions = _find_terms(combined, term_sets["research_action"])
+    delegation_actions = _find_terms(combined, term_sets["delegation_action"])
+    if delegation_actions and _looks_like_delegation_claim_safety_eval(combined):
+        delegation_actions = []
     research_project_build_signal = _detect_research_project_build_signal(combined)
     explicit_writing_actions = [
         item
         for item in writing_actions
         if item not in {"docs", "document", "documentation", "文档", "说明"}
     ]
+    writing_route = _classify_writing_route(
+        text=combined,
+        writing_actions=writing_actions,
+        research_actions=research_actions,
+        code_actions=code_actions,
+        delegation_actions=delegation_actions,
+    )
 
     primary = "general_chat"
     secondary: list[str] = []
@@ -230,6 +562,8 @@ def classify_task_shape(
         "research": 0.0,
         "writing": 0.0,
     }
+
+    multi_runtime_orchestration = bool(delegation_actions and (research_actions or code_actions or "工程" in combined))
 
     if code_frameworks:
         primary = "project_coding"
@@ -249,6 +583,10 @@ def classify_task_shape(
             optional_grants.append("research.core")
             family_scores["research"] = 0.48
             signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+        if delegation_actions:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+            signals.extend(f"delegation_secondary:{item}" for item in delegation_actions[:4])
     elif media_providers:
         primary = "creative_media"
         confidence = 0.92
@@ -269,13 +607,19 @@ def classify_task_shape(
             family_scores["engineering"] = 0.58
             signals.extend(f"code_secondary:{item}" for item in code_actions[:4])
             ambiguity_flags.append("provider_generation_with_code_action")
-    elif code_actions:
+        if delegation_actions:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+            signals.extend(f"delegation_secondary:{item}" for item in delegation_actions[:4])
+    elif code_actions or multi_runtime_orchestration:
         primary = "project_coding"
-        confidence = 0.74
-        reason = "engineering_action_terms"
-        family_scores["engineering"] = 0.74
+        confidence = 0.9 if multi_runtime_orchestration else 0.74
+        reason = "multi_runtime_orchestration_terms" if multi_runtime_orchestration else "engineering_action_terms"
+        family_scores["engineering"] = 0.9 if multi_runtime_orchestration else 0.74
         suggested_families = ["engineering"]
         signals.extend(f"code_action:{item}" for item in code_actions[:6])
+        if multi_runtime_orchestration:
+            signals.extend(f"delegation_action:{item}" for item in delegation_actions[:6])
         if media_outputs:
             secondary.append("creative_media")
             family_scores["creative_media"] = 0.38
@@ -286,6 +630,9 @@ def classify_task_shape(
             optional_grants.append("research.core")
             family_scores["research"] = 0.45
             signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+        if delegation_actions:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
     elif writing_actions and (not research_actions or explicit_writing_actions):
         primary = "writing"
         confidence = 0.7
@@ -299,6 +646,10 @@ def classify_task_shape(
             optional_grants.append("research.core")
             family_scores["research"] = 0.48
             signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+        if delegation_actions:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+            signals.extend(f"delegation_secondary:{item}" for item in delegation_actions[:4])
     elif research_actions and research_project_build_signal:
         primary = "project_coding"
         confidence = 0.86
@@ -310,14 +661,50 @@ def classify_task_shape(
         secondary.append("research")
         signals.extend(f"research_action:{item}" for item in research_actions[:4])
         signals.extend(research_project_build_signal[:6])
+        if delegation_actions:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+            signals.extend(f"delegation_secondary:{item}" for item in delegation_actions[:4])
     elif research_actions:
-        primary = "research"
-        confidence = 0.91
-        reason = "research_or_current_source_terms"
-        family_scores["research"] = 0.91
-        suggested_families = ["research"]
-        optional_grants = ["research.core"]
-        signals.extend(f"research_action:{item}" for item in research_actions[:8])
+        if delegation_actions:
+            primary = "project_coding"
+            confidence = 0.9
+            reason = "research_plus_delegation_orchestration_terms"
+            family_scores["engineering"] = 0.82
+            family_scores["research"] = 0.62
+            suggested_families = ["engineering", "research"]
+            optional_grants = ["research.core", "delegation.recursive"]
+            secondary.extend(["research", "delegation"])
+            signals.extend(f"research_action:{item}" for item in research_actions[:4])
+            signals.extend(f"delegation_action:{item}" for item in delegation_actions[:6])
+        else:
+            primary = "research"
+            confidence = 0.91
+            reason = "research_or_current_source_terms"
+            family_scores["research"] = 0.91
+            suggested_families = ["research"]
+            optional_grants = ["research.core"]
+            signals.extend(f"research_action:{item}" for item in research_actions[:8])
+    elif writing_route.get("present"):
+        primary = "writing"
+        confidence = 0.72
+        reason = str(writing_route.get("reason") or "writing_route_terms")
+        family_scores["writing"] = 0.72
+        recommended_family = str(writing_route.get("recommendedFamily") or "writing").strip()
+        suggested_families = [recommended_family] if recommended_family else ["writing"]
+        if writing_route.get("requiresResearch"):
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.48
+        if writing_route.get("requiresArtifact"):
+            secondary.append("project_coding")
+            suggested_families.append("engineering")
+            family_scores["engineering"] = 0.58
+        if writing_route.get("mode") in {"skill_subagent", "writing_subagent"}:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+        signals.append(f"writing_route:{writing_route.get('mode') or 'unknown'}")
     elif media_outputs:
         primary = "creative_media"
         confidence = 0.62
@@ -333,6 +720,10 @@ def classify_task_shape(
             optional_grants.append("research.core")
             family_scores["research"] = 0.44
             signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+        if delegation_actions:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+            signals.extend(f"delegation_secondary:{item}" for item in delegation_actions[:4])
 
     if primary not in secondary:
         secondary = [item for item in secondary if item != primary]
@@ -368,6 +759,7 @@ def classify_task_shape(
         "ambiguityFlags": _unique_preserve_order(ambiguity_flags),
         "autoRevealRecommendation": auto_reveal,
         "signals": signals[:12],
+        "writingRoute": writing_route,
         "lexiconSignature": _lexicon_signature(),
         "policy": "hint_only_conservative_auto_reveal_recommendation_no_grant",
     }
@@ -396,11 +788,21 @@ def render_task_shape_hint(hint: dict[str, Any] | None) -> str:
     auto_reveal = hint.get("autoRevealRecommendation") if isinstance(hint.get("autoRevealRecommendation"), dict) else {}
     auto_families = ", ".join(_as_list(auto_reveal.get("families") if isinstance(auto_reveal, dict) else None)) or "none"
     auto_status = "eligible" if bool(auto_reveal.get("eligible")) else "not_eligible"
+    writing_route = hint.get("writingRoute") if isinstance(hint.get("writingRoute"), dict) else {}
+    writing_route_line = ""
+    if writing_route.get("present"):
+        writing_route_line = (
+            f"writingRoute={writing_route.get('mode') or 'unknown'}; "
+            f"needsClarification={bool(writing_route.get('needsClarification'))}; "
+            f"recommendedFamily={writing_route.get('recommendedFamily') or 'none'}; "
+            f"reason={writing_route.get('reason') or 'unspecified'}\n"
+        )
     return (
         "<task_shape>\n"
         f"primary={primary}; secondary={secondary}; confidence={confidence_text}; reason={reason}\n"
         f"suggestedFamilies={families}; optionalRuntimeGrants={grants}\n"
         f"topFamily={top_family}; scoreMargin={margin_text}; ambiguityFlags={ambiguity}\n"
+        f"{writing_route_line}"
         f"autoReveal={auto_status}; autoRevealFamilies={auto_families}; source=task_shape_classifier\n"
         "policy=non-binding hint; high-confidence auto reveal may expose one subagent family, but never grants runtime tools.\n"
         "</task_shape>\n"
@@ -413,6 +815,8 @@ def _task_shape_term_sets() -> dict[str, tuple[str, ...]]:
     task_aliases = _load_task_shape_aliases()
     for key, values in task_aliases.items():
         terms.setdefault(key, set()).update(values)
+    for key, values in _NON_ACTION_CONTEXT_TERMS.items():
+        terms.setdefault(key, set()).difference_update(values)
     lexicon_maps = _load_extension_lexicon_maps()
     for key, values in list(terms.items()):
         if key in {"media_output"}:
@@ -464,14 +868,42 @@ def _detect_research_project_build_signal(text: str) -> list[str]:
         "应用",
         "项目",
     )
-    action_hits = [term for term in action_terms if term in normalized]
-    artifact_hits = [term for term in artifact_terms if term in normalized]
+    action_hits = [term for term in action_terms if _term_in_text(normalized, term)]
+    artifact_hits = [term for term in artifact_terms if _term_in_text(normalized, term)]
     if not action_hits or not artifact_hits:
         return []
     return [
         *(f"project_build_action:{item}" for item in action_hits[:3]),
         *(f"project_build_artifact:{item}" for item in artifact_hits[:3]),
     ]
+
+
+def _looks_like_delegation_claim_safety_eval(text: str) -> bool:
+    """Avoid treating anti-hallucination policy examples as real delegation work."""
+    normalized = _lower_text(text)
+    if not normalized:
+        return False
+    claim_terms = (
+        "不要声称",
+        "不要宣称",
+        "不得声称",
+        "不得宣称",
+        "不要假装",
+        "不要编造",
+        "如果没有证据",
+        "没有证据",
+        "do not claim",
+        "don't claim",
+        "do not pretend",
+        "hallucination",
+    )
+    delegation_markers = ("subagent", "sub-agent", "子代理", "子 agent", "子agent", "delegation")
+    success_markers = ("成功", "完成", "succeeded", "successful", "completed")
+    return (
+        any(term in normalized for term in claim_terms)
+        and any(term in normalized for term in delegation_markers)
+        and any(term in normalized for term in success_markers)
+    )
 
 
 @lru_cache(maxsize=1)
@@ -575,9 +1007,37 @@ def _term_in_text(text: str, term: str) -> bool:
         return False
     if _CJK_SINGLE_CHAR_RE.match(lowered):
         return False
-    if lowered.isascii() and _ASCII_WORD_RE.match(lowered):
-        return bool(re.search(rf"(?<![a-z0-9_+-]){re.escape(lowered)}(?![a-z0-9_+-])", text, re.IGNORECASE))
-    return lowered in text
+    return any(True for _ in _iter_non_negated_term_matches(text, lowered))
+
+
+def _iter_non_negated_term_matches(text: str, term: str):
+    if not text or not term:
+        return
+    if term.isascii() and _ASCII_WORD_RE.match(term):
+        pattern = re.compile(rf"(?<![a-z0-9_+-]){re.escape(term)}(?![a-z0-9_+-])", re.IGNORECASE)
+        for match in pattern.finditer(text):
+            if not _is_negated_match(text, match.start()):
+                yield match
+        return
+    start = 0
+    while True:
+        index = text.find(term, start)
+        if index < 0:
+            break
+        if not _is_negated_match(text, index):
+            yield (index, index + len(term))
+        start = index + max(1, len(term))
+
+
+def _is_negated_match(text: str, start_index: int) -> bool:
+    left = text[max(0, start_index - 32) : start_index]
+    last_separator = max((left.rfind(separator) for separator in _NEGATION_CLAUSE_SEPARATORS), default=-1)
+    if last_separator >= 0:
+        left = left[last_separator + 1 :]
+    compact = re.sub(r"\s+", " ", left.strip().lower())
+    if not compact:
+        return False
+    return any(marker in compact for marker in _NEGATION_MARKERS)
 
 
 def _top_family_and_margin(scores: dict[str, float]) -> tuple[str, float]:

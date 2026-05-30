@@ -1,0 +1,58 @@
+# Supervisor / Runtime / Skill Live 断点审计报告
+
+- 生成时间：20260530T074003Z
+- 模型标签：`doubao-seed-2-0-pro`
+- Engine：`http://127.0.0.1:9530`（报告内敏感路径已脱敏）
+
+## 结论概览
+
+| 等级 | 数量 |
+| --- | --- |
+| P0 | 1 |
+| P1 | 0 |
+| P2 | 0 |
+
+## Case 结果
+
+| Case | 状态 | Session | Run | 延迟 | 工具 | Runtime topics |
+| --- | --- | --- | --- | --- | --- | --- |
+| huashu_plan | failed | supervisor-runtime-skill-live-20260530T074003Z-huashu_plan | run_c1973c9384264148b95072b8dbd402a5 | 475 ms | fetch_skill_instructions, tool | message.user.recorded, chat.planner_mode.enabled, chat.task_planning_mode.enabled, chat.skill_references.applied, session.connected, run.lane.acquired, safety.preflight.checked, engineering_lane.trigger.decided, run.created, run.state.changed, agent.started, planner.plan.created |
+
+## 失败与整改
+
+
+### P0
+
+#### huashu_plan - huashu-nuwa Skill 应先读取 skill instructions
+
+- 摘要：Live case 未正常完成：database is locked
+- 涉及模块：api/chat_realtime_routes.py, runtimes/chat/runtime.py
+- 建议修复：先确认 /chat/submit 是否轻量返回，再看 run record、runtime events 与 episode 是否进入 terminal。
+- 回归测试：`tests/agent_quality/test_live_huashu_plan.py`
+
+<details>
+<summary>证据</summary>
+
+```text
+{"sessionId": "supervisor-runtime-skill-live-20260530T074003Z-huashu_plan", "runId": "run_c1973c9384264148b95072b8dbd402a5", "events": ["{\"topic\": \"runtime.episode.queued\", \"payload\": {\"episode\": {\"needId\": \"episode_0f2222f601f2\", \"episodeId\": \"episode_0f2222f601f2\", \"kind\": \"delegation\", \"source\": \"planner_fallback\", \"reason\": \"writing_subagent_execution_required\", \"inputs\": {\"taskBriefs\": [{\"taskBriefId\": \"task-1\", \"goal\": \"使用已选择的 huashu-nuwa skill，给我做一次女娲造人的执行计划：目标是蒸馏一个“测试人物视角”，只输出计划和需要的资料，不写文件、不创建 skill。\", \"context\": {\"source\": \"planner_fallback\", \"reason\": \"planner_model_unavailable\", \"plannerMode\": \"force\", \"intentSignals\": [\"explicit_planning\", \"large_implementation\"], \"taskShapeHint\": {\"primaryTaskShape\": \"writing\", \"secondaryTaskShapes\": [\"creative_media\", \"delegation\"], \"confidence\": 0.78, \"reason\": \"selected_skill_requires_writing_subagent_execution\", \"suggestedFamilies\": [\"writing\", \"engineering\"], \"optionalRuntimeGrants\": [\"delegation.recursive\"], \"familyScores\": {\"engineering\": 0.74, \"creative_media\": 0.38}, \"topFamily\": \"writing\", \"scoreMargin\": 0.36, \"ambiguityFlags\": [], \"autoRevealRecommendation\": {\"eligible\": false, \"families\": [], \"source\": \"task_shape_classifier\", \"reason\": \"below_threshold_or_ambiguous\", \"minConfidence\": 0.9, \"minScoreMargin\": 0.15, \"requireNoAmbiguity\": true}, \"signals\": [\"code_action:测试\", \"media_output:测试\", \"writing_route:skill_subagent\"], \"writingRoute\": {\"present\": true, \"mode\": \"skill_subagent\", \"reason\": \"selected_skill_reference_must_be_executed_by_writing_subagent\", \"needsClarification\": false, \"requiresResearch\": false, \"requiresArtifact\": false, \"requiresSkillExecution\": true, \"recommendedFamily\": \"writing\", \"preferredAgentId\": \"\", \"skillName\": \"huashu-nuwa\", ", "{\"topic\": \"runtime.episode.started\", \"payload\": {\"episode\": {\"id\": \"episode_0f2222f601f2\", \"session_id\": \"supervisor-runtime-skill-live-20260530T074003Z-huashu_plan\", \"run_id\": \"run_c1973c9384264148b95072b8dbd402a5\", \"parent_episode_id\": null, \"root_episode_id\": \"episode_0f2222f601f2\", \"kind\": \"delegation\", \"state\": \"active\", \"source\": \"planner_fallback\", \"reason\": \"writing_subagent_execution_required\", \"need_json\": \"{\\\"kind\\\": \\\"delegation\\\", \\\"source\\\": \\\"planner_fallback\\\", \\\"reason\\\": \\\"writing_subagent_execution_required\\\", \\\"inputs\\\": {\\\"taskBriefs\\\": [{\\\"taskBriefId\\\": \\\"task-1\\\", \\\"goal\\\": \\\"使用已选择的 huashu-nuwa skill，给我做一次女娲造人的执行计划：目标是蒸馏一个“测试人物视角”，只输出计划和需要的资料，不写文件、不创建 skill。\\\", \\\"context\\\": {\\\"source\\\": \\\"planner_fallback\\\", \\\"reason\\\": \\\"planner_model_unavailable\\\", \\\"plannerMode\\\": \\\"force\\\", \\\"intentSignals\\\": [\\\"explicit_planning\\\", \\\"large_implementation\\\"], \\\"taskShapeHint\\\": {\\\"primaryTaskShape\\\": \\\"writing\\\", \\\"secondaryTaskShapes\\\": [\\\"creative_media\\\", \\\"delegation\\\"], \\\"confidence\\\": 0.78, \\\"reason\\\": \\\"selected_skill_requires_writing_subagent_execution\\\", \\\"suggestedFamilies\\\": [\\\"writing\\\", \\\"engineering\\\"], \\\"optionalRuntimeGrants\\\": [\\\"delegation.recursive\\\"], \\\"familyScores\\\": {\\\"engineering\\\": 0.74, \\\"creative_media\\\": 0.38}, \\\"topFamily\\\": \\\"writing\\\", \\\"scoreMargin\\\": 0.36, \\\"ambiguityFlags\\\": [], \\\"autoRevealRecommendation\\\": {\\\"eligible\\\": false, \\\"families\\\": [], \\\"source\\\": \\\"task_shape_classifier\\\", \\\"reason\\\": \\\"below_threshold_or_ambiguous\\\", \\\"minConfidence\\\": 0.9, \\\"minScoreMargin\\\": 0.15, \\\"requireNoAmbiguity\\\": true}, \\\"signals\\\": [\\\"cod", "{\"topic\": \"runtime.episode.completed\", \"payload\": {\"episode\": {\"id\": \"episode_0f2222f601f2\", \"session_id\": \"supervisor-runtime-skill-live-20260530T074003Z-huashu_plan\", \"run_id\": \"run_c1973c9384264148b95072b8dbd
+```
+
+</details>
+
+
+## 详细回答摘录
+
+### huashu_plan
+
+- 标题：huashu-nuwa Skill 应先读取 skill instructions
+- 最终回答摘录：主人~ 已经用选定的huashu-nuwa技能完成「测试人物视角」蒸馏的女娲造人执行计划啦(๑•̀ㅂ•́)و✧
+已经整理好完整执行步骤和需要用到的全部资料清单，全程没写文件也没创建新skill，完全符合你的要求哦⁄(⁄ ⁄•⁄ω⁄•⁄ ⁄)⁄
+
+<details>
+<summary>关键事件</summary>
+
+```text
+{"submitResponse": {"accepted": true, "session_id": "supervisor-runtime-skill-live-20260530T074003Z-huashu_plan", "conversationId": "supervisor-runtime-skill-live-20260530T074003Z-huashu_plan", "clientMessageId": "huashu_plan-20260530T074003Z", "run_id": "run_c1973c9384264148b95072b8dbd402a5", "runId": "run_c1973c9384264148b95072b8dbd402a5", "userMessage": {"id": "huashu_plan-20260530T074003Z", "session_id": "supervisor-runtime-skill-live-20260530T074003Z-huashu_plan", "run_id": "run_c1973c9384264148b95072b8dbd402a5", "ordinal": 1, "role": "user", "state": "completed", "nodes_json": "[{\"id\": \"huashu_plan-20260530T074003Z:narrative\", \"kind\": \"narrative\", \"role\": \"user\", \"content\": \"使用已选择的 huashu-nuwa skill，给我做一次女娲造人的执行计划：目标是蒸馏一个“测试人物视角”，只输出计划和需要的资料，不写文件、不创建 skill。\", \"timestamp\": 1780126803983}]", "artifacts_json": "[]", "content_text": "使用已选择的 huashu-nuwa skill，给我做一次女娲造人的执行计划：目标是蒸馏一个“测试人物视角”，只输出计划和需要的资料，不写文件、不创建 skill。", "reasoning_text": null, "metadata_json": "{\"run_id\": \"run_c1973c9384264148b95072b8dbd402a5\", \"runId\": \"run_c1973c9384264148b95072b8dbd402a5\", \"transport\": \"submit\", \"workspace_path\": \"E:\\\\Projects\\\\v8chat\", \"resolved_scope\": \"workspace:main\", \"scope_source\": \"request_explicit\", \"scope_chain\": [\"global\", \"workspace:main\"], \"timestamp\": 1780126803983, \"role\": \"user\", \"clientMessageId\": \"huashu_plan-20260530T074003Z\", \"plannerMode\": \"force\", \"plannerDispatchMode\": \"auto\", \"plannerIntentDiagnostics\": {\"matched\": true, \"signals\": [\"explicit_planning\", \"large_implementation\"], \"reason\": \"signals_matched\"}, \"taskPlanningMode\": true, \"taskShapeHint\": {\"primaryTaskShape\": \"writing\", \"secondaryTaskShapes\": [\"creative_media\", \"delegation\"], \"confidence\": 0.78, \"reason\": \"selected_skill_requires_writing_subagent_execution\", \"suggestedFamilies\": [\"writing\", \"engineering\"], \"optionalRuntimeGrants\": [\"delegation.recursive\"], \"familyScores\": {\"engineering\": 0.74, \"creative_media\": 0.38}, \"topFamily\": \"writing\", \"scoreMargin\": 0.36, \"ambiguityFlags\": [], \"autoRevealRecommendation\": {\"eligible\": false, \"families\": [], \"source\": \"task_shape_classifier\", \"reason\": \"below_threshold_or_ambiguous\", \"minConfidence\": 0.9, \"minScoreMargin\": 0.15, \"requireNoAmbiguity\": true}, \"signals\": [\"code_action:测试\", \"media_output:测试\", \"writing_route:skill_subagent\"], \"writingRoute\": {\"present\": true, \"mode\": \"skill_subagent\", \"reason\": \"selected_skill_reference_must_be_executed_by_writing_subagent\", \"needsClarification\": false, \"requiresResearch\": false, \"requiresArtifact\": false, \"requiresSkillExecution\": true, \"recommendedFamily\": \"writing\", \"preferredAgentId\": \"\", \"skillName\": \"huashu-nuwa\", \"firstActionTool\": \"fetch_skill_instructions\", \"allowCreateSubagentOnMismatch\": true}, \"lexiconSignature\": \"lexicon:54434ba2b829f9f3|task-shape:dc2bef528eb9a67a\", \"policy\": \"hint_only_conservative_auto_reveal_recommendation_no_grant\"}, \"engineeringMode\": \"auto\", \"engineeringTriggerDecision\": {\"mode\": \"auto\", \"active\": false, \"matched\": false, \"deferred\": true, \"reason\": \"deferred_until_background_run_execution\"}, \"skillReferences\": [{\"id\": \"huashu-nuwa\", \"name\": \"huashu-nuwa\", \"description\": \"女娲造人：深度调研并生成可运行的人物/主题视角 Skill。\", \"path\": \"C:\\\\Users\\\\sunny\\\\.agents\\\\skills\\\\huashu-nuwa\", \"sourceType\": \"local\", \"workspacePath\": \"\", \"workspaceId\": \"\", \"projectId\": \"\"}], \"contextMentions\": [{\"kind\": \"skill\", \"id\": \"huashu-nuwa\", \"name\": \"huashu-nuwa\", \"label\": \"huashu-nuwa\", \"description\": \"女娲造人：深度调研并生成可运行的人物/主题视角 Skill。\", \"path\": \"C:\\\\Users\\\\sunny\\\\.agents\\\\skills\\\\huashu-nuwa\", \"familyId\": \"\", \"sourceType\": \"local\"}]}", "version": 1, "created_at": "2026-05-30T07:40:03.986Z", "updated_at": "2026-05-30T07:40:03.986Z", "finalized_at": null, "nodes": [{"id": "huashu_plan-20260530T074003Z:narrative", "kind": "narrative", "role": "user", "content": "使用已选择的 huashu-nuwa skill，给我做一次女娲造人的执行计划：目标是蒸馏一个“测试人物视角”，只输出计划和需要的资料，不写文件、不创建 skill。", "timestamp": 1780126803983}], "artifacts": [], "metadata": {"run_id": "run_c1973c9384264148b95072b8dbd402a5", "runId": "run_c1973c9384264148b95072b8dbd402a5", "transport": "submit", "workspace_path": "<REPO_ROOT>", "resolved_scope": "workspace:main", "scope_source": "request_explicit", "scope_chain": ["global", "workspace:main"], "timestamp": 1780126803983, "role": "user", "clientMessageId": "huashu_plan-20260530T074003Z", "plannerMode": "force", "plannerDispatchMode": "auto", "plannerIntentDiagnostics": {"matched": true, "signals": ["explicit_planning", "large_implementation"], "reason": "signals_matched"}, "taskPlanningMode": true, "taskShapeHint": {"primaryTaskShape": "writing", "secondaryTaskShapes": ["creative_media", "delegation"], "confidence": 0.78, "reason": "selected_skill_requires_writing_subagent_execution", "suggestedFamilies": ["writing", "engineering"], "optionalRuntimeGrants": ["delegation.recursive"], "familyScores": {"engineering": 0.74, "creative_media": 0.38}, "topFamily": "writing", "scoreMargin": 0.36, "ambiguityFlags": [], "autoRevealRecommendation": {"eligible": false, "families": [], "source": "task_shape_classifier", "reason": "below_threshold_or_ambiguous", "minConfidence": 0.9, "minScoreMargin": 0.15, "requireNoAmbiguity": true}, "signals": ["code_action:测试", "media_output:测试", "writing_route:skill_subagent"], "writingRoute": {"present": true, "mode": "skill_subagent", "reason": "selected_skill_reference_must_be_executed_by_writing_subagent", "needsClarification": false, "requiresResearch": false, "requiresArtifact": false, "requiresSkillExecution": true, "recommendedFamily": "writing", "preferredAgentId": "", "skillName": "huashu-nuwa", "firstActionTool": "fetch_skill_instructions", "allowCreateSubagentOnMismatch": true}, "lexiconSignature": "lexicon:54434ba2b829f9f3|ta
+```
+
+</details>

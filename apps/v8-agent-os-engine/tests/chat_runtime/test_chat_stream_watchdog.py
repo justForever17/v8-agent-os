@@ -88,13 +88,36 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
             state.idle_timeout_seconds(),
             watchdog_module.ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS,
         )
-        self.assertEqual(state.active_runtime_episode_ids, {"runtime_episode_1"})
+        self.assertEqual(state.active_runtime_episode_ids, {"chain:parallel_delegate_task"})
 
         state.finish_event(
             {
                 "event": "on_chain_end",
                 "name": "parallel_delegate_task",
                 "run_id": "runtime_episode_1",
+            }
+        )
+
+        self.assertEqual(state.active_runtime_episode_ids, set())
+        self.assertEqual(state.idle_phase(), "stream_progress")
+
+    def test_runtime_episode_chain_finish_ignores_unstable_langgraph_span_id(self):
+        state = GraphStreamWatchdogState()
+
+        state.observe_event(
+            {
+                "event": "on_chain_start",
+                "name": "runtime_episode",
+                "run_id": "langgraph-span-start",
+            }
+        )
+        self.assertEqual(state.active_runtime_episode_ids, {"chain:runtime_episode"})
+
+        state.finish_event(
+            {
+                "event": "on_chain_end",
+                "name": "runtime_episode",
+                "run_id": "langgraph-span-end",
             }
         )
 
@@ -125,7 +148,7 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(timeout_payloads), 1)
         self.assertEqual(timeout_payloads[0]["phase"], "runtime_episode_wait")
         self.assertEqual(timeout_payloads[0]["activeRuntimeEpisodeCount"], 1)
-        self.assertEqual(timeout_payloads[0]["activeRuntimeEpisodeIds"], ["runtime_episode_join"])
+        self.assertEqual(timeout_payloads[0]["activeRuntimeEpisodeIds"], ["chain:parallel_delegate_join"])
 
     async def test_shared_watchdog_distinguishes_downstream_timeout(self):
         state = GraphStreamWatchdogState(has_productive_stream_activity=True)

@@ -497,6 +497,50 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("invalid_dependency_removed", repaired["qualityFlags"])
         self.assertGreaterEqual(repaired["repairCount"], 1)
 
+    def test_planner_contract_verifier_repairs_skill_artifact_contract(self):
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                skill_references=[{"name": "huashu-nuwa"}],
+                task_shape_hint={
+                    "writingRoute": {
+                        "mode": "skill_subagent",
+                        "requiresSkillExecution": True,
+                        "requiresArtifact": True,
+                        "skillName": "huashu-nuwa",
+                    }
+                },
+            )
+        )
+        fallback_plan = {
+            "planId": "fallback",
+            "executionStrategy": "delegate",
+            "taskBriefs": [{"taskBriefId": "task-1", "goal": "Generate a perspective skill", "familyHint": "writing"}],
+            "qualityFlags": [],
+            "repairCount": 0,
+        }
+
+        repaired = ChatRuntime._verify_and_repair_planner_contract(
+            {
+                "planId": "model-plan",
+                "executionStrategy": "delegate",
+                "taskBriefs": [{"taskBriefId": "task-1", "goal": "Generate a perspective skill", "familyHint": "writing"}],
+                "qualityFlags": [],
+                "repairCount": 0,
+            },
+            fallback_plan=fallback_plan,
+            chat_run=chat_run,
+        )
+
+        task = repaired["taskBriefs"][0]
+        brief = task["context"]["writingExecutionBrief"]
+        self.assertIn("fetch_skill_instructions", task["requiredCapabilities"])
+        self.assertTrue(task["validateSkillArtifact"])
+        self.assertEqual(task["requiredSkillContracts"], ["huashu-nuwa", "skill-creator"])
+        self.assertEqual(brief["subagentFirstAction"], "fetch_skill_instructions")
+        self.assertEqual(brief["skillArtifactContract"]["requiredValidator"], "SkillArtifactValidator")
+        self.assertTrue(any(item.get("skillName") == "skill-creator" for item in brief["requiredInstructionReads"]))
+        self.assertIn("planner_contract_skill_creator_full_read_required", repaired["qualityFlags"])
+
     def test_planner_auto_dispatch_suggest_never_dispatches(self):
         decision = ChatRuntime._decide_planner_auto_dispatch(
             {
@@ -795,6 +839,29 @@ class ChatPlannerModeTests(unittest.TestCase):
 
         self.assertFalse(decision["willDispatch"])
         self.assertEqual(decision["reason"], "no_matching_target")
+
+    def test_planner_auto_dispatch_accepts_explicit_local_runtime_lane(self):
+        decision = ChatRuntime._decide_planner_auto_dispatch(
+            {
+                "executionStrategy": "delegate",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-skill-artifact",
+                        "goal": "Generate workspace skill artifact",
+                        "familyHint": "engineering",
+                        "executionLaneHint": "engineering",
+                        "requiredCapabilities": ["skill_artifact_validation", "workspace_file_write"],
+                    }
+                ],
+            },
+            registry={"subagents": [], "externalWorkers": []},
+            planner_mode="force",
+            planner_dispatch_mode="auto",
+        )
+
+        self.assertTrue(decision["willDispatch"])
+        self.assertEqual(decision["reason"], "eligible")
+        self.assertEqual(decision["selectedTargets"][0]["targetId"], "local_runtime:engineering")
 
     def test_planner_auto_dispatch_node_enqueues_episode_without_tool_message(self):
         node = build_planner_auto_dispatch_node()

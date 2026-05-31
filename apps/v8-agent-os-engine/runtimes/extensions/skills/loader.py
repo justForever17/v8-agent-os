@@ -1989,6 +1989,12 @@ class SkillLoader:
             normalized = cls._normalize_cached_item(item)
             if normalized is None:
                 return False
+            instruction_path = Path(str(normalized.get("instructionPath") or "").strip())
+            skill_root = Path(str(normalized.get("skillRoot") or normalized.get("rootPath") or "").strip())
+            if not instruction_path.exists() or not instruction_path.is_file():
+                continue
+            if skill_root and not skill_root.exists():
+                continue
             registry[str(normalized.get("skillId"))] = normalized
         if not registry:
             return False
@@ -2843,6 +2849,15 @@ class SkillLoader:
         )
 
     @classmethod
+    def _looks_like_precise_skill_identifier(cls, identifier: str) -> bool:
+        needle = str(identifier or "").strip()
+        if not needle or cls._looks_like_skill_path_identifier(needle):
+            return False
+        if any(ch.isspace() for ch in needle):
+            return False
+        return bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*[-_:][A-Za-z0-9_.:-]*$", needle))
+
+    @classmethod
     def _resolve_direct_skill_entry(cls, identifier: str) -> dict[str, Any] | None:
         needle = str(identifier or "").strip().strip("\"'")
         if not needle or not cls._looks_like_skill_path_identifier(needle):
@@ -3662,6 +3677,7 @@ class SkillLoader:
         normalized_needle = needle.lower()
         query_variants = cls._skill_match_query_variants(needle)
         path_like_identifier = cls._looks_like_skill_path_identifier(needle)
+        precise_identifier = cls._looks_like_precise_skill_identifier(needle)
 
         def _dedupe(entries_to_sort: list[dict[str, Any]]) -> list[dict[str, Any]]:
             deduped: list[dict[str, Any]] = []
@@ -3715,7 +3731,7 @@ class SkillLoader:
                 return _dedupe(exact_matches)
             if hint_matches:
                 return _dedupe(hint_matches)
-            if path_like_identifier:
+            if path_like_identifier or precise_identifier:
                 return []
             if not fuzzy_scored:
                 return []
@@ -3744,6 +3760,27 @@ class SkillLoader:
         matches = _match(list(inventory.get("items") or []))
         if matches or force_refresh:
             return matches
+        targeted_refresh = cls._refresh_missing_skill_candidates(
+            needle,
+            runtime_kind=runtime_kind,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
+        if targeted_refresh.get("refreshed"):
+            refreshed_inventory = cls.get_inventory(
+                force_refresh=False,
+                include_scoped=True,
+                runtime_kind=runtime_kind,
+                session_id=session_id,
+                explicit_workspace_id=explicit_workspace_id,
+                explicit_workspace_path=explicit_workspace_path,
+                explicit_project_id=explicit_project_id,
+            )
+            refreshed_matches = _match(list(refreshed_inventory.get("items") or []))
+            if refreshed_matches:
+                return refreshed_matches
         change = cls.reload_if_changed()
         if not change.get("changed"):
             return []
@@ -3757,6 +3794,159 @@ class SkillLoader:
             explicit_project_id=explicit_project_id,
         )
         return _match(list(refreshed.get("items") or []))
+
+    @classmethod
+    def _refresh_missing_skill_candidates(
+        cls,
+        identifier: str,
+        *,
+        runtime_kind: str | None = None,
+        session_id: str | None = None,
+        explicit_workspace_id: str | None = None,
+        explicit_workspace_path: str | None = None,
+        explicit_project_id: str | None = None,
+    ) -> dict[str, Any]:
+        needle = str(identifier or "").strip()
+        if not needle or cls._looks_like_skill_path_identifier(needle):
+            return {"refreshed": False, "reason": "path_like_or_empty"}
+        descriptors: list[dict[str, Any]] = []
+        scoped = cls._scoped_workspace_root_descriptor(
+            runtime_kind=runtime_kind,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
+        if scoped is not None:
+            descriptors.append(scoped)
+        descriptors.append(cls._global_root_descriptor())
+        descriptors = cls._dedupe_root_descriptors(descriptors)
+        candidate_descriptors = [
+            descriptor
+            for descriptor in descriptors
+            if cls._root_has_missing_skill_candidate(descriptor, needle)
+        ]
+        if not candidate_descriptors:
+            cls._last_reload_result = {
+                **dict(cls._last_reload_result or {}),
+                "missingSkillTargetedRefresh": {
+                    "identifier": needle,
+                    "refreshed": False,
+                    "roots": [cls._descriptor_cache_key(item) for item in descriptors],
+                    "reason": "no_one_level_candidate",
+                },
+            }
+            return {"refreshed": False, "reason": "no_one_level_candidate"}
+
+        changed_root_paths: set[str] = set()
+        next_states = {
+            str(root_path): {
+                key: (
+                    {str(item_key): dict(item_value) for item_key, item_value in dict(value).items()}
+                    if key in {"manifest", "registry"}
+                    else dict(value)
+                    if isinstance(value, dict)
+                    else value
+                )
+                for key, value in dict(state).items()
+            }
+            for root_path, state in cls._root_inventory_states.items()
+        }
+        for descriptor in candidate_descriptors:
+            root_path = cls._descriptor_cache_key(descriptor)
+            if not root_path:
+                continue
+            manifest = cls._compute_root_manifest(descriptor)
+            registry = cls._scan_single_root_descriptor(descriptor, manifest=manifest)
+            next_states[root_path] = {
+                "descriptor": dict(descriptor),
+                "descriptorSignature": cls._root_descriptors_signature([descriptor]),
+                "manifest": manifest,
+                "registry": registry,
+                "rootRevision": cls._root_manifest_fingerprint(descriptor, manifest),
+                "lastScanAt": cls._now_iso(),
+                "dirty": False,
+            }
+            changed_root_paths.add(root_path)
+
+        if not changed_root_paths:
+            return {"refreshed": False, "reason": "no_changed_roots"}
+        cls._root_inventory_states = next_states
+        aggregate_descriptors = cls._dedupe_root_descriptors(
+            [
+                *list(cls._skills_root_descriptors or cls._discovery_root_descriptors()),
+                *candidate_descriptors,
+            ]
+        )
+        cls._rebuild_aggregate_registry_from_root_states(
+            descriptors=aggregate_descriptors,
+            changed_root_paths=changed_root_paths,
+        )
+        cls._dirty_root_paths.difference_update(changed_root_paths)
+        recent = cls._remember_recent_skill_discovery(
+            added=[
+                item
+                for item in cls._skills_registry.values()
+                if cls._normalize_path(item.get("rootPath")) in changed_root_paths
+            ],
+            updated=[],
+            refresh_mode="missing_skill_targeted",
+        )
+        cls._last_reload_result = {
+            **dict(cls._last_reload_result or {}),
+            "changed": True,
+            "refreshMode": "missing_skill_targeted",
+            "missingSkillTargetedRefresh": {
+                "identifier": needle,
+                "refreshed": True,
+                "roots": sorted(changed_root_paths),
+                "recentSkillDiscovery": recent,
+            },
+        }
+        cls._update_startup_freshness_state()
+        return {"refreshed": True, "changedRoots": sorted(changed_root_paths)}
+
+    @classmethod
+    def _root_has_missing_skill_candidate(cls, descriptor: dict[str, Any], identifier: str) -> bool:
+        root_path = cls._descriptor_cache_key(descriptor)
+        if not root_path:
+            return False
+        root = Path(root_path)
+        if not root.exists() or not root.is_dir():
+            return False
+        needle = cls._normalize_text(identifier)
+        normalized_folder = cls._normalize_text(str(identifier or "").strip().strip("\"'"))
+        direct = root / str(identifier or "").strip().strip("\"'")
+        if direct.exists() and direct.is_dir() and (direct / "SKILL.md").exists():
+            return True
+        for skill_file in sorted(root.glob("*/SKILL.md")):
+            folder = cls._normalize_text(skill_file.parent.name)
+            if folder == normalized_folder:
+                return True
+            try:
+                text = skill_file.read_text(encoding="utf-8", errors="replace")[:4000]
+            except Exception:
+                continue
+            try:
+                body = text
+                if text.startswith("---"):
+                    end = text.find("\n---", 3)
+                    if end > 0:
+                        meta = yaml.safe_load(text[3:end]) or {}
+                        if isinstance(meta, dict) and cls._normalize_text(str(meta.get("name") or "")) == needle:
+                            return True
+                        body = text[end + 4 :]
+                first_heading = ""
+                for line in body.splitlines()[:24]:
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        first_heading = stripped.lstrip("#").strip()
+                        break
+                if first_heading and cls._normalize_text(first_heading) == needle:
+                    return True
+            except Exception:
+                continue
+        return False
 
 
 def _skill_instruction_headings(markdown: str, *, limit: int = 24) -> list[str]:
@@ -3821,12 +4011,131 @@ def _skill_instruction_section(markdown: str, section: str | None, *, limit: int
     return f"{text[:limit].rstrip()}\n...[section truncated; request detail_level='full' only when explicitly needed]"
 
 
+def _normalize_skill_relative_path(value: str) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    raw = raw.lstrip("/")
+    parts = [part for part in raw.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError("relative_path must stay inside the skill directory")
+    if ":" in parts[0]:
+        raise ValueError("relative_path must be relative, not an absolute drive path")
+    return "/".join(parts)
+
+
+def _looks_like_text_skill_file(path: Path) -> bool:
+    if path.suffix.lower() in {
+        ".md",
+        ".txt",
+        ".rst",
+        ".json",
+        ".jsonl",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".py",
+        ".sh",
+        ".ps1",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".html",
+        ".css",
+    }:
+        return True
+    return path.name.upper() in {"README", "LICENSE"}
+
+
+def _read_skill_text_file(path: Path, *, max_chars: int = 220_000) -> str:
+    raw = path.read_bytes()
+    if b"\x00" in raw[:4096]:
+        raise ValueError("skill file appears to be binary")
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            text = ""
+    if not text:
+        text = raw.decode("utf-8", errors="replace")
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + f"\n...[skill file truncated at {max_chars} chars; request a narrower section or inspect the raw file in workspace tools]"
+    return text
+
+
+def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[str]) -> dict[str, Any]:
+    def _norm(item: Any) -> str:
+        return str(item or "").strip().replace("\\", "/").lstrip("/")
+
+    files = [_norm(item) for item in list(available_files or []) if _norm(item)]
+    references = [item for item in files if item.startswith("references/")]
+    scripts = [item for item in files if item.startswith("scripts/")]
+    templates = [
+        item
+        for item in files
+        if item.startswith("templates/") or "template" in Path(item).name.lower()
+    ]
+    frameworks = [
+        item
+        for item in files
+        if "framework" in Path(item).name.lower() or "method" in Path(item).name.lower()
+    ]
+    examples = [item for item in files if item.startswith("examples/") and item.endswith("SKILL.md")]
+    priority: list[str] = []
+    for bucket in (templates, frameworks, references):
+        for item in bucket:
+            if item.lower().endswith((".md", ".txt", ".rst")) and item not in priority:
+                priority.append(item)
+    script_hints = []
+    for item in scripts[:12]:
+        name = Path(item).name
+        purpose = "supporting script; read before executing and run only through governed tools"
+        lower = name.lower()
+        if "subtitle" in lower:
+            purpose = "subtitle/media transcript helper; execute only when the task has media evidence and permission"
+        elif "quality" in lower:
+            purpose = "quality check helper; useful after generating the skill artifact"
+        elif "merge" in lower:
+            purpose = "research merge helper; useful after collecting per-dimension research notes"
+        script_hints.append({"path": item, "purpose": purpose})
+
+    return {
+        "schema": "v8.skill_continuation_manifest.v1",
+        "skillName": skill.get("skillName") or skill.get("name") or "",
+        "skillRoot": skill.get("skillRoot") or skill.get("path") or "",
+        "readContract": {
+            "primary": "SKILL.md has already been loaded by this tool call.",
+            "nextStep": "Use fetch_skill_instructions(skill_name, relative_path='<path>') to continue into references/templates/scripts only when the task needs that detail.",
+            "doNotInlineEverything": True,
+        },
+        "recommendedReads": priority[:10],
+        "references": references[:24],
+        "templates": templates[:12],
+        "frameworks": frameworks[:12],
+        "scripts": script_hints,
+        "examples": examples[:12],
+        "scriptExecutionBoundary": "Scripts are method assets, not permissions. Read them first; any execution must use existing governed command/runtime tools.",
+    }
+
+
+def _format_skill_continuation_manifest(manifest: dict[str, Any]) -> str:
+    lines = ["=== CONTINUATION MANIFEST ==="]
+    lines.append(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return "\n".join(lines)
+
+
 @tool
-def fetch_skill_instructions(skill_name: str, detail_level: str = "full", section: str | None = None) -> str:
+def fetch_skill_instructions(
+    skill_name: str,
+    detail_level: str = "full",
+    section: str | None = None,
+    relative_path: str | None = None,
+) -> str:
     """Fetch workflow guidance for a listed Skill.
 
     Default detail_level='full' returns the approved SKILL.md instructions so delegated agents can follow the workflow.
     Use detail_level='summary' only for browsing/discovery, or detail_level='section' with section='...' for a specific heading.
+    Pass relative_path='references/foo.md' to continue reading a file inside that skill directory after inspecting the continuation manifest.
     """
 
     runtime_kind = "chat"
@@ -3867,16 +4176,26 @@ def fetch_skill_instructions(skill_name: str, detail_level: str = "full", sectio
         return "\n".join(lines)
     if not matches:
         status = SkillLoader.get_startup_status()
+        targeted = (status.get("lastReloadResult") or {}).get("missingSkillTargetedRefresh") if isinstance(status.get("lastReloadResult"), dict) else {}
         roots = "\n".join(f"- {item}" for item in list(status.get("roots") or [])[:8]) or "- (no visible skill roots)"
         recent_items = list(status.get("recentSkillDiscovery") or [])[:8]
         recent = "\n".join(
             f"- {item.get('skillName') or item.get('skillId')} | {item.get('reason')} | {item.get('skillRoot')}"
             for item in recent_items
         ) or "- (no recent skill discovery)"
+        targeted_lines = ""
+        if isinstance(targeted, dict) and targeted:
+            targeted_lines = (
+                "Targeted refresh:\n"
+                f"- identifier: {targeted.get('identifier') or skill_name}\n"
+                f"- refreshed: {targeted.get('refreshed')}\n"
+                f"- roots: {', '.join(str(item) for item in list(targeted.get('roots') or [])[:4]) or '(none)'}\n"
+            )
         return (
             f"Error: The requested skill '{skill_name}' was not found in the registry after a freshness check.\n"
             f"Skill inventory revision: {status.get('revision') or status.get('fingerprint') or 'unknown'}\n"
             f"Visible skill roots:\n{roots}\n"
+            f"{targeted_lines}"
             f"Recent skill discovery:\n{recent}\n"
             "If the skill was just installed, confirm that its SKILL.md lives directly under one of the visible skill roots."
         )
@@ -4030,6 +4349,44 @@ def fetch_skill_instructions(skill_name: str, detail_level: str = "full", sectio
         pass
 
     available_files = list(skill.get("availableFiles") or [])
+    manifest = _skill_continuation_manifest(skill, available_files)
+    if str(relative_path or "").strip():
+        try:
+            normalized_relative_path = _normalize_skill_relative_path(str(relative_path or ""))
+            skill_root = Path(str(skill.get("skillRoot") or skill.get("path") or "")).resolve(strict=False)
+            target = (skill_root / normalized_relative_path).resolve(strict=False)
+            try:
+                target.relative_to(skill_root)
+            except ValueError:
+                raise ValueError("relative_path escapes the skill directory")
+            if not target.exists() or not target.is_file():
+                raise FileNotFoundError(f"skill file not found: {normalized_relative_path}")
+            if not _looks_like_text_skill_file(target):
+                raise ValueError(f"skill file is not a supported text file: {normalized_relative_path}")
+            content = _read_skill_text_file(target)
+            execution_hint = ""
+            if normalized_relative_path.startswith("scripts/"):
+                execution_hint = (
+                    "\nExecution Boundary: This is a script asset. Reading it does not grant permission to run it; "
+                    "execute only through governed command/runtime tools when the task explicitly requires it."
+                )
+            return (
+                "=== SKILL FILE ===\n"
+                f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
+                f"Relative Path: {normalized_relative_path}\n"
+                f"Continuation API: fetch_skill_instructions(skill_name={skill_name!r}, relative_path='<path>')\n"
+                f"{execution_hint}\n\n"
+                f"{content}"
+            )
+        except Exception as exc:
+            return (
+                "=== SKILL FILE ERROR ===\n"
+                f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
+                f"Requested Path: {relative_path}\n"
+                f"Error: {exc}\n"
+                "Visible continuation manifest:\n"
+                f"{json.dumps(manifest, ensure_ascii=False, indent=2)}"
+            )
     structure = "\n".join(f"- {item}" for item in available_files[:64]) if available_files else "- (no extra references/scripts/assets/templates/examples found)"
     normalized_detail = str(detail_level or "summary").strip().lower()
     if normalized_detail not in {"summary", "section", "full"}:
@@ -4077,6 +4434,7 @@ def fetch_skill_instructions(skill_name: str, detail_level: str = "full", sectio
         f"Templates Dir: {skill.get('templatesDir') or ''}\n"
         f"Examples Dir: {skill.get('examplesDir') or ''}\n"
         f"Directory Structure:\n{structure}\n\n"
+        f"{_format_skill_continuation_manifest(manifest)}\n\n"
         f"按当前 skill 的要求去做。\n\n"
         f"{instructions_block}"
     )

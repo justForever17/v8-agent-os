@@ -153,6 +153,26 @@ def _preflight(workspace: Path, *, require_engine: bool, engine_url: str) -> lis
                     {"missing": missing, "preview": full[:2000]},
                 )
             )
+        if "=== CONTINUATION MANIFEST ===" not in full or "references/skill-template.md" not in full:
+            findings.append(
+                Finding(
+                    "P1",
+                    "huashu_nuwa_continuation_manifest_missing",
+                    "fetch_skill_instructions(full) 没有暴露可续读的 continuationManifest 或关键模板。",
+                    {"preview": full[:3000]},
+                )
+            )
+        template = fetch_skill_instructions.func("huashu-nuwa", relative_path="references/skill-template.md")
+        framework = fetch_skill_instructions.func("huashu-nuwa", relative_path="references/extraction-framework.md")
+        if "=== SKILL FILE ===" not in template or "=== SKILL FILE ===" not in framework:
+            findings.append(
+                Finding(
+                    "P1",
+                    "huashu_nuwa_continuation_read_failed",
+                    "无法通过 fetch_skill_instructions(relative_path=...) 续读 huashu-nuwa 关键参考文件。",
+                    {"templatePreview": template[:1200], "frameworkPreview": framework[:1200]},
+                )
+            )
     except Exception as exc:  # noqa: BLE001 - preflight should preserve exact import/runtime failures.
         findings.append(Finding("P0", "skill_full_read_exception", f"{type(exc).__name__}: {exc}"))
     return findings
@@ -180,7 +200,10 @@ def _prompt(target: str, game: str, target_dir: Path) -> str:
 目标：使用已选择的 huashu-nuwa skill，调研米哈游游戏《{game}》角色「{target}」，并按 huashu-nuwa 的要求蒸馏生成一个可运行的角色视角 skill。
 
 硬性要求：
-1. 第一动作必须读取 fetch_skill_instructions(skill_name="huashu-nuwa", detail_level="full")，不要只读摘要。
+1. 第一阶段必须读取 fetch_skill_instructions(skill_name="huashu-nuwa", detail_level="full") 和 fetch_skill_instructions(skill_name="skill-creator", detail_level="full")，不要只读摘要；huashu-nuwa 规定蒸馏流程，skill-creator 规定可加载 SKILL.md schema。
+   - 读取 huashu-nuwa full 后，必须按 continuationManifest 继续读取：
+     fetch_skill_instructions(skill_name="huashu-nuwa", relative_path="references/skill-template.md")
+     fetch_skill_instructions(skill_name="huashu-nuwa", relative_path="references/extraction-framework.md")
 2. 输出目录只能是：{target_dir}
 3. 必须创建自包含目录结构：
    - SKILL.md
@@ -309,6 +332,7 @@ def _repair_prompt(*, target: str, game: str, target_dir: Path, findings: list[F
 ```
 
 硬性修复要求：
+0. 先重新读取 huashu-nuwa/full 和 skill-creator/full，再按两者合同修复；不要只凭上轮记忆补模板。
 1. SKILL.md 必须以 YAML frontmatter 开头：
    ---
    name: sanyueqi-perspective
@@ -438,6 +462,8 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
         result.add("P0", "live_run_not_terminal", f"Live run 未正常完成：{live.failure_reason or live.status}", live.key_events[-8:])
     if "fetch_skill_instructions" not in blob:
         result.add("P0", "missing_fetch_skill_instructions", "Live session 没有观察到 fetch_skill_instructions。", blob[:5000])
+    if "skill-creator" not in blob:
+        result.add("P1", "missing_skill_creator_contract_read", "Live session 没有观察到 skill-creator/full 合同读取，生成 skill 时可能再次缺 YAML/schema。", blob[:5000])
     if not re.search(r"research_broker|runtime\.episode\..*research|research_evidence_bundle|Web Research Architect|claimTable|sourceMatrix", blob, re.I):
         result.add("P1", "missing_research_evidence", "没有观察到 Research Runtime evidence 或 Architect synthesis 证据。", blob[:5000])
     if not re.search(r"runtime_broker|engineering|write_native_file|patch_bundle|work_plan_ready|文件|SKILL\.md", blob, re.I):
@@ -451,6 +477,19 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
     if not skill_file.exists():
         result.add("P0", "skill_file_missing", f"缺少最终 SKILL.md：{skill_file}")
         return
+    try:
+        from runtimes.extensions.skills.artifact_validator import SkillArtifactValidator
+
+        validation = SkillArtifactValidator.validate(target_dir, require_huashu_research=True)
+        if not validation.ok:
+            result.add(
+                "P0",
+                "skill_artifact_validator_failed",
+                "SkillArtifactValidator 未通过，不能把该 skill 标记为完成。",
+                validation.as_dict(),
+            )
+    except Exception as exc:  # noqa: BLE001
+        result.add("P0", "skill_artifact_validator_exception", f"{type(exc).__name__}: {exc}")
     skill_text = _read_text(skill_file)
     if not skill_text.lstrip().startswith("---"):
         result.add("P0", "skill_missing_frontmatter", "SKILL.md 缺少 YAML frontmatter，SkillLoader 会忽略该 skill。", skill_text[:1200])

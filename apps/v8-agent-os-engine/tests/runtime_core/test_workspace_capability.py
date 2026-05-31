@@ -100,3 +100,51 @@ def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkey
     assert (active_root / "src" / "ok.txt").read_text(encoding="utf-8") == "ok"
     assert "workspace_boundary_block" in blocked_result
     assert not (main_root / "projects" / "wrong.txt").exists()
+
+
+def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    monkeypatch.setattr(
+        native_tools,
+        "_workspace_inventory_status",
+        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
+    )
+    target = active_root / "src" / "longish.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("one\nold-a\nold-b\nfour\n", encoding="utf-8")
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        result = native_tools.write_native_file.func("src/longish.txt", "new-a\nnew-b", line_start=2, line_end=3)
+
+    assert "scoped_file_patch" in result
+    assert target.read_text(encoding="utf-8") == "one\nnew-a\nnew-b\nfour\n"
+
+
+def test_write_native_file_blocks_existing_long_file_full_overwrite_without_anchor(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    monkeypatch.setattr(
+        native_tools,
+        "_workspace_inventory_status",
+        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
+    )
+    target = active_root / "src" / "very_long.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("".join(f"line {index}\n" for index in range(1000)), encoding="utf-8")
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        result = native_tools.write_native_file.func("src/very_long.txt", "replacement")
+
+    assert "long_file_full_overwrite_block" in result
+    assert "line 999" in target.read_text(encoding="utf-8")

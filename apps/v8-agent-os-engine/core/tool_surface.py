@@ -1439,6 +1439,7 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
     instructions = _section("INSTRUCTIONS (FULL)", "INSTRUCTIONS FULL", "INSTRUCTIONS SECTION", "INSTRUCTIONS SUMMARY")
     if not instructions:
         instructions = text
+    continuation_manifest = _section("CONTINUATION MANIFEST")
     cleaned_lines: list[str] = []
     skip_prefixes = (
         "Skill Root:",
@@ -1458,6 +1459,9 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
 
     lines = ["Skill instructions" + (f": {skill_name}" if skill_name else "")]
     lines.append("Use these instructions as the method contract; paths and loader diagnostics are kept in raw detail.")
+    if continuation_manifest:
+        lines.append("Continuation manifest:")
+        lines.append(continuation_manifest)
     if cleaned:
         lines.append("Instructions:")
         lines.append(cleaned)

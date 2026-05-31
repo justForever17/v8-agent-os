@@ -326,9 +326,9 @@ def test_subagent_default_surface_hides_supervisor_only_and_runtime_tools():
     names = {tool.name for tool in visible}
 
     assert {"read_native_file", "run_system_command", "web_broker"}.issubset(names)
+    assert "ask_user" in names
     assert "runtime_broker" not in names
     assert "delegation_broker" not in names
-    assert "ask_user" not in names
     assert "s3_broker" not in names
     assert "http_request" not in names
     assert "delegate_network_task" not in names

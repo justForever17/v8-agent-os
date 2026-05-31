@@ -77,6 +77,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field, model_validator
 from runtimes.engineering.service import engineering_lane_service
+from runtimes.chat.planner_contract_verifier import verify_and_repair_planner_contract
 from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
@@ -894,6 +895,118 @@ class ChatRuntime:
         return False
 
     @staticmethod
+    def _looks_like_engineering_continuation_message(user_content: str) -> bool:
+        text = str(user_content or "").strip()
+        if not text:
+            return False
+        lower = text.lower()
+        strong_markers = (
+            "traceback",
+            "exception",
+            "error:",
+            "failed",
+            "build failed",
+            "typeerror",
+            "referenceerror",
+            "syntaxerror",
+            "报错",
+            "错误",
+            "异常",
+            "没反应",
+            "还是不行",
+            "运行不了",
+            "启动不了",
+            "失败",
+            "日志",
+            "截图",
+            "崩溃",
+            "卡住",
+        )
+        if any(marker in lower for marker in strong_markers):
+            return True
+        return bool(re.search(r"\b(line|at)\s+\d+\b|^\s*(GET|POST|PUT|DELETE)\s+/.+\s+5\d\d\b", text, flags=re.IGNORECASE | re.MULTILINE))
+
+    @staticmethod
+    def _recent_engineering_continuation_context(
+        *,
+        session_id: str,
+        workspace_path: str,
+        limit: int = 12,
+    ) -> dict[str, Any]:
+        if not session_id:
+            return {"active": False, "reason": "missing_session_id"}
+        episodes = [
+            dict(item)
+            for item in db.list_runtime_episodes(session_id=session_id, limit=limit)
+            if str(item.get("kind") or "").strip().lower() == "engineering"
+        ]
+        artifacts = [dict(item) for item in db.list_runtime_artifacts(session_id=session_id, limit=limit)]
+        try:
+            proof_entries = [dict(item) for item in db.list_engineering_proof_entries(session_id=session_id, limit=limit)]
+        except Exception:
+            proof_entries = []
+        candidates: list[dict[str, Any]] = []
+        if episodes:
+            episode = episodes[0]
+            episode_inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+            candidates.append(
+                {
+                    "type": "runtime_episode",
+                    "episodeId": episode.get("id") or episode.get("episodeId"),
+                    "runId": episode.get("run_id") or episode.get("runId"),
+                    "state": episode.get("state"),
+                    "workspacePath": episode.get("workspace_path") or episode_inputs.get("workspacePath") or "",
+                    "updatedAt": episode.get("updated_at") or episode.get("updatedAt"),
+                }
+            )
+        if artifacts:
+            artifact = artifacts[0]
+            candidates.append(
+                {
+                    "type": "runtime_artifact",
+                    "artifactId": artifact.get("id"),
+                    "runId": artifact.get("runId") or artifact.get("run_id"),
+                    "workspacePath": artifact.get("workspacePath") or artifact.get("workspace_path") or "",
+                    "title": artifact.get("title"),
+                }
+            )
+        if proof_entries:
+            proof = proof_entries[0]
+            candidates.append(
+                {
+                    "type": "engineering_proof",
+                    "proofId": proof.get("id") or proof.get("entryId"),
+                    "runId": proof.get("run_id") or proof.get("runId"),
+                    "workspacePath": proof.get("workspace_path") or proof.get("workspacePath") or "",
+                    "summary": proof.get("summary"),
+                }
+            )
+        if not candidates:
+            return {"active": False, "reason": "no_recent_engineering_context"}
+        normalized_workspace = workspace_path.strip().lower()
+        workspace_candidates = [
+            item
+            for item in candidates
+            if not normalized_workspace
+            or not str(item.get("workspacePath") or "").strip()
+            or str(item.get("workspacePath") or "").strip().lower() == normalized_workspace
+        ]
+        if not workspace_candidates:
+            return {"active": False, "reason": "workspace_mismatch", "candidates": candidates[:3]}
+        primary = workspace_candidates[0]
+        return {
+            "active": True,
+            "reason": "same_session_recent_engineering_context",
+            "previousEpisodeId": primary.get("episodeId") or "",
+            "previousRunId": primary.get("runId") or "",
+            "workspacePath": workspace_path or primary.get("workspacePath") or "",
+            "recentContext": primary,
+            "candidateCount": len(workspace_candidates),
+            "proofRefs": [item.get("id") or item.get("entryId") for item in proof_entries[:3] if item.get("id") or item.get("entryId")],
+            "artifactRefs": [item.get("id") for item in artifacts[:3] if item.get("id")],
+        }
+
+    @staticmethod
     def _is_negated_phrase_match(text: str, start_index: int) -> bool:
         left = text[max(0, start_index - 32) : start_index]
         last_separator = max((left.rfind(separator) for separator in "，。；;,.!?！？、\n\r"), default=-1)
@@ -1373,7 +1486,19 @@ class ChatRuntime:
         workspace_refs: list[str] | None = None,
     ) -> dict[str, Any]:
         skill_name = str(route.get("skillName") or "").strip()
-        return {
+        requires_artifact = bool(route.get("requiresArtifact"))
+        required_instruction_reads = []
+        if route.get("requiresSkillExecution") and skill_name:
+            required_instruction_reads.append({"skillName": skill_name, "detailLevel": "full", "reason": "primary workflow"})
+        if requires_artifact:
+            required_instruction_reads.append(
+                {
+                    "skillName": "skill-creator",
+                    "detailLevel": "full",
+                    "reason": "generated skills must satisfy the canonical SKILL.md schema and loader contract",
+                }
+            )
+        brief = {
             "schema": "v8.writing_execution_brief.v1",
             "userOriginalRequest": user_request,
             "audience": "unspecified",
@@ -1402,16 +1527,29 @@ class ChatRuntime:
             ],
             "allowedRuntimeUse": {
                 "research": bool(route.get("requiresResearch")),
-                "engineering": bool(route.get("requiresArtifact")),
+                "engineering": requires_artifact,
                 "memory": False,
             },
             "subagentFirstAction": "fetch_skill_instructions" if route.get("requiresSkillExecution") else "",
+            "requiredInstructionReads": required_instruction_reads,
             "subagentCreationPolicy": {
                 "allowAiCreatedWritingSubagentOnClearMismatch": bool(route.get("allowCreateSubagentOnMismatch")),
                 "requiredMetadata": ["family=writing", "createdBy=ai", "sourceTask", "capabilityGap", "boundaries"],
                 "doNotCreateForOrdinaryShortText": True,
             },
         }
+        if requires_artifact:
+            brief["skillArtifactContract"] = {
+                "schema": "v8.skill_artifact_contract.v1",
+                "requiredValidator": "SkillArtifactValidator",
+                "mustReadContracts": [item["skillName"] for item in required_instruction_reads],
+                "requiredFrontmatter": ["name", "description"],
+                "requiredSections": ["使用说明", "身份卡/能力说明", "诚实边界", "调研来源"],
+                "requiredResearchDir": "references/research",
+                "completionStatus": "skill_artifact_ready",
+                "failureStatus": "recoverable_failed",
+            }
+        return brief
 
     def _fallback_writing_planner_plan(
         self,
@@ -1567,6 +1705,7 @@ class ChatRuntime:
             required = ["writing", "follow_skill_workflow", "fetch_skill_instructions"] if mode == "skill_subagent" else ["writing", "document", "explain"]
             behavior = ["skill_driven_writing", "isolated_context"] if mode == "skill_subagent" else ["writing", "independent_review"]
             requires_research = bool(writing_route.get("requiresResearch"))
+            requires_artifact = bool(writing_route.get("requiresArtifact"))
             research_refs = ["task-1:evidenceBundleId", "task-1:sourceMatrix", "task-1:claimTable"] if requires_research else []
             task_id = "task-2" if requires_research else "task-1"
             dependency = ["task-1"] if requires_research else []
@@ -1612,19 +1751,46 @@ class ChatRuntime:
                     },
                     "writeSet": [],
                     "behaviorScope": behavior,
-                    "requiredCapabilities": required,
+                    "requiredCapabilities": (
+                        [*required, "skill_artifact_validation", "skill_creator_contract", "workspace_file_write"]
+                        if requires_artifact
+                        else required
+                    ),
                     "acceptanceContract": (
-                        "Read any named skill instructions first, consume the required research evidence refs before writing, "
+                        "Read huashu-nuwa/full skill instructions and skill-creator/full contract first, consume the required research evidence refs, "
+                        "write the skill artifact through Engineering discipline, validate it with SkillArtifactValidator, "
+                        "and return skill_artifact_ready or recoverable_failed with exact blockers."
+                        if requires_artifact
+                        else "Read any named skill instructions first, consume the required research evidence refs before writing, "
                         "then return final draft/artifact proof plus execution notes, assumptions, and blockers."
                         if requires_research
                         else "Read any named skill instructions first, then return final draft plus execution notes, assumptions, and blockers."
                     ),
                     "dependency": dependency,
-                    "executionLaneHint": "subagent",
-                    "familyHint": str(writing_route.get("recommendedFamily") or "writing").strip() or "writing",
+                    "executionLaneHint": "engineering" if requires_artifact else "subagent",
+                    "familyHint": "writing" if requires_artifact else (str(writing_route.get("recommendedFamily") or "writing").strip() or "writing"),
                     "preferredAgentId": preferred_agent,
                     "routeQuery": "skill workflow writing" if mode == "skill_subagent" else "writing document handoff",
                     **({"researchRefs": research_refs} if research_refs else {}),
+                    **(
+                        {
+                            "writeSet": [".agents/skills/<generated-skill>/**"],
+                            "validateSkillArtifact": True,
+                            "requiredSkillContracts": ["huashu-nuwa", "skill-creator"],
+                            "proofExpectations": [
+                                "Report generated skill root.",
+                                "Validate YAML frontmatter and SkillLoader loadability.",
+                                "Report references/research file coverage and source markers.",
+                            ],
+                            "engineeringTaskCapsule": {
+                                "writeSet": [".agents/skills/<generated-skill>/**"],
+                                "proofExpectations": ["skill_artifact_ready or recoverable_failed"],
+                                "riskFlags": ["skill_artifact_schema_required", "workspace_skill_root_required"],
+                            },
+                        }
+                        if requires_artifact
+                        else {}
+                    ),
                 }
             )
             task_briefs = ([research_brief] if research_brief else []) + [brief]
@@ -1645,7 +1811,13 @@ class ChatRuntime:
                     }
                 )
             capability_plan.append(
-                {"kind": "delegation", "source": "planner_fallback", "reason": "writing_subagent_execution_required", "taskBriefId": task_id, "state": "detected"}
+                {
+                    "kind": "engineering" if requires_artifact else "delegation",
+                    "source": "planner_fallback",
+                    "reason": "skill_artifact_requires_engineering_validation" if requires_artifact else "writing_subagent_execution_required",
+                    "taskBriefId": task_id,
+                    "state": "detected",
+                }
             )
             return {
                 "planId": plan_id,
@@ -1670,9 +1842,18 @@ class ChatRuntime:
                     if requires_research
                     else []
                 ),
-                "globalAcceptanceContract": "Use the delegated writing result only if it follows the brief, skill boundary, and no-fabrication contract.",
-                "riskFlags": ["writing_subagent_required"] + (["research_evidence_required_before_skill_output"] if requires_research else []),
-                "qualityFlags": common_quality + (["skill_first_action_required"] if mode == "skill_subagent" else []) + (["research_before_skill_writing"] if requires_research else []),
+                "globalAcceptanceContract": (
+                    "Use the generated skill artifact only if Engineering returns skill_artifact_ready; otherwise surface recoverable blockers."
+                    if requires_artifact
+                    else "Use the delegated writing result only if it follows the brief, skill boundary, and no-fabrication contract."
+                ),
+                "riskFlags": ["writing_subagent_required"]
+                + (["research_evidence_required_before_skill_output"] if requires_research else [])
+                + (["skill_artifact_schema_required"] if requires_artifact else []),
+                "qualityFlags": common_quality
+                + (["skill_first_action_required"] if mode == "skill_subagent" else [])
+                + (["research_before_skill_writing"] if requires_research else [])
+                + (["skill_creator_contract_required", "skill_artifact_validation_required"] if requires_artifact else []),
                 "repairCount": 0,
                 "autoDispatchDecision": {},
                 "dispatchEligibilityReason": "",
@@ -2542,6 +2723,25 @@ class ChatRuntime:
         return True
 
     @staticmethod
+    def _verify_and_repair_planner_contract(
+        plan: dict[str, Any],
+        *,
+        fallback_plan: dict[str, Any],
+        chat_run: ChatRunContext | None = None,
+    ) -> dict[str, Any]:
+        prepared = getattr(chat_run, "prepared", None)
+        return verify_and_repair_planner_contract(
+            plan,
+            fallback_plan=fallback_plan,
+            skill_references=list(getattr(prepared, "skill_references", None) or []),
+            task_shape_hint=(
+                getattr(prepared, "task_shape_hint", None)
+                if isinstance(getattr(prepared, "task_shape_hint", None), dict)
+                else {}
+            ),
+        )
+
+    @staticmethod
     def _decide_planner_auto_dispatch(
         plan: dict[str, Any],
         *,
@@ -2600,15 +2800,16 @@ class ChatRuntime:
             task_id = str(brief.get("taskBriefId") or brief.get("id") or "").strip()
             family_hint = str(brief.get("familyHint") or "").strip().lower()
             capability_kind = capability_by_task_id.get(task_id) or family_hint
-            if lane == "auto" and capability_kind in local_runtime_kinds:
+            local_runtime_kind = lane if lane in local_runtime_kinds else capability_kind if capability_kind in local_runtime_kinds else ""
+            if local_runtime_kind:
                 selections.append(
                     {
                         "taskBriefId": brief.get("taskBriefId"),
-                        "targetId": f"local_runtime:{capability_kind}",
-                        "targetLabel": f"{capability_kind} runtime",
+                        "targetId": f"local_runtime:{local_runtime_kind}",
+                        "targetLabel": f"{local_runtime_kind} runtime",
                         "selectionReason": "local_runtime_episode",
                         "selectionConfidence": 1.0,
-                        "matchSignals": [f"capability:{capability_kind}", "episode_runner"],
+                        "matchSignals": [f"capability:{local_runtime_kind}", "episode_runner"],
                     }
                 )
                 continue
@@ -2995,6 +3196,7 @@ class ChatRuntime:
                 plan = fallback_plan
 
         plan = self._validate_and_repair_planner_plan(plan, fallback_plan=fallback_plan)
+        plan = self._verify_and_repair_planner_contract(plan, fallback_plan=fallback_plan, chat_run=chat_run)
         if self._planner_plan_violates_skill_execution_contract(chat_run, plan):
             repaired_fallback = self._fallback_planner_plan(
                 chat_run=chat_run,
@@ -3009,6 +3211,7 @@ class ChatRuntime:
             repaired_fallback["qualityFlags"] = list(dict.fromkeys(flags))
             repaired_fallback["repairCount"] = int(repaired_fallback.get("repairCount") or 0) + 1
             plan = self._validate_and_repair_planner_plan(repaired_fallback, fallback_plan=repaired_fallback)
+            plan = self._verify_and_repair_planner_contract(plan, fallback_plan=repaired_fallback, chat_run=chat_run)
         plan = engineering_lane_service.enrich_planner_plan_with_engineering_contract(
             plan,
             engineering_context=chat_run.prepared.engineering_context_pack,
@@ -3509,6 +3712,55 @@ class ChatRuntime:
                         }
                     )
                     prepared.task_shape_hint = hint
+            continuation_context = {}
+            if self._looks_like_engineering_continuation_message(prepared.latest_user_content):
+                continuation_context = self._recent_engineering_continuation_context(
+                    session_id=prepared.session_id,
+                    workspace_path=str(scope_result.binding.workspace_path or ""),
+                )
+            if continuation_context.get("active"):
+                hint = dict(prepared.task_shape_hint or {})
+                secondary = [
+                    str(item or "").strip()
+                    for item in list(hint.get("secondaryTaskShapes") or [])
+                    if str(item or "").strip()
+                ]
+                if "engineering_continuation" not in secondary:
+                    secondary.insert(0, "engineering_continuation")
+                suggested = [
+                    str(item or "").strip()
+                    for item in list(hint.get("suggestedFamilies") or [])
+                    if str(item or "").strip()
+                ]
+                if "engineering" not in suggested:
+                    suggested.insert(0, "engineering")
+                signals = [
+                    str(item or "").strip()
+                    for item in list(hint.get("signals") or [])
+                    if str(item or "").strip()
+                ]
+                signals.append("engineering_continuation:same_session")
+                try:
+                    existing_confidence = float(hint.get("confidence") or 0.0)
+                except (TypeError, ValueError):
+                    existing_confidence = 0.0
+                hint.update(
+                    {
+                        "primaryTaskShape": "project_coding",
+                        "secondaryTaskShapes": secondary[:5],
+                        "confidence": max(existing_confidence, 0.86),
+                        "reason": "same_session_engineering_continuation",
+                        "suggestedFamilies": suggested[:6],
+                        "engineeringContinuation": {
+                            **continuation_context,
+                            "userSymptom": prepared.latest_user_content[:1200],
+                            "verificationExpectation": "Reproduce or reason from the new symptom/log, patch only the relevant scope, and return proof.",
+                        },
+                        "signals": list(dict.fromkeys(signals))[:12],
+                    }
+                )
+                prepared.task_shape_hint = hint
+                prepared.engineering_mode = "force"
             primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
             shape_reason = str(prepared.task_shape_hint.get("reason") or "").strip()
             secondary_shapes = {
@@ -4067,6 +4319,7 @@ class ChatRuntime:
             or engineering_required
             or getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") != "suggest"
         ):
+            engineering_continuation = task_shape_hint.get("engineeringContinuation") if isinstance(task_shape_hint, dict) else None
             current_route_context = {
                 **current_route_context,
                 "explicitEngineeringRequested": bool(getattr(chat_run.prepared, "explicit_engineering_requested", False)),
@@ -4076,6 +4329,7 @@ class ChatRuntime:
                 "taskPlanningMode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
                 "taskShapeHint": task_shape_hint,
                 "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
+                **({"engineeringContinuation": engineering_continuation} if isinstance(engineering_continuation, dict) else {}),
             }
         planner_dispatch_status: dict[str, Any] | None = None
         planner_plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None

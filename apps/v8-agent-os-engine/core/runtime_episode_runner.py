@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 from core.database import db
@@ -659,6 +661,22 @@ class RuntimeEpisodeRunner:
             )
         if child_handoffs:
             ready_count = len(child_handoffs)
+            skill_validation = self._validate_skill_artifact_if_requested(episode, need=need, inputs=inputs)
+            if skill_validation and not skill_validation.get("ok"):
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="engineering",
+                    compact_summary="Engineering recoverable_failed after child handoff: skill artifact validation failed.",
+                    status="failed",
+                    confidence="low",
+                    consumer_hint="Repair the generated skill artifact before marking the episode completed.",
+                    extra={
+                        "engineeringState": "recoverable_failed",
+                        "errorCode": "skill_artifact_validation_failed",
+                        "skillArtifactValidation": skill_validation,
+                        "childHandoffs": child_handoffs,
+                    },
+                )
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
@@ -670,9 +688,10 @@ class RuntimeEpisodeRunner:
                 confidence="medium",
                 consumer_hint="Merge child delegation handoffs into Supervisor route context and continue orchestration.",
                 extra={
-                    "engineeringState": "handoff_ready",
+                    "engineeringState": "skill_artifact_ready" if skill_validation and skill_validation.get("ok") else "handoff_ready",
                     "childHandoffs": child_handoffs,
                     "handoffRefs": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs if isinstance(item, dict)],
+                    **({"skillArtifactValidation": skill_validation} if skill_validation else {}),
                 },
             )
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
@@ -737,6 +756,11 @@ class RuntimeEpisodeRunner:
                 ]
             )
         if worker_briefs:
+            worker_briefs = self._prepare_engineering_worker_briefs_for_delegation(
+                worker_briefs,
+                need=need,
+                inputs=inputs,
+            )
             self._heartbeat(str(episode.get("episodeId")), "engineering: delegate executable work")
             delegation_episode = {
                 **episode,
@@ -756,6 +780,22 @@ class RuntimeEpisodeRunner:
                 },
             }
             delegation_handoff = await self._execute_delegation(delegation_episode)
+            skill_validation = self._validate_skill_artifact_if_requested(episode, need=need, inputs=inputs)
+            if skill_validation and not skill_validation.get("ok"):
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="engineering",
+                    compact_summary="Engineering recoverable_failed after delegated execution: skill artifact validation failed.",
+                    status="failed",
+                    confidence="low",
+                    consumer_hint="Repair the generated skill artifact before marking the episode completed.",
+                    extra={
+                        "engineeringState": "recoverable_failed",
+                        "errorCode": "skill_artifact_validation_failed",
+                        "skillArtifactValidation": skill_validation,
+                        "delegationHandoff": delegation_handoff,
+                    },
+                )
             delegation_status = str(delegation_handoff.get("status") or "ready").strip().lower()
             status = "waiting" if delegation_status in {"waiting", "pending", "running"} else delegation_status
             if status not in {"failed", "blocked", "waiting"}:
@@ -771,11 +811,12 @@ class RuntimeEpisodeRunner:
                 confidence=str(delegation_handoff.get("confidence") or "medium"),
                 consumer_hint="Merge this engineering handoff into Supervisor route context before continuing.",
                 extra={
-                    "engineeringState": "execution_started",
+                    "engineeringState": "skill_artifact_ready" if skill_validation and skill_validation.get("ok") else "execution_started",
                     "delegationHandoff": delegation_handoff,
                     "workspaceDigestRef": f"workspace_digest:{episode.get('episodeId')}",
                     "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
                     "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],
+                    **({"skillArtifactValidation": skill_validation} if skill_validation else {}),
                 },
             )
         reason = str(inputs.get("task") or need.get("reason") or "engineering episode").strip()
@@ -798,6 +839,186 @@ class RuntimeEpisodeRunner:
                 "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],
             },
         )
+
+    def _prepare_engineering_worker_briefs_for_delegation(
+        self,
+        worker_briefs: list[dict[str, Any]],
+        *,
+        need: dict[str, Any],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Normalize Engineering-owned briefs before handing them to subagents.
+
+        The owning runtime is already Engineering here. A child delegation item
+        should select an actual worker family, not the Engineering runtime lane
+        itself.
+        """
+
+        blob = json.dumps({"need": need, "inputs": inputs, "workerBriefs": worker_briefs}, ensure_ascii=False).lower()
+        skill_artifact = bool(inputs.get("validateSkillArtifact") or need.get("validateSkillArtifact"))
+        skill_artifact = skill_artifact or any(
+            marker in blob
+            for marker in (
+                "skill_artifact_validation",
+                "skillartifactvalidator",
+                "huashu-nuwa",
+                "skill-creator",
+                ".agents/skills",
+            )
+        )
+        normalized: list[dict[str, Any]] = []
+        for brief in worker_briefs:
+            item = dict(brief)
+            lane = str(item.get("executionLaneHint") or "").strip().lower()
+            if lane == "engineering":
+                item["executionLaneHint"] = "subagent"
+            if skill_artifact:
+                family = str(item.get("familyHint") or "").strip().lower()
+                if not family or family == "engineering":
+                    item["familyHint"] = "writing"
+                item.setdefault("preferredAgentId", "skill-workflow-curator")
+            normalized.append(item)
+        return normalized
+
+    def _validate_skill_artifact_if_requested(
+        self,
+        episode: dict[str, Any],
+        *,
+        need: dict[str, Any],
+        inputs: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        blob = json.dumps({"need": need, "inputs": inputs}, ensure_ascii=False).lower()
+        requested = bool(inputs.get("validateSkillArtifact") or need.get("validateSkillArtifact"))
+        requested = requested or any(
+            marker in blob
+            for marker in (
+                "skill_artifact_validation",
+                "skillartifactvalidator",
+                "skill.md",
+                ".agents/skills",
+                "huashu-nuwa",
+                "skill-creator",
+            )
+        )
+        if not requested:
+            return None
+        try:
+            from runtimes.extensions.skills.artifact_validator import SkillArtifactValidator
+
+            candidate_roots = self._candidate_skill_artifact_roots(need=need, inputs=inputs)
+            if not candidate_roots:
+                return {
+                    "ok": False,
+                    "status": "skill_artifact_target_missing",
+                    "findings": ["未能从 Engineering episode 输入中定位生成 skill 目录。"],
+                }
+            require_huashu = "huashu-nuwa" in blob or bool(inputs.get("requireHuashuResearch") or need.get("requireHuashuResearch"))
+            results = [
+                SkillArtifactValidator.validate(
+                    root,
+                    require_huashu_research=require_huashu,
+                    require_source_markers=True,
+                ).as_dict()
+                for root in candidate_roots
+            ]
+            passing = [item for item in results if item.get("ok")]
+            if passing:
+                return {
+                    "ok": True,
+                    "status": "skill_artifact_ready",
+                    "validatedRoot": passing[0].get("skillRoot"),
+                    "results": results,
+                }
+            return {
+                "ok": False,
+                "status": "skill_artifact_invalid",
+                "results": results,
+                "findings": [finding for item in results for finding in list(item.get("findings") or [])],
+            }
+        except Exception as exc:  # noqa: BLE001 - keep runtime failure recoverable.
+            return {
+                "ok": False,
+                "status": "skill_artifact_validator_error",
+                "findings": [f"{type(exc).__name__}: {exc}"],
+            }
+
+    def _candidate_skill_artifact_roots(self, *, need: dict[str, Any], inputs: dict[str, Any]) -> list[str]:
+        values: list[str] = []
+
+        def extract_skill_path_candidates(text: str) -> list[str]:
+            stripped = text.strip().strip("\"'")
+            candidates: list[str] = []
+            if re.match(r"^(?:[A-Za-z]:[\\/]|\.agents[\\/])", stripped) or stripped.lower().endswith("skill.md"):
+                candidates.append(stripped)
+            patterns = [
+                r"[A-Za-z]:[\\/](?:(?![\r\n\"'<>|，。；;,]).)*?\.agents[\\/]+skills[\\/]+(?:(?![\r\n\"'<>|，。；;,]).)+",
+                r"(?<!\S)\.agents[\\/]+skills[\\/]+(?:(?![\r\n\"'<>|，。；;,]).)+",
+            ]
+            for pattern in patterns:
+                for match in re.finditer(pattern, text):
+                    raw = match.group(0).strip().strip("\"'()（）[]【】")
+                    if raw:
+                        candidates.append(raw)
+            return candidates
+
+        def collect(value: Any) -> None:
+            if isinstance(value, str):
+                values.extend(extract_skill_path_candidates(value))
+                return
+            if isinstance(value, dict):
+                for nested in value.values():
+                    collect(nested)
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    collect(item)
+
+        collect(inputs)
+        collect(need)
+        workspace_path = str(inputs.get("workspacePath") or need.get("workspacePath") or "").strip()
+        roots: list[Path] = []
+
+        def as_skill_root(path: Path) -> Path:
+            if path.name.lower() == "skill.md":
+                path = path.parent
+            parts = list(path.parts)
+            lowered = [part.lower() for part in parts]
+            for index, part in enumerate(lowered):
+                if part == ".agents" and index + 2 < len(parts) and lowered[index + 1] == "skills":
+                    return Path(*parts[: index + 3])
+            return path
+
+        for raw in values:
+            candidate = Path(str(raw).strip().strip("\"'"))
+            candidate = as_skill_root(candidate)
+            if not candidate.is_absolute() and workspace_path:
+                candidate = Path(workspace_path) / candidate
+            if candidate.exists() and candidate.is_file() and candidate.name.lower() == "skill.md":
+                candidate = candidate.parent
+            if candidate.exists() and candidate.is_file():
+                continue
+            explicit_skill_root = ".agents" in str(candidate).lower()
+            if explicit_skill_root or (candidate.exists() and candidate.is_dir() and (candidate / "SKILL.md").exists()):
+                roots.append(candidate)
+        if not roots and workspace_path:
+            skills_root = Path(workspace_path) / ".agents" / "skills"
+            if skills_root.exists():
+                children = [
+                    child
+                    for child in skills_root.iterdir()
+                    if child.is_dir() and (child / "SKILL.md").exists()
+                ]
+                children.sort(key=lambda item: (item / "SKILL.md").stat().st_mtime if (item / "SKILL.md").exists() else 0, reverse=True)
+                roots.extend(children[:3])
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            normalized = str(root.resolve())
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
 
     async def _execute_creative_media(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "creative_media: recipe compile")

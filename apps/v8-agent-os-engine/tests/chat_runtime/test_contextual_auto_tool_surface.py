@@ -43,6 +43,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                     _tool("run_system_command"),
                     _tool("command_session_broker"),
                     _tool("web_broker"),
+                    _tool("ask_user"),
                     _tool("s3_broker"),
                     _tool("delegation_broker"),
                     _tool("read_background_output"),
@@ -70,9 +71,9 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("run_system_command", tool_names)
         self.assertIn("command_session_broker", tool_names)
         self.assertIn("web_broker", tool_names)
+        self.assertIn("ask_user", tool_names)
         self.assertNotIn("s3_broker", tool_names)
         self.assertNotIn("http_request", tool_names)
-        self.assertNotIn("ask_user", tool_names)
         self.assertIn("fetch_skill_instructions", tool_names)
         self.assertNotIn("delegation_broker", tool_names)
         self.assertNotIn("read_background_output", tool_names)

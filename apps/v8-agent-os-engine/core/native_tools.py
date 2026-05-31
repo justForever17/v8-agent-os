@@ -3992,12 +3992,97 @@ def workspace_broker(
         indent=2,
     )
 
+def _line_count_for_guard(text: str) -> int:
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def _dominant_newline(text: str) -> str:
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _apply_scoped_text_patch(
+    *,
+    original: str,
+    replacement: str,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    expected_old_text: str | None = None,
+) -> dict[str, Any]:
+    replacement = str(replacement or "")
+    expected_old_text = str(expected_old_text or "")
+    if line_start is not None or line_end is not None:
+        if line_start is None or line_end is None:
+            return {"ok": False, "error": "patch_range_incomplete", "summary": "行号替换需要同时提供 line_start 和 line_end。"}
+        try:
+            start = int(line_start)
+            end = int(line_end)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "patch_range_invalid", "summary": "line_start / line_end 必须是整数。"}
+        original_lines = original.splitlines(keepends=True)
+        line_count = len(original_lines)
+        if start < 1 or end < start or end > max(line_count, 1):
+            return {
+                "ok": False,
+                "error": "patch_anchor_missing",
+                "summary": "行号范围不在当前文件内，已阻止写入以避免误覆盖。",
+                "lineStart": start,
+                "lineEnd": end,
+                "lineCount": line_count,
+            }
+        newline = _dominant_newline(original)
+        if replacement and not replacement.endswith(("\n", "\r")):
+            old_slice = original_lines[start - 1 : end]
+            if (old_slice and old_slice[-1].endswith(("\n", "\r"))) or end < line_count:
+                replacement = replacement + newline
+        new_text = "".join(original_lines[: start - 1]) + replacement + "".join(original_lines[end:])
+        replacement_line_count = _line_count_for_guard(replacement)
+        return {
+            "ok": True,
+            "newText": new_text,
+            "proof": {
+                "mode": "line_range",
+                "lineStart": start,
+                "lineEnd": end,
+                "originalLineCount": line_count,
+                "replacementLineCount": replacement_line_count,
+                "touchedLineCount": max(end - start + 1, replacement_line_count),
+            },
+        }
+    if expected_old_text:
+        offset = original.find(expected_old_text)
+        if offset < 0:
+            return {"ok": False, "error": "patch_anchor_missing", "summary": "未找到 expected_old_text 锚点，已阻止写入以避免误覆盖。"}
+        before = original[:offset]
+        start_line = before.count("\n") + 1
+        old_line_count = _line_count_for_guard(expected_old_text)
+        new_text = original[:offset] + replacement + original[offset + len(expected_old_text) :]
+        return {
+            "ok": True,
+            "newText": new_text,
+            "proof": {
+                "mode": "text_anchor",
+                "lineStart": start_line,
+                "lineEnd": start_line + max(old_line_count - 1, 0),
+                "originalTextLength": len(expected_old_text),
+                "replacementTextLength": len(replacement),
+                "replacementLineCount": _line_count_for_guard(replacement),
+                "touchedLineCount": max(old_line_count, _line_count_for_guard(replacement)),
+            },
+        }
+    return {"ok": False, "error": "patch_anchor_missing", "summary": "局部替换需要提供行号范围或 expected_old_text 锚点。"}
+
 
 @tool
 def write_native_file(
     path: str,
     content: str,
     append: bool = False,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    expected_old_text: str = "",
+    allow_full_replace: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Write or append text content to a native file on the host filesystem.
@@ -4006,6 +4091,10 @@ def write_native_file(
         path (str): Absolute path to the file.
         content (str): The string content to write.
         append (bool): If True, appends to the end of the file. If False, overwrites the entire file.
+        line_start (int | None): Optional 1-based start line for scoped replacement.
+        line_end (int | None): Optional 1-based end line for scoped replacement.
+        expected_old_text (str): Optional exact text anchor for scoped replacement.
+        allow_full_replace (bool): Explicitly allow full overwrite of an existing long file.
     """
     try:
         runtime_context = get_runtime_context()
@@ -4047,13 +4136,66 @@ def write_native_file(
         if not allowed:
             return error_message or "Safety Guardian 已阻止文件写入。"
 
-        mode = 'a' if append else 'w'
-        
         # Create parent directories if they don't exist
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        scoped_patch_requested = (
+            not append
+            and target_path.exists()
+            and (line_start is not None or line_end is not None or bool(str(expected_old_text or "")))
+        )
+        patch_proof: dict[str, Any] | None = None
+        write_content = str(content or "")
+        write_reason = "file_write"
+        if scoped_patch_requested:
+            original_text = target_path.read_text(encoding="utf-8", errors="ignore")
+            patch_result = _apply_scoped_text_patch(
+                original=original_text,
+                replacement=write_content,
+                line_start=line_start,
+                line_end=line_end,
+                expected_old_text=expected_old_text,
+            )
+            if not patch_result.get("ok"):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "kind": "scoped_patch_block",
+                        "summary": patch_result.get("summary") or "局部替换锚点缺失，已阻止写入。",
+                        "error": patch_result.get("error") or "patch_anchor_missing",
+                        "path": str(target_path),
+                        "lineStart": line_start,
+                        "lineEnd": line_end,
+                        "recommendedNextAction": "先读取目标行号或提供 expected_old_text 锚点，再执行局部替换；不要全量覆盖长文件。",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            write_content = str(patch_result.get("newText") or "")
+            patch_proof = dict(patch_result.get("proof") or {})
+            write_reason = "file_scoped_patch"
+        elif (
+            not append
+            and target_path.exists()
+            and not allow_full_replace
+            and _line_count_for_guard(target_path.read_text(encoding="utf-8", errors="ignore")) >= 1000
+        ):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "long_file_full_overwrite_block",
+                    "summary": "目标是已有长文件，已阻止无锚点全量覆盖。",
+                    "error": "long_file_requires_scoped_patch",
+                    "path": str(target_path),
+                    "recommendedNextAction": "提供 line_start/line_end 或 expected_old_text 做精准替换；确需全量重写时显式设置 allow_full_replace=true 并说明原因。",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        mode = 'a' if append else 'w'
         with open(target_path, mode, encoding='utf-8') as f:
-            f.write(content)
+            f.write(write_content)
 
         safety_guardian.observe_post_action(
             action_family="file_write",
@@ -4063,17 +4205,31 @@ def write_native_file(
                 "inputPath": path,
                 "workspaceBinding": path_preflight.get("binding"),
                 "append": append,
-                "content_length": len(content),
+                "content_length": len(write_content),
+                **({"scopedPatchProof": patch_proof} if patch_proof else {}),
             },
             runtime_context=runtime_context,
         )
         mark_workspace_state_stale(
             runtime_context,
-            reason="file_append" if append else "file_write",
+            reason="file_append" if append else write_reason,
             subject=str(target_path),
         )
+        if patch_proof:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "kind": "scoped_file_patch",
+                    "summary": f"已按局部锚点替换文件：{target_path}",
+                    "path": str(target_path),
+                    "charsWritten": len(write_content),
+                    "proof": patch_proof,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
         action = "Appended" if append else "Created/Overwritten"
-        return f"Successfully {action} file: {target_path} ({len(content)} chars written)"
+        return f"Successfully {action} file: {target_path} ({len(write_content)} chars written)"
     except Exception as e:
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error writing file '{path}': {str(e)}"
@@ -6615,11 +6771,68 @@ def creative_media_safety_events(limit: int = 20) -> str:
 @tool
 def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
     """Ask the user for mandatory input or confirmation and pause the graph until a response is provided."""
+    runtime_context = get_runtime_context() or {}
+    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    agent_id = str(runtime_context.get("agent_id") or runtime_context.get("agentId") or "").strip()
+    runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip()
+    node = str(runtime_context.get("node") or runtime_context.get("node_name") or "").strip()
+    normalized_tool_call_id = str(tool_call_id or "").strip()
+
+    if session_id:
+        try:
+            pending_interactions = db.list_ask_user_interactions(session_id=session_id, status="pending")
+        except Exception:
+            pending_interactions = []
+        active_interaction = None
+        for item in pending_interactions:
+            if not isinstance(item, dict):
+                continue
+            existing_tool_call_id = str(item.get("tool_call_id") or item.get("toolCallId") or "").strip()
+            active_interaction = item
+            if normalized_tool_call_id and existing_tool_call_id == normalized_tool_call_id:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "status": "already_pending",
+                        "error": "ask_user_already_pending",
+                        "summary": "这个澄清请求已经在等待用户回答。",
+                        "interactionId": item.get("id"),
+                        "question": item.get("question") or item.get("prompt"),
+                        "recommendedNextAction": "Wait for the existing ask_user response.",
+                    },
+                    ensure_ascii=False,
+                )
+            break
+        if active_interaction is not None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "blocked_waiting_for_active_ask_user",
+                    "error": "ask_user_blocked_by_active_interaction",
+                    "summary": "同一会话已有一个 ask_user 正在等待用户回答；当前请求已被串行保护阻断。",
+                    "activeInteractionId": active_interaction.get("id"),
+                    "activeQuestion": active_interaction.get("question") or active_interaction.get("prompt"),
+                    "requester": {
+                        "runtimeKind": runtime_kind,
+                        "agentId": agent_id,
+                        "node": node,
+                        "runId": run_id,
+                    },
+                    "recommendedNextAction": "Wait for the active ask_user response, then retry if the information is still missing.",
+                },
+                ensure_ascii=False,
+            )
+
     request = {
         "question": question,
         "prompt": question,
         "toolCallId": tool_call_id,
         "interactionKind": "ask_user",
+        "requesterRuntimeKind": runtime_kind,
+        "requesterAgentId": agent_id,
+        "requesterNode": node,
+        "requesterRunId": run_id,
     }
     if details:
         request["details"] = details

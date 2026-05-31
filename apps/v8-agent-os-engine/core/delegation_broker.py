@@ -186,7 +186,15 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         normalized["engineeringTaskCapsule"] = dict(payload.get("engineeringTaskCapsule") or {})
     elif isinstance(payload.get("engineering_task_capsule"), dict):
         normalized["engineeringTaskCapsule"] = dict(payload.get("engineering_task_capsule") or {})
-    if normalized["executionLaneHint"] not in {"subagent", "external_worker", "auto"}:
+    if "validateSkillArtifact" in payload or "validate_skill_artifact" in payload:
+        normalized["validateSkillArtifact"] = _safe_bool(
+            _first_present(payload, ("validateSkillArtifact", "validate_skill_artifact"))
+        )
+    if "requiredSkillContracts" in payload or "required_skill_contracts" in payload:
+        normalized["requiredSkillContracts"] = _normalize_scope_values(
+            payload.get("requiredSkillContracts") or payload.get("required_skill_contracts")
+        )
+    if normalized["executionLaneHint"] not in {"subagent", "external_worker", "engineering", "auto"}:
         normalized["executionLaneHint"] = "auto"
     if not normalized["taskBriefId"]:
         normalized["taskBriefId"] = defaults["taskBriefId"]

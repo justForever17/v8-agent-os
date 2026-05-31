@@ -27,6 +27,13 @@ def _event_scope_id(event: dict[str, Any], name: str) -> str:
     return name
 
 
+def _long_running_chain_scope_id(name: str) -> str:
+    # LangGraph's internal event run_id is a span id, not a RuntimeEpisode id.
+    # Some providers emit different span ids for start/end around the same node,
+    # so long-running node liveness must be tracked by stable node name.
+    return f"chain:{name}"
+
+
 class GraphStreamIdleTimeoutError(TimeoutError):
     def __init__(self, *, run_id: str, session_id: str, idle_seconds: float, phase: str, last_event: str | None) -> None:
         self.run_id = run_id
@@ -91,14 +98,14 @@ class GraphStreamWatchdogState:
         self.last_observed_event = f"{kind}:{name}" if name else kind or None
         if kind == "on_chain_start" and name in _LONG_RUNNING_CHAIN_NAMES:
             self.has_productive_stream_activity = True
-            self.active_runtime_episode_ids.add(_event_scope_id(event, name))
+            self.active_runtime_episode_ids.add(_long_running_chain_scope_id(name))
 
     def finish_event(self, event: dict[str, Any]) -> None:
         kind = str(event.get("event") or "").strip()
         name = str(event.get("name") or "").strip()
         if kind in {"on_chain_end", "on_chain_error"} and name in _LONG_RUNNING_CHAIN_NAMES:
             self.has_productive_stream_activity = True
-            self.active_runtime_episode_ids.discard(_event_scope_id(event, name))
+            self.active_runtime_episode_ids.discard(_long_running_chain_scope_id(name))
             return
         if kind == "on_tool_end":
             if not self.active_tool_call_ids:

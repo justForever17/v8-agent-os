@@ -1259,6 +1259,120 @@ def test_parallel_branch_fails_skill_artifact_acceptance_when_skill_md_missing(t
     assert any(path.endswith("SKILL.md") for path in summary["missingArtifacts"])
 
 
+def test_runtime_runner_validates_skill_artifact_without_integration_error(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+    from runtimes.extensions.skills.artifact_validator import SkillArtifactValidator
+
+    target_dir = tmp_path / ".agents" / "skills" / "sanyueqi-perspective"
+    research_dir = target_dir / "references" / "research"
+    research_dir.mkdir(parents=True)
+    (target_dir / "SKILL.md").write_text(
+        """---
+name: sanyueqi-perspective
+description: 用三月七视角分析问题和表达建议。
+---
+
+# 三月七视角
+
+## 触发说明
+当用户要求用三月七视角分析、安慰、吐槽或做角色化表达时使用。
+
+## 心智模型
+保留角色语气，但不要编造官方剧情。
+
+## 表达 DNA
+轻快、真诚、带一点拍照记录感。
+
+## 诚实边界
+未知设定必须标注假设，不把玩家二创当官方事实。
+
+## 调研来源
+见 references/research 下的来源记录。
+""",
+        encoding="utf-8",
+    )
+    for name in SkillArtifactValidator.REQUIRED_RESEARCH_FILES:
+        (research_dir / name).write_text(
+            (
+                f"# {name}\n\n"
+                "结论：这是经过来源约束的调研条目，包含角色设定、剧情表达、玩家解读和时间线证据。\n\n"
+                "来源：https://example.com/honkai-star-rail/march-7th\n"
+                "可信度：medium。该条目用于测试 runner 集成层能正确调用 validator。\n"
+            ),
+            encoding="utf-8",
+        )
+
+    result = RuntimeEpisodeRunner()._validate_skill_artifact_if_requested(
+        {"episodeId": "episode-skill"},
+        need={
+            "workspacePath": str(tmp_path),
+            "targetSkillRoot": str(target_dir),
+            "validateSkillArtifact": True,
+            "requireHuashuResearch": True,
+        },
+        inputs={
+            "workspacePath": str(tmp_path),
+            "validateSkillArtifact": True,
+            "requiredSkillContracts": ["huashu-nuwa", "skill-creator"],
+        },
+    )
+
+    assert result is not None
+    assert result["ok"] is True
+    assert result["status"] == "skill_artifact_ready"
+    assert result["validatedRoot"] == str(target_dir.resolve())
+
+
+def test_runtime_runner_extracts_missing_skill_root_from_goal_text(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    target_dir = tmp_path / ".agents" / "skills" / "sanyueqi-perspective"
+    target_dir.mkdir(parents=True)
+
+    result = RuntimeEpisodeRunner()._validate_skill_artifact_if_requested(
+        {"episodeId": "episode-skill-missing"},
+        need={
+            "workspacePath": str(tmp_path),
+            "reason": f"生成 skill 到 {target_dir}；如果目录存在请覆盖。",
+            "validateSkillArtifact": True,
+        },
+        inputs={
+            "workspacePath": str(tmp_path),
+            "validateSkillArtifact": True,
+            "requiredSkillContracts": ["huashu-nuwa", "skill-creator"],
+        },
+    )
+
+    assert result is not None
+    assert result["ok"] is False
+    assert result["status"] == "skill_artifact_invalid"
+    assert any(item.get("skillRoot") == str(target_dir.resolve()) for item in result["results"])
+    assert any("缺少 SKILL.md" in finding for finding in result["findings"])
+
+
+def test_engineering_worker_briefs_for_skill_artifact_delegate_to_writing_family(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    worker_briefs = [
+        {
+            "goal": "用 huashu-nuwa 和 skill-creator 生成 SKILL.md",
+            "executionLaneHint": "engineering",
+            "familyHint": "engineering",
+            "validateSkillArtifact": True,
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"workspacePath": str(tmp_path)},
+        inputs={"workspacePath": str(tmp_path), "validateSkillArtifact": True},
+    )
+
+    assert normalized[0]["executionLaneHint"] == "subagent"
+    assert normalized[0]["familyHint"] == "writing"
+    assert normalized[0]["preferredAgentId"] == "skill-workflow-curator"
+
+
 def test_parallel_branch_fails_huashu_skill_artifact_when_sparse_or_not_discoverable(tmp_path):
     from graph.parallel_support import _run_parallel_agent_branch
     from langgraph.types import Command

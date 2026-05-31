@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.task_shape_classifier import classify_task_shape
 from graph.workflow_assembly import build_planner_auto_dispatch_node
+import runtimes.chat.runtime as chat_runtime_module
 from runtimes.chat.runtime import ChatRuntime
 from runtimes.engineering.service import engineering_lane_service
 
@@ -17,6 +18,65 @@ def test_explicit_engineering_request_is_detected() -> None:
     assert runtime._detect_explicit_engineering_runtime_request("用工程模式做前端实现")
     assert not runtime._detect_explicit_engineering_runtime_request("做一个小的文字说明")
     assert not runtime._detect_explicit_engineering_runtime_request("只写正文，不调用工程运行时")
+
+
+def test_engineering_continuation_detects_same_session_debug_signal(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    fake_db = SimpleNamespace(
+        list_runtime_episodes=lambda **_: [
+            {
+                "id": "episode-eng-1",
+                "kind": "engineering",
+                "state": "completed",
+                "run_id": "run-1",
+                "workspace_path": str(workspace),
+            }
+        ],
+        list_runtime_artifacts=lambda **_: [],
+        list_engineering_proof_entries=lambda **_: [{"id": "proof-1", "workspace_path": str(workspace), "summary": "patched"}],
+    )
+    monkeypatch.setattr(chat_runtime_module, "db", fake_db)
+
+    assert ChatRuntime._looks_like_engineering_continuation_message("还是不行，控制台报错 TypeError: boom")
+    context = ChatRuntime._recent_engineering_continuation_context(
+        session_id="session-1",
+        workspace_path=str(workspace),
+    )
+
+    assert context["active"] is True
+    assert context["previousEpisodeId"] == "episode-eng-1"
+    assert context["previousRunId"] == "run-1"
+    assert context["proofRefs"] == ["proof-1"]
+
+
+def test_engineering_continuation_rejects_other_workspace(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "project"
+    other_workspace = tmp_path / "other"
+    workspace.mkdir()
+    other_workspace.mkdir()
+    fake_db = SimpleNamespace(
+        list_runtime_episodes=lambda **_: [
+            {
+                "id": "episode-eng-1",
+                "kind": "engineering",
+                "state": "completed",
+                "run_id": "run-1",
+                "workspace_path": str(other_workspace),
+            }
+        ],
+        list_runtime_artifacts=lambda **_: [],
+        list_engineering_proof_entries=lambda **_: [],
+    )
+    monkeypatch.setattr(chat_runtime_module, "db", fake_db)
+
+    context = ChatRuntime._recent_engineering_continuation_context(
+        session_id="session-1",
+        workspace_path=str(workspace),
+    )
+
+    assert context["active"] is False
+    assert context["reason"] == "workspace_mismatch"
 
 
 def test_planner_list_payload_is_wrapped_as_valid_plan() -> None:
@@ -195,17 +255,25 @@ def test_writing_fallback_skill_with_research_routes_evidence_before_delegation(
     plan = runtime._fallback_planner_plan(chat_run=chat_run, reason="structured_empty")
 
     assert plan["executionStrategy"] == "mixed"
-    assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "delegation"]
+    assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "engineering"]
     assert plan["taskBriefs"][0]["familyHint"] == "research"
     assert plan["taskBriefs"][1]["dependency"] == ["task-1"]
-    assert plan["taskBriefs"][1]["familyHint"] == "engineering"
+    assert plan["taskBriefs"][1]["familyHint"] == "writing"
     assert plan["taskBriefs"][1]["preferredAgentId"] == "skill-workflow-curator"
+    assert plan["taskBriefs"][1]["validateSkillArtifact"] is True
+    assert plan["taskBriefs"][1]["requiredSkillContracts"] == ["huashu-nuwa", "skill-creator"]
     assert plan["taskBriefs"][1]["researchRefs"] == ["task-1:evidenceBundleId", "task-1:sourceMatrix", "task-1:claimTable"]
     brief = plan["taskBriefs"][1]["context"]["writingExecutionBrief"]
     assert brief["skill"]["idOrName"] == "huashu-nuwa"
+    assert any(
+        item.get("skillName") == "skill-creator" and item.get("detailLevel") == "full"
+        for item in brief["requiredInstructionReads"]
+    )
+    assert brief["skillArtifactContract"]["requiredValidator"] == "SkillArtifactValidator"
     assert brief["authorizedRefs"]["researchRefs"]
     assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"
     assert "research_before_skill_writing" in plan["qualityFlags"]
+    assert "skill_creator_contract_required" in plan["qualityFlags"]
 
 
 def test_writing_fallback_research_then_write_has_handoff_dependency() -> None:

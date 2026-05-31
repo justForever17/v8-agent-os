@@ -312,6 +312,39 @@ _WRITING_SKILL_TERMS = (
     "技能",
 )
 
+_WRITING_SKILL_ARTIFACT_TERMS = (
+    "造skill",
+    "造 skill",
+    "造人",
+    "女娲",
+    "蒸馏",
+    "生成 skill",
+    "生成skill",
+    "创建 skill",
+    "创建skill",
+    "更新 skill",
+    "更新skill",
+    "写入 skill",
+    "写入skill",
+    "skill.md",
+    ".agents",
+    "references/research",
+)
+
+_WRITING_SKILL_DIRECT_USAGE_TERMS = (
+    "回答",
+    "回复",
+    "安慰",
+    "建议",
+    "怎么看",
+    "视角",
+    "perspective",
+    "answer",
+    "reply",
+    "respond",
+    "advise",
+)
+
 _WRITING_SKILL_CURATOR_TERMS = (
     "skill 设计",
     "skill设计",
@@ -353,6 +386,32 @@ def _extract_skill_name_hint(text: str) -> str:
     return ""
 
 
+def _looks_like_skill_artifact_creation(text: str) -> bool:
+    normalized = _lower_text(text)
+    if not normalized:
+        return False
+    if not _contains_any(normalized, _WRITING_SKILL_ARTIFACT_TERMS):
+        return False
+    # A common planning request is "use huashu-nuwa to output a plan, do not
+    # create/write/save a skill".  Treat that as method usage instead of a file
+    # artifact request unless an explicit target path or create/save verb remains.
+    plan_only_markers = ("只输出计划", "只要计划", "输出执行计划", "不写文件", "不保存", "不创建")
+    explicit_artifact_markers = (
+        "生成 skill",
+        "生成skill",
+        "创建 skill",
+        "创建skill",
+        "写入",
+        "保存",
+        "skill.md",
+        ".agents",
+        "references/research",
+    )
+    if any(marker in normalized for marker in plan_only_markers) and not _contains_any(normalized, explicit_artifact_markers):
+        return False
+    return True
+
+
 def _classify_writing_route(
     *,
     text: str,
@@ -364,26 +423,47 @@ def _classify_writing_route(
     """Return non-authoritative writing routing metadata for planner/supervisor use."""
 
     has_skill = _contains_any(text, _WRITING_SKILL_TERMS)
-    has_skill_writing_verb = has_skill and any(term in str(text or "").lower() for term in ("write", "draft", "写", "撰写"))
+    normalized_text = _lower_text(text)
+    has_skill_writing_verb = has_skill and (
+        any(_term_in_text(normalized_text, term) for term in ("write", "draft", "撰写"))
+        or any(True for _ in _iter_non_negated_term_matches(normalized_text, "写"))
+    )
     has_writing = bool(writing_actions) or _contains_any(text, _WRITING_AMBIGUOUS_DELIVERABLE_TERMS) or has_skill_writing_verb
     has_artifact = _contains_any(text, _WRITING_ARTIFACT_TERMS)
     has_source = bool(research_actions)
+    has_skill_artifact_intent = has_skill and _looks_like_skill_artifact_creation(text)
     if not any((has_writing, has_skill, has_artifact)):
         return {}
 
     skill_name = _extract_skill_name_hint(text)
     is_skill_curator = has_skill and _contains_any(text, _WRITING_SKILL_CURATOR_TERMS)
-    if is_skill_curator:
+    if is_skill_curator or has_skill_artifact_intent:
         return {
             "present": True,
             "mode": "skill_subagent",
-            "reason": "skill_design_or_review_requires_curator",
+            "reason": "skill_design_or_artifact_creation_requires_curator",
+            "needsClarification": False,
+            "requiresResearch": bool(has_source or has_skill_artifact_intent),
+            "requiresArtifact": bool(has_skill_artifact_intent),
+            "requiresSkillExecution": True,
+            "recommendedFamily": "engineering" if has_skill_artifact_intent else "writing",
+            "preferredAgentId": "skill-workflow-curator",
+            "skillName": skill_name,
+            "firstActionTool": "fetch_skill_instructions",
+            "allowCreateSubagentOnMismatch": False,
+        }
+
+    if has_skill and not has_source and not has_artifact and _contains_any(text, _WRITING_SKILL_DIRECT_USAGE_TERMS):
+        return {
+            "present": True,
+            "mode": "direct_supervisor",
+            "reason": "existing_skill_direct_answer_or_perspective_usage",
             "needsClarification": False,
             "requiresResearch": False,
             "requiresArtifact": False,
             "requiresSkillExecution": True,
-            "recommendedFamily": "engineering",
-            "preferredAgentId": "skill-workflow-curator",
+            "recommendedFamily": "",
+            "preferredAgentId": "",
             "skillName": skill_name,
             "firstActionTool": "fetch_skill_instructions",
             "allowCreateSubagentOnMismatch": False,
@@ -489,15 +569,15 @@ def _classify_writing_route(
     return {
         "present": True,
         "mode": "direct_supervisor",
-        "reason": "plain_writing_can_remain_with_supervisor",
+        "reason": "named_skill_can_be_used_directly_by_supervisor" if has_skill else "plain_writing_can_remain_with_supervisor",
         "needsClarification": False,
         "requiresResearch": False,
         "requiresArtifact": False,
-        "requiresSkillExecution": False,
+        "requiresSkillExecution": bool(has_skill),
         "recommendedFamily": "",
         "preferredAgentId": "",
-        "skillName": "",
-        "firstActionTool": "",
+        "skillName": skill_name,
+        "firstActionTool": "fetch_skill_instructions" if has_skill else "",
         "allowCreateSubagentOnMismatch": False,
     }
 
@@ -650,6 +730,27 @@ def classify_task_shape(
             secondary.append("delegation")
             optional_grants.append("delegation.recursive")
             signals.extend(f"delegation_secondary:{item}" for item in delegation_actions[:4])
+    elif writing_route.get("present") and (writing_route.get("requiresSkillExecution") or writing_route.get("requiresArtifact")):
+        primary = "writing"
+        confidence = 0.78
+        reason = str(writing_route.get("reason") or "writing_route_terms")
+        family_scores["writing"] = 0.78
+        recommended_family = str(writing_route.get("recommendedFamily") or "writing").strip()
+        suggested_families = [recommended_family] if recommended_family else ["writing"]
+        if writing_route.get("requiresResearch"):
+            secondary.append("research")
+            suggested_families.append("research")
+            optional_grants.append("research.core")
+            family_scores["research"] = 0.56
+            signals.extend(f"research_secondary:{item}" for item in research_actions[:4])
+        if writing_route.get("requiresArtifact"):
+            secondary.append("project_coding")
+            suggested_families.append("engineering")
+            family_scores["engineering"] = 0.62
+        if writing_route.get("mode") in {"skill_subagent", "writing_subagent"}:
+            secondary.append("delegation")
+            optional_grants.append("delegation.recursive")
+        signals.append(f"writing_route:{writing_route.get('mode') or 'unknown'}")
     elif research_actions and research_project_build_signal:
         primary = "project_coding"
         confidence = 0.86

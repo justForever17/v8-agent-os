@@ -228,6 +228,18 @@ def _runtime_episode_handoff_ready(state) -> bool:
         return False
 
 
+def _runtime_episode_recoverable_failure(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    dispatch_status = state.get("planner_dispatch_status")
+    if not isinstance(dispatch_status, dict):
+        return False
+    mode = str(dispatch_status.get("mode") or "").strip()
+    next_action = str(dispatch_status.get("nextAction") or "").strip()
+    dispatch_state = str(dispatch_status.get("state") or "").strip()
+    return mode == "runtime_episode" and next_action == "recoverable_failure" and bool(dispatch_state)
+
+
 def _runtime_handoff_final_message() -> HumanMessage:
     return HumanMessage(
         content=(
@@ -238,6 +250,46 @@ def _runtime_handoff_final_message() -> HumanMessage:
             "unless the user sends a new request."
         )
     )
+
+
+def _runtime_recoverable_failure_message(state) -> HumanMessage:
+    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
+    return HumanMessage(
+        content=(
+            "[Runtime Recoverable Failure]\n"
+            "A runtime episode that was required for the current user request failed or produced a failed handoff. "
+            "You MUST NOT claim the user request is complete, and you MUST NOT summarize failed artifacts as delivered.\n"
+            f"Failure reason: {reason}\n"
+            "If the request is still actionable, continue through the runtime/subagent route with a concrete repair task "
+            "that includes the failed acceptance reason and required artifact contract. If you cannot repair it in this turn, "
+            "tell the user the exact blocker and what still needs to be fixed. Do not call direct mutation tools to bypass "
+            "runtime gate."
+        )
+    )
+
+
+def _response_has_tool_calls(response) -> bool:
+    if getattr(response, "tool_calls", None):
+        return True
+    additional_kwargs = dict(getattr(response, "additional_kwargs", None) or {})
+    return bool(additional_kwargs.get("tool_calls") or additional_kwargs.get("toolCalls"))
+
+
+def _coerce_recoverable_failure_response(response, state):
+    if not _runtime_episode_recoverable_failure(state) or _response_has_tool_calls(response):
+        return response
+    content = str(getattr(response, "content", "") or "")
+    if any(marker in content for marker in ("未完成", "失败", "阻塞", "需要修复", "recoverable", "failed", "blocked")):
+        return response
+    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
+    response.content = (
+        "这次任务还没有真正完成：必需的 runtime episode 已失败，"
+        f"失败原因是 `{reason}`。我不会把失败的产物当作已交付；需要继续走 runtime/subagent 修复链路，"
+        "或根据失败原因补齐验收要求后重试。"
+    )
+    return response
 
 
 def execute_supervisor_turn(
@@ -421,6 +473,8 @@ def execute_supervisor_turn(
         if _runtime_episode_handoff_ready(state):
             filtered_supervisor_tools = []
             prepared_messages.append(_runtime_handoff_final_message())
+        elif _runtime_episode_recoverable_failure(state):
+            prepared_messages.append(_runtime_recoverable_failure_message(state))
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],
@@ -453,6 +507,7 @@ def execute_supervisor_turn(
             ),
         )
         response = sanitize_response_tool_calls(response)
+        response = _coerce_recoverable_failure_response(response, state)
         _attach_route_context_to_response(
             response,
             user_query=user_query,

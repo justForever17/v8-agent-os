@@ -13,6 +13,7 @@ from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_f
 @pytest.fixture(autouse=True)
 def _isolated_research_ledger(monkeypatch, tmp_path):
     monkeypatch.setenv("V8_RESEARCH_LEDGER_PATH", str(tmp_path / "research_ledger.json"))
+    monkeypatch.setattr(research_module, "_invoke_web_research_architect_agent", lambda **kwargs: None)
 
 
 class _ToolRef:
@@ -128,6 +129,10 @@ def test_research_broker_run_returns_evidence_bundle(monkeypatch):
     assert payload["finalExperiencePack"]["architectAgentId"] == "web-research-architect"
     assert "Web Research Architect final result" in payload["answer"]
     assert payload["finalExperiencePack"]["sourceUrls"][0]["url"] == "https://docs.example.com/research"
+    assert payload["claimTable"]
+    assert payload["researchLoopState"]["phase"] == "research_loop"
+    assert payload["researchLoopState"]["readSources"]
+    assert payload["experienceReuse"]["reuseDecision"] in {"ignore", "refresh"}
 
     observed = json.loads(
         research_module.research_broker.func(
@@ -163,6 +168,313 @@ def test_research_broker_run_returns_evidence_bundle(monkeypatch):
         )
     )
     assert matches["items"]
+    assert matches["reuseDecision"]["reuseDecision"] in {"reuse", "refresh"}
+
+
+def test_research_broker_uses_source_router_by_default(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 1, "maxShardCount": 1, "maxRounds": 1}},
+    )
+    calls: list[str] = []
+
+    def fake_source_router_search(**kwargs):
+        calls.append(kwargs["query"])
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "router",
+                "networkRoute": "global",
+                "providerAttemptMatrix": [{"provider": "router", "ok": True}],
+                "results": [
+                    {
+                        "title": "Router source",
+                        "url": "https://docs.router.example/page",
+                        "snippet": "Router sourced result.",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(research_module, "source_router_search", fake_source_router_search)
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="source router contract",
+            maxShards=1,
+            maxRounds=1,
+            state={"run_id": "run-router"},
+        )
+    )
+
+    assert calls
+    assert payload["sourceMatrix"][0]["provider"] == "router"
+    assert payload["providerAttemptMatrix"][0]["provider"] == "router"
+
+
+def test_research_broker_uses_web_research_architect_agent_when_available(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {
+            "research": {
+                "enabled": True,
+                "defaultShardCount": 1,
+                "maxShardCount": 1,
+                "maxRounds": 1,
+                "architectAgentSynthesisEnabled": True,
+            }
+        },
+    )
+
+    def fake_search(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": "Official Architect Source",
+                        "url": "https://docs.example.com/architect",
+                        "snippet": "Official source snippet.",
+                    }
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "title": "Official Architect Source",
+                "status": 200,
+                "text": "The official page says the architecture uses a source router, research loop, and synthesis pass.",
+            }
+        )
+
+    def fake_architect(**kwargs):
+        return {
+            "headline": "模型提纯后的 Web Research Architect 结论",
+            "researchResult": "最终结论：Research Runtime 应由 Source Router、Research Agent Loop 和 Web Research Architect 三层组成。",
+            "claimTable": [
+                {
+                    "claim": "Research Runtime 应分为三层。",
+                    "sourceURL": "https://docs.example.com/architect",
+                    "refutingSources": [],
+                    "confidence": "high",
+                }
+            ],
+            "conflictMatrix": [],
+            "missingEvidence": [],
+            "assumptions": [],
+        }
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+    monkeypatch.setattr(research_module, "_invoke_web_research_architect_agent", fake_architect)
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="research runtime architect synthesis",
+            maxShards=1,
+            state={"run_id": "run-architect"},
+        )
+    )
+
+    assert payload["finalExperiencePack"]["synthesisMode"] == "model_agent"
+    assert payload["finalExperiencePack"]["modelSynthesis"]["agentId"] == "web-research-architect"
+    assert payload["answer"].startswith("最终结论")
+    assert payload["claimTable"][0]["supportingSources"][0]["url"] == "https://docs.example.com/architect"
+
+
+def test_research_broker_reuses_existing_experience_pack(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 1, "maxShardCount": 1, "maxRounds": 2}},
+    )
+    search_calls = 0
+
+    def fake_search(**kwargs):
+        nonlocal search_calls
+        search_calls += 1
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": "Official repeat topic docs",
+                        "url": "https://docs.example.com/repeat",
+                        "snippet": "Primary repeat source.",
+                    }
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "title": "Official repeat topic docs",
+                "status": 200,
+                "text": "Repeat topic has a stable source-backed conclusion. It is reusable for future matching questions.",
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    first = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="repeat topic experience reuse",
+            maxShards=1,
+            state={"run_id": "run-reuse"},
+        )
+    )
+    second = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="repeat topic experience reuse",
+            maxShards=1,
+            state={"run_id": "run-reuse"},
+        )
+    )
+
+    assert first["ok"] is True
+    assert second["experienceReuse"]["reuseDecision"] == "reuse"
+    assert second["researchLoopState"]["stopReason"] == "experience_reused"
+    assert search_calls == 2
+
+
+def test_research_broker_does_not_reuse_unrelated_pack(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 1, "maxShardCount": 1, "maxRounds": 1}},
+    )
+
+    def fake_search(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": "OpenClaw Plugin SDK",
+                        "url": "https://docs.example.com/openclaw",
+                        "snippet": "OpenClaw plugin SDK source.",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=lambda **kwargs: json.dumps({"ok": True, "text": "OpenClaw plugin SDK documentation."})))
+
+    first = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="OpenClaw plugin SDK patterns",
+            state={"run_id": "run-unrelated"},
+        )
+    )
+    assert first["ok"] is True
+
+    second = json.loads(
+        research_module.research_broker.func(
+            mode="search_experience",
+            query="Python pathlib CLI best practices",
+            state={"run_id": "run-unrelated"},
+        )
+    )
+    assert second["items"] == []
+    assert second["reuseDecision"]["reuseDecision"] == "ignore"
+    assert second["reuseDecision"]["reason"] in {"no_matching_experience_pack", "no_topic_matched_reusable_candidate_after_filtering"}
+
+
+def test_reuse_decision_ignores_generic_stopword_overlap():
+    decision = research_module._experience_reuse_decision(
+        [
+            {
+                "experiencePackId": "rxp-openclaw",
+                "title": "Research the latest OpenClaw plugin SDK patterns",
+                "query": "Research the latest OpenClaw plugin SDK patterns and API exports",
+                "confidence": "high",
+                "sourcePolicy": "authoritative",
+            }
+        ],
+        question="What are the current best practices for using Python pathlib in CLI tools? cite official sources.",
+        source_policy="authoritative",
+        freshness="auto",
+    )
+
+    assert decision["reuseDecision"] == "ignore"
+
+
+def test_research_architect_jsonish_field_extraction():
+    raw = (
+        '{\n'
+        '    "headline": "提纯标题",\n'
+        '    "researchResult": "第一行结论\n第二行结论",\n'
+        '    "claimTable": []\n'
+        '}'
+    )
+
+    assert research_module._extract_jsonish_string_field(raw, "headline") == "提纯标题"
+    assert "第二行结论" in research_module._extract_jsonish_string_field(raw, "researchResult")
+
+
+def test_research_broker_refines_when_sources_are_not_readable(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 1, "maxShardCount": 2, "maxRounds": 2}},
+    )
+    queries: list[str] = []
+
+    def fake_search(**kwargs):
+        query = kwargs["query"]
+        queries.append(query)
+        suffix = "primary" if "official documentation primary source" in query else "baseline"
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": f"{suffix} source",
+                        "url": f"https://docs.example.com/{suffix}",
+                        "snippet": f"{suffix} snippet",
+                    }
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        if "baseline" in kwargs["url"]:
+            return json.dumps({"ok": False, "title": "blocked", "status": 403, "text": ""})
+        return json.dumps({"ok": True, "title": "primary source", "status": 200, "text": "Primary source body with useful claim."})
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="refinement source gap",
+            maxShards=1,
+            maxRounds=2,
+            state={"run_id": "run-refine"},
+        )
+    )
+
+    assert len(payload["researchLoopState"]["rounds"]) == 2
+    assert any("official documentation primary source" in query for query in queries)
 
 
 def test_research_broker_video_policy_uses_popularity_signals_and_stays_compact(monkeypatch):

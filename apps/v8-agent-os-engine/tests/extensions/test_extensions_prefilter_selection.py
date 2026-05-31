@@ -1361,6 +1361,60 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         self.assertIn("elon-musk-perspective", result)
         self.assertIn("munger-perspective", result)
 
+    def test_fetch_skill_instructions_reads_existing_skill_path_without_fuzzy_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_root = Path(temp_dir) / ".agents" / "skills" / "sanyueqi-perspective"
+            skill_root.mkdir(parents=True, exist_ok=True)
+            skill_file = skill_root / "SKILL.md"
+            skill_file.write_text(
+                """---
+name: sanyueqi-perspective
+description: 三月七视角 skill。
+---
+# 三月七视角
+
+## 心智模型
+以好奇、记录和守护同伴为核心。
+""",
+                encoding="utf-8",
+            )
+
+            result_from_dir = fetch_skill_instructions.invoke(
+                {"skill_name": str(skill_root), "detail_level": "summary"}
+            )
+            result_from_file = fetch_skill_instructions.invoke(
+                {"skill_name": str(skill_file), "detail_level": "summary"}
+            )
+
+        self.assertIn("Skill Name: sanyueqi-perspective", result_from_dir)
+        self.assertIn("Skill Root:", result_from_dir)
+        self.assertIn("三月七视角", result_from_dir)
+        self.assertIn("Skill Name: sanyueqi-perspective", result_from_file)
+        self.assertNotIn("find-skills", result_from_dir)
+
+    def test_path_like_missing_skill_does_not_fuzzy_match_unrelated_skills(self):
+        skills = [
+            {
+                "skillId": "global:find-skills",
+                "skillName": "find-skills",
+                "name": "find-skills",
+                "folder": "find-skills",
+                "description": "Find installable skills for user requests.",
+                "skillRoot": "C:/skills/find-skills",
+                "instructionPath": "C:/skills/find-skills/SKILL.md",
+                "aliases": [],
+                "triggers": [],
+                "keywords": ["skill"],
+                "tags": [],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = str(Path(temp_dir) / ".agents" / "skills" / "sanyueqi-perspective")
+            with patch.object(SkillLoader, "get_inventory", return_value={"items": skills, "rootDescriptors": []}), patch.object(
+                SkillLoader, "reload_if_changed", return_value={"changed": False}
+            ):
+                self.assertEqual(SkillLoader.resolve_skill_matches(missing_path), [])
+
     def test_skill_loader_can_overlay_llm_assisted_profile(self):
         with patch.object(SkillLoader, "_should_attempt_llm_profile_inference", return_value=True), patch.object(
             SkillLoader,

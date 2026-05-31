@@ -26,6 +26,7 @@ type ExperiencePack = {
     query?: string;
     summary?: string;
     resultPreview?: string;
+    researchResult?: string;
     answer?: string;
     findings?: string;
     applicability?: string;
@@ -35,6 +36,8 @@ type ExperiencePack = {
     usageCount?: number;
     lastUsedAt?: string | null;
     archivedAt?: string | null;
+    sourceUrls?: string[];
+    claimDigest?: Array<{ claim?: string }>;
     sourceMatrixDigest?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
     createdFromBundleId?: string;
 };
@@ -82,10 +85,14 @@ function normalizeErrorCode(value?: string) {
 
 function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeof useT>) {
     const lines: string[] = [];
-    const rawResult = String(item.resultPreview || item.answer || item.findings || item.summary || "").trim();
+    const rawResult = String(item.researchResult || item.resultPreview || item.answer || item.findings || item.summary || "").trim();
     const summary = rawResult.toLowerCase().startsWith("collected ") ? "" : rawResult;
     const applicability = String(item.applicability || "").trim();
     if (summary) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${summary.length > 1200 ? `${summary.slice(0, 1200)}…` : summary}`);
+    for (const itemClaim of (Array.isArray(item.claimDigest) ? item.claimDigest : []).slice(0, 3)) {
+        const claim = String(itemClaim?.claim || "").trim();
+        if (claim) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${claim.length > 420 ? `${claim.slice(0, 420)}…` : claim}`);
+    }
     if (applicability) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.applicability")}: ${applicability}`);
     const sources = Array.isArray(item.sourceMatrixDigest) ? item.sourceMatrixDigest : [];
     for (const source of sources.slice(0, 4)) {
@@ -93,6 +100,10 @@ function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeo
         if (!title) continue;
         const host = String(source.host || "").trim();
         lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.source")}: ${title}${host && host !== title ? ` · ${host}` : ""}`);
+    }
+    for (const url of (Array.isArray(item.sourceUrls) ? item.sourceUrls : []).slice(0, Math.max(0, 4 - sources.length))) {
+        const text = String(url || "").trim();
+        if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.source")}: ${text}`);
     }
     if (!lines.length && item.experiencePackId) {
         lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.experiencePack")}: ${item.experiencePackId}`);

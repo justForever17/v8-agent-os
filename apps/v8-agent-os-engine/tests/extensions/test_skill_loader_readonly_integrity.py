@@ -49,7 +49,7 @@ def test_skill_delete_api_is_the_only_loader_path_that_removes_directory(tmp_pat
     assert "backupPath" in source
 
 
-def test_safety_reviews_direct_skill_file_write(tmp_path):
+def test_safety_allows_workspace_skill_artifact_file_write(tmp_path):
     workspace = tmp_path / "workspace"
     skill_file = workspace / ".agents" / "skills" / "demo" / "SKILL.md"
 
@@ -57,6 +57,19 @@ def test_safety_reviews_direct_skill_file_write(tmp_path):
         str(skill_file),
         append=False,
         runtime_context={"workspace_path": str(workspace)},
+    )
+
+    assert decision.verdict == "allow"
+    assert decision.risk_code == "workspace_skill_artifact_write_allowed"
+
+
+def test_safety_reviews_global_skill_file_write():
+    skill_file = Path.home() / ".agents" / "skills" / "demo" / "SKILL.md"
+
+    decision = safety_guardian.assess_file_write(
+        str(skill_file),
+        append=False,
+        runtime_context={},
     )
 
     assert decision.verdict == "review"

@@ -1,6 +1,7 @@
 import hashlib
 
 import asyncio
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -126,6 +127,50 @@ def build_planner_auto_dispatch_node():
         if kind == "delegation":
             return briefs
         return briefs[:1] if briefs else []
+
+    def _brief_research_query(briefs: list[dict], item: dict) -> str:
+        for source in [*briefs, item]:
+            if not isinstance(source, dict):
+                continue
+            for key in ("routeQuery", "query", "question", "goal", "title", "reason"):
+                value = str(source.get(key) or "").strip()
+                if value:
+                    return value
+            context = source.get("context")
+            if isinstance(context, dict):
+                for key in ("routeQuery", "query", "question", "userRequest"):
+                    value = str(context.get(key) or "").strip()
+                    if value:
+                        return value
+        return ""
+
+    def _research_requires_full_run(briefs: list[dict], inputs: dict, item: dict) -> bool:
+        blob = json.dumps(
+            {
+                "briefs": briefs,
+                "inputs": inputs,
+                "item": item,
+            },
+            ensure_ascii=False,
+            default=str,
+        ).lower()
+        return any(
+            marker in blob
+            for marker in (
+                "full_read",
+                "multi_source",
+                "evidence_bundle",
+                "claim_table",
+                "claimtable",
+                "sourcematrix",
+                "source_matrix",
+                "research_before",
+                "architect",
+                "source quality",
+                "source_quality",
+                "citations",
+            )
+        )
 
     def _capability_items(plan: dict) -> list[dict]:
         explicit_items = [dict(item) for item in list(plan.get("capabilityPlan") or []) if isinstance(item, dict)]
@@ -324,6 +369,23 @@ def build_planner_auto_dispatch_node():
                     inputs.setdefault("workerBriefs", matching_briefs)
                     inputs.setdefault("targetCount", len(matching_briefs))
                 inputs = _inherit_child_delegation_policy(inputs, matching_briefs)
+                if kind == "research":
+                    research_query = _brief_research_query(matching_briefs, item)
+                    if research_query:
+                        inputs.setdefault("query", research_query)
+                        inputs.setdefault("question", research_query)
+                        need_payload.setdefault("query", research_query)
+                    first_context = matching_briefs[0].get("context") if matching_briefs else None
+                    source_policy = str(
+                        inputs.get("sourcePolicy")
+                        or inputs.get("source_policy")
+                        or (first_context.get("sourcePolicy") if isinstance(first_context, dict) else "")
+                        or ""
+                    ).strip()
+                    if source_policy:
+                        inputs.setdefault("sourcePolicy", source_policy)
+                    if _research_requires_full_run(matching_briefs, inputs, item):
+                        inputs.setdefault("mode", "run")
             if kind == "engineering" and plan_allows_child_delegation:
                 inputs["allowChildDelegation"] = True
                 existing_budget = (
@@ -685,6 +747,20 @@ def build_runtime_episode_wait_node():
         lines.append("Supervisor must use these runtime facts and must not retry direct mutating tools while active episodes remain.")
         return HumanMessage(content="\n".join(lines))
 
+    def _failed_handoffs(handoffs: list[dict]) -> list[dict]:
+        return [
+            handoff
+            for handoff in handoffs
+            if str(handoff.get("status") or "").strip().lower() in {"failed", "blocked", "error", "recoverable_failed"}
+        ]
+
+    def _failed_episodes(episodes: list[dict]) -> list[dict]:
+        return [
+            episode
+            for episode in episodes
+            if str(episode.get("state") or "").strip().lower() in {"failed", "cancelled", "canceled"}
+        ]
+
     async def runtime_episode_wait_node(state):
         session_id, run_id, workspace_path = _state_runtime_identity(state)
         route_context = dict((state or {}).get("current_route_context") or {})
@@ -716,6 +792,43 @@ def build_runtime_episode_wait_node():
             active = _active_episodes(episodes)
             terminal = _terminal_episodes(episodes)
             if episodes and not active:
+                failed_handoffs = _failed_handoffs(handoffs)
+                failed_episodes = _failed_episodes(terminal or episodes)
+                if failed_handoffs or failed_episodes:
+                    failure_reason = _string_value(
+                        (failed_episodes[0] if failed_episodes else {}).get("errorCode"),
+                        (failed_episodes[0] if failed_episodes else {}).get("error_code"),
+                        (failed_episodes[0] if failed_episodes else {}).get("errorMessage"),
+                        (failed_episodes[0] if failed_episodes else {}).get("error_message"),
+                        (failed_handoffs[0] if failed_handoffs else {}).get("errorCode"),
+                        (failed_handoffs[0] if failed_handoffs else {}).get("compactSummary"),
+                        "runtime_episode_failed",
+                    )
+                    return Command(
+                        goto="supervisor",
+                        update={
+                            "current_route_context": route_context,
+                            **identity_update,
+                            "planner_dispatch_status": {
+                                "mode": "runtime_episode",
+                                "nextAction": "recoverable_failure",
+                                "state": "episode_failed",
+                                "episodeCount": len(episodes),
+                                "handoffCount": len(handoffs),
+                                "failedEpisodeCount": len(failed_episodes),
+                                "failedHandoffCount": len(failed_handoffs),
+                                "reason": failure_reason,
+                            },
+                            "messages": [
+                                _summary_message(
+                                    episodes=failed_episodes or terminal or episodes,
+                                    handoffs=failed_handoffs or handoffs,
+                                    status="Recoverable Failure",
+                                    reason=failure_reason,
+                                )
+                            ],
+                        },
+                    )
                 return Command(
                     goto="supervisor",
                     update={

@@ -5717,12 +5717,28 @@ def _enrich_route_need_for_episode(
                 ],
             )
     elif kind == "research":
-        query = str(inputs.get("query") or enriched.get("query") or enriched.get("reason") or "").strip()
+        route_briefs = planner_briefs or normalize_task_briefs(inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        brief_query = ""
+        for brief in route_briefs:
+            if not isinstance(brief, dict):
+                continue
+            for key in ("routeQuery", "query", "question", "goal", "title"):
+                value = str(brief.get(key) or "").strip()
+                if value:
+                    brief_query = value
+                    break
+            if brief_query:
+                break
+        query = str(inputs.get("query") or enriched.get("query") or brief_query or enriched.get("reason") or "").strip()
         if query:
             inputs.setdefault("query", query)
+            inputs.setdefault("question", query)
         if not inputs.get("taskBriefs"):
-            inputs["taskBriefs"] = planner_briefs or [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
+            inputs["taskBriefs"] = route_briefs or [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
         inputs.setdefault("sourcePolicy", "multi_source_evidence")
+        research_blob = json.dumps(inputs.get("taskBriefs") or [], ensure_ascii=False, default=str).lower()
+        if any(marker in research_blob for marker in ("full_read", "multi_source", "evidence_bundle", "claim_table", "claimtable", "sourcematrix", "source_matrix", "citations")):
+            inputs.setdefault("mode", "run")
 
     enriched["inputs"] = inputs
     return enriched
@@ -9906,6 +9922,62 @@ def _coerce_delegation_dict(value: Any) -> dict[str, Any]:
     return dict(parsed) if isinstance(parsed, dict) else {}
 
 
+def _delegation_task_has_meaningful_content(value: Any) -> bool:
+    parsed = _coerce_delegation_json_value(value)
+    if isinstance(parsed, str):
+        return bool(parsed.strip())
+    if not isinstance(parsed, dict):
+        return False
+    text_keys = (
+        "goal",
+        "title",
+        "brief",
+        "task",
+        "description",
+        "instructions",
+        "prompt",
+        "routeQuery",
+        "route_query",
+        "acceptanceContract",
+        "acceptance_contract",
+    )
+    for key in text_keys:
+        if str(parsed.get(key) or "").strip():
+            return True
+    context = parsed.get("context")
+    if isinstance(context, dict) and any(str(item or "").strip() for item in context.values()):
+        return True
+    if isinstance(context, str) and context.strip():
+        return True
+    list_keys = (
+        "workerBriefs",
+        "worker_briefs",
+        "workers",
+        "branches",
+        "parallelBranches",
+        "parallel_branches",
+        "writeSet",
+        "write_set",
+        "readSet",
+        "read_set",
+        "requiredCapabilities",
+        "required_capabilities",
+        "runtimeAccess",
+        "runtime_access",
+        "researchRefs",
+        "research_refs",
+    )
+    for key in list_keys:
+        raw = parsed.get(key)
+        if isinstance(raw, (list, tuple)) and any(_delegation_task_has_meaningful_content(item) or str(item or "").strip() for item in raw):
+            return True
+    return False
+
+
+def _filter_meaningful_delegation_tasks(values: list[Any]) -> list[Any]:
+    return [item for item in values if _delegation_task_has_meaningful_content(item)]
+
+
 @tool
 def delegation_broker(
     mode: str = "observe",
@@ -9984,15 +10056,15 @@ def delegation_broker(
         )
 
     if normalized_mode == "dispatch":
-        requested_tasks = list(tasks_list or worker_briefs_list or [])
+        requested_tasks = _filter_meaningful_delegation_tasks(list(tasks_list or worker_briefs_list or []))
         dispatch_task_source = "explicit"
         if not requested_tasks:
-            requested_tasks = _planner_task_briefs_from_state(
+            requested_tasks = _filter_meaningful_delegation_tasks(_planner_task_briefs_from_state(
                 {
                     **base_state,
                     "current_route_context": inherited_context,
                 }
-            )
+            ))
             if requested_tasks:
                 dispatch_task_source = "planner_or_episode_fallback"
         if not requested_tasks:

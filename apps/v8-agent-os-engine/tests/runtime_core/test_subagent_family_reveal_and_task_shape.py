@@ -198,14 +198,40 @@ def test_skill_driven_writing_requires_skill_subagent() -> None:
     assert hint["writingRoute"]["firstActionTool"] == "fetch_skill_instructions"
 
 
-def test_skill_driven_writing_ignores_negated_skill_creation() -> None:
+def test_skill_direct_usage_ignores_negated_skill_creation() -> None:
     hint = classify_task_shape("使用 huashu-nuwa skill 输出执行计划，不写文件、不创建新 skill。")
 
     assert hint["primaryTaskShape"] == "writing"
-    assert "delegation" in hint["secondaryTaskShapes"]
-    assert hint["writingRoute"]["mode"] == "skill_subagent"
+    assert "delegation" not in hint["secondaryTaskShapes"]
+    assert hint["writingRoute"]["mode"] == "direct_supervisor"
+    assert hint["writingRoute"]["requiresSkillExecution"] is True
     assert hint["writingRoute"]["skillName"] == "huashu-nuwa"
     assert hint["writingRoute"]["firstActionTool"] == "fetch_skill_instructions"
+
+
+def test_existing_perspective_skill_answer_stays_direct_supervisor() -> None:
+    hint = classify_task_shape("用 sanyueqi-perspective skill 回答：朋友迷路害怕时应该怎么安慰？")
+
+    assert hint["primaryTaskShape"] == "writing"
+    assert "research" not in hint["secondaryTaskShapes"]
+    assert "project_coding" not in hint["secondaryTaskShapes"]
+    assert "delegation" not in hint["secondaryTaskShapes"]
+    assert hint["writingRoute"]["mode"] == "direct_supervisor"
+    assert hint["writingRoute"]["requiresSkillExecution"] is True
+    assert hint["writingRoute"]["skillName"] == "sanyueqi-perspective"
+    assert hint["writingRoute"]["firstActionTool"] == "fetch_skill_instructions"
+
+
+def test_huashu_nuwa_skill_creation_still_requires_runtime_artifact() -> None:
+    hint = classify_task_shape("使用 huashu-nuwa skill 调研三月七并生成 skill，写入 .agents/skills/sanyueqi-perspective。")
+
+    assert hint["primaryTaskShape"] == "writing"
+    assert "research" in hint["secondaryTaskShapes"]
+    assert "project_coding" in hint["secondaryTaskShapes"]
+    assert hint["writingRoute"]["mode"] == "skill_subagent"
+    assert hint["writingRoute"]["requiresResearch"] is True
+    assert hint["writingRoute"]["requiresArtifact"] is True
+    assert hint["writingRoute"]["preferredAgentId"] == "skill-workflow-curator"
 
 
 def test_family_hint_filters_local_agent_selection() -> None:

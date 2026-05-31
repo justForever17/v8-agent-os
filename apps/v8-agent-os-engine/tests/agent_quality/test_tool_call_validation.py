@@ -191,3 +191,19 @@ def test_delegation_dispatch_without_tasks_is_single_diagnostic_not_fake_swarm()
     assert payload["missingResult"] is True
     assert payload["exampleTasks"]
     assert "parallel_invocations" not in command.update
+
+
+def test_delegation_dispatch_null_task_is_single_diagnostic_not_fake_swarm() -> None:
+    command = delegation_broker.func(
+        mode="dispatch",
+        tasks=[{"taskBriefId": None, "goal": None, "executionLaneHint": None, "preferredAgentId": None}],
+        state={"current_route_context": {}},
+        tool_call_id="call-delegation-null-task-agent-quality",
+    )
+    payload = _payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "missing_tasks"
+    assert payload["dispatchStatus"] == "missing_tasks"
+    assert payload["diagnosticKey"] == "delegation_missing_tasks"
+    assert "parallel_invocations" not in command.update

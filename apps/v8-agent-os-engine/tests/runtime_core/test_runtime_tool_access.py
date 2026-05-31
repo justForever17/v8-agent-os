@@ -232,6 +232,23 @@ def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
     assert payload["exampleTasks"]
 
 
+def test_delegation_broker_null_task_is_structured_and_diagnostic_only():
+    command = delegation_broker.func(
+        mode="dispatch",
+        tasks=[{"taskBriefId": None, "goal": None, "preferredAgentId": None}],
+        state={"current_route_context": {}},
+        tool_call_id="call-delegation-null-task",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "missing_tasks"
+    assert payload["dispatchStatus"] == "missing_tasks"
+    assert payload["missingTasks"] is True
+    assert payload["diagnosticKey"] == "delegation_missing_tasks"
+    assert "parallel_invocations" not in command.update
+
+
 def test_windows_shell_syntax_violation_blocks_posix_mkdir(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
 

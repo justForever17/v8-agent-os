@@ -1566,38 +1566,113 @@ class ChatRuntime:
             preferred_agent = str(writing_route.get("preferredAgentId") or "").strip()
             required = ["writing", "follow_skill_workflow", "fetch_skill_instructions"] if mode == "skill_subagent" else ["writing", "document", "explain"]
             behavior = ["skill_driven_writing", "isolated_context"] if mode == "skill_subagent" else ["writing", "independent_review"]
+            requires_research = bool(writing_route.get("requiresResearch"))
+            research_refs = ["task-1:evidenceBundleId", "task-1:sourceMatrix", "task-1:claimTable"] if requires_research else []
+            task_id = "task-2" if requires_research else "task-1"
+            dependency = ["task-1"] if requires_research else []
+            research_brief = None
+            if requires_research:
+                skill_name = str(writing_route.get("skillName") or "").strip()
+                research_goal = latest_user_content or "Collect source-backed evidence for the requested skill-driven writing."
+                if skill_name:
+                    research_goal = f"Collect source-backed evidence required by {skill_name} before writing: {research_goal}"
+                research_brief = normalize_task_brief(
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": research_goal,
+                        "context": {
+                            **fallback_context,
+                            "writingRoute": writing_route,
+                            "sourcePolicy": "multi_source_full_read_required",
+                            "researchFor": "skill_driven_writing",
+                        },
+                        "writeSet": [],
+                        "behaviorScope": ["research", "read_only", "evidence_collection", "source_quality"],
+                        "requiredCapabilities": ["web_research", "source_quality", "citations", "evidence_bundle", "claim_table"],
+                        "acceptanceContract": "Produce a compact evidence bundle with final researchResult, claimTable, sourceMatrix, conflicts, confidence, source URLs, and raw refs. Do not return bare search snippets as conclusions.",
+                        "executionLaneHint": "auto",
+                        "familyHint": "research",
+                        "runtimeAccess": ["research.core"],
+                        "routeQuery": research_goal,
+                    }
+                )
             brief = normalize_task_brief(
                 {
-                    "taskBriefId": "task-1",
+                    "taskBriefId": task_id,
                     "goal": latest_user_content or "Complete the delegated writing task.",
                     "context": {
                         **fallback_context,
                         "writingRoute": writing_route,
-                        "writingExecutionBrief": self._writing_execution_brief(user_request=latest_user_content, route=writing_route),
+                        "writingExecutionBrief": self._writing_execution_brief(
+                            user_request=latest_user_content,
+                            route=writing_route,
+                            research_refs=research_refs,
+                        ),
+                        **({"requiredResearchEvidence": research_refs} if research_refs else {}),
                     },
                     "writeSet": [],
                     "behaviorScope": behavior,
                     "requiredCapabilities": required,
-                    "acceptanceContract": "Read any named skill instructions first, then return final draft plus execution notes, assumptions, and blockers.",
+                    "acceptanceContract": (
+                        "Read any named skill instructions first, consume the required research evidence refs before writing, "
+                        "then return final draft/artifact proof plus execution notes, assumptions, and blockers."
+                        if requires_research
+                        else "Read any named skill instructions first, then return final draft plus execution notes, assumptions, and blockers."
+                    ),
+                    "dependency": dependency,
                     "executionLaneHint": "subagent",
                     "familyHint": str(writing_route.get("recommendedFamily") or "writing").strip() or "writing",
                     "preferredAgentId": preferred_agent,
                     "routeQuery": "skill workflow writing" if mode == "skill_subagent" else "writing document handoff",
+                    **({"researchRefs": research_refs} if research_refs else {}),
                 }
+            )
+            task_briefs = ([research_brief] if research_brief else []) + [brief]
+            task_graph = []
+            if research_brief:
+                task_graph.append({"taskBriefId": "task-1", "title": research_brief["goal"], "dependency": [], "parallelGroup": "research"})
+            task_graph.append({"taskBriefId": task_id, "title": brief["goal"], "dependency": dependency, "parallelGroup": "writing"})
+            capability_plan = []
+            if research_brief:
+                capability_plan.append(
+                    {
+                        "kind": "research",
+                        "source": "planner_fallback",
+                        "reason": "skill_driven_writing_requires_source_evidence",
+                        "taskBriefId": "task-1",
+                        "requiredRuntimeAccess": ["research.core"],
+                        "state": "detected",
+                    }
+                )
+            capability_plan.append(
+                {"kind": "delegation", "source": "planner_fallback", "reason": "writing_subagent_execution_required", "taskBriefId": task_id, "state": "detected"}
             )
             return {
                 "planId": plan_id,
-                "executionStrategy": "delegate",
-                "planSummary": "Delegate specialized writing execution with a bounded WritingExecutionBrief.",
-                "capabilityPlan": [
-                    {"kind": "delegation", "source": "planner_fallback", "reason": "writing_subagent_execution_required", "taskBriefId": "task-1", "state": "detected"}
-                ],
-                "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": "writing"}],
-                "taskBriefs": [brief],
-                "handoffPlan": [],
+                "executionStrategy": "mixed" if requires_research else "delegate",
+                "planSummary": (
+                    "Research first, then delegate skill-driven writing with a bounded WritingExecutionBrief."
+                    if requires_research
+                    else "Delegate specialized writing execution with a bounded WritingExecutionBrief."
+                ),
+                "capabilityPlan": capability_plan,
+                "taskGraph": task_graph,
+                "taskBriefs": task_briefs,
+                "handoffPlan": (
+                    [
+                        {
+                            "fromTaskBriefId": "task-1",
+                            "toTaskBriefId": task_id,
+                            "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix", "claimTable"],
+                            "reason": "Skill-driven writing must consume compact research evidence before drafting artifacts.",
+                        }
+                    ]
+                    if requires_research
+                    else []
+                ),
                 "globalAcceptanceContract": "Use the delegated writing result only if it follows the brief, skill boundary, and no-fabrication contract.",
-                "riskFlags": ["writing_subagent_required"],
-                "qualityFlags": common_quality + (["skill_first_action_required"] if mode == "skill_subagent" else []),
+                "riskFlags": ["writing_subagent_required"] + (["research_evidence_required_before_skill_output"] if requires_research else []),
+                "qualityFlags": common_quality + (["skill_first_action_required"] if mode == "skill_subagent" else []) + (["research_before_skill_writing"] if requires_research else []),
                 "repairCount": 0,
                 "autoDispatchDecision": {},
                 "dispatchEligibilityReason": "",
@@ -1607,11 +1682,29 @@ class ChatRuntime:
             {
                 "taskBriefId": "task-1",
                 "goal": latest_user_content or "Write the requested response directly.",
-                "context": {**fallback_context, "writingRoute": writing_route},
+                "context": {
+                    **fallback_context,
+                    "writingRoute": writing_route,
+                    **(
+                        {
+                            "writingExecutionBrief": self._writing_execution_brief(
+                                user_request=latest_user_content,
+                                route=writing_route,
+                                research_refs=[],
+                            )
+                        }
+                        if writing_route.get("requiresSkillExecution")
+                        else {}
+                    ),
+                },
                 "writeSet": [],
-                "behaviorScope": ["direct_writing"],
-                "requiredCapabilities": ["writing"],
-                "acceptanceContract": "Produce the requested text directly; do not invent sources, files, tests, or memories.",
+                "behaviorScope": ["direct_writing"] + (["skill_guided_answer"] if writing_route.get("requiresSkillExecution") else []),
+                "requiredCapabilities": (["fetch_skill_instructions", "writing"] if writing_route.get("requiresSkillExecution") else ["writing"]),
+                "acceptanceContract": (
+                    "Fetch and follow the selected skill instructions first, then answer directly in chat; do not invent sources, files, tests, or memories."
+                    if writing_route.get("requiresSkillExecution")
+                    else "Produce the requested text directly; do not invent sources, files, tests, or memories."
+                ),
                 "executionLaneHint": "auto",
             }
         )
@@ -3289,6 +3382,59 @@ class ChatRuntime:
                 first_skill = dict(prepared.skill_references[0])
                 skill_name = str(first_skill.get("name") or first_skill.get("id") or "").strip()
                 hint = dict(prepared.task_shape_hint or {})
+                request_text = str(prepared.latest_user_content or "")
+                request_blob_lower = request_text.lower()
+                is_skill_artifact_creation = any(
+                    marker in request_blob_lower
+                    for marker in (
+                        "造skill",
+                        "造 skill",
+                        "造人",
+                        "女娲",
+                        "蒸馏",
+                        "生成 skill",
+                        "生成skill",
+                        "创建 skill",
+                        "创建skill",
+                        "更新 skill",
+                        "更新skill",
+                        ".agents",
+                        "skill.md",
+                        "references/research",
+                    )
+                )
+                if is_skill_artifact_creation and any(
+                    marker in request_blob_lower
+                    for marker in ("只输出计划", "只要计划", "不写文件", "不保存", "不创建")
+                ) and not any(
+                    marker in request_blob_lower
+                    for marker in ("生成 skill", "生成skill", "创建 skill", "创建skill", ".agents", "skill.md", "references/research", "保存到", "写入")
+                ):
+                    is_skill_artifact_creation = False
+                def _has_non_negated_request_marker(markers: tuple[str, ...]) -> bool:
+                    for marker in markers:
+                        start = 0
+                        while True:
+                            index = request_blob_lower.find(marker, start)
+                            if index < 0:
+                                break
+                            left = request_blob_lower[max(0, index - 24) : index]
+                            if not any(neg in left for neg in ("不要", "不需要", "无需", "无须", "不必", "不得", "不能", "不", "no ", "not ", "without ")):
+                                return True
+                            start = index + max(1, len(marker))
+                    return False
+                direct_skill_usage = (
+                    not is_skill_artifact_creation
+                    and not _has_non_negated_request_marker(("调研", "来源", "出处", "联网", "官方", "最新", "保存", "写入", ".md", ".agents"))
+                    and (
+                        any(
+                            marker in request_blob_lower
+                            for marker in ("回答", "回复", "安慰", "建议", "怎么看", "视角", "perspective", "answer", "reply", "respond")
+                        )
+                        or "perspective" in skill_name.lower()
+                        or "视角" in str(first_skill.get("description") or "")
+                    )
+                )
                 signals_before_skill = [str(item or "") for item in list(hint.get("signals") or [])]
                 if skill_name:
                     try:
@@ -3300,45 +3446,66 @@ class ChatRuntime:
                         for item in list(hint.get("secondaryTaskShapes") or [])
                         if str(item or "").strip()
                     ]
-                    if "delegation" not in secondary:
+                    if not direct_skill_usage and "delegation" not in secondary:
                         secondary.append("delegation")
                     suggested = [
                         str(item or "").strip()
                         for item in list(hint.get("suggestedFamilies") or [])
                         if str(item or "").strip()
                     ]
-                    suggested = ["writing", *[item for item in suggested if item != "writing"]]
+                    if direct_skill_usage:
+                        suggested = [item for item in suggested if item not in {"engineering", "research", "delegation"}]
+                    elif is_skill_artifact_creation:
+                        suggested = [
+                            "engineering",
+                            "writing",
+                            *[item for item in suggested if item not in {"engineering", "writing"}],
+                        ]
+                    else:
+                        suggested = ["writing", *[item for item in suggested if item != "writing"]]
                     grants = [
                         str(item or "").strip()
                         for item in list(hint.get("optionalRuntimeGrants") or [])
                         if str(item or "").strip()
                     ]
-                    if "delegation.recursive" not in grants:
+                    if direct_skill_usage:
+                        grants = [item for item in grants if item != "delegation.recursive"]
+                    elif "delegation.recursive" not in grants:
                         grants.append("delegation.recursive")
+                    writing_mode = "direct_supervisor" if direct_skill_usage else "skill_subagent"
+                    writing_reason = (
+                        "selected_existing_skill_can_be_used_directly_by_supervisor"
+                        if direct_skill_usage
+                        else "selected_skill_reference_must_be_executed_by_writing_subagent"
+                    )
                     hint.update(
                         {
                             "primaryTaskShape": "writing",
                             "secondaryTaskShapes": secondary[:4],
                             "confidence": confidence_floor,
-                            "reason": "selected_skill_requires_writing_subagent_execution",
+                            "reason": (
+                                "selected_skill_direct_supervisor_usage"
+                                if direct_skill_usage
+                                else "selected_skill_requires_writing_subagent_execution"
+                            ),
                             "suggestedFamilies": suggested[:6],
                             "optionalRuntimeGrants": grants[:6],
-                            "topFamily": "writing",
+                            "topFamily": "writing" if not direct_skill_usage else "",
                             "writingRoute": {
                                 "present": True,
-                                "mode": "skill_subagent",
-                                "reason": "selected_skill_reference_must_be_executed_by_writing_subagent",
+                                "mode": writing_mode,
+                                "reason": writing_reason,
                                 "needsClarification": False,
-                                "requiresResearch": "research" in secondary,
-                                "requiresArtifact": False,
+                                "requiresResearch": bool("research" in secondary or is_skill_artifact_creation),
+                                "requiresArtifact": bool(is_skill_artifact_creation),
                                 "requiresSkillExecution": True,
-                                "recommendedFamily": "writing",
-                                "preferredAgentId": "",
+                                "recommendedFamily": "" if direct_skill_usage else ("engineering" if is_skill_artifact_creation else "writing"),
+                                "preferredAgentId": "skill-workflow-curator" if is_skill_artifact_creation else "",
                                 "skillName": skill_name,
                                 "firstActionTool": "fetch_skill_instructions",
-                                "allowCreateSubagentOnMismatch": True,
+                                "allowCreateSubagentOnMismatch": (not direct_skill_usage and not is_skill_artifact_creation),
                             },
-                            "signals": [*signals_before_skill, "writing_route:skill_subagent"][:12],
+                            "signals": [*signals_before_skill, f"writing_route:{writing_mode}"][:12],
                         }
                     )
                     prepared.task_shape_hint = hint

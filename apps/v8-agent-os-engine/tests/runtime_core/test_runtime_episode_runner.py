@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from erc.runtime_context import bind_runtime_context
 from core.database import db
@@ -135,6 +136,58 @@ def test_runtime_episode_typed_handoff_artifact_for_research(monkeypatch):
     assert handoffs
     assert handoffs[-1]["payload"]["kind"] == "research_evidence_bundle"
     assert handoffs[-1]["payload"]["artifactId"].startswith("artifact_")
+
+
+def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypatch):
+    calls: list[dict] = []
+
+    def _fake_research_broker(**kwargs):
+        calls.append(dict(kwargs))
+        from langchain_core.messages import ToolMessage
+        from langgraph.types import Command
+
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"mode={kwargs.get('mode')} query={kwargs.get('query')}",
+                        tool_call_id=str(kwargs.get("tool_call_id") or "test"),
+                    )
+                ]
+            }
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "skill_driven_writing_requires_source_evidence"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "Collect real evidence for 三月七.",
+                        "routeQuery": "调研《崩坏：星穹铁道》三月七官方设定与剧情台词",
+                        "context": {"sourcePolicy": "multi_source_full_read_required"},
+                        "requiredCapabilities": ["web_research", "evidence_bundle", "claim_table"],
+                    }
+                ]
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert calls[0]["mode"] == "search_experience"
+    assert calls[1]["mode"] == "run"
+    assert "三月七" in calls[0]["query"]
+    assert calls[0]["query"] != "skill_driven_writing_requires_source_evidence"
+    assert handoff["status"] == "ready"
+    assert handoff["runMode"] == "run"
 
 
 def test_runtime_episode_rpa_prepare_draft_creates_trace_bundle(monkeypatch):
@@ -514,6 +567,56 @@ def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
     assert payload["kind"] == "subagent_result_bundle"
     assert payload["delegationRefs"] == ["delegation-local-1"]
     assert payload["results"][0]["compactTranscript"] == "patch proposal ready"
+
+
+def test_delegation_episode_fails_when_all_workers_are_child_budget_blocked(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "id": "brief-parent",
+                        "title": "Create reusable skill",
+                        "goal": "Create reusable skill",
+                        "agentId": "skill-workflow-curator",
+                    }
+                ],
+                "targetCount": 1,
+            }
+        },
+    )
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command
+
+    def _fake_dispatch(**kwargs):
+        assert kwargs["mode"] == "dispatch"
+        return Command(
+            update={
+                "parallel_results": [
+                    {
+                        "status": "blocked",
+                        "delegationId": "delegation-blocked-1",
+                        "targetLabel": "Skill Workflow Curator",
+                        "error": "child_delegation_not_allowed",
+                        "dispatchStatus": "dispatch_missing_child_budget",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    assert handoff["status"] == "failed"
+    assert handoff["failedDelegationCount"] == 0
+    assert handoff["budgetBlockedChildDelegations"][0]["delegationId"] == "delegation-blocked-1"
+    assert "child_budget_blocked=1" in handoff["compactSummary"]
 
 
 def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkeypatch):
@@ -1115,3 +1218,93 @@ def test_parallel_branch_blocks_child_delegation_without_explicit_budget():
     assert summary["status"] == "blocked"
     assert summary["error"] == "child_delegation_not_allowed"
     assert summary["blockedChildDelegationCount"] == 1
+
+
+def test_parallel_branch_fails_skill_artifact_acceptance_when_skill_md_missing(tmp_path):
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langgraph.types import Command
+
+    target_dir = tmp_path / ".agents" / "skills" / "sanyueqi-perspective"
+    (target_dir / "references" / "research").mkdir(parents=True)
+    (target_dir / "references" / "research" / "01-writings.md").write_text("stub\n", encoding="utf-8")
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "workspace_path": str(tmp_path),
+        "parallel_branch": {
+            "agentId": "writer",
+            "agentName": "Writer",
+            "delegationId": "delegation-artifact-1",
+            "invocationId": "invoke-artifact-1",
+            "taskBriefId": "brief-artifact",
+            "reason": f"Use huashu-nuwa to write {target_dir}\\SKILL.md and references/research/01-writings.md.",
+            "taskBrief": {
+                "goal": f"Write reusable skill into {target_dir}",
+                "context": {"skillName": "huashu-nuwa"},
+                "acceptanceContract": "Required files: SKILL.md and references/research/01-writings.md through 06-timeline.md.",
+            },
+        },
+    }
+
+    def _node_func(_state):
+        return Command(goto="supervisor", update={})
+
+    _delta_messages, _delta_todos, summary, _child_requests = asyncio.run(
+        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert summary["status"] == "failed"
+    assert summary["error"] == "artifact_acceptance_failed"
+    assert any(path.endswith("SKILL.md") for path in summary["missingArtifacts"])
+
+
+def test_parallel_branch_fails_huashu_skill_artifact_when_sparse_or_not_discoverable(tmp_path):
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langgraph.types import Command
+
+    target_dir = tmp_path / ".agents" / "skills" / "sanyueqi-perspective"
+    research_dir = target_dir / "references" / "research"
+    research_dir.mkdir(parents=True)
+    (target_dir / "SKILL.md").write_text("# 三月七视角\n\n待调研后补充。\n", encoding="utf-8")
+    for name in [
+        "01-writings.md",
+        "02-conversations.md",
+        "03-expression-dna.md",
+        "04-external-views.md",
+        "05-decisions.md",
+        "06-timeline.md",
+    ]:
+        (research_dir / name).write_text("待调研\n", encoding="utf-8")
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "workspace_path": str(tmp_path),
+        "parallel_branch": {
+            "agentId": "skill-workflow-curator",
+            "agentName": "Skill Workflow Curator",
+            "delegationId": "delegation-artifact-sparse",
+            "invocationId": "invoke-artifact-sparse",
+            "taskBriefId": "brief-artifact-sparse",
+            "reason": f"Use huashu-nuwa to write {target_dir}\\SKILL.md and references/research/01-writings.md.",
+            "taskBrief": {
+                "goal": f"Write reusable skill into {target_dir}",
+                "context": {"skillName": "huashu-nuwa"},
+                "acceptanceContract": "Required files: SKILL.md and references/research/01-writings.md through 06-timeline.md.",
+            },
+        },
+    }
+
+    def _node_func(_state):
+        return Command(goto="supervisor", update={})
+
+    _delta_messages, _delta_todos, summary, _child_requests = asyncio.run(
+        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert summary["status"] == "failed"
+    assert summary["error"] == "artifact_acceptance_failed"
+    assert any("missing_frontmatter" in item for item in summary["sparseArtifacts"])
+    assert any("missing_sections" in item for item in summary["sparseArtifacts"])
+    assert any("too_short" in item for item in summary["sparseArtifacts"])

@@ -1777,6 +1777,15 @@ class SafetyGuardian:
                     allow_override=False,
                 )
             if mutation_level == "mutation":
+                if self._command_targets_workspace_skill_artifact_root(skill_root_command, runtime_context):
+                    return self._decision(
+                        verdict="allow",
+                        reason="命令只写入当前工作区内的 Skill 产物目录，允许作为本次工作区交付物生成。",
+                        risk_code="workspace_skill_artifact_command_allowed",
+                        governance_target="workspace_artifact",
+                        posture=posture,
+                        details={"command": command, "matched_command": skill_root_command, "runtime_context": runtime_context, "analysis": analysis_payload},
+                    )
                 return self._decision(
                     verdict="review",
                     reason="命令疑似会写入或覆盖 Skill 根目录内容，需要人工确认。",
@@ -1946,6 +1955,16 @@ class SafetyGuardian:
                 posture=posture,
                 details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
                 allow_override=False,
+            )
+
+        if self._is_under_workspace_skill_root(normalized, runtime_context):
+            return self._decision(
+                verdict="allow",
+                reason="workspace_skill_artifact_write_allowed",
+                risk_code="workspace_skill_artifact_write_allowed",
+                governance_target="workspace_artifact",
+                posture=posture,
+                details={"path": str(normalized), "append": append, "runtime_context": runtime_context or {}},
             )
 
         if self._is_under_skill_root(normalized, runtime_context):
@@ -3706,6 +3725,15 @@ class SafetyGuardian:
                 continue
         return False
 
+    def _is_under_workspace_skill_root(self, path: Path, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
+        workspace_root = self._workspace_root_from_context(runtime_context)
+        if workspace_root is None:
+            return False
+        workspace_skill_root = self._normalize_path(str(workspace_root / ".agents" / "skills"))
+        if workspace_skill_root is None:
+            return False
+        return self._is_path_within_root(path, workspace_skill_root)
+
     def _command_touches_skill_root(self, command: str, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
         normalized_command = str(command or "").lower().replace("\\", "/")
         if ".agents/skills" in normalized_command:
@@ -3715,6 +3743,32 @@ class SafetyGuardian:
             if root_text and root_text in normalized_command:
                 return True
         return False
+
+    def _command_targets_workspace_skill_artifact_root(self, command: str, runtime_context: Optional[Dict[str, Any]] = None) -> bool:
+        workspace_root = self._workspace_root_from_context(runtime_context)
+        if workspace_root is None:
+            return False
+        workspace_skill_root = self._normalize_path(str(workspace_root / ".agents" / "skills"))
+        if workspace_skill_root is None:
+            return False
+
+        explicit_paths = self._extract_explicit_paths_from_command(command)
+        skill_paths = [path for path in explicit_paths if self._is_under_skill_root(path, runtime_context)]
+        if skill_paths:
+            return all(self._is_path_within_root(path, workspace_skill_root) for path in skill_paths)
+
+        normalized_command = str(command or "").lower().replace("\\", "/")
+        if ".agents/skills" not in normalized_command:
+            return False
+        # A relative `.agents/skills/...` command is interpreted against the
+        # current runtime workspace. Keep absolute/global skill roots protected.
+        for root in self._skill_root_paths(runtime_context):
+            if self._is_path_within_root(root, workspace_skill_root):
+                continue
+            root_text = str(root).lower().replace("\\", "/")
+            if root_text and root_text in normalized_command:
+                return False
+        return True
 
     def _skill_root_command_mutation_level(self, command: str) -> str:
         lowered = f" {str(command or '').lower()} "

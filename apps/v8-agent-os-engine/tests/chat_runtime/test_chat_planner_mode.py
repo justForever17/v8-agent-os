@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
+from uuid import uuid4
 from unittest.mock import patch
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData
@@ -864,6 +865,48 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(episode["run_id"], "run-synth")
         self.assertEqual(episode["inputs"]["workspacePath"], r"E:\Projects\demo")
 
+    def test_planner_auto_dispatch_research_uses_task_route_query_and_run_mode(self):
+        node = build_planner_auto_dispatch_node()
+        command = node(
+            {
+                "session_id": "session-research-route",
+                "run_id": "run-research-route",
+                "planner_plan": {
+                    "planId": "plan-research-route",
+                    "capabilityPlan": [
+                        {
+                            "kind": "research",
+                            "source": "planner_fallback",
+                            "reason": "skill_driven_writing_requires_source_evidence",
+                            "taskBriefId": "task-1",
+                        }
+                    ],
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "task-1",
+                            "goal": "Collect real sources for March 7th before skill writing.",
+                            "routeQuery": "调研《崩坏：星穹铁道》三月七官方设定、剧情台词、表达风格和版本时间线",
+                            "context": {"sourcePolicy": "multi_source_full_read_required"},
+                            "requiredCapabilities": ["web_research", "evidence_bundle", "claim_table"],
+                            "familyHint": "research",
+                        }
+                    ],
+                    "autoDispatchDecision": {
+                        "mode": "auto",
+                        "willDispatch": True,
+                        "reason": "eligible",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "runtime_episode")
+        episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+        self.assertEqual(episode["kind"], "research")
+        self.assertIn("三月七", episode["inputs"]["query"])
+        self.assertEqual(episode["inputs"]["mode"], "run")
+        self.assertNotEqual(episode["inputs"]["query"], "skill_driven_writing_requires_source_evidence")
+
     def test_planner_auto_dispatch_node_preserves_child_delegation_policy(self):
         node = build_planner_auto_dispatch_node()
         command = node(
@@ -1038,6 +1081,47 @@ class ChatPlannerModeTests(unittest.TestCase):
         refs = command.update["current_route_context"]["handoffRefs"]
         self.assertTrue(any(item.get("handoffRefId") == handoff["handoffRefId"] for item in refs))
         self.assertEqual(command.update["planner_dispatch_status"]["state"], "handoff_ready")
+
+    def test_runtime_episode_wait_node_reports_failed_handoff_as_recoverable_failure(self):
+        node = build_runtime_episode_wait_node()
+        episode_id = f"episode_wait_node_failed_handoff_{uuid4().hex}"
+        episode = build_runtime_episode(
+            need={"episodeId": episode_id, "kind": "engineering", "reason": "create artifact"},
+            kind="engineering",
+            state="queued",
+            continuation_target="runtime_episode_runner",
+        )
+        db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+        handoff = build_handoff_ref(
+            producer_episode_id=episode_id,
+            kind="engineering",
+            compact_summary="Delegated artifact creation failed acceptance.",
+            status="failed",
+            extra={"errorCode": "artifact_acceptance_failed"},
+        )
+        db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+        db.complete_runtime_episode(
+            episode_id,
+            state="failed",
+            result_ref=handoff["handoffRefId"],
+            error_code="artifact_acceptance_failed",
+            error_message="Required SKILL.md was missing.",
+        )
+
+        command = asyncio.run(
+            node(
+                {
+                    "current_route_context": {
+                        "capabilityEpisodes": [episode],
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "supervisor")
+        self.assertEqual(command.update["planner_dispatch_status"]["nextAction"], "recoverable_failure")
+        self.assertEqual(command.update["planner_dispatch_status"]["state"], "episode_failed")
+        self.assertEqual(command.update["planner_dispatch_status"]["failedHandoffCount"], 1)
 
     def test_runtime_episode_wait_node_does_not_resume_on_partial_handoff(self):
         node = build_runtime_episode_wait_node()

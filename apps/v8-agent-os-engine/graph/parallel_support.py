@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
+import re
 import uuid
 from typing import Any
 
@@ -134,6 +136,148 @@ def _extract_tool_names(messages: list[Any]) -> list[str]:
             if name not in names:
                 names.append(name)
     return names
+
+
+def _stringify_for_acceptance(value: Any, *, limit: int = 12000) -> str:
+    try:
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, dict):
+            parts: list[str] = []
+            for key, item in value.items():
+                parts.append(f"{key}: {_stringify_for_acceptance(item, limit=2000)}")
+            text = "\n".join(parts)
+        elif isinstance(value, (list, tuple, set)):
+            text = "\n".join(_stringify_for_acceptance(item, limit=2000) for item in value)
+        else:
+            text = str(value or "")
+    except Exception:
+        text = str(value or "")
+    return text[:limit]
+
+
+def _infer_required_skill_artifacts(branch: dict[str, Any], state: dict[str, Any]) -> list[Path]:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    blob = "\n".join(
+        part
+        for part in [
+            _stringify_for_acceptance(branch.get("reason")),
+            _stringify_for_acceptance(branch.get("taskGoal")),
+            _stringify_for_acceptance(task_brief),
+        ]
+        if part.strip()
+    )
+    if ".agents" not in blob or "skills" not in blob:
+        return []
+    skill_root_match = re.search(
+        r"([A-Za-z]:[\\/][^\r\n\"'<>|]*?\.agents[\\/]skills[\\/][^\s\r\n\"'<>|，。；;]+)",
+        blob,
+    )
+    base_dir: Path | None = None
+    if skill_root_match:
+        raw_path = skill_root_match.group(1).rstrip(".,，。；;:：")
+        base_dir = Path(raw_path)
+        if base_dir.name.lower() == "skill.md":
+            base_dir = base_dir.parent
+    else:
+        workspace = str(
+            state.get("workspace_path")
+            or state.get("workspacePath")
+            or (state.get("current_route_context") or {}).get("workspace_path")
+            or (state.get("current_route_context") or {}).get("workspacePath")
+            or ""
+        ).strip()
+        slug_match = re.search(r"skill[s]?[\\/](?P<slug>[A-Za-z0-9_.-]+)", blob)
+        if workspace and slug_match:
+            base_dir = Path(workspace) / ".agents" / "skills" / slug_match.group("slug")
+    if not base_dir:
+        return []
+    required = [base_dir / "SKILL.md"]
+    if "huashu-nuwa" in blob or "01-writings" in blob or "references/research" in blob.replace("\\", "/"):
+        required.extend(
+            [
+                base_dir / "references" / "research" / "01-writings.md",
+                base_dir / "references" / "research" / "02-conversations.md",
+                base_dir / "references" / "research" / "03-expression-dna.md",
+                base_dir / "references" / "research" / "04-external-views.md",
+                base_dir / "references" / "research" / "05-decisions.md",
+                base_dir / "references" / "research" / "06-timeline.md",
+            ]
+        )
+    return required
+
+
+def _validate_required_skill_artifacts(
+    *,
+    branch: dict[str, Any],
+    state: dict[str, Any],
+    delta_messages: list[Any],
+) -> dict[str, Any] | None:
+    required = _infer_required_skill_artifacts(branch, state)
+    if not required:
+        return None
+    requires_huashu_research = any("references" in str(path).replace("\\", "/") and "research" in str(path).replace("\\", "/") for path in required)
+    placeholder_re = re.compile(
+        r"(待调研|待补充|待填充|占位|空目录|空模板|placeholder|todo|tbd|无官方设定来源|仅示例|示例内容)",
+        re.IGNORECASE,
+    )
+    required_skill_markers = (
+        "心智模型",
+        "决策启发式",
+        "表达DNA",
+        "诚实边界",
+        "调研来源",
+        "时间线",
+    )
+    missing: list[str] = []
+    sparse: list[str] = []
+    observed: list[str] = []
+    for path in required:
+        try:
+            if not path.exists():
+                missing.append(str(path))
+                continue
+            observed.append(str(path))
+            if path.is_file():
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                stripped = text.strip()
+                # Tiny shells are worse than an explicit blocker for reusable skills.
+                if path.name == "SKILL.md":
+                    if not stripped.startswith("---"):
+                        sparse.append(f"{path} (missing_frontmatter)")
+                    min_chars = 3500 if requires_huashu_research else 1000
+                    if len(stripped) < min_chars:
+                        sparse.append(f"{path} (too_short:{len(stripped)}<{min_chars})")
+                    if requires_huashu_research:
+                        missing_markers = [marker for marker in required_skill_markers if marker not in stripped]
+                        if missing_markers:
+                            sparse.append(f"{path} (missing_sections:{','.join(missing_markers)})")
+                else:
+                    min_chars = 500 if requires_huashu_research else 120
+                    if len(stripped) < min_chars:
+                        sparse.append(f"{path} (too_short:{len(stripped)}<{min_chars})")
+                    if requires_huashu_research and not re.search(r"https?://|来源|source|官方|HoYo|米哈游|可信|confidence", stripped, re.IGNORECASE):
+                        sparse.append(f"{path} (missing_sources)")
+                if placeholder_re.search(stripped):
+                    sparse.append(str(path))
+        except Exception:
+            missing.append(str(path))
+    if not missing and not sparse:
+        return None
+    transcript = _compact_transcript(delta_messages, limit=1200)
+    return {
+        "status": "failed",
+        "error": "artifact_acceptance_failed",
+        "dispatchStatus": "artifact_missing_or_sparse",
+        "missingArtifacts": missing,
+        "sparseArtifacts": sparse,
+        "observedArtifacts": observed,
+        "localSelfCheck": "Subagent returned before producing required workspace skill artifacts.",
+        "acceptanceHint": (
+            "Retry after the research handoff is available; write the required SKILL.md and references before reporting success."
+        ),
+        "compactTranscript": transcript,
+    }
 
 
 def _child_request_from_send_state(
@@ -383,7 +527,7 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
     initial_message_count = int(branch.get("initialMessageCount") or len(local_state["messages"]))
     initial_todo_count = int(branch.get("initialTodoCount") or len(local_state["todos"]))
 
-    max_steps = 36
+    max_steps = 72 if _infer_required_skill_artifacts(branch, local_state) else 36
     for _ in range(max_steps):
         if current_node == agent_id:
             runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
@@ -521,6 +665,31 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
 
     delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
     delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
+    artifact_failure = _validate_required_skill_artifacts(
+        branch=branch,
+        state=local_state,
+        delta_messages=delta_messages,
+    )
+    if artifact_failure:
+        return delta_messages, delta_todos, {
+            "invocationId": branch.get("invocationId"),
+            "taskBriefId": branch.get("taskBriefId"),
+            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+            "taskGoal": branch.get("reason"),
+            "agentId": agent_id,
+            "agentName": branch.get("agentName") or agent_id,
+            "delegationId": branch.get("delegationId"),
+            "lane": branch.get("lane") or "subagent",
+            "targetId": agent_id,
+            "targetLabel": branch.get("agentName") or agent_id,
+            "branchIndex": branch.get("branchIndex"),
+            "completedAt": _now_iso(),
+            "messageCount": len(delta_messages),
+            "todoDeltaCount": len(delta_todos),
+            "toolMode": agent_data.get("tool_mode"),
+            "toolsUsed": _extract_tool_names(delta_messages),
+            **artifact_failure,
+        }, []
     summary = {
         "invocationId": branch.get("invocationId"),
         "taskBriefId": branch.get("taskBriefId"),

@@ -124,7 +124,16 @@ def _research_result_preview(bundle: dict[str, Any], *, limit: int = 900) -> str
         "evidence collected. use sourcematrix and fetchedtopsources to write the final answer.",
     }
     for key in ("answer", "result", "findings", "resultPreview", "researchResult"):
-        value = _safe_text(bundle.get(key))
+        raw_value = bundle.get(key)
+        if isinstance(raw_value, dict):
+            value = _safe_text(
+                raw_value.get("researchResult")
+                or raw_value.get("answer")
+                or raw_value.get("headline")
+                or "\n".join(_safe_text(item.get("claim")) for item in _as_list(raw_value.get("claimTable")) if isinstance(item, dict))
+            )
+        else:
+            value = _safe_text(raw_value)
         if value and value.lower() not in generic_answers:
             return value[:limit]
     summary = _safe_text(bundle.get("summary"))
@@ -154,6 +163,39 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
     pack_id = f"rxp_{uuid.uuid5(uuid.NAMESPACE_URL, bundle_id).hex[:16]}"
     created_at = _utc_now_iso()
     result_preview = _research_result_preview(bundle)
+    final_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
+    research_result = _safe_text(
+        final_pack.get("researchResult")
+        or final_pack.get("answer")
+        or bundle.get("answer")
+        or result_preview
+    )
+    source_urls = []
+    for url in _as_list(bundle.get("sourceUrls")):
+        text = _safe_text(url)
+        if text and text not in source_urls:
+            source_urls.append(text)
+    for source in _as_list(bundle.get("sourceMatrix")):
+        if not isinstance(source, dict):
+            continue
+        url = _safe_text(source.get("url"))
+        if url and url not in source_urls:
+            source_urls.append(url)
+    claim_digest = []
+    for item in _as_list(bundle.get("claimTable") or final_pack.get("claimTable"))[:8]:
+        if not isinstance(item, dict):
+            continue
+        claim_digest.append(
+            {
+                "claim": _safe_text(item.get("claim"))[:400],
+                "supportingSources": _as_list(item.get("supportingSources"))[:3],
+                "confidence": item.get("confidence"),
+            }
+        )
+    topic_fingerprint = _safe_text(bundle.get("topicFingerprint"))
+    if not topic_fingerprint:
+        normalized_topic = re.sub(r"\s+", " ", _safe_text(bundle.get("question") or topic).lower()).strip()
+        topic_fingerprint = uuid.uuid5(uuid.NAMESPACE_URL, normalized_topic).hex[:16]
     return {
         "experiencePackId": pack_id,
         "status": status,
@@ -162,6 +204,19 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "summary": result_preview[:600],
         "resultPreview": result_preview,
         "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
+        "researchResult": research_result,
+        "claimDigest": claim_digest,
+        "topicFingerprint": topic_fingerprint,
+        "sourcePolicy": bundle.get("sourcePolicy"),
+        "freshnessWindow": bundle.get("freshness"),
+        "sourceUrls": source_urls[:16],
+        "reusableExperiencePack": {
+            "summary": result_preview[:900],
+            "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
+            "sourceUrls": source_urls[:16],
+            "claimDigest": claim_digest,
+        },
+        "invalidationReason": "",
         "confidence": bundle.get("confidence"),
         "authorityScore": bundle.get("authorityScore"),
         "confidenceTimeline": [
@@ -251,8 +306,11 @@ def search_experience_packs(*, query: str, scope: str = "global", tags: list[str
                     _safe_text(item.get("title")),
                     _safe_text(item.get("query")),
                     _safe_text(item.get("summary")),
+                    _safe_text(item.get("researchResult")),
                     _safe_text(item.get("applicability")),
+                    _safe_text(item.get("sourcePolicy")),
                     " ".join(_safe_text(src.get("host")) for src in _as_list(item.get("sourceMatrixDigest")) if isinstance(src, dict)),
+                    " ".join(_safe_text(url) for url in _as_list(item.get("sourceUrls"))),
                     " ".join(item_tags),
                 ]
             ).lower()
@@ -297,8 +355,11 @@ def search_experience_packs_with_options(
                     _safe_text(item.get("title")),
                     _safe_text(item.get("query")),
                     _safe_text(item.get("summary")),
+                    _safe_text(item.get("researchResult")),
                     _safe_text(item.get("applicability")),
+                    _safe_text(item.get("sourcePolicy")),
                     " ".join(_safe_text(src.get("host")) for src in _as_list(item.get("sourceMatrixDigest")) if isinstance(src, dict)),
+                    " ".join(_safe_text(url) for url in _as_list(item.get("sourceUrls"))),
                     " ".join(item_tags),
                 ]
             ).lower()

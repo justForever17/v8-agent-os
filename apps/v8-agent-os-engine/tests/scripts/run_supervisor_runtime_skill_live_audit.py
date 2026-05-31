@@ -440,6 +440,8 @@ def _load_run_terminal(result: LiveCaseResult) -> tuple[bool, dict[str, Any]]:
     run_status = str(facts.get("runStatus") or "").lower()
     if result.run_id and run_status and run_status not in {"completed", "failed", "cancelled", "canceled", "succeeded", "success"}:
         return False, facts
+    if result.run_id and run_status in {"completed", "succeeded", "success"}:
+        return True, facts
     if active_episodes:
         return False, facts
     return True, facts
@@ -451,6 +453,7 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
     after_seq = 0
     start = time.time()
     last_event_at = start
+    terminal_seen_at: float | None = None
     while time.time() - start < max_wait:
         query = f"?after_seq={after_seq}" if after_seq else ""
         try:
@@ -492,7 +495,9 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
             }:
                 result.key_events.append(_redact({"topic": topic, "payload": payload})[:1600])
         terminal, facts = _load_run_terminal(result)
-        if terminal and time.time() - last_event_at > 2:
+        if terminal and terminal_seen_at is None:
+            terminal_seen_at = time.time()
+        if terminal and (time.time() - last_event_at > 2 or (terminal_seen_at is not None and time.time() - terminal_seen_at > 5)):
             result.status = "completed"
             result.key_events.append(_redact({"terminalFacts": facts})[:1600])
             break

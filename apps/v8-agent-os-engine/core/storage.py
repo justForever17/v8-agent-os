@@ -520,6 +520,8 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "maxShardCount": 30,
             "maxRounds": 5,
             "evidenceTtlSeconds": 21600,
+            "architectAgentSynthesisEnabled": True,
+            "architectAgentTimeoutSeconds": 60,
         },
     },
     "workspace": {"agent_workspace_path": _default_workspace_path()},
@@ -2433,6 +2435,8 @@ class StorageManager:
         raw["maxShardCount"] = max(raw["defaultShardCount"], min(_as_int(raw.get("maxShardCount"), 30), 30))
         raw["maxRounds"] = max(1, min(_as_int(raw.get("maxRounds"), 5), 5))
         raw["evidenceTtlSeconds"] = max(60, min(_as_int(raw.get("evidenceTtlSeconds"), 21600), 7 * 24 * 60 * 60))
+        raw["architectAgentSynthesisEnabled"] = _as_bool(raw.get("architectAgentSynthesisEnabled"), True)
+        raw["architectAgentTimeoutSeconds"] = max(5, min(_as_int(raw.get("architectAgentTimeoutSeconds"), 60), 90))
         return raw
 
     def get_supervisor_config(self) -> Dict[str, Any]:

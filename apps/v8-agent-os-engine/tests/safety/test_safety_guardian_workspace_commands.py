@@ -11,6 +11,8 @@ from erc.safety_guardian import safety_guardian
 
 WORKSPACE_PATH = r"C:\Users\sunny\.v8-agent-os\workspace"
 RUNTIME_CONTEXT = {"workspace_path": WORKSPACE_PATH, "runtime_kind": "chat"}
+TEST7_WORKSPACE_PATH = r"E:\Projects\test7"
+TEST7_RUNTIME_CONTEXT = {"workspace_path": TEST7_WORKSPACE_PATH, "runtime_kind": "chat"}
 
 
 class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
@@ -30,7 +32,7 @@ class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
         self.assertEqual(decision.verdict, "allow")
         self.assertEqual(decision.risk_code, "workspace_file_write_allowed")
 
-    def test_skill_root_file_write_is_reviewed(self):
+    def test_global_skill_root_file_write_is_reviewed(self):
         decision = safety_guardian.assess_file_write(
             str(Path.home() / ".agents" / "skills" / "demo-skill" / "SKILL.md"),
             append=False,
@@ -38,6 +40,15 @@ class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
         )
         self.assertEqual(decision.verdict, "review")
         self.assertEqual(decision.risk_code, "protected_skill_root_write")
+
+    def test_workspace_skill_artifact_file_write_is_allowed(self):
+        decision = safety_guardian.assess_file_write(
+            str(Path(WORKSPACE_PATH) / ".agents" / "skills" / "demo-skill" / "SKILL.md"),
+            append=False,
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "allow")
+        self.assertEqual(decision.risk_code, "workspace_skill_artifact_write_allowed")
 
     def test_skill_root_mutation_command_is_reviewed(self):
         target = Path.home() / ".agents" / "skills" / "demo-skill" / "SKILL.md"
@@ -48,11 +59,37 @@ class SafetyGuardianWorkspaceCommandTests(unittest.TestCase):
         self.assertEqual(decision.verdict, "review")
         self.assertEqual(decision.risk_code, "protected_skill_root_mutation_command")
 
+    def test_workspace_skill_artifact_mutation_command_is_allowed(self):
+        target = Path(WORKSPACE_PATH) / ".agents" / "skills" / "demo-skill" / "SKILL.md"
+        decision = safety_guardian.assess_system_command(
+            f'Set-Content -Path "{target}" -Value "# Demo"',
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "allow")
+        self.assertEqual(decision.risk_code, "workspace_skill_artifact_command_allowed")
+
+    def test_workspace_skill_artifact_relative_mutation_command_is_allowed(self):
+        decision = safety_guardian.assess_system_command(
+            r'Set-Content -Path ".agents\skills\demo-skill\SKILL.md" -Value "# Demo"',
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "allow")
+        self.assertEqual(decision.risk_code, "workspace_skill_artifact_command_allowed")
+
     def test_skill_root_destructive_command_is_blocked(self):
         target = Path.home() / ".agents" / "skills"
         decision = safety_guardian.assess_system_command(
             f'Remove-Item -LiteralPath "{target}" -Recurse -Force',
             runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "block")
+        self.assertEqual(decision.risk_code, "protected_skill_root_destructive_command")
+
+    def test_workspace_skill_artifact_destructive_command_is_blocked(self):
+        target = Path(TEST7_WORKSPACE_PATH) / ".agents" / "skills" / "demo-skill"
+        decision = safety_guardian.assess_system_command(
+            f'Remove-Item -LiteralPath "{target}" -Recurse -Force',
+            runtime_context=TEST7_RUNTIME_CONTEXT,
         )
         self.assertEqual(decision.verdict, "block")
         self.assertEqual(decision.risk_code, "protected_skill_root_destructive_command")

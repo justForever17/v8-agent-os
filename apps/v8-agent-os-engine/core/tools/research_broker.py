@@ -37,6 +37,7 @@ _EVIDENCE_TTL_SECONDS = 6 * 60 * 60
 _RESEARCH_TOOL_DEADLINE_MS = 120_000
 _RESEARCH_SHARD_DEADLINE_MS = 45_000
 _RESEARCH_SOURCE_READ_DEADLINE_MS = 35_000
+_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS = 60_000
 _EVIDENCE_LEDGER: dict[str, dict[str, Any]] = {}
 _AUTHORITATIVE_HOST_HINTS = (
     "docs.",
@@ -105,6 +106,8 @@ def _research_config() -> dict[str, Any]:
         "maxShardCount": max(1, min(max_shards, 30)),
         "maxRounds": max(1, min(max_rounds, 5)),
         "evidenceTtlSeconds": max(60, _as_int(raw.get("evidenceTtlSeconds"), _EVIDENCE_TTL_SECONDS)),
+        "architectAgentSynthesisEnabled": bool(raw.get("architectAgentSynthesisEnabled", True)),
+        "architectAgentTimeoutSeconds": max(5, min(_as_int(raw.get("architectAgentTimeoutSeconds"), 60), 90)),
     }
 
 
@@ -388,11 +391,26 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
         "finalExperiencePack": {
             key: value
             for key, value in dict(payload.get("finalExperiencePack") or payload.get("researchResult") or {}).items()
-            if key in {"kind", "architectAgentId", "architectName", "headline", "confidence", "sourceUrls"}
+            if key
+            in {
+                "kind",
+                "architectAgentId",
+                "architectName",
+                "headline",
+                "researchResult",
+                "confidence",
+                "sourceUrls",
+                "synthesisMode",
+                "modelSynthesis",
+            }
         },
         "evidenceBundleId": payload.get("evidenceBundleId"),
         "confidence": payload.get("confidence"),
         "authorityScore": payload.get("authorityScore"),
+        "researchLoopState": payload.get("researchLoopState"),
+        "experienceReuse": payload.get("experienceReuse"),
+        "claimTable": list(payload.get("claimTable") or [])[:5],
+        "conflictMatrix": list(payload.get("conflictMatrix") or [])[:5],
         "sourceMatrix": list(payload.get("sourceMatrix") or [])[:3],
         "omitted": {
             **omitted,
@@ -444,7 +462,270 @@ def _fetched_source_map(shards: list[dict[str, Any]]) -> dict[str, dict[str, Any
     return fetched
 
 
-def _web_research_architect_pack(
+def _confidence_rank(value: Any) -> int:
+    return {"low": 1, "medium": 2, "high": 3}.get(_safe_text(value).lower(), 0)
+
+
+def _topic_fingerprint(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", _safe_text(value).lower())
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", normalized).strip()
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+_REUSE_STOP_WORDS = {
+    "what",
+    "are",
+    "is",
+    "the",
+    "a",
+    "an",
+    "for",
+    "in",
+    "to",
+    "and",
+    "or",
+    "of",
+    "on",
+    "by",
+    "as",
+    "about",
+    "compare",
+    "claims",
+    "that",
+    "when",
+    "where",
+    "which",
+    "how",
+    "why",
+    "best",
+    "current",
+    "latest",
+    "using",
+    "use",
+    "uses",
+    "with",
+    "from",
+    "source",
+    "sources",
+    "cite",
+    "official",
+    "please",
+    "请",
+    "说明",
+    "来源",
+    "最新",
+    "当前",
+    "如何",
+}
+
+
+def _reuse_tokens(value: str) -> set[str]:
+    text = re.sub(r"\s+", " ", _safe_text(value).lower())
+    tokens = {
+        token
+        for token in re.split(r"[^\w\u4e00-\u9fff]+", text)
+        if len(token) >= 2 and token not in _REUSE_STOP_WORDS
+    }
+    # CJK questions are often one long token after punctuation splitting. Add
+    # coarse bigrams so near-identical Chinese titles/queries can still match
+    # without letting generic words dominate.
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", text))
+    if len(cjk) >= 4:
+        tokens.update(cjk[index : index + 2] for index in range(0, min(len(cjk) - 1, 24)))
+    return tokens
+
+
+def _reuse_topic_match(question: str, pack: dict[str, Any]) -> tuple[bool, str]:
+    normalized_question = re.sub(r"\s+", " ", _safe_text(question).lower()).strip()
+    candidate_text = " ".join(
+        [
+            _safe_text(pack.get("query")),
+            _safe_text(pack.get("title")),
+            _safe_text(pack.get("topicFingerprint")),
+        ]
+    ).lower()
+    if not normalized_question:
+        return False, "empty_question"
+    if _safe_text(pack.get("topicFingerprint")) == _topic_fingerprint(question):
+        return True, "topic_fingerprint_match"
+    if normalized_question and normalized_question in candidate_text:
+        return True, "exact_question_contained_in_candidate"
+    q_tokens = _reuse_tokens(question)
+    p_tokens = _reuse_tokens(candidate_text)
+    if not q_tokens or not p_tokens:
+        return False, "insufficient_topic_tokens"
+    overlap = q_tokens.intersection(p_tokens)
+    ratio = len(overlap) / max(1, min(len(q_tokens), len(p_tokens)))
+    if len(overlap) >= 2 and ratio >= 0.35:
+        return True, f"topic_overlap:{ratio:.2f}"
+    return False, f"topic_overlap_too_low:{ratio:.2f}"
+
+
+def _source_urls_from_matrix(source_matrix: list[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    for item in source_matrix:
+        if not isinstance(item, dict):
+            continue
+        url = _safe_text(item.get("url"))
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _flatten_provider_attempts(shards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    for shard in shards:
+        matrix = shard.get("providerAttemptMatrix")
+        if isinstance(matrix, list):
+            for item in matrix:
+                if isinstance(item, dict):
+                    attempts.append({"shardId": shard.get("shardId"), "query": shard.get("query"), **item})
+        elif matrix:
+            attempts.append({"shardId": shard.get("shardId"), "query": shard.get("query"), "attempt": matrix})
+        elif shard.get("provider") or shard.get("networkRoute"):
+            attempts.append(
+                {
+                    "shardId": shard.get("shardId"),
+                    "query": shard.get("query"),
+                    "provider": shard.get("provider"),
+                    "networkRoute": shard.get("networkRoute"),
+                    "ok": shard.get("ok"),
+                    "fallbackReason": shard.get("errors"),
+                }
+            )
+    return attempts[:40]
+
+
+def _experience_reuse_decision(
+    packs: list[dict[str, Any]],
+    *,
+    question: str,
+    source_policy: str,
+    freshness: str,
+    min_confidence: str = "",
+) -> dict[str, Any]:
+    if not packs:
+        return {
+            "reuseDecision": "ignore",
+            "reason": "no_matching_experience_pack",
+            "candidatePackId": None,
+            "topicFingerprint": _topic_fingerprint(question),
+        }
+    min_rank = _confidence_rank(min_confidence) or 2
+    normalized_policy = _safe_text(source_policy).lower()
+    normalized_freshness = _safe_text(freshness).lower()
+    for pack in packs:
+        matched, match_reason = _reuse_topic_match(question, pack)
+        if not matched:
+            continue
+        confidence = _safe_text(pack.get("confidence")).lower()
+        if _confidence_rank(confidence) < min_rank:
+            return {
+                "reuseDecision": "refresh",
+                "reason": "candidate_confidence_below_threshold",
+                "matchReason": match_reason,
+                "candidatePackId": pack.get("experiencePackId"),
+                "candidateConfidence": confidence,
+                "requiredConfidence": min_confidence or "medium",
+                "topicFingerprint": _topic_fingerprint(question),
+            }
+        pack_policy = _safe_text(pack.get("sourcePolicy")).lower()
+        if pack_policy and normalized_policy and pack_policy != normalized_policy:
+            return {
+                "reuseDecision": "refresh",
+                "reason": "source_policy_changed",
+                "matchReason": match_reason,
+                "candidatePackId": pack.get("experiencePackId"),
+                "previousSourcePolicy": pack_policy,
+                "requestedSourcePolicy": normalized_policy,
+                "topicFingerprint": _topic_fingerprint(question),
+            }
+        if normalized_freshness in {"latest", "current", "fresh", "recent", "实时", "最新"}:
+            return {
+                "reuseDecision": "refresh",
+                "reason": "freshness_requires_delta_research",
+                "matchReason": match_reason,
+                "candidatePackId": pack.get("experiencePackId"),
+                "freshness": freshness,
+                "topicFingerprint": _topic_fingerprint(question),
+            }
+        return {
+            "reuseDecision": "reuse",
+            "reason": "high_confidence_pack_matches_topic_and_policy",
+            "matchReason": match_reason,
+            "candidatePackId": pack.get("experiencePackId"),
+            "candidateTitle": pack.get("title"),
+            "candidateConfidence": confidence,
+            "skippedSearches": True,
+            "topicFingerprint": pack.get("topicFingerprint") or _topic_fingerprint(question),
+        }
+    return {
+        "reuseDecision": "ignore",
+        "reason": "no_topic_matched_reusable_candidate_after_filtering",
+        "candidatePackId": None,
+        "topicFingerprint": _topic_fingerprint(question),
+    }
+
+
+def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict[str, Any], deliverable: str) -> dict[str, Any]:
+    source_matrix = list(pack.get("sourceMatrixDigest") or [])
+    source_urls = _source_urls_from_matrix(source_matrix)
+    result = _safe_text(pack.get("researchResult") or pack.get("resultPreview") or pack.get("summary"))
+    if not result:
+        result = "Reused research experience pack, but no detailed research result was stored."
+    claim_table = list(pack.get("claimDigest") or [])
+    architect_pack = {
+        "kind": "research_result_pack",
+        "architectAgentId": "web-research-architect",
+        "architectName": "Web Research Architect",
+        "question": question,
+        "headline": f"Reused experience pack: {pack.get('title') or pack.get('experiencePackId')}",
+        "answer": result,
+        "researchResult": result,
+        "claimTable": claim_table,
+        "sourceUrls": [{"url": url} for url in source_urls],
+        "confidence": pack.get("confidence"),
+        "authorityScore": pack.get("authorityScore"),
+        "createdAt": _utc_now_iso(),
+    }
+    return {
+        "ok": True,
+        "kind": "research_evidence_bundle",
+        "summary": architect_pack["headline"],
+        "question": question,
+        "researchIntent": "experience_reuse",
+        "sourcePolicy": pack.get("sourcePolicy"),
+        "freshness": pack.get("freshnessWindow"),
+        "deliverable": deliverable,
+        "answer": result,
+        "resultPreview": result,
+        "researchResult": architect_pack,
+        "finalExperiencePack": architect_pack,
+        "claimTable": claim_table,
+        "conflictMatrix": [],
+        "missingEvidence": [],
+        "assumptions": [],
+        "sourceMatrix": source_matrix,
+        "sourceUrls": source_urls,
+        "providerAttemptMatrix": [],
+        "researchLoopState": {
+            "phase": "experience_reused",
+            "rounds": [],
+            "stopReason": "experience_reused",
+            "questions": [question],
+            "readSources": source_urls,
+            "uncoveredClaims": [],
+            "conflictClaims": [],
+            "nextQueries": [],
+        },
+        "experienceReuse": {**reuse, "pack": pack},
+        "confidence": pack.get("confidence") or "medium",
+        "authorityScore": pack.get("authorityScore"),
+        "recommendedNextAction": "use_reused_experience_pack",
+    }
+
+
+def _deterministic_web_research_architect_pack(
     *,
     question: str,
     source_matrix: list[dict[str, Any]],
@@ -463,7 +744,10 @@ def _web_research_architect_pack(
     fetched = _fetched_source_map(shards)
     source_urls: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
-    for source in source_matrix[:8]:
+    claim_table: list[dict[str, Any]] = []
+    missing_evidence: list[str] = []
+    conflict_matrix: list[dict[str, Any]] = []
+    for source in source_matrix[:3]:
         url = _safe_text(source.get("url"))
         if not url:
             continue
@@ -478,18 +762,41 @@ def _web_research_architect_pack(
             "authorityScore": source.get("authorityScore"),
         }
         source_urls.append({key: value for key, value in source_entry.items() if value not in (None, "", [], {})})
-        source_text = _safe_text(read_payload.get("textPreview")) or _safe_text(source.get("snippet"))
+        source_text = (
+            _safe_text(read_payload.get("text"))
+            or _safe_text(read_payload.get("markdown"))
+            or _safe_text(read_payload.get("textPreview"))
+            or _safe_text(source.get("snippet"))
+        )
+        if not source_text:
+            missing_evidence.append(f"{title or url}: no readable body text")
         for sentence in _research_sentences(source_text, limit=2):
             if not sentence:
                 continue
-            findings.append(
+            finding = {
+                "claim": sentence,
+                "sourceTitle": title,
+                "sourceUrl": url,
+                "host": host,
+            }
+            findings.append(finding)
+            claim_table.append(
                 {
                     "claim": sentence,
-                    "sourceTitle": title,
-                    "sourceUrl": url,
-                    "host": host,
+                    "supportingSources": [source_entry],
+                    "refutingSources": [],
+                    "confidence": source.get("tier") or "secondary",
                 }
             )
+            lowered = sentence.lower()
+            if any(token in lowered for token in ("deprecated", "not supported", "unsupported", "conflict", "不支持", "已弃用", "冲突")):
+                conflict_matrix.append(
+                    {
+                        "claim": sentence,
+                        "kind": "possible_conflict_or_limitation",
+                        "sources": [source_entry],
+                    }
+                )
             if len(findings) >= 8:
                 break
         if len(findings) >= 8:
@@ -509,6 +816,8 @@ def _web_research_architect_pack(
             limitations.append("Evidence confidence is low; verify with more authoritative or primary sources before making final decisions.")
         if len(source_urls) < 2:
             limitations.append("Only one usable source was available; treat conclusions as provisional.")
+        if missing_evidence:
+            limitations.append("Some ranked sources could not be read as clean full text; detail/refetch may be needed.")
     else:
         headline = "Web Research Architect could not synthesize a reliable result because no usable source text was collected."
         answer_lines = [
@@ -516,21 +825,371 @@ def _web_research_architect_pack(
             "- No reliable source-backed findings were collected. Revise the query, grant Research Runtime, or provide authoritative seed URLs.",
         ]
         limitations = ["No usable source text was collected."]
+        missing_evidence.append("No usable source-backed findings were collected.")
 
     return {
         "kind": "research_result_pack",
         "architectAgentId": "web-research-architect",
         "architectName": "Web Research Architect",
+        "synthesisMode": "deterministic_fallback",
         "question": question,
         "headline": headline,
         "answer": "\n".join(answer_lines),
+        "researchResult": "\n".join(answer_lines),
         "keyFindings": findings,
+        "claimTable": claim_table,
+        "conflictMatrix": conflict_matrix,
+        "missingEvidence": missing_evidence,
+        "assumptions": [] if findings else ["Research result is provisional until readable sources are supplied."],
         "sourceUrls": source_urls,
         "confidence": confidence,
         "authorityScore": average_authority,
         "limitations": limitations,
         "createdAt": _utc_now_iso(),
     }
+
+
+def _research_architect_sources_for_prompt(source_matrix: list[dict[str, Any]], shards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fetched = _fetched_source_map(shards)
+    sources: list[dict[str, Any]] = []
+    prioritized_sources = sorted(
+        source_matrix[:10],
+        key=lambda source: float(source.get("authorityScore") or 0),
+        reverse=True,
+    )
+    for source in prioritized_sources:
+        url = _safe_text(source.get("url"))
+        if not url:
+            continue
+        read_payload = fetched.get(url) or {}
+        source_text = (
+            _safe_text(read_payload.get("text"))
+            or _safe_text(read_payload.get("markdown"))
+            or _safe_text(read_payload.get("textPreview"))
+            or _safe_text(source.get("snippet"))
+        )
+        if "About Press Copyright Contact us Creators" in source_text and "YouTube works" in source_text:
+            continue
+        sources.append(
+            {
+                "title": _safe_text(read_payload.get("title") or source.get("title") or url),
+                "url": url,
+                "host": _safe_text(source.get("host")) or _host(url),
+                "tier": source.get("tier"),
+                "authorityScore": source.get("authorityScore"),
+                "freshness": source.get("freshness"),
+                "provider": source.get("provider"),
+                "networkRoute": source.get("networkRoute"),
+                "text": _compact_research_text(source_text, limit=600),
+            }
+        )
+        if len(sources) >= 5:
+            break
+    return sources
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = _safe_text(text)
+    if not raw:
+        return None
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    candidates = [fenced.group(1)] if fenced else []
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first >= 0 and last > first:
+        candidates.append(raw[first : last + 1])
+    candidates.append(raw)
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            try:
+                import yaml  # type: ignore
+
+                payload = yaml.safe_load(candidate)
+            except Exception:
+                continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _extract_jsonish_string_field(text: str, field: str) -> str:
+    raw = str(text or "")
+    marker = f'"{field}"'
+    marker_index = raw.find(marker)
+    if marker_index < 0:
+        return ""
+    colon_index = raw.find(":", marker_index + len(marker))
+    if colon_index < 0:
+        return ""
+    quote_index = raw.find('"', colon_index + 1)
+    if quote_index < 0:
+        return ""
+    end_index = -1
+    delimiter_match = re.search(
+        r'",\s*"(?:headline|researchResult|claimTable|conflictMatrix|missingEvidence|assumptions)"\s*:',
+        raw[quote_index + 1 :],
+        re.DOTALL,
+    )
+    if delimiter_match:
+        end_index = quote_index + 1 + delimiter_match.start()
+    if end_index < 0:
+        end_index = raw.find('"}', quote_index + 1)
+    if end_index < 0:
+        end_index = min(len(raw), quote_index + 1200)
+    value = raw[quote_index + 1 : end_index]
+    return value.replace('\\"', '"').replace("\\n", "\n").strip()
+
+
+def _create_web_research_architect_llm() -> tuple[Any, str, str]:
+    from core.llm_factory import llm_factory
+
+    agent_id = "web-research-architect"
+    try:
+        model_id = _safe_text(storage.get_agent_model_binding(agent_id))
+    except Exception:
+        model_id = ""
+    if model_id:
+        return llm_factory.create_chat_model(model_id, temperature=0.1, max_tokens=1800, _role=agent_id), model_id, agent_id
+    last_error: Exception | None = None
+    for role in ("research", "summary", "supervisor"):
+        try:
+            return llm_factory.create_for_role(role, temperature=0.1, max_tokens=1800), "", role
+        except Exception as exc:  # noqa: BLE001 - role fallback is intentional.
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise ValueError("No model configured for Web Research Architect synthesis.")
+
+
+def _invoke_web_research_architect_agent(
+    *,
+    question: str,
+    source_matrix: list[dict[str, Any]],
+    shards: list[dict[str, Any]],
+    confidence: str,
+    average_authority: float,
+    timeout_seconds: int,
+) -> dict[str, Any] | None:
+    sources = _research_architect_sources_for_prompt(source_matrix, shards)
+    if not sources:
+        return None
+
+    def _call() -> dict[str, Any] | None:
+        from langchain_core.messages import HumanMessage
+
+        llm, model_id, role = _create_web_research_architect_llm()
+
+        def _parse_response(raw_content: str, *, parse_mode: str) -> dict[str, Any] | None:
+            parsed = _extract_json_object(raw_content)
+            if parsed:
+                parsed["_modelRole"] = role
+                parsed["_modelId"] = model_id
+                parsed["_modelParseMode"] = parse_mode
+                return parsed
+            extracted_result = _extract_jsonish_string_field(raw_content, "researchResult")
+            if extracted_result:
+                return {
+                    "headline": _extract_jsonish_string_field(raw_content, "headline")
+                    or "Web Research Architect synthesized final evidence.",
+                    "researchResult": extracted_result,
+                    "claimTable": [],
+                    "conflictMatrix": [],
+                    "missingEvidence": [],
+                    "assumptions": [],
+                    "_modelRole": role,
+                    "_modelId": model_id,
+                    "_modelParseMode": f"{parse_mode}_jsonish_text",
+                }
+            return None
+
+        compact_sources = [
+            {
+                "title": _safe_text(source.get("title")),
+                "url": _safe_text(source.get("url")),
+                "tier": source.get("tier"),
+                "authorityScore": source.get("authorityScore"),
+                "text": _compact_research_text(_safe_text(source.get("text")), limit=420),
+            }
+            for source in sources[:4]
+        ]
+        prompts = [
+            (
+                "你是 Web Research Architect。根据 SOURCES 做冲突归纳和结论压缩。"
+                "必须在最终回答内容里输出一个 JSON 对象，不要 Markdown。\n"
+                "字段：headline, researchResult, claimTable, conflictMatrix, missingEvidence, assumptions。\n"
+                "claimTable 每项至少包含 claim 和 supportingSources；如果更方便，也可写 sourceURL，但 URL 必须来自 SOURCES。\n"
+                "researchResult 必须面向后续 agent 阅读：完整、紧凑、标注限制，不能照搬导航栏或搜索摘要。\n"
+                f"QUESTION: {question}\n"
+                f"SOURCES: {json.dumps(compact_sources[:4], ensure_ascii=False)}"
+            ),
+            (
+                "只根据 SOURCES 输出 JSON，不要 Markdown。字段 headline, researchResult, claimTable, conflictMatrix, missingEvidence, assumptions。"
+                "不要引入外部事实；不确定就写 missingEvidence。\n"
+                f"QUESTION: {question}\n"
+                f"SOURCES: {json.dumps(compact_sources[:3], ensure_ascii=False)}"
+            ),
+        ]
+        raw_previews: list[str] = []
+        for index, prompt in enumerate(prompts):
+            response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": []})
+            raw_content = str(getattr(response, "content", "") or "")
+            if raw_content:
+                raw_previews.append(raw_content[:500])
+            parsed = _parse_response(raw_content, parse_mode="json" if index == 0 else "retry_json")
+            if parsed:
+                return parsed
+        return {
+            "_agentError": "architect_agent_no_json",
+            "_rawPreview": "\n--- retry ---\n".join(raw_previews)[:800],
+            "_modelRole": role,
+            "_modelId": model_id,
+        }
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_call)
+    try:
+        return future.result(timeout=max(5, timeout_seconds))
+    except concurrent.futures.TimeoutError:
+        return {"_agentError": "architect_agent_timeout"}
+    except Exception as exc:  # noqa: BLE001 - fallback must keep research runtime alive.
+        return {"_agentError": f"{type(exc).__name__}: {exc}"}
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _merge_web_research_architect_agent_pack(
+    base_pack: dict[str, Any],
+    agent_pack: dict[str, Any] | None,
+    *,
+    question: str,
+) -> dict[str, Any]:
+    if not isinstance(agent_pack, dict) or agent_pack.get("_agentError"):
+        fallback_reason = "architect_agent_no_result"
+        raw_preview = ""
+        if isinstance(agent_pack, dict) and agent_pack.get("_agentError"):
+            fallback_reason = _safe_text(agent_pack.get("_agentError")) or fallback_reason
+            raw_preview = _safe_text(agent_pack.get("_rawPreview"))[:500]
+        return {
+            **base_pack,
+            "synthesisMode": "deterministic_fallback",
+            "modelSynthesis": {
+                "used": False,
+                "agentId": "web-research-architect",
+                "fallbackReason": fallback_reason,
+                **({"rawPreview": raw_preview} if raw_preview else {}),
+            },
+        }
+    research_result = _safe_text(agent_pack.get("researchResult") or agent_pack.get("answer") or agent_pack.get("summary"))
+    if not research_result:
+        return {
+            **base_pack,
+            "modelSynthesis": {
+                "used": False,
+                "agentId": "web-research-architect",
+                "fallbackReason": "architect_agent_missing_research_result",
+            },
+        }
+    known_urls = {item.get("url") for item in list(base_pack.get("sourceUrls") or []) if isinstance(item, dict) and item.get("url")}
+    claim_table: list[dict[str, Any]] = []
+    for raw_item in list(agent_pack.get("claimTable") or [])[:12]:
+        if not isinstance(raw_item, dict):
+            continue
+        supporting: list[dict[str, Any]] = []
+        for source in list(raw_item.get("supportingSources") or [])[:4]:
+            if not isinstance(source, dict):
+                continue
+            url = _safe_text(source.get("url"))
+            if url and url in known_urls:
+                supporting.append({"title": _safe_text(source.get("title")) or url, "url": url})
+        if not supporting:
+            candidate_urls: list[str] = []
+            for field in ("sourceURL", "sourceUrl", "url"):
+                value = _safe_text(raw_item.get(field))
+                if value:
+                    candidate_urls.append(value)
+            for value in list(raw_item.get("sourceUrls") or [])[:4]:
+                if isinstance(value, str):
+                    candidate_urls.append(value)
+                elif isinstance(value, dict):
+                    candidate_urls.append(_safe_text(value.get("url")))
+            for url in candidate_urls[:4]:
+                if url and url in known_urls:
+                    supporting.append({"title": url, "url": url})
+        if not supporting:
+            continue
+        claim = _safe_text(raw_item.get("claim"))
+        if claim:
+            claim_table.append(
+                {
+                    "claim": claim,
+                    "supportingSources": supporting,
+                    "refutingSources": list(raw_item.get("refutingSources") or [])[:4],
+                    "confidence": _safe_text(raw_item.get("confidence")) or base_pack.get("confidence"),
+                }
+            )
+    if not claim_table:
+        claim_table = list(base_pack.get("claimTable") or [])
+    headline = _safe_text(agent_pack.get("headline")) or f"Web Research Architect synthesized final evidence for: {question}"
+    return {
+        **base_pack,
+        "headline": headline,
+        "answer": research_result,
+        "researchResult": research_result,
+        "claimTable": claim_table,
+        "conflictMatrix": list(agent_pack.get("conflictMatrix") or base_pack.get("conflictMatrix") or [])[:12],
+        "missingEvidence": list(agent_pack.get("missingEvidence") or base_pack.get("missingEvidence") or [])[:12],
+        "assumptions": list(agent_pack.get("assumptions") or base_pack.get("assumptions") or [])[:12],
+        "synthesisMode": "model_agent",
+        "modelSynthesis": {
+            "used": True,
+            "agentId": "web-research-architect",
+            "agentName": "Web Research Architect",
+            "modelRole": agent_pack.get("_modelRole"),
+            "modelId": agent_pack.get("_modelId"),
+            "parseMode": agent_pack.get("_modelParseMode") or "json",
+        },
+    }
+
+
+def _web_research_architect_pack(
+    *,
+    question: str,
+    source_matrix: list[dict[str, Any]],
+    shards: list[dict[str, Any]],
+    confidence: str,
+    average_authority: float,
+) -> dict[str, Any]:
+    base_pack = _deterministic_web_research_architect_pack(
+        question=question,
+        source_matrix=source_matrix,
+        shards=shards,
+        confidence=confidence,
+        average_authority=average_authority,
+    )
+    config = _research_config()
+    if not config.get("architectAgentSynthesisEnabled", True):
+        return {
+            **base_pack,
+            "modelSynthesis": {
+                "used": False,
+                "agentId": "web-research-architect",
+                "fallbackReason": "architect_agent_synthesis_disabled",
+            },
+        }
+    agent_pack = _invoke_web_research_architect_agent(
+        question=question,
+        source_matrix=source_matrix,
+        shards=shards,
+        confidence=confidence,
+        average_authority=average_authority,
+        timeout_seconds=max(
+            int(_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000),
+            int(config.get("architectAgentTimeoutSeconds") or (_RESEARCH_ARCHITECT_SYNTHESIS_DEADLINE_MS / 1000)),
+        ),
+    )
+    return _merge_web_research_architect_agent_pack(base_pack, agent_pack, question=question)
 
 
 def _deadline_failure(
@@ -589,9 +1248,10 @@ def _call_with_deadline(
 
 
 def _source_router_search(**kwargs: Any) -> str:
-    # Keep web_search monkeypatchable in tests while routing production calls
-    # through the internal Source Router primitive.
-    if web_search is not None and getattr(web_search, "func", None):
+    # Keep legacy tests monkeypatchable with a SimpleNamespace(func=...), while
+    # production routes through the Source Router rather than the raw web_search
+    # primitive.
+    if web_search is not None and getattr(web_search, "func", None) and not getattr(web_search, "name", None):
         return web_search.func(**kwargs)
     return source_router_search(**kwargs)
 
@@ -667,7 +1327,7 @@ def _run_search_shard(
     top_results = sorted(results, key=lambda item: int((item.get("sourceQualityHints") or {}).get("authorityScore") or 0), reverse=True)
     fetched: list[dict[str, Any]] = []
     if max_rounds > 1:
-        for result in top_results[:1]:
+        for result in top_results[:2]:
             url = _safe_text(result.get("url"))
             if not url:
                 continue
@@ -686,15 +1346,25 @@ def _run_search_shard(
                 family="research",
                 recommended_next_action="标记该 source unavailable，换可访问来源或降低置信度。",
             )
-            text = _safe_text(read_payload.get("text") or read_payload.get("textPreview"))
+            text = _safe_text(read_payload.get("text") or read_payload.get("markdown") or read_payload.get("textPreview"))
+            extraction_quality = read_payload.get("extractionQuality")
+            if not extraction_quality:
+                extraction_quality = "readable" if read_payload.get("ok") and text else "unreadable"
             fetched.append(
                 {
                     "url": url,
                     "ok": bool(read_payload.get("ok")),
                     "title": _safe_text(read_payload.get("title"))[:300],
                     "status": read_payload.get("status"),
-                    "textPreview": text[:360],
-                    "omittedChars": max(0, len(text) - 360),
+                    "text": text[:6000],
+                    "textPreview": text[:1200],
+                    "contentChars": len(text),
+                    "omittedChars": max(0, len(text) - 6000),
+                    "extractionQuality": extraction_quality,
+                    "sourceCapability": read_payload.get("sourceCapability"),
+                    "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders"),
+                    "rawRef": read_payload.get("rawRef") or read_payload.get("detailRawRef"),
+                    "missingContentReason": read_payload.get("missingContentReason"),
                     "warnings": read_payload.get("warnings") if isinstance(read_payload.get("warnings"), list) else [],
                     "failureClass": read_payload.get("failureClass") or (read_payload.get("toolExecution") or {}).get("failureClass"),
                     "toolExecution": read_payload.get("toolExecution"),
@@ -785,6 +1455,124 @@ def _run_search_shards(
     return [item for item in completed if item is not None]
 
 
+def _read_source_count(shards: list[dict[str, Any]]) -> int:
+    count = 0
+    for shard in shards:
+        for item in list(shard.get("fetchedTopSources") or []):
+            if isinstance(item, dict) and item.get("ok") and _safe_text(item.get("text") or item.get("textPreview")):
+                count += 1
+    return count
+
+
+def _build_refinement_shards(question: str, shards: list[dict[str, Any]], *, source_policy: str, limit: int = 2) -> list[dict[str, Any]]:
+    seen = {_safe_text(shard.get("query")).lower() for shard in shards if _safe_text(shard.get("query"))}
+    candidates = [
+        (f"{question} official documentation primary source", "gap_primary_source", "补读官方/一手来源"),
+        (f"{question} limitations conflict comparison", "gap_conflict_check", "补查限制、冲突和反例"),
+        (f"{question} latest updates source", "gap_freshness_check", "补查新鲜度和最新变化"),
+    ]
+    refined: list[dict[str, Any]] = []
+    for query, kind, reason in candidates:
+        normalized = query.lower()
+        if normalized in seen:
+            continue
+        if source_policy in {"official", "primary", "authoritative"} and "official" not in normalized:
+            continue
+        refined.append({"shardId": f"shard_refine_{len(refined)+1}", "kind": kind, "query": query, "reason": reason})
+        if len(refined) >= max(1, limit):
+            break
+    return refined
+
+
+def _run_research_loop(
+    *,
+    question: str,
+    initial_shards: list[dict[str, Any]],
+    allowed_domains: list[str],
+    blocked_domains: list[str],
+    source_policy: str,
+    max_rounds: int,
+    use_agent_browser_profile: bool,
+    tool_call_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    loop_state: dict[str, Any] = {
+        "phase": "research_loop",
+        "questions": [question],
+        "rounds": [],
+        "readSources": [],
+        "uncoveredClaims": [],
+        "conflictClaims": [],
+        "nextQueries": [],
+        "stopReason": "",
+    }
+    all_shards = _run_search_shards(
+        initial_shards,
+        allowed_domains=allowed_domains,
+        blocked_domains=blocked_domains,
+        source_policy=source_policy,
+        max_rounds=max_rounds,
+        use_agent_browser_profile=bool(use_agent_browser_profile),
+        tool_call_id=tool_call_id,
+    )
+    loop_state["rounds"].append(
+        {
+            "round": 1,
+            "queries": [shard.get("query") for shard in initial_shards],
+            "resultCount": sum(int(shard.get("resultCount") or 0) for shard in all_shards),
+            "readSourceCount": _read_source_count(all_shards),
+        }
+    )
+    read_urls = _source_urls_from_matrix(
+        [
+            {"url": item.get("url")}
+            for shard in all_shards
+            for item in list(shard.get("fetchedTopSources") or [])
+            if isinstance(item, dict) and item.get("ok")
+        ]
+    )
+    loop_state["readSources"] = read_urls
+    if _read_source_count(all_shards) >= 2 or max_rounds <= 1:
+        loop_state["stopReason"] = "sufficient_evidence" if _read_source_count(all_shards) else "max_rounds_reached_without_readable_sources"
+        return all_shards, loop_state
+
+    refined_shards = _build_refinement_shards(question, all_shards, source_policy=source_policy)
+    if not refined_shards:
+        loop_state["stopReason"] = "no_refinement_queries_available"
+        loop_state["uncoveredClaims"].append("Insufficient readable full-text sources.")
+        return all_shards, loop_state
+    loop_state["nextQueries"] = [shard.get("query") for shard in refined_shards]
+    second_round = _run_search_shards(
+        refined_shards,
+        allowed_domains=allowed_domains,
+        blocked_domains=blocked_domains,
+        source_policy=source_policy,
+        max_rounds=max_rounds,
+        use_agent_browser_profile=bool(use_agent_browser_profile),
+        tool_call_id=tool_call_id,
+    )
+    all_shards.extend(second_round)
+    loop_state["rounds"].append(
+        {
+            "round": 2,
+            "queries": [shard.get("query") for shard in refined_shards],
+            "resultCount": sum(int(shard.get("resultCount") or 0) for shard in second_round),
+            "readSourceCount": _read_source_count(second_round),
+        }
+    )
+    loop_state["readSources"] = _source_urls_from_matrix(
+        [
+            {"url": item.get("url")}
+            for shard in all_shards
+            for item in list(shard.get("fetchedTopSources") or [])
+            if isinstance(item, dict) and item.get("ok")
+        ]
+    )
+    loop_state["stopReason"] = "sufficient_evidence_after_refinement" if _read_source_count(all_shards) >= 2 else "max_rounds_reached_with_gaps"
+    if _read_source_count(all_shards) < 2:
+        loop_state["uncoveredClaims"].append("Need at least two readable independent sources for stable reuse.")
+    return all_shards, loop_state
+
+
 def _synthesize_bundle(
     *,
     question: str,
@@ -793,6 +1581,8 @@ def _synthesize_bundle(
     freshness: str,
     shards: list[dict[str, Any]],
     deliverable: str,
+    research_loop_state: dict[str, Any] | None = None,
+    experience_reuse: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_matrix: list[dict[str, Any]] = []
     citations: list[dict[str, Any]] = []
@@ -831,6 +1621,7 @@ def _synthesize_bundle(
     if not source_matrix:
         conflicts.append({"kind": "no_sources", "summary": "No usable source result was collected."})
     visible_shards = shards[:12]
+    provider_attempt_matrix = _flatten_provider_attempts(shards)
     architect_pack = _web_research_architect_pack(
         question=question,
         source_matrix=source_matrix,
@@ -838,11 +1629,17 @@ def _synthesize_bundle(
         confidence=confidence,
         average_authority=average_authority,
     )
+    claim_table = list(architect_pack.get("claimTable") or [])
+    conflict_matrix = list(architect_pack.get("conflictMatrix") or [])
+    if conflicts:
+        conflict_matrix.extend(conflicts)
+    source_urls = [item.get("url") for item in list(architect_pack.get("sourceUrls") or []) if isinstance(item, dict) and item.get("url")]
     return {
         "ok": bool(source_matrix),
         "kind": "research_evidence_bundle",
         "summary": architect_pack.get("headline") or f"Collected {len(source_matrix)} ranked source(s) across {len(shards)} research shard(s).",
         "question": question,
+        "topicFingerprint": _topic_fingerprint(question),
         "researchIntent": research_intent,
         "sourcePolicy": source_policy,
         "freshness": freshness,
@@ -851,6 +1648,30 @@ def _synthesize_bundle(
         "resultPreview": architect_pack.get("answer") or architect_pack.get("headline"),
         "researchResult": architect_pack,
         "finalExperiencePack": architect_pack,
+        "claimTable": claim_table,
+        "conflictMatrix": conflict_matrix,
+        "missingEvidence": list(architect_pack.get("missingEvidence") or []),
+        "assumptions": list(architect_pack.get("assumptions") or []),
+        "sourceUrls": source_urls,
+        "providerAttemptMatrix": provider_attempt_matrix,
+        "researchLoopState": research_loop_state
+        or {
+            "phase": "single_pass",
+            "rounds": [],
+            "stopReason": "single_pass_synthesis",
+            "questions": [question],
+            "readSources": source_urls,
+            "uncoveredClaims": [],
+            "conflictClaims": [],
+            "nextQueries": [],
+        },
+        "experienceReuse": experience_reuse
+        or {
+            "reuseDecision": "ignore",
+            "reason": "not_checked",
+            "candidatePackId": None,
+            "topicFingerprint": _topic_fingerprint(question),
+        },
         "refinedBy": {
             "agentId": "web-research-architect",
             "agentName": "Web Research Architect",
@@ -859,7 +1680,7 @@ def _synthesize_bundle(
         "confidence": confidence,
         "authorityScore": average_authority,
         "sourceMatrix": source_matrix[:8],
-        "conflicts": conflicts,
+        "conflicts": conflict_matrix,
         "citations": citations[:8],
         "shards": [
             {
@@ -868,6 +1689,9 @@ def _synthesize_bundle(
                 "query": shard.get("query"),
                 "ok": shard.get("ok"),
                 "resultCount": shard.get("resultCount"),
+                "provider": shard.get("provider"),
+                "networkRoute": shard.get("networkRoute"),
+                "sourceCapability": shard.get("sourceCapability"),
                 "fetchedTopSources": shard.get("fetchedTopSources") or [],
                 "errors": shard.get("errors") or [],
             }
@@ -881,6 +1705,7 @@ def _synthesize_bundle(
             "rawRefsOmitted": max(0, len(shards) - len(visible_shards)),
             "sourceCatalogRef": "research_source_quality_catalog:v1",
             "popularityMetrics": "best-effort extraction from search title/snippet; verify on-page metrics for final claims",
+            "providerAttemptsOmitted": max(0, len(provider_attempt_matrix) - 40),
         },
         "recommendedNextAction": "use_evidence_bundle" if source_matrix else "revise_queries",
     }
@@ -1011,6 +1836,13 @@ def research_broker(
             limit=limit,
             include_archived=includeArchived,
         )
+        reuse_decision = _experience_reuse_decision(
+            packs,
+            question=clean_query,
+            source_policy=sourcePolicy,
+            freshness=freshness,
+            min_confidence=minConfidence,
+        )
         return _render_payload(
             {
                 "ok": True,
@@ -1018,6 +1850,7 @@ def research_broker(
                 "kind": "research_experience_search",
                 "summary": f"Found {len(packs)} reusable research experience pack(s) for scope {scope}.",
                 "query": clean_query,
+                "reuseDecision": reuse_decision,
                 "items": [
                     {
                         "experiencePackId": item.get("experiencePackId"),
@@ -1025,6 +1858,10 @@ def research_broker(
                         "status": item.get("status"),
                         "confidence": item.get("confidence"),
                         "authorityScore": item.get("authorityScore"),
+                        "topicFingerprint": item.get("topicFingerprint"),
+                        "sourcePolicy": item.get("sourcePolicy"),
+                        "freshnessWindow": item.get("freshnessWindow"),
+                        "sourceUrls": list(item.get("sourceUrls") or [])[:4],
                         "usageCount": item.get("usageCount"),
                         "lastUsedAt": item.get("lastUsedAt"),
                         "tags": item.get("tags") or [],
@@ -1171,8 +2008,38 @@ def research_broker(
         }
         return _render_payload(plan)
 
-    completed_shards = _run_search_shards(
-        shards,
+    experience_candidates = search_experience_packs_with_options(
+        query=clean_question,
+        scope=scope,
+        tags=_as_list(tags),
+        min_confidence=minConfidence,
+        limit=3,
+        include_archived=False,
+    )
+    experience_reuse = _experience_reuse_decision(
+        experience_candidates,
+        question=clean_question,
+        source_policy=sourcePolicy,
+        freshness=freshness,
+        min_confidence=minConfidence,
+    )
+    if experience_reuse.get("reuseDecision") == "reuse" and experience_candidates:
+        pack_id = _safe_text(experience_reuse.get("candidatePackId"))
+        pack = get_experience_pack(pack_id) if pack_id else experience_candidates[0]
+        if pack:
+            return _render_payload(
+                _bundle_from_reused_pack(
+                    pack,
+                    question=clean_question,
+                    reuse=experience_reuse,
+                    deliverable=deliverable,
+                ),
+                max_chars=12000,
+            )
+
+    completed_shards, research_loop_state = _run_research_loop(
+        question=clean_question,
+        initial_shards=shards,
         allowed_domains=allowed_domains,
         blocked_domains=blocked_domains,
         source_policy=sourcePolicy,
@@ -1187,6 +2054,8 @@ def research_broker(
         freshness=freshness,
         shards=completed_shards,
         deliverable=deliverable,
+        research_loop_state=research_loop_state,
+        experience_reuse=experience_reuse,
     )
     stored = _store_evidence(bundle, state=state)
     return _render_payload(_visible_bundle(stored))

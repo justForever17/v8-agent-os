@@ -2830,6 +2830,64 @@ class SkillLoader:
         return entry
 
     @classmethod
+    def _looks_like_skill_path_identifier(cls, identifier: str) -> bool:
+        needle = str(identifier or "").strip()
+        if not needle:
+            return False
+        lowered = needle.replace("\\", "/").lower()
+        return (
+            "/" in lowered
+            or "\\\\" in needle
+            or bool(re.match(r"^[a-zA-Z]:[\\/]", needle))
+            or lowered.endswith("skill.md")
+        )
+
+    @classmethod
+    def _resolve_direct_skill_entry(cls, identifier: str) -> dict[str, Any] | None:
+        needle = str(identifier or "").strip().strip("\"'")
+        if not needle or not cls._looks_like_skill_path_identifier(needle):
+            return None
+        try:
+            candidate = Path(needle).expanduser()
+            if candidate.is_dir():
+                skill_file = candidate / "SKILL.md"
+                skill_root = candidate
+            else:
+                skill_file = candidate
+                skill_root = candidate.parent
+            if not skill_file.exists() or not skill_file.is_file() or skill_file.name.lower() != "skill.md":
+                return None
+            content = skill_file.read_text(encoding="utf-8")
+            descriptor: dict[str, Any] = {
+                "sourceType": "direct_path",
+                "visibility": "direct",
+                "rootPath": str(skill_root.parent),
+            }
+            normalized = cls._normalize_path(skill_file)
+            workspace_marker = "/.agents/skills/".lower()
+            normalized_slash = normalized.replace("\\", "/")
+            normalized_slash_lower = normalized_slash.lower()
+            if workspace_marker in normalized_slash_lower:
+                split_index = normalized_slash_lower.index(workspace_marker)
+                workspace_path = normalized_slash[:split_index]
+                descriptor.update(
+                    {
+                        "sourceType": "workspace",
+                        "visibility": "scoped",
+                        "workspacePath": workspace_path,
+                        "rootPath": str(skill_root.parent),
+                    }
+                )
+            return cls._build_skill_entry(
+                folder_name=skill_root.name,
+                file_path=skill_file,
+                descriptor=descriptor,
+                content=content,
+            )
+        except Exception:
+            return None
+
+    @classmethod
     def _scan_root_descriptors(cls, descriptors: list[dict[str, Any]]) -> dict[str, dict]:
         registry: dict[str, dict] = {}
         for descriptor in descriptors:
@@ -3589,6 +3647,9 @@ class SkillLoader:
         needle = str(identifier or "").strip()
         if not needle:
             return []
+        direct_entry = cls._resolve_direct_skill_entry(needle)
+        if direct_entry is not None:
+            return [direct_entry]
         inventory = cls.get_inventory(
             force_refresh=force_refresh,
             include_scoped=True,
@@ -3600,6 +3661,7 @@ class SkillLoader:
         )
         normalized_needle = needle.lower()
         query_variants = cls._skill_match_query_variants(needle)
+        path_like_identifier = cls._looks_like_skill_path_identifier(needle)
 
         def _dedupe(entries_to_sort: list[dict[str, Any]]) -> list[dict[str, Any]]:
             deduped: list[dict[str, Any]] = []
@@ -3653,6 +3715,8 @@ class SkillLoader:
                 return _dedupe(exact_matches)
             if hint_matches:
                 return _dedupe(hint_matches)
+            if path_like_identifier:
+                return []
             if not fuzzy_scored:
                 return []
             fuzzy_scored.sort(

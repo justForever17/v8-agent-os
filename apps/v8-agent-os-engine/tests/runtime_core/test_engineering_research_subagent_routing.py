@@ -96,6 +96,40 @@ def test_writing_fallback_skill_task_delegates_with_execution_brief() -> None:
     assert "skill_first_action_required" in plan["qualityFlags"]
 
 
+def test_writing_fallback_existing_perspective_skill_stays_direct_with_fetch() -> None:
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(
+            latest_user_content="用 sanyueqi-perspective skill 回答：朋友迷路害怕时应该怎么安慰？",
+            planner_intent_diagnostics={"signals": []},
+            planner_mode="auto",
+            task_shape_hint={
+                "primaryTaskShape": "writing",
+                "secondaryTaskShapes": [],
+                "writingRoute": {
+                    "present": True,
+                    "mode": "direct_supervisor",
+                    "requiresSkillExecution": True,
+                    "requiresResearch": False,
+                    "requiresArtifact": False,
+                    "recommendedFamily": "",
+                    "skillName": "sanyueqi-perspective",
+                    "firstActionTool": "fetch_skill_instructions",
+                    "allowCreateSubagentOnMismatch": False,
+                },
+            },
+        )
+    )
+
+    plan = runtime._fallback_planner_plan(chat_run=chat_run, reason="structured_empty")
+
+    task = plan["taskBriefs"][0]
+    assert plan["executionStrategy"] == "direct"
+    assert plan["capabilityPlan"] == []
+    assert task["requiredCapabilities"] == ["fetch_skill_instructions", "writing"]
+    assert task["context"]["writingExecutionBrief"]["skill"]["idOrName"] == "sanyueqi-perspective"
+
+
 def test_writing_fallback_selected_skill_overrides_false_engineering_signals() -> None:
     runtime = ChatRuntime()
     chat_run = SimpleNamespace(
@@ -130,6 +164,48 @@ def test_writing_fallback_selected_skill_overrides_false_engineering_signals() -
     assert task["familyHint"] == "writing"
     assert "fetch_skill_instructions" in task["requiredCapabilities"]
     assert task["context"]["writingExecutionBrief"]["skill"]["idOrName"] == "huashu-nuwa"
+
+
+def test_writing_fallback_skill_with_research_routes_evidence_before_delegation() -> None:
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(
+            latest_user_content="在 E:\\Projects\\test7 里用 huashu-nuwa skill 调研三月七并生成 skill。",
+            planner_intent_diagnostics={"signals": []},
+            planner_mode="force",
+            task_shape_hint={
+                "primaryTaskShape": "writing",
+                "secondaryTaskShapes": ["research", "delegation"],
+                "writingRoute": {
+                    "present": True,
+                    "mode": "skill_subagent",
+                    "requiresSkillExecution": True,
+                    "requiresResearch": True,
+                    "requiresArtifact": True,
+                    "recommendedFamily": "engineering",
+                    "preferredAgentId": "skill-workflow-curator",
+                    "skillName": "huashu-nuwa",
+                    "firstActionTool": "fetch_skill_instructions",
+                    "allowCreateSubagentOnMismatch": False,
+                },
+            },
+        )
+    )
+
+    plan = runtime._fallback_planner_plan(chat_run=chat_run, reason="structured_empty")
+
+    assert plan["executionStrategy"] == "mixed"
+    assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "delegation"]
+    assert plan["taskBriefs"][0]["familyHint"] == "research"
+    assert plan["taskBriefs"][1]["dependency"] == ["task-1"]
+    assert plan["taskBriefs"][1]["familyHint"] == "engineering"
+    assert plan["taskBriefs"][1]["preferredAgentId"] == "skill-workflow-curator"
+    assert plan["taskBriefs"][1]["researchRefs"] == ["task-1:evidenceBundleId", "task-1:sourceMatrix", "task-1:claimTable"]
+    brief = plan["taskBriefs"][1]["context"]["writingExecutionBrief"]
+    assert brief["skill"]["idOrName"] == "huashu-nuwa"
+    assert brief["authorizedRefs"]["researchRefs"]
+    assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"
+    assert "research_before_skill_writing" in plan["qualityFlags"]
 
 
 def test_writing_fallback_research_then_write_has_handoff_dependency() -> None:

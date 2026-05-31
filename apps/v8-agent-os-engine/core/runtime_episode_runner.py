@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import uuid
@@ -552,7 +553,17 @@ class RuntimeEpisodeRunner:
         self._heartbeat(str(episode.get("episodeId")), "research: experience lookup")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
-        query = str(inputs.get("query") or need.get("query") or need.get("reason") or "research request").strip()
+        task_briefs = [dict(item) for item in list(inputs.get("taskBriefs") or inputs.get("tasks") or []) if isinstance(item, dict)]
+        brief_query = ""
+        for brief in task_briefs:
+            for key in ("routeQuery", "query", "question", "goal", "title"):
+                value = str(brief.get(key) or "").strip()
+                if value:
+                    brief_query = value
+                    break
+            if brief_query:
+                break
+        query = str(inputs.get("query") or inputs.get("question") or need.get("query") or brief_query or need.get("reason") or "research request").strip()
         state = {
             "current_route_context": {
                 "runtimeToolGrants": [{"group": "research.core", "runtimeKind": "research"}],
@@ -568,6 +579,31 @@ class RuntimeEpisodeRunner:
         )
         search_visible = _first_tool_message_content(search_result)
         run_mode = str(inputs.get("mode") or need.get("mode") or "").strip().lower()
+        research_blob = json.dumps(
+            {
+                "inputs": inputs,
+                "need": need,
+                "taskBriefs": task_briefs,
+            },
+            ensure_ascii=False,
+            default=str,
+        ).lower()
+        if not run_mode and any(
+            marker in research_blob
+            for marker in (
+                "full_read",
+                "multi_source",
+                "evidence_bundle",
+                "claim_table",
+                "claimtable",
+                "sourcematrix",
+                "source_matrix",
+                "architect",
+                "citations",
+                "source_quality",
+            )
+        ):
+            run_mode = "run"
         if run_mode == "run":
             self._heartbeat(str(episode.get("episodeId")), "research: live run")
             run_result = research_broker.func(
@@ -595,7 +631,7 @@ class RuntimeEpisodeRunner:
             status="ready",
             confidence="medium",
             consumer_hint="Use this research handoff as evidence refs input for Engineering/Creative episodes.",
-            extra={"query": query, "researchRefs": [f"episode:{episode.get('episodeId')}"]},
+            extra={"query": query, "researchRefs": [f"episode:{episode.get('episodeId')}"], "runMode": run_mode or "plan"},
         )
 
     async def _execute_engineering(self, episode: dict[str, Any]) -> dict[str, Any]:
@@ -1165,7 +1201,19 @@ class RuntimeEpisodeRunner:
                 for item in results
                 if str(item.get("status") or "").lower() in {"waiting_child_delegation", "waiting_child", "waiting"}
             ]
-            status = "waiting" if waiting_child else ("failed" if results and len(hard_failed) == len(results) and not budget_blocked else "ready")
+            ready_results = [
+                item
+                for item in results
+                if str(item.get("status") or "").lower() in {"ok", "ready", "completed", "success"}
+            ]
+            if waiting_child:
+                status = "waiting"
+            elif results and not ready_results and (hard_failed or budget_blocked):
+                status = "failed"
+            elif hard_failed:
+                status = "failed" if len(hard_failed) == len(results) else "ready"
+            else:
+                status = "ready"
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
             if local_results:
                 summary = f"Delegation executed {len(local_results)} local subagent worker(s)."
@@ -1188,6 +1236,7 @@ class RuntimeEpisodeRunner:
                 extra={
                     "delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)],
                     "childEpisodeIds": child_episode_ids,
+                    "failedDelegationCount": len(hard_failed),
                     "budgetBlockedChildDelegations": [
                         {
                             "delegationId": item.get("delegationId") or item.get("id"),

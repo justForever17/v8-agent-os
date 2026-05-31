@@ -1197,6 +1197,12 @@ def build_supervisor_system_content(
             lines.append("- This writing request is ambiguous. Ask the user to choose: direct body text, research-backed writing, or saved file/artifact before drafting or routing.")
         if mode == "direct_supervisor":
             lines.append("- Direct Supervisor writing is allowed for this bounded prose task; do not delegate merely because the output is text.")
+            if writing_route.get("requiresSkillExecution"):
+                skill_name = str(writing_route.get("skillName") or "").strip()
+                if skill_name:
+                    lines.append(f"- Before answering, call fetch_skill_instructions(skill_name={skill_name!r}) and follow the skill. Do not route to Research/Engineering/Delegation unless the user asks for sources, files, or side effects.")
+                else:
+                    lines.append("- Before answering, fetch the exact selected skill instructions. Do not route to runtime unless the user asks for sources, files, or side effects.")
         elif mode == "research_then_write":
             lines.append("- Route Research first, wait for a compact evidence bundle/source matrix, then draft or delegate final writing from those refs only.")
         elif mode == "artifact_runtime":

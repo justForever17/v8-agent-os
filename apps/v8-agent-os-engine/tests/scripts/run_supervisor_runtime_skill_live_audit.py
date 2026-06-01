@@ -224,7 +224,7 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
             case_id="source_write",
             title="来源型写作应 Research evidence 后成稿",
             prompt="联网查找 2-3 个来源，写一段关于 V8OS runtime-first 设计价值的短报告，必须保留来源，不保存文件。",
-            expected_any_tools=["research_broker", "web_broker", "runtime_broker"],
+            expected_any_tools=["research_broker", "runtime_broker"],
             source_required=True,
             explicit_degradation_ok=True,
         ),
@@ -628,7 +628,38 @@ def _mentions_source(text: str) -> bool:
 
 
 def _explicit_degradation(text: str) -> bool:
-    return bool(re.search(r"无法|不能|需要|请提供|缺少|未配置|没有权限|没有访问|无法获取|无法分析|降级|fallback|degrad", text, re.I))
+    return bool(
+        re.search(
+            r"无法|不能|需要|请提供|缺少|未配置|没有权限|没有访问|无法获取|无法分析|降级|fallback|degrad|"
+            r"cannot|unable|need(?:s|ed)?|must provide|required|missing|not configured|"
+            r"no actual|not performed|was not performed|blocking|blocker|workaround",
+            text,
+            re.I,
+        )
+    )
+
+
+def _has_research_evidence_path(result: LiveCaseResult) -> bool:
+    if "research_broker" in set(result.actual_tools):
+        return True
+    for episode in result.episodes:
+        kind = str(episode.get("kind") or episode.get("runtimeKind") or episode.get("episodeKind") or "").strip().lower()
+        if kind == "research":
+            return True
+    observed = " ".join(
+        [
+            *result.observed_topics,
+            *result.key_events,
+            json.dumps(result.handoffs, ensure_ascii=False, default=str),
+        ]
+    )
+    return bool(
+        re.search(
+            r"runtime\.episode\..*research|research_evidence_bundle|researchResult|claimTable|sourceMatrix|Web Research Architect",
+            observed,
+            re.I,
+        )
+    )
 
 
 def _claims_video_analysis_without_evidence(result: LiveCaseResult) -> bool:
@@ -749,6 +780,26 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
                 modules=["core/native_tools.py", "graph/supervisor_context.py", "runtimes/research"],
                 recommended_fix="检查该模型的 tool call 适配、web_broker/research_broker 可见性，以及天气/来源型写作的路由提示。",
                 regression_test="tests/agent_quality/test_tool_call_validation.py",
+            )
+        )
+    if spec.case_id == "source_write" and not _has_research_evidence_path(result):
+        findings.append(
+            AuditFinding(
+                severity="P1",
+                case_id=spec.case_id,
+                title=spec.title,
+                summary="来源型写作没有进入 Research evidence 路径，存在只靠临时网页搜索成稿的假通过风险。",
+                evidence=_redact(
+                    {
+                        "tools": result.actual_tools,
+                        "topics": result.observed_topics[-12:],
+                        "episodes": result.episodes[:6],
+                        "finalText": result.final_text[:1000],
+                    }
+                ),
+                modules=["runtimes/chat/runtime.py", "runtimes/research", "tests/scripts/run_supervisor_runtime_skill_live_audit.py"],
+                recommended_fix="写作分流为 research_then_write 且 primaryTaskShape=writing 时强制进入 Planner/Research evidence 链路，再由 Supervisor 或 writing subagent 成稿。",
+                regression_test="tests/agent_quality/test_skill_writing_routing.py",
             )
         )
     if result.final_text and _looks_like_handoff_leak(result.final_text):

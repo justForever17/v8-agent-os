@@ -3802,11 +3802,17 @@ class ChatRuntime:
                 if isinstance(prepared.task_shape_hint.get("writingRoute"), dict)
                 else {}
             )
+            writing_route_mode = str(writing_route_current.get("mode") or "").strip()
             skill_subagent_required = (
-                str(writing_route_current.get("mode") or "").strip() == "skill_subagent"
+                writing_route_mode == "skill_subagent"
                 and bool(writing_route_current.get("requiresSkillExecution"))
             )
-            if skill_subagent_required:
+            source_backed_writing_required = (
+                writing_route_mode == "research_then_write"
+                and bool(writing_route_current.get("requiresResearch"))
+                and primary_shape == "writing"
+            )
+            if skill_subagent_required or source_backed_writing_required:
                 prepared.task_planning_mode = True
                 prepared.planner_mode = "force"
                 prepared.planner_dispatch_mode = "auto"

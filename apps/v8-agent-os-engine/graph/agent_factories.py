@@ -310,7 +310,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
                     lines.append("- First Action: You MUST call fetch_skill_instructions with the exact delegated skill name before drafting; ask the supervisor if the skill name is missing.")
             required_reads = writing_brief.get("requiredInstructionReads") if isinstance(writing_brief.get("requiredInstructionReads"), list) else []
             if required_reads:
-                lines.append("- Required Skill Reads: complete these before drafting, editing, or writing artifacts:")
+                lines.append("- Required Skill Reads: complete these exact fetch_skill_instructions calls before drafting, editing, or writing artifacts. Do not replace them with read_native_file or memory.")
                 for item in required_reads[:8]:
                     if not isinstance(item, dict):
                         continue

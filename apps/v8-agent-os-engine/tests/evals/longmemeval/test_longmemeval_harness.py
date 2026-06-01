@@ -6,6 +6,8 @@ from .harness import (
     LongMemEvalV8Harness,
     build_official_evaluation_command,
     load_longmemeval_dataset,
+    _render_history_evidence,
+    _render_session_text,
 )
 
 
@@ -102,3 +104,30 @@ def test_official_evaluation_command_shape(tmp_path):
     assert command[2] == "gpt-4o"
     assert str(command[1]).endswith("src\\evaluation\\evaluate_qa.py") or str(command[1]).endswith("src/evaluation/evaluate_qa.py")
     assert str(command[3]).endswith("hypotheses.jsonl")
+
+
+def test_rendered_history_does_not_expose_answer_labels(tmp_path):
+    session = [{"role": "user", "content": "I now prefer Nike shoes.", "has_answer": True}]
+
+    rendered = _render_session_text(session)
+
+    assert "has_answer" not in rendered
+    assert "Nike shoes" in rendered
+
+
+def test_history_evidence_preserves_tail_when_truncated(tmp_path):
+    row = _sample_dataset()[1]
+    row["haystack_sessions"].append(
+        [{"role": "user", "content": "late evidence: the editor is VS Code with extensions.", "has_answer": True}]
+    )
+    row["haystack_session_ids"].append("s5")
+    row["haystack_dates"].append("2026-04-01")
+    data_path = tmp_path / "longmemeval_sample.json"
+    data_path.write_text(json.dumps([row], ensure_ascii=False), encoding="utf-8")
+    instance = load_longmemeval_dataset(data_path)[0]
+
+    rendered = _render_history_evidence(instance, max_chars=180)
+
+    assert "timestamped history truncated" in rendered
+    assert "late evidence" in rendered
+    assert "has_answer" not in rendered

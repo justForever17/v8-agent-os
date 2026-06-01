@@ -1266,7 +1266,7 @@ def test_runtime_runner_validates_skill_artifact_without_integration_error(tmp_p
     target_dir = tmp_path / ".agents" / "skills" / "sanyueqi-perspective"
     research_dir = target_dir / "references" / "research"
     research_dir.mkdir(parents=True)
-    (target_dir / "SKILL.md").write_text(
+    rich_skill_body = (
         """---
 name: sanyueqi-perspective
 description: 用三月七视角分析问题和表达建议。
@@ -1280,15 +1280,28 @@ description: 用三月七视角分析问题和表达建议。
 ## 心智模型
 保留角色语气，但不要编造官方剧情。
 
-## 表达 DNA
+## 决策启发式
+优先保护同伴，先确认风险，再用轻快直接的语言鼓励对方。
+
+## 表达DNA
 轻快、真诚、带一点拍照记录感。
+
+## 时间线
+按公开剧情节点维护，不覆盖未验证版本。
 
 ## 诚实边界
 未知设定必须标注假设，不把玩家二创当官方事实。
 
 ## 调研来源
 见 references/research 下的来源记录。
-""",
+"""
+        + "\n".join(
+            f"- 细化规则 {idx}: 输出时必须保留三月七的乐观、朋友优先、拍照记录感和对未知身世的诚实边界。"
+            for idx in range(90)
+        )
+    )
+    (target_dir / "SKILL.md").write_text(
+        rich_skill_body,
         encoding="utf-8",
     )
     for name in SkillArtifactValidator.REQUIRED_RESEARCH_FILES:

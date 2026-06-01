@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,8 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from core.v8_agent_os_paths import CHECKPOINT_DB_PATH
+
+logger = logging.getLogger(__name__)
 
 
 class CheckpointStore:
@@ -54,14 +58,37 @@ class CheckpointStore:
         write_lock = asyncio.Lock()
         original_aput = saver.aput
         original_aput_writes = saver.aput_writes
+        retry_delays = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0)
+
+        async def _call_with_lock_retry(operation: Any, *args: Any, **kwargs: Any) -> Any:
+            last_exc: sqlite3.OperationalError | None = None
+            for attempt, delay in enumerate((*retry_delays, 0.0), start=1):
+                try:
+                    return await operation(*args, **kwargs)
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    last_exc = exc
+                    if delay <= 0:
+                        break
+                    logger.debug(
+                        "LangGraph checkpoint write hit SQLite lock; retrying attempt %s/%s after %.2fs",
+                        attempt,
+                        len(retry_delays) + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+            if last_exc is not None:
+                raise last_exc
+            return await operation(*args, **kwargs)
 
         async def locked_aput(*args: Any, **kwargs: Any) -> Any:
             async with write_lock:
-                return await original_aput(*args, **kwargs)
+                return await _call_with_lock_retry(original_aput, *args, **kwargs)
 
         async def locked_aput_writes(*args: Any, **kwargs: Any) -> Any:
             async with write_lock:
-                return await original_aput_writes(*args, **kwargs)
+                return await _call_with_lock_retry(original_aput_writes, *args, **kwargs)
 
         saver.aput = locked_aput  # type: ignore[method-assign]
         saver.aput_writes = locked_aput_writes  # type: ignore[method-assign]

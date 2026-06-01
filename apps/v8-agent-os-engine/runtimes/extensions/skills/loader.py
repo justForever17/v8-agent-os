@@ -4105,9 +4105,13 @@ def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[st
         "skillRoot": skill.get("skillRoot") or skill.get("path") or "",
         "readContract": {
             "primary": "SKILL.md has already been loaded by this tool call.",
-            "nextStep": "Use fetch_skill_instructions(skill_name, relative_path='<path>') to continue into references/templates/scripts only when the task needs that detail.",
+            "nextStep": "Use fetch_skill_instructions(skill_name, relative_path='<path>') to continue into references/templates/scripts when the task needs implementation detail.",
+            "artifactRule": "For creating or updating a Skill artifact, template/framework reads are mandatory before drafting; direct filesystem reads do not satisfy the Skill contract because the loader resolver, safety review, and raw-ref surface must be exercised.",
             "doNotInlineEverything": True,
         },
+        "requiredReadsForArtifact": [
+            item for item in priority[:10] if item in templates or item in frameworks
+        ],
         "recommendedReads": priority[:10],
         "references": references[:24],
         "templates": templates[:12],

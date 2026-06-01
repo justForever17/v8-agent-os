@@ -136,6 +136,7 @@ class ChatRequestData(BaseModel):
 
     client_message_id: Optional[str] = Field(default=None, alias="clientMessageId")
     conversation_id: Optional[str] = Field(default=None, alias="conversationId")
+    model_profile: Optional[str] = Field(default=None, alias="modelProfile")
     command_preset: Optional[CommandPresetSelection] = Field(default=None, alias="commandPreset")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")
     planner_mode: Optional[str] = Field(default=None, alias="plannerMode")

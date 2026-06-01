@@ -2,10 +2,12 @@ from types import SimpleNamespace
 
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
+    _filter_tool_names,
     _runtime_episode_handoff_ready,
     _runtime_episode_recoverable_failure,
     _runtime_handoff_final_message,
     _runtime_recoverable_failure_message,
+    _should_hide_todo_tools_for_direct_writing,
 )
 
 
@@ -80,3 +82,45 @@ def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_succe
     coerced = _coerce_recoverable_failure_response(response, state)
     assert "还没有真正完成" in coerced.content
     assert "artifact_acceptance_failed" in coerced.content
+
+
+def test_direct_writing_skill_plan_hides_supervisor_todo_tools():
+    state = {
+        "task_shape_hint": {
+            "primaryTaskShape": "writing",
+            "writingRoute": {
+                "present": True,
+                "mode": "direct_supervisor",
+                "requiresSkillExecution": True,
+                "requiresArtifact": False,
+                "requiresResearch": False,
+                "skillName": "huashu-nuwa",
+            },
+        }
+    }
+
+    assert _should_hide_todo_tools_for_direct_writing(
+        state,
+        "使用 huashu-nuwa 给我做执行计划，只输出计划，不写文件、不创建 skill。",
+    )
+    tools = [SimpleNamespace(name="fetch_skill_instructions"), SimpleNamespace(name="write_todos"), SimpleNamespace(name="update_todo")]
+    filtered = _filter_tool_names(tools, {"write_todos", "update_todo"})
+    assert [tool.name for tool in filtered] == ["fetch_skill_instructions"]
+
+
+def test_runtime_or_artifact_writing_keeps_supervisor_todo_tools_available():
+    state = {
+        "task_shape_hint": {
+            "primaryTaskShape": "writing",
+            "writingRoute": {
+                "present": True,
+                "mode": "skill_subagent",
+                "requiresSkillExecution": True,
+                "requiresArtifact": True,
+                "requiresResearch": True,
+                "recommendedFamily": "writing",
+            },
+        }
+    }
+
+    assert not _should_hide_todo_tools_for_direct_writing(state, "调研后生成 skill 并保存到工作区。")

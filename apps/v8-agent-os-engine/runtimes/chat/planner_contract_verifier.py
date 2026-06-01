@@ -53,7 +53,6 @@ def _requires_skill_artifact(task: dict[str, Any], *, task_shape_hint: dict[str,
         bool(task.get("validateSkillArtifact"))
         or bool(writing_route.get("requiresArtifact"))
         or "skill-creator" in required_contracts
-        or str(skill_name).strip() in {"huashu-nuwa", "skill-creator"}
     )
 
 

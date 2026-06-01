@@ -78,3 +78,44 @@ def resolve_engine_config_for_role(
         ),
         "resolution": resolution,
     }
+
+
+def resolve_engine_config_for_model_ref(
+    model_ref: str,
+    *,
+    provider_id: str = "",
+    fallback_provider: str = "openai",
+    fallback_model: str = "gpt-4o",
+) -> dict[str, Any]:
+    """Resolve an explicit per-run model ref without mutating role bindings."""
+    normalized_model_ref = str(model_ref or "").strip()
+    normalized_provider_id = str(provider_id or "").strip()
+    record = (
+        model_control_plane.get_model_record(normalized_model_ref, provider_id=normalized_provider_id)
+        if normalized_model_ref
+        else None
+    )
+    resolved_provider_id = str((record or {}).get("provider_id") or normalized_provider_id or fallback_provider)
+    resolved_model_id = str((record or {}).get("model_id") or normalized_model_ref or fallback_model)
+
+    routes = storage.get_routes()
+    provider_config = ((routes.get("providers") or {}).get(resolved_provider_id) or {}).get("provider") or {}
+    api_key, base_url = _hydrate_provider_credentials(resolved_provider_id, provider_config)
+
+    return {
+        "engine_config": EngineConfig(
+            provider=resolved_provider_id,
+            model_name=resolved_model_id,
+            api_key=api_key or None,
+            base_url=base_url or None,
+        ),
+        "resolution": {
+            "role": "request_override",
+            "bindingState": "request_override" if record else "missing",
+            "rawModelId": normalized_model_ref,
+            "resolvedModelId": resolved_model_id if record else "",
+            "resolvedModelRef": str((record or {}).get("model_ref") or ""),
+            "resolvedProviderId": resolved_provider_id if record else "",
+            "lookupStatus": "exact" if record else "missing",
+        },
+    }

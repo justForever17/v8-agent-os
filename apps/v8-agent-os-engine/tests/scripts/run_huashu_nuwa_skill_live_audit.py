@@ -204,6 +204,7 @@ def _prompt(target: str, game: str, target_dir: Path) -> str:
    - 读取 huashu-nuwa full 后，必须按 continuationManifest 继续读取：
      fetch_skill_instructions(skill_name="huashu-nuwa", relative_path="references/skill-template.md")
      fetch_skill_instructions(skill_name="huashu-nuwa", relative_path="references/extraction-framework.md")
+   这两次必须作为 fetch_skill_instructions 工具调用出现在 live 轨迹中；不能用 read_native_file、记忆、摘要或最终 validator 替代。
 2. 输出目录只能是：{target_dir}
 3. 必须创建自包含目录结构：
    - SKILL.md
@@ -221,6 +222,7 @@ def _prompt(target: str, game: str, target_dir: Path) -> str:
    description: 三月七（《{game}》）的思维框架与表达方式。用于以三月七视角分析问题、回应选择、生成台词风格建议。
    ---
    并且正文至少包含这些一级或二级章节：使用说明、身份卡、心智模型、决策启发式、表达DNA、时间线、诚实边界、调研来源。
+   这不是简短角色扮演提示词；正文必须达到至少 4500 个 Unicode 字符。请在交付前重新读取磁盘上的 SKILL.md 并确认字符数，而不是按字节数估计。
 5. 三月七是虚构角色，请把 huashu-nuwa 的人物调研六维适配为：
    - 官方设定、角色故事、角色档案、命途/版本设定
    - 剧情台词、短信、同行任务、活动剧情中的表达方式
@@ -333,6 +335,9 @@ def _repair_prompt(*, target: str, game: str, target_dir: Path, findings: list[F
 
 硬性修复要求：
 0. 先重新读取 huashu-nuwa/full 和 skill-creator/full，再按两者合同修复；不要只凭上轮记忆补模板。
+0.0a 产物类 skill 任务必须通过 fetch_skill_instructions 的相对路径续读完成模板和方法论读取，不能用 read_native_file 或“我已知道模板”替代。修复前必须实际调用：
+   fetch_skill_instructions(skill_name="huashu-nuwa", relative_path="references/skill-template.md")
+   fetch_skill_instructions(skill_name="huashu-nuwa", relative_path="references/extraction-framework.md")
 0.1 本 live audit 已显式允许工作区副作用写入；系统不存在 `skill-validation-repair` 工具组，也不需要等待额外授权。你必须实际调用可用工具覆盖文件，或通过 runtime_broker(route) 等待 Engineering 完成。只输出计划、等待授权、让用户手动覆盖，都视为失败。
 0.2 修复完成前不要给最终交付回复；最终回复必须基于磁盘上已写入并可读取的文件，而不是“准备好了/待执行”的计划。
 1. SKILL.md 必须以 YAML frontmatter 开头：

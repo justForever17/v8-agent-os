@@ -32,6 +32,15 @@ class SupervisorRuntimeBundle:
     agent_nodes_map: dict[str, Callable]
 
 
+def _is_request_model_override(config: EngineConfig, default_role_model: str | None) -> bool:
+    return bool(
+        config.model_name
+        and config.model_name != "gpt-4o"
+        and config.model_name != default_role_model
+        and str(config.provider or "").strip().lower() not in {"", "openai"}
+    )
+
+
 def build_supervisor_runtime_bundle(
     *,
     config: EngineConfig,
@@ -54,14 +63,17 @@ def build_supervisor_runtime_bundle(
     sup_model_name = str(supervisor_resolution["resolution"].get("resolvedModelId") or "")
     supervisor_binding_state = str(supervisor_resolution["resolution"].get("bindingState") or "")
     default_role_model = storage.get_role_model_id("default")
+    request_model_override = _is_request_model_override(config, default_role_model)
 
-    if supervisor_binding_state != "explicit" and config.model_name and config.model_name != default_role_model:
+    if request_model_override:
+        sup_model_name = config.model_name
+    elif supervisor_binding_state != "explicit" and config.model_name and config.model_name != default_role_model:
         sup_model_name = config.model_name
     if not sup_model_name:
         sup_model_name = default_role_model or config.model_name
 
     supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=False, **caller_kwargs)
-    default_agent_model_id = storage.get_default_agent_model_id() or sup_model_name
+    default_agent_model_id = sup_model_name if request_model_override else (storage.get_default_agent_model_id() or sup_model_name)
     default_agent_llm = (
         supervisor_base_llm
         if not default_agent_model_id or default_agent_model_id == sup_model_name

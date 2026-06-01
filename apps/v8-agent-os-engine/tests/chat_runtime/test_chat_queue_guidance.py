@@ -117,6 +117,41 @@ def test_completed_run_consumes_next_pending_message_in_same_session(monkeypatch
     assert test_db.get_chat_user_message_queue_item("queue-next")["state"] == "consumed"
 
 
+def test_terminal_post_run_failure_does_not_poison_completed_run_or_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-terminal-fail", "Terminal Failure")
+    test_db.create_run_record(run_id="run-done", session_id="session-terminal-fail", run_type="chat", status="completed")
+    test_db.add_chat_user_message_queue_item(
+        queue_id="queue-next",
+        session_id="session-terminal-fail",
+        run_id="run-done",
+        client_message_id="client-next",
+        content="终端治理失败后继续发送",
+        request_payload=_chat_request(
+            session_id="session-terminal-fail",
+            client_message_id="client-next",
+            content="终端治理失败后继续发送",
+        ).model_dump(mode="json", by_alias=True),
+    )
+    scheduled: list[tuple[ChatRequest, str, str | None]] = []
+    monkeypatch.setattr(routes, "_schedule_chat_run", lambda request, *, transport, run_id=None: scheduled.append((request, transport, run_id)) or run_id)
+    import core.terminal_post_run as terminal_post_run
+
+    def fail_dispatch(**_kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(terminal_post_run.terminal_post_run_service, "dispatch", fail_dispatch)
+
+    routes._fire_on_chat_end_if_terminal("session-terminal-fail", "run-done")
+
+    assert test_db.get_run_record("run-done")["status"] == "completed"
+    assert len(scheduled) == 1
+    assert scheduled[0][0].session_id == "session-terminal-fail"
+    assert test_db.get_chat_user_message_queue_item("queue-next")["state"] == "consumed"
+    events = test_db.get_runtime_events("session-terminal-fail")
+    assert any(event["topic"] == "terminal_post_run.failed" for event in events)
+
+
 def test_promoted_guidance_requeues_when_run_completes_before_injection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     test_db = _install_db(monkeypatch, tmp_path)
     test_db.create_or_update_session("session-guidance", "Guidance")

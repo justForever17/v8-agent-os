@@ -146,6 +146,9 @@ _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
 }
 
 
+_SUPERVISOR_TODO_TOOL_NAMES = {"write_todos", "update_todo"}
+
+
 def _tool_ref_name(tool_ref) -> str:
     return str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip()
 
@@ -159,6 +162,51 @@ def _filter_network_supervisor_compat_tools(tools):
         if name.startswith("network_") or name in _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES:
             filtered.append(tool_ref)
     return filtered
+
+
+def _filter_tool_names(tools, excluded_names: set[str]):
+    excluded = {str(name or "").strip() for name in excluded_names if str(name or "").strip()}
+    return [tool_ref for tool_ref in list(tools or []) if _tool_ref_name(tool_ref) not in excluded]
+
+
+def _task_shape_from_state(state) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    task_shape = state.get("task_shape_hint")
+    if isinstance(task_shape, dict) and task_shape:
+        return dict(task_shape)
+    route_context = state.get("current_route_context")
+    if isinstance(route_context, dict) and isinstance(route_context.get("taskShapeHint"), dict):
+        return dict(route_context.get("taskShapeHint") or {})
+    return {}
+
+
+def _should_hide_todo_tools_for_direct_writing(state, user_query: str) -> bool:
+    task_shape = _task_shape_from_state(state)
+    writing_route = task_shape.get("writingRoute") if isinstance(task_shape.get("writingRoute"), dict) else {}
+    if not writing_route.get("present"):
+        return False
+    mode = str(writing_route.get("mode") or "").strip()
+    if mode not in {"direct_supervisor", "ask_user_clarify"}:
+        return False
+    if bool(writing_route.get("requiresArtifact")) or bool(writing_route.get("requiresResearch")):
+        return False
+    if str(writing_route.get("recommendedFamily") or "").strip() or str(writing_route.get("preferredAgentId") or "").strip():
+        return False
+    query = str(user_query or "")
+    explicit_runtime_terms = (
+        "runtime",
+        "subagent",
+        "子代理",
+        "工程 runtime",
+        "调研 runtime",
+        "派发",
+        "多 agent",
+        "多智能体",
+    )
+    if any(term.lower() in query.lower() for term in explicit_runtime_terms):
+        return False
+    return True
 
 
 def _build_neutral_extensions_route(visible_supervisor_tools):
@@ -350,6 +398,8 @@ def execute_supervisor_turn(
             )
             route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
         filtered_supervisor_tools = route_bundle.filtered_tools
+        if _should_hide_todo_tools_for_direct_writing(state, user_query):
+            filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, _SUPERVISOR_TODO_TOOL_NAMES)
         if not _is_network_supervisor_compat_transport(state):
             extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
 

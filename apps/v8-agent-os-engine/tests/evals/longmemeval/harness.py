@@ -104,7 +104,7 @@ def default_smoke_answerer(
     ).strip()
 
 
-def create_v8os_model_answerer(*, model_id: str, max_context_chars: int = 24000) -> Answerer:
+def create_v8os_model_answerer(*, model_id: str, max_context_chars: int = 240000) -> Answerer:
     """Create a real V8OS model-backed answerer.
 
     This intentionally stays small: LongMemEval scoring truth is still the
@@ -120,8 +120,10 @@ def create_v8os_model_answerer(*, model_id: str, max_context_chars: int = 24000)
     from core.llm_factory import llm_factory
 
     def _answer(instance: LongMemEvalInstance, memory_context: str, retrieved_facts: list[dict[str, Any]]) -> str:
-        retrieved_block = _render_retrieved_facts(retrieved_facts, limit=8)
-        context_block = str(memory_context or "")[: max(0, int(max_context_chars))]
+        budget = max(0, int(max_context_chars))
+        history_block = _render_history_evidence(instance, max_chars=max(1000, int(budget * 0.82)))
+        retrieved_block = _render_retrieved_facts(retrieved_facts, limit=8, max_chars=max(1000, int(budget * 0.14)))
+        context_block = str(memory_context or "")[: max(0, budget - len(history_block) - len(retrieved_block))]
         model = llm_factory.create_chat_model(
             normalized_model_id,
             temperature=0,
@@ -143,6 +145,8 @@ def create_v8os_model_answerer(*, model_id: str, max_context_chars: int = 24000)
                         f"Question date: {instance.question_date or 'unknown'}\n"
                         f"Question type: {instance.question_type or 'unknown'}\n"
                         f"Question: {instance.question}\n\n"
+                        "[TIMESTAMPED HISTORY]\n"
+                        f"{history_block or '(empty)'}\n\n"
                         "[V8OS MEMORY CONTEXT]\n"
                         f"{context_block or '(empty)'}\n\n"
                         "[RETRIEVED FACTS]\n"
@@ -322,12 +326,32 @@ def _render_session_text(session: list[dict[str, Any]]) -> str:
         content = str(turn.get("content") or "").strip()
         if not content:
             continue
-        has_answer = " has_answer=true" if bool(turn.get("has_answer")) else ""
-        lines.append(f"{role}{has_answer}: {content}")
+        lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
 
-def _render_retrieved_facts(items: list[dict[str, Any]], *, limit: int) -> str:
+def _render_history_evidence(instance: LongMemEvalInstance, *, max_chars: int) -> str:
+    lines: list[str] = []
+    for index, session in enumerate(_ordered_sessions(instance), start=1):
+        date_value = _session_date_for(instance, index - 1) or "unknown date"
+        session_id = _session_id_for(instance, index - 1)
+        text = _render_session_text(session)
+        if not text:
+            continue
+        lines.append(f"## Session {index}: {session_id} at {date_value}\n{text}")
+    rendered = "\n\n".join(lines)
+    if len(rendered) <= max_chars:
+        return rendered
+    head = int(max_chars * 0.72)
+    tail = max_chars - head - 120
+    return (
+        rendered[: max(0, head)].rstrip()
+        + "\n\n[... timestamped history truncated; preserving latest tail ...]\n\n"
+        + rendered[-max(0, tail) :].lstrip()
+    )
+
+
+def _render_retrieved_facts(items: list[dict[str, Any]], *, limit: int, max_chars: int = 24000) -> str:
     lines: list[str] = []
     for index, item in enumerate(items[: max(0, int(limit))], start=1):
         fact = str(item.get("fact") or item.get("text") or item.get("content") or "").strip()
@@ -340,8 +364,13 @@ def _render_retrieved_facts(items: list[dict[str, Any]], *, limit: int) -> str:
             prefix += f" [{scope}]"
         if score is not None:
             prefix += f" score={score}"
-        lines.append(f"{prefix} {fact[:1800]}")
-    return "\n".join(lines)
+        lines.append(f"{prefix} {fact}")
+    rendered = "\n".join(lines)
+    if len(rendered) <= max_chars:
+        return rendered
+    head = int(max_chars * 0.7)
+    tail = max_chars - head - 80
+    return rendered[: max(0, head)].rstrip() + "\n[... retrieved facts truncated ...]\n" + rendered[-max(0, tail) :].lstrip()
 
 
 def _extract_response_text(response: Any) -> str:
@@ -378,7 +407,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Optional number of instances for smoke runs.")
     parser.add_argument("--answerer", choices=("smoke", "v8os"), default="smoke", help="Use smoke plumbing output or a real V8OS model-backed answerer.")
     parser.add_argument("--model-id", default="", help="Registered V8OS model id used when --answerer=v8os.")
-    parser.add_argument("--max-context-chars", type=int, default=24000, help="Maximum V8OS memory context characters sent to the LongMemEval answerer.")
+    parser.add_argument("--max-context-chars", type=int, default=240000, help="Maximum LongMemEval evidence characters sent to the V8OS answerer.")
     args = parser.parse_args()
     answerer = (
         create_v8os_model_answerer(model_id=args.model_id, max_context_chars=args.max_context_chars)

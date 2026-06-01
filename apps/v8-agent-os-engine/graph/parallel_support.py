@@ -245,7 +245,7 @@ def _validate_required_skill_artifacts(
                 if path.name == "SKILL.md":
                     if not stripped.startswith("---"):
                         sparse.append(f"{path} (missing_frontmatter)")
-                    min_chars = 3500 if requires_huashu_research else 1000
+                    min_chars = 4000 if requires_huashu_research else 1000
                     if len(stripped) < min_chars:
                         sparse.append(f"{path} (too_short:{len(stripped)}<{min_chars})")
                     if requires_huashu_research:

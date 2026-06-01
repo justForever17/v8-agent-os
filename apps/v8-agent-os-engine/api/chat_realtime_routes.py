@@ -1,5 +1,6 @@
 import json
 import asyncio
+import logging
 import mimetypes
 import re
 import threading
@@ -37,6 +38,7 @@ from runtimes.chat.runtime import chat_runtime
 
 router = APIRouter()
 _UPLOAD_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+logger = logging.getLogger("v8chat.chat_realtime")
 
 
 def _engine_now_ms() -> int:
@@ -285,13 +287,53 @@ def _fire_on_chat_end_if_terminal(session_id: str, run_id: str | None) -> None:
         return
     from core.terminal_post_run import terminal_post_run_service
 
-    terminal_post_run_service.dispatch(
-        session_id=session_id,
-        run_id=run_id,
-        source_component="chat_realtime",
-    )
-    record = db.get_run_record(run_id) or {}
-    if str(record.get("status") or "").strip().lower() == "completed":
+    try:
+        terminal_post_run_service.dispatch(
+            session_id=session_id,
+            run_id=run_id,
+            source_component="chat_realtime",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Terminal post-run dispatch failed for session %s run %s; keeping chat run terminal state intact: %s",
+            session_id,
+            run_id,
+            exc,
+        )
+        try:
+            event = build_runtime_event(
+                kind="event",
+                topic="terminal_post_run.failed",
+                session_id=session_id,
+                run_id=run_id,
+                seq=db.get_next_runtime_seq(session_id) if session_id else None,
+                payload={
+                    "summary": "终端治理任务失败，已作为诊断记录，不影响本轮对话完成态。",
+                    "sourceComponent": "chat_realtime",
+                    "error": str(exc),
+                    "governanceOnly": True,
+                    "hiddenFromHistory": True,
+                },
+                source={
+                    "plane": "engine",
+                    "component": "chat_realtime",
+                    "node": "terminal_post_run",
+                    "agent_id": None,
+                },
+            )
+            db.add_runtime_event(event)
+        except Exception:
+            logger.debug(
+                "Failed to persist terminal post-run diagnostic for session %s run %s",
+                session_id,
+                run_id,
+                exc_info=True,
+            )
+
+    try:
+        record = db.get_run_record(run_id) or {}
+        if str(record.get("status") or "").strip().lower() != "completed":
+            return
         for item in db.requeue_promoted_chat_user_messages_for_run(
             session_id=session_id,
             run_id=run_id,
@@ -308,6 +350,13 @@ def _fire_on_chat_end_if_terminal(session_id: str, run_id: str | None) -> None:
                 },
             )
         _schedule_next_queued_user_message(session_id)
+    except Exception as exc:
+        logger.warning(
+            "Completed chat queue drain failed for session %s run %s; preserving completed run state: %s",
+            session_id,
+            run_id,
+            exc,
+        )
 
 
 async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str | None = None) -> None:

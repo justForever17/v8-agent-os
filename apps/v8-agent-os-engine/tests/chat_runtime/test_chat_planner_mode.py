@@ -4,15 +4,63 @@ from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import patch
 
-from api.models import ChatMessage, ChatRequest, ChatRequestData
+from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 from core.database import db
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from graph.workflow_assembly import build_planner_auto_dispatch_node, build_runtime_episode_wait_node
 from graph.parallel_support import build_parallel_delegate_join_node
+from graph.supervisor_builder import _is_request_model_override
 from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
 
 class ChatPlannerModeTests(unittest.TestCase):
+    def test_model_profile_data_resolves_per_run_engine_config(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="写一段说明")],
+            data=ChatRequestData(modelProfile="xiaomi-mimo-tokenplan::mimo-v2.5-pro"),
+        )
+        override = EngineConfig(
+            provider="xiaomi-mimo-tokenplan",
+            model_name="mimo-v2.5-pro",
+            api_key="test-key",
+            base_url="https://example.test/v1",
+        )
+
+        with patch(
+            "runtimes.chat.runtime.resolve_engine_config_for_model_ref",
+            return_value={
+                "engine_config": override,
+                "resolution": {
+                    "bindingState": "request_override",
+                    "resolvedModelId": "mimo-v2.5-pro",
+                    "resolvedProviderId": "xiaomi-mimo-tokenplan",
+                },
+            },
+        ) as resolver:
+            runtime._resolve_engine_config(request)
+
+        resolver.assert_called_once_with("xiaomi-mimo-tokenplan::mimo-v2.5-pro")
+        self.assertEqual(request.config.provider, "xiaomi-mimo-tokenplan")
+        self.assertEqual(request.config.model_name, "mimo-v2.5-pro")
+        self.assertEqual(request.config.api_key, "test-key")
+        self.assertEqual(request.config.base_url, "https://example.test/v1")
+
+    def test_supervisor_request_model_override_is_explicit_and_non_default(self):
+        self.assertTrue(
+            _is_request_model_override(
+                EngineConfig(provider="xiaomi-mimo-tokenplan", model_name="mimo-v2.5-pro"),
+                "doubao-seed-2.0-pro",
+            )
+        )
+        self.assertFalse(_is_request_model_override(EngineConfig(), "doubao-seed-2.0-pro"))
+        self.assertFalse(
+            _is_request_model_override(
+                EngineConfig(provider="volcengine-coding", model_name="doubao-seed-2.0-pro"),
+                "doubao-seed-2.0-pro",
+            )
+        )
+
     def test_planner_model_timeout_uses_deterministic_fallback_event(self):
         class SlowPlannerModel:
             def with_structured_output(self, _schema):
@@ -554,6 +602,43 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("planner_contract_skill_creator_full_read_required", repaired["qualityFlags"])
         self.assertIn("planner_contract_huashu_template_read_required", repaired["qualityFlags"])
         self.assertIn("planner_contract_huashu_framework_read_required", repaired["qualityFlags"])
+
+    def test_planner_contract_verifier_does_not_force_artifact_for_huashu_plan_only(self):
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                skill_references=[{"name": "huashu-nuwa"}],
+                task_shape_hint={
+                    "writingRoute": {
+                        "mode": "skill_subagent",
+                        "requiresSkillExecution": True,
+                        "requiresArtifact": False,
+                        "skillName": "huashu-nuwa",
+                    }
+                },
+            )
+        )
+
+        repaired = ChatRuntime._verify_and_repair_planner_contract(
+            {
+                "planId": "model-plan",
+                "executionStrategy": "delegate",
+                "taskBriefs": [{"taskBriefId": "task-1", "goal": "Read huashu-nuwa and draft an execution plan", "familyHint": "writing"}],
+                "qualityFlags": [],
+                "repairCount": 0,
+            },
+            fallback_plan=None,
+            chat_run=chat_run,
+        )
+
+        task = repaired["taskBriefs"][0]
+        brief = task["context"]["writingExecutionBrief"]
+        self.assertIn("fetch_skill_instructions", task["requiredCapabilities"])
+        self.assertFalse(task.get("validateSkillArtifact", False))
+        self.assertNotIn("requiredSkillContracts", task)
+        reads = brief["requiredInstructionReads"]
+        self.assertTrue(any(item.get("skillName") == "huashu-nuwa" and item.get("detailLevel") == "full" for item in reads))
+        self.assertFalse(any(item.get("skillName") == "skill-creator" for item in reads))
+        self.assertFalse(any(item.get("relativePath") == "references/skill-template.md" for item in reads))
 
     def test_planner_auto_dispatch_suggest_never_dispatches(self):
         decision = ChatRuntime._decide_planner_auto_dispatch(

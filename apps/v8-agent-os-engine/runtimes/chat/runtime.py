@@ -34,7 +34,7 @@ from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.models.provider_compatibility import normalize_provider_error
 from core.database import db
-from core.engine_config_resolver import resolve_engine_config_for_role
+from core.engine_config_resolver import resolve_engine_config_for_model_ref, resolve_engine_config_for_role
 from core.graph_stream_watchdog import (
     GraphStreamDownstreamTimeoutError,
     GraphStreamIdleTimeoutError,
@@ -3391,6 +3391,16 @@ class ChatRuntime:
         }
 
     def _resolve_engine_config(self, request: ChatRequest) -> None:
+        explicit_model_profile = str(getattr(getattr(request, "data", None), "model_profile", None) or "").strip()
+        if explicit_model_profile and explicit_model_profile not in {"engine-default", "default"}:
+            resolved = resolve_engine_config_for_model_ref(explicit_model_profile)
+            if resolved["resolution"].get("bindingState") == "request_override":
+                override_config = resolved["engine_config"]
+                request.config.provider = override_config.provider
+                request.config.model_name = override_config.model_name
+                request.config.api_key = override_config.api_key
+                request.config.base_url = override_config.base_url
+                return
         if request.config.provider == "openai" and request.config.model_name == "gpt-4o":
             resolved = resolve_engine_config_for_role(
                 "supervisor",
@@ -3603,33 +3613,6 @@ class ChatRuntime:
                 hint = dict(prepared.task_shape_hint or {})
                 request_text = str(prepared.latest_user_content or "")
                 request_blob_lower = request_text.lower()
-                is_skill_artifact_creation = any(
-                    marker in request_blob_lower
-                    for marker in (
-                        "造skill",
-                        "造 skill",
-                        "造人",
-                        "女娲",
-                        "蒸馏",
-                        "生成 skill",
-                        "生成skill",
-                        "创建 skill",
-                        "创建skill",
-                        "更新 skill",
-                        "更新skill",
-                        ".agents",
-                        "skill.md",
-                        "references/research",
-                    )
-                )
-                if is_skill_artifact_creation and any(
-                    marker in request_blob_lower
-                    for marker in ("只输出计划", "只要计划", "不写文件", "不保存", "不创建")
-                ) and not any(
-                    marker in request_blob_lower
-                    for marker in ("生成 skill", "生成skill", "创建 skill", "创建skill", ".agents", "skill.md", "references/research", "保存到", "写入")
-                ):
-                    is_skill_artifact_creation = False
                 def _has_non_negated_request_marker(markers: tuple[str, ...]) -> bool:
                     for marker in markers:
                         start = 0
@@ -3642,6 +3625,32 @@ class ChatRuntime:
                                 return True
                             start = index + max(1, len(marker))
                     return False
+                explicit_artifact_creation = _has_non_negated_request_marker(
+                    (
+                        "造skill",
+                        "造 skill",
+                        "生成 skill",
+                        "生成skill",
+                        "创建 skill",
+                        "创建skill",
+                        "更新 skill",
+                        "更新skill",
+                        ".agents",
+                        "skill.md",
+                        "references/research",
+                        "保存到",
+                        "写入",
+                    )
+                )
+                planning_only_or_no_artifact = any(
+                    marker in request_blob_lower
+                    for marker in ("只输出计划", "只要计划", "仅输出计划", "只做计划", "不写文件", "不保存", "不创建")
+                )
+                huashu_distillation_creation = (
+                    _has_non_negated_request_marker(("造人", "女娲", "蒸馏"))
+                    and not planning_only_or_no_artifact
+                )
+                is_skill_artifact_creation = bool(explicit_artifact_creation or huashu_distillation_creation)
                 direct_skill_usage = (
                     not is_skill_artifact_creation
                     and not _has_non_negated_request_marker(("调研", "来源", "出处", "联网", "官方", "最新", "保存", "写入", ".md", ".agents"))

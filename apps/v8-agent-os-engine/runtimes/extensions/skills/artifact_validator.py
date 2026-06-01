@@ -32,6 +32,8 @@ class SkillArtifactValidationResult:
 class SkillArtifactValidator:
     """Validate generated Skill artifacts before an Engineering episode claims completion."""
 
+    MIN_GENERIC_SKILL_MD_CHARS = 1000
+    MIN_HUASHU_SKILL_MD_CHARS = 4000
     REQUIRED_RESEARCH_FILES = (
         "01-writings.md",
         "02-conversations.md",
@@ -62,6 +64,9 @@ class SkillArtifactValidator:
         metadata["skillMdChars"] = len(text)
         if not text.strip():
             findings.append("SKILL.md 为空。")
+        min_skill_chars = cls.MIN_HUASHU_SKILL_MD_CHARS if require_huashu_research else cls.MIN_GENERIC_SKILL_MD_CHARS
+        if len(text.strip()) < min_skill_chars:
+            findings.append(f"SKILL.md 内容过短：{len(text.strip())}<{min_skill_chars}。")
 
         frontmatter, body = cls._split_frontmatter(text)
         if not frontmatter:

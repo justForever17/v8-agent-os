@@ -308,6 +308,22 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
                     lines.append(f"- First Action: You MUST call fetch_skill_instructions(skill_name={skill_name!r}) before drafting or editing.")
                 else:
                     lines.append("- First Action: You MUST call fetch_skill_instructions with the exact delegated skill name before drafting; ask the supervisor if the skill name is missing.")
+            required_reads = writing_brief.get("requiredInstructionReads") if isinstance(writing_brief.get("requiredInstructionReads"), list) else []
+            if required_reads:
+                lines.append("- Required Skill Reads: complete these before drafting, editing, or writing artifacts:")
+                for item in required_reads[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    read_skill = str(item.get("skillName") or item.get("name") or skill_name or "").strip()
+                    detail_level = str(item.get("detailLevel") or item.get("detail_level") or "").strip()
+                    relative_path = str(item.get("relativePath") or item.get("relative_path") or "").strip()
+                    reason = _compact_prompt_value(item.get("reason"))
+                    args = [f"skill_name={read_skill!r}"] if read_skill else ["skill_name=<delegated skill name>"]
+                    if relative_path:
+                        args.append(f"relative_path={relative_path!r}")
+                    elif detail_level:
+                        args.append(f"detail_level={detail_level!r}")
+                    lines.append(f"  - fetch_skill_instructions({', '.join(args)})" + (f" — {reason}" if reason else ""))
             if authorized_refs:
                 lines.append(f"- Authorized Refs Only: {_compact_prompt_value(authorized_refs)}")
             forbidden = _compact_prompt_value(writing_brief.get("forbiddenInventions"))

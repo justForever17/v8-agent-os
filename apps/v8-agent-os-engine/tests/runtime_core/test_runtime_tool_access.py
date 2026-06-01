@@ -53,7 +53,8 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     names = {tool.name for tool in visible}
 
-    assert {"runtime_broker", "read_native_file", "run_system_command", "http_request", "delegate_network_task"}.issubset(names)
+    assert {"runtime_broker", "read_native_file", "run_system_command", "http_request"}.issubset(names)
+    assert "delegate_network_task" not in names
     assert "memory_broker" in names
     assert "memory_recall" not in names
     assert "mem_update" not in names
@@ -63,6 +64,28 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     assert "creative_media_compile_recipe" not in names
     assert "creative_media_create_character_bible" not in names
     assert "creative_media_create_edit_plan" not in names
+
+
+def test_network_supervisor_delegate_requires_explicit_runtime_grant():
+    tools = [
+        _tool("runtime_broker"),
+        _tool("delegate_network_task"),
+    ]
+
+    default_visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
+    assert "delegate_network_task" not in {tool.name for tool in default_visible}
+
+    command = runtime_broker.func(
+        mode="grant",
+        tool_group="network_supervisor.delegate",
+        reason="explicit remote peer delegation",
+        state={"current_route_context": {}},
+        tool_call_id="call-network-supervisor-grant",
+    )
+    updated_context = command.update["current_route_context"]
+
+    visible_after_grant = filter_visible_tools_for_actor(tools, actor="supervisor", route_context=updated_context)
+    assert "delegate_network_task" in {tool.name for tool in visible_after_grant}
 
 
 def test_runtime_broker_grant_makes_group_visible_for_same_run_next_step():

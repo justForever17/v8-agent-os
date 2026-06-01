@@ -77,6 +77,14 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "delegation_broker",
         ],
     },
+    "network_supervisor.delegate": {
+        "runtimeKind": "network_supervisor",
+        "label": "Network Supervisor delegation",
+        "summary": "向已连接的远端 V8 peer 委托任务。普通 runtime/subagent 编排应使用 runtime_broker / delegation_broker；此组仅在明确需要 Network Supervisor peer 委托时授予。",
+        "toolNames": [
+            "delegate_network_task",
+        ],
+    },
     "creative_media.core": {
         "runtimeKind": "creative_media",
         "label": "Creative Media core",

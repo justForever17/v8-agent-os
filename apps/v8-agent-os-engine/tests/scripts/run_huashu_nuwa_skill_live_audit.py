@@ -333,14 +333,16 @@ def _repair_prompt(*, target: str, game: str, target_dir: Path, findings: list[F
 
 硬性修复要求：
 0. 先重新读取 huashu-nuwa/full 和 skill-creator/full，再按两者合同修复；不要只凭上轮记忆补模板。
+0.1 本 live audit 已显式允许工作区副作用写入；系统不存在 `skill-validation-repair` 工具组，也不需要等待额外授权。你必须实际调用可用工具覆盖文件，或通过 runtime_broker(route) 等待 Engineering 完成。只输出计划、等待授权、让用户手动覆盖，都视为失败。
+0.2 修复完成前不要给最终交付回复；最终回复必须基于磁盘上已写入并可读取的文件，而不是“准备好了/待执行”的计划。
 1. SKILL.md 必须以 YAML frontmatter 开头：
    ---
    name: sanyueqi-perspective
    description: 三月七（《{game}》）的思维框架与表达方式。用于以三月七视角分析问题、回应选择、生成台词风格建议。
    ---
 2. SKILL.md 正文必须显式包含：使用说明、身份卡、心智模型、决策启发式、表达DNA、时间线、诚实边界、调研来源。
-3. SKILL.md 不能是简短角色扮演提示词；它必须是可复用 skill，至少 4000 字符，能教另一个 agent 如何以「{target}」视角思考和表达。
-4. references/research/01-writings.md 到 06-timeline.md 必须全部保留，每个文件必须有来源 URL 或来源说明/可信度标记。
+3. SKILL.md 不能是简短角色扮演提示词；它必须是可复用 skill，至少 4500 个 Unicode 字符（不是字节数），能教另一个 agent 如何以「{target}」视角思考和表达。
+4. references/research/01-writings.md 到 06-timeline.md 必须全部保留，每个文件必须有来源 URL 或来源说明/可信度标记；缺来源的文件直接追加 `## 来源与可信度` 小节即可。
 5. 不要声称分析过未实际读取的视频；如无视频画面证据，在诚实边界写清。
 6. 修复完成后再次让 SkillLoader 能在 test7 workspace 发现并 fetch `sanyueqi-perspective`。
 
@@ -449,6 +451,75 @@ def _event_blob(result: LiveCaseResult) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _durable_event_blob(result: LiveCaseResult) -> str:
+    """Load durable events losslessly enough for acceptance checks.
+
+    Live polling intentionally stores compact key events for reports. Acceptance
+    checks for long tool outputs must use the DB-backed event stream so a real
+    tool result is not hidden by the report preview budget.
+    """
+
+    events, error = _load_durable_runtime_events(result)
+    payload = {
+        "error": error,
+        "events": events,
+        "episodes": result.episodes,
+        "handoffs": result.handoffs,
+        "finalText": result.final_text,
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _has_structured_skill_file_read(live: LiveCaseResult, relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").strip()
+    events, _error = _load_durable_runtime_events(live)
+    matching_call_ids: set[str] = set()
+
+    def _payload_from_event(event: dict[str, Any]) -> dict[str, Any]:
+        payload = _event_payload(event)
+        if not isinstance(payload, dict) and event.get("payload_json") is not None:
+            try:
+                payload = json.loads(str(event.get("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _tool_call_id(tool_payload: dict[str, Any]) -> str:
+        return str(
+            tool_payload.get("toolCallId")
+            or tool_payload.get("toolInvocationId")
+            or tool_payload.get("tool_call_id")
+            or tool_payload.get("id")
+            or ""
+        ).strip()
+
+    def _result_text(tool_payload: dict[str, Any]) -> str:
+        result_payload = tool_payload.get("result")
+        if result_payload is None and tool_payload.get("output") is not None:
+            result_payload = tool_payload.get("output")
+        if isinstance(result_payload, str):
+            return result_payload
+        return json.dumps(result_payload, ensure_ascii=False, default=str)
+
+    for event in events:
+        payload = _payload_from_event(event)
+        tool_payload = payload.get("tool") if isinstance(payload.get("tool"), dict) else payload
+        tool_name = str(tool_payload.get("toolName") or tool_payload.get("name") or tool_payload.get("tool") or "").strip()
+        if tool_name != "fetch_skill_instructions":
+            continue
+        args = tool_payload.get("args") if isinstance(tool_payload.get("args"), dict) else {}
+        arg_path = str(args.get("relative_path") or args.get("relativePath") or "").replace("\\", "/").strip()
+        call_id = _tool_call_id(tool_payload)
+        if arg_path == normalized and call_id:
+            matching_call_ids.add(call_id)
+        result_text = _result_text(tool_payload)
+        if arg_path == normalized and "=== SKILL FILE ===" in result_text and normalized in result_text:
+            return True
+        if call_id and call_id in matching_call_ids and "=== SKILL FILE ===" in result_text and normalized in result_text:
+            return True
+    return False
+
+
 def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, target_dir: Path, workspace: Path) -> None:
     result.session_id = live.session_id
     result.run_id = live.run_id
@@ -456,14 +527,41 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
     result.observed_topics = list(live.observed_topics)
     result.final_text = live.final_text
     result.generated_files = _generated_manifest(target_dir)
-    blob = _event_blob(live)
+    compact_blob = _event_blob(live)
+    durable_blob = _durable_event_blob(live)
+    blob = compact_blob + "\n" + durable_blob
 
     if live.status in {"failed", "timeout"}:
         result.add("P0", "live_run_not_terminal", f"Live run 未正常完成：{live.failure_reason or live.status}", live.key_events[-8:])
     if "fetch_skill_instructions" not in blob:
-        result.add("P0", "missing_fetch_skill_instructions", "Live session 没有观察到 fetch_skill_instructions。", blob[:5000])
+        result.add("P0", "missing_fetch_skill_instructions", "Live session 没有观察到 fetch_skill_instructions。", compact_blob[:5000])
     if "skill-creator" not in blob:
-        result.add("P1", "missing_skill_creator_contract_read", "Live session 没有观察到 skill-creator/full 合同读取，生成 skill 时可能再次缺 YAML/schema。", blob[:5000])
+        result.add("P1", "missing_skill_creator_contract_read", "Live session 没有观察到 skill-creator/full 合同读取，生成 skill 时可能再次缺 YAML/schema。", compact_blob[:5000])
+    if not _has_structured_skill_file_read(live, "references/skill-template.md"):
+        result.add(
+            "P1",
+            "missing_huashu_template_continuation_read",
+            "Live session 没有观察到通过 fetch_skill_instructions(relative_path=...) 续读 huashu-nuwa skill-template。",
+            compact_blob[:7000],
+        )
+    if not _has_structured_skill_file_read(live, "references/extraction-framework.md"):
+        result.add(
+            "P1",
+            "missing_huashu_framework_continuation_read",
+            "Live session 没有观察到通过 fetch_skill_instructions(relative_path=...) 续读 huashu-nuwa extraction-framework。",
+            compact_blob[:7000],
+        )
+    if re.search(
+        r"当前任务.*阻塞|不可绕过的运行时约束|无法启动修复流程|需要用户提供.*(?:节点|支持)|只需提供.*节点ID|"
+        r"当前卡住|遇到.*卡点|工程运行时.*失败|没办法直接.*写入|权限恢复之后|暂时.*无法.*写入",
+        live.final_text or "",
+    ):
+        result.add(
+            "P1",
+            "final_response_reports_false_blocked_state",
+            "最终用户可见回复仍声称任务被阻塞或需要额外执行节点；这会造成 live 假通过。",
+            live.final_text[:3000],
+        )
     if not re.search(r"research_broker|runtime\.episode\..*research|research_evidence_bundle|Web Research Architect|claimTable|sourceMatrix", blob, re.I):
         result.add("P1", "missing_research_evidence", "没有观察到 Research Runtime evidence 或 Architect synthesis 证据。", blob[:5000])
     if not re.search(r"runtime_broker|engineering|write_native_file|patch_bundle|work_plan_ready|文件|SKILL\.md", blob, re.I):

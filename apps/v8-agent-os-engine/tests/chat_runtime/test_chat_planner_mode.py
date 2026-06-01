@@ -539,7 +539,21 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(brief["subagentFirstAction"], "fetch_skill_instructions")
         self.assertEqual(brief["skillArtifactContract"]["requiredValidator"], "SkillArtifactValidator")
         self.assertTrue(any(item.get("skillName") == "skill-creator" for item in brief["requiredInstructionReads"]))
+        self.assertTrue(
+            any(
+                item.get("skillName") == "huashu-nuwa" and item.get("relativePath") == "references/skill-template.md"
+                for item in brief["requiredInstructionReads"]
+            )
+        )
+        self.assertTrue(
+            any(
+                item.get("skillName") == "huashu-nuwa" and item.get("relativePath") == "references/extraction-framework.md"
+                for item in brief["requiredInstructionReads"]
+            )
+        )
         self.assertIn("planner_contract_skill_creator_full_read_required", repaired["qualityFlags"])
+        self.assertIn("planner_contract_huashu_template_read_required", repaired["qualityFlags"])
+        self.assertIn("planner_contract_huashu_framework_read_required", repaired["qualityFlags"])
 
     def test_planner_auto_dispatch_suggest_never_dispatches(self):
         decision = ChatRuntime._decide_planner_auto_dispatch(

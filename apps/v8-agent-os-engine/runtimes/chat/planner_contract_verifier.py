@@ -96,13 +96,45 @@ def _ensure_skill_read_contract(
         if isinstance(item, dict)
     ]
 
-    def _has_read(name: str) -> bool:
-        return any(str(item.get("skillName") or item.get("name") or "").strip() == name for item in required_reads)
+    def _has_read(name: str, *, relative_path: str = "", detail_level: str = "") -> bool:
+        for item in required_reads:
+            item_name = str(item.get("skillName") or item.get("name") or "").strip()
+            if item_name != name:
+                continue
+            if relative_path and str(item.get("relativePath") or item.get("relative_path") or "").strip().replace("\\", "/") != relative_path:
+                continue
+            if detail_level and str(item.get("detailLevel") or item.get("detail_level") or "").strip() != detail_level:
+                continue
+            return True
+        return False
 
-    if skill_name and not _has_read(skill_name):
+    if skill_name and not _has_read(skill_name, detail_level="full"):
         required_reads.insert(0, {"skillName": skill_name, "detailLevel": "full", "reason": "primary skill workflow"})
         quality_flags.append("planner_contract_primary_skill_full_read_required")
         repair_count += 1
+    if requires_artifact and skill_name == "huashu-nuwa":
+        for relative_path, reason, flag in (
+            (
+                "references/skill-template.md",
+                "huashu-nuwa generated skill template",
+                "planner_contract_huashu_template_read_required",
+            ),
+            (
+                "references/extraction-framework.md",
+                "huashu-nuwa extraction and synthesis framework",
+                "planner_contract_huashu_framework_read_required",
+            ),
+        ):
+            if not _has_read(skill_name, relative_path=relative_path):
+                required_reads.append(
+                    {
+                        "skillName": skill_name,
+                        "relativePath": relative_path,
+                        "reason": reason,
+                    }
+                )
+                quality_flags.append(flag)
+                repair_count += 1
     if requires_artifact and not _has_read("skill-creator"):
         required_reads.append(
             {

@@ -1490,6 +1490,21 @@ class ChatRuntime:
         required_instruction_reads = []
         if route.get("requiresSkillExecution") and skill_name:
             required_instruction_reads.append({"skillName": skill_name, "detailLevel": "full", "reason": "primary workflow"})
+            if requires_artifact and skill_name == "huashu-nuwa":
+                required_instruction_reads.extend(
+                    [
+                        {
+                            "skillName": skill_name,
+                            "relativePath": "references/skill-template.md",
+                            "reason": "huashu-nuwa generated skill template",
+                        },
+                        {
+                            "skillName": skill_name,
+                            "relativePath": "references/extraction-framework.md",
+                            "reason": "huashu-nuwa extraction and synthesis framework",
+                        },
+                    ]
+                )
         if requires_artifact:
             required_instruction_reads.append(
                 {
@@ -1757,7 +1772,8 @@ class ChatRuntime:
                         else required
                     ),
                     "acceptanceContract": (
-                        "Read huashu-nuwa/full skill instructions and skill-creator/full contract first, consume the required research evidence refs, "
+                        "Read huashu-nuwa/full, huashu-nuwa references/skill-template.md, huashu-nuwa references/extraction-framework.md, "
+                        "and skill-creator/full first; consume the required research evidence refs, "
                         "write the skill artifact through Engineering discipline, validate it with SkillArtifactValidator, "
                         "and return skill_artifact_ready or recoverable_failed with exact blockers."
                         if requires_artifact

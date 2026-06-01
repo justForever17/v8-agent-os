@@ -269,6 +269,14 @@ def test_writing_fallback_skill_with_research_routes_evidence_before_delegation(
         item.get("skillName") == "skill-creator" and item.get("detailLevel") == "full"
         for item in brief["requiredInstructionReads"]
     )
+    assert any(
+        item.get("skillName") == "huashu-nuwa" and item.get("relativePath") == "references/skill-template.md"
+        for item in brief["requiredInstructionReads"]
+    )
+    assert any(
+        item.get("skillName") == "huashu-nuwa" and item.get("relativePath") == "references/extraction-framework.md"
+        for item in brief["requiredInstructionReads"]
+    )
     assert brief["skillArtifactContract"]["requiredValidator"] == "SkillArtifactValidator"
     assert brief["authorizedRefs"]["researchRefs"]
     assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"

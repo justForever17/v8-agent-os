@@ -327,6 +327,14 @@ class ModelProviderCatalog:
             model_ids = []
         if not model_ids:
             model_ids = _MEDIA_DEFAULT_MODEL_IDS.get(provider_id) or [f"{provider_id}-model"]
+        registry_model_ids = [
+            str(model.get("canonicalModelId") or "").strip()
+            for model in media_model_capability_registry.models_for_provider(provider_id)
+            if str(model.get("canonicalModelId") or "").strip()
+        ]
+        for registry_model_id in registry_model_ids:
+            if registry_model_id not in model_ids:
+                model_ids.append(registry_model_id)
         auth = dict(entry.get("auth") or {})
         adapter = str(entry.get("adapter") or "catalog_only")
         api_standard = str(entry.get("apiStandard") or adapter or "media_generation")

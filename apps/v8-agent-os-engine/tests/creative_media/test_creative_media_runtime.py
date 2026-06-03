@@ -52,6 +52,23 @@ def _contains_any_key(value, keys: set[str]) -> bool:
     return False
 
 
+def _candidate(model_id: str, *, operation_kind: str, modality: str, provider_id: str = "test_provider", priority: int = 10):
+    return {
+        "candidateId": f"{provider_id}-{model_id}-{operation_kind}",
+        "modality": modality,
+        "operationKind": operation_kind,
+        "providerId": provider_id,
+        "providerName": provider_id,
+        "modelId": model_id,
+        "modelRef": f"{provider_id}::{model_id}",
+        "adapter": "volcengine_ark" if modality == "video" else "openai_images",
+        "source": "model_control_plane",
+        "available": True,
+        "enabled": True,
+        "priority": priority,
+    }
+
+
 def test_media_provider_matrix_has_required_contract_fields():
     matrix = load_provider_matrix()
     assert matrix["version"] == 1
@@ -160,6 +177,113 @@ def test_media_payload_rendering_keeps_provider_specific_fields_separate():
     )
     assert {"ratio", "resolution", "duration", "content"}.issubset(volc_video_payload)
     assert "size" not in volc_video_payload
+
+
+def test_simple_asset_work_order_prefers_gpt_image_2(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr("runtimes.creative_media.recipe.storage", fake)
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_preferred_model_candidates",
+        lambda operation_kind: {
+            "image.generate": [
+                _candidate("legacy-image", operation_kind="image.generate", modality="image", priority=20),
+                _candidate("gpt-image-2", operation_kind="image.generate", modality="image", provider_id="openai", priority=30),
+            ]
+        }.get(operation_kind, []),
+    )
+
+    work_order = creative_media_runtime.compile_work_order(
+        {
+            "intent": "simple_asset",
+            "assetRole": "engineering_background",
+            "brief": "A restrained dashboard background for an engineering proof page.",
+            "aspectRatio": "16:9",
+            "requestingRuntime": "engineering",
+        }
+    )
+
+    assert work_order["workOrderKind"] == "simple_asset"
+    assert work_order["requestingRuntime"] == "engineering"
+    assert work_order["providerPlan"]["imageGeneration"]["primary"]["modelId"] == "gpt-image-2"
+    assert work_order["recipeRefs"]
+    assert work_order["dryRunOnly"] is True
+
+
+def test_storyboard_work_order_prefers_seedance_2_over_seed_lite(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr("runtimes.creative_media.recipe.storage", fake)
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_preferred_model_candidates",
+        lambda operation_kind: {
+            "image.generate": [
+                _candidate("gpt-image-2", operation_kind="image.generate", modality="image", provider_id="openai", priority=10),
+            ],
+            "video.first_last_frame": [
+                _candidate("doubao-seed-2-0-lite-260428", operation_kind="video.first_last_frame", modality="video", provider_id="volcengine_seedance", priority=1),
+                _candidate("doubao-seedance-2-0-260128", operation_kind="video.first_last_frame", modality="video", provider_id="volcengine_seedance", priority=20),
+            ],
+        }.get(operation_kind, []),
+    )
+
+    work_order = creative_media_runtime.compile_work_order(
+        {
+            "intent": "storyboard_to_video",
+            "brief": "A three-shot product intro with a first frame and final frame.",
+            "modality": "video",
+            "aspectRatio": "16:9",
+            "duration": 5,
+            "referenceAssetIds": ["asset_first", "asset_last"],
+            "requestingRuntime": "creative_media",
+        }
+    )
+
+    video_plan = work_order["providerPlan"]["videoGeneration"]
+    assert work_order["workOrderKind"] == "storyboard_to_video"
+    assert video_plan["operationKind"] == "video.first_last_frame"
+    assert video_plan["primary"]["modelId"] == "doubao-seedance-2-0-260128"
+    assert video_plan["fallbacks"][0]["modelId"] == "doubao-seed-2-0-lite-260428"
+    assert "doubao-seed-2-0-lite-260428" in work_order["providerPlan"]["directorOrReview"]["lowerTierExecutableVideoModels"]
+    assert work_order["shotPlan"]
+    assert work_order["storyboardAssets"]
+
+
+def test_storyboard_work_order_can_execute_with_seed_lite_when_seedance_2_is_unavailable(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr("runtimes.creative_media.recipe.storage", fake)
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_preferred_model_candidates",
+        lambda operation_kind: {
+            "image.generate": [
+                _candidate("gpt-image-2", operation_kind="image.generate", modality="image", provider_id="openai", priority=10),
+            ],
+            "video.reference_to_video": [
+                _candidate("doubao-seed-2-0-lite-260428", operation_kind="video.reference_to_video", modality="video", provider_id="volcengine_seedance", priority=10),
+            ],
+        }.get(operation_kind, []),
+    )
+
+    work_order = creative_media_runtime.compile_work_order(
+        {
+            "intent": "storyboard_to_video",
+            "brief": "A short music-driven scene using video and audio references.",
+            "modality": "video",
+            "aspectRatio": "16:9",
+            "duration": 5,
+            "referenceAssets": [{"id": "asset_reference_video", "modality": "video", "role": "camera_motion"}],
+            "requestingRuntime": "creative_media",
+        }
+    )
+
+    video_plan = work_order["providerPlan"]["videoGeneration"]
+    assert video_plan["operationKind"] == "video.reference_to_video"
+    assert video_plan["primary"]["modelId"] == "doubao-seed-2-0-lite-260428"
+    assert video_plan["capabilityGap"] is None
 
 
 def test_volcengine_status_is_normalized():

@@ -1540,6 +1540,144 @@ class MemoryStore:
             "accepted_items": preview.get("accepted_items") or [],
         }
 
+    def build_memory_injection_pack(
+        self,
+        *,
+        user_query: str,
+        scope: str = "global",
+        scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        target_role: str = "supervisor",
+        latency_tier: str = "balanced",
+        visual_evidence: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Build an answer-oriented, explainable memory pack for diagnostics/injection.
+
+        第一版主要服务 Admin 诊断和报告：说明选中了哪些记忆、为什么选、
+        哪些候选被拒绝，以及作用域/延迟档位。真正 prompt 注入仍由
+        build_session_context 负责，避免一次性改变 Phone/Web 主体验。
+        """
+
+        tier = str(latency_tier or "balanced").strip().lower()
+        if tier not in {"fast", "balanced", "accurate"}:
+            tier = "balanced"
+        limit_by_tier = {"fast": 3, "balanced": 5, "accurate": 8}
+        limit = limit_by_tier[tier]
+        normalized_chain = self._normalize_scope_chain(scope=scope, scope_chain=scope_chain)
+        preview = self.preview_unified_recall(
+            query=user_query,
+            limit=limit,
+            scope=scope,
+            scopes=normalized_chain,
+        )
+        threshold = preview.get("effective_acceptance_threshold")
+
+        def _compact_content(item: Dict[str, Any], *, max_chars: int = 420) -> str:
+            content = str(
+                item.get("fact")
+                or item.get("content")
+                or item.get("text")
+                or item.get("summary")
+                or ""
+            ).strip()
+            if len(content) <= max_chars:
+                return content
+            return content[: max_chars - 1].rstrip() + "…"
+
+        def _score(item: Dict[str, Any]) -> float:
+            try:
+                return float(item.get("final_relevance_score", item.get("relevance_score", 0.0)) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        selected_memory: List[Dict[str, Any]] = []
+        for item in preview.get("accepted_items") or []:
+            score = _score(item)
+            selected_memory.append(
+                {
+                    "id": item.get("id") or item.get("fact_id") or item.get("memory_id"),
+                    "content": _compact_content(item),
+                    "category": item.get("category") or item.get("type") or "memory",
+                    "scope": item.get("scope") or "global",
+                    "source": item.get("source") or item.get("maintainer_source") or item.get("origin") or "memory_store",
+                    "confidence": score,
+                    "recency": item.get("updated_at") or item.get("created_at") or item.get("timestamp"),
+                    "whySelected": (
+                        f"accepted_by_unified_recall(score={score:.3f}"
+                        + (f", threshold={float(threshold):.3f}" if isinstance(threshold, (int, float)) else "")
+                        + ")"
+                    ),
+                }
+            )
+
+        accepted_ids = {entry.get("id") for entry in selected_memory if entry.get("id")}
+        rejected_memory: List[Dict[str, Any]] = []
+        for item in preview.get("items") or []:
+            item_id = item.get("id") or item.get("fact_id") or item.get("memory_id")
+            if item_id in accepted_ids or item.get("accepted"):
+                continue
+            rejected_memory.append(
+                {
+                    "id": item_id,
+                    "content": _compact_content(item, max_chars=260),
+                    "category": item.get("category") or item.get("type") or "memory",
+                    "scope": item.get("scope") or "global",
+                    "source": item.get("source") or item.get("maintainer_source") or item.get("origin") or "memory_store",
+                    "confidence": _score(item),
+                    "doNotInjectReason": item.get("reject_reason") or "below_threshold_or_scope",
+                }
+            )
+            if len(rejected_memory) >= limit * 2:
+                break
+
+        diagnostics = preview.get("diagnostics") or {}
+        do_not_inject_reasons: List[Dict[str, Any]] = []
+        rejected_count = int(diagnostics.get("rejected_count") or 0)
+        if rejected_count:
+            do_not_inject_reasons.append(
+                {
+                    "reason": "below_threshold",
+                    "count": rejected_count,
+                    "detail": "Unified recall found candidates below the injection threshold.",
+                }
+            )
+        if not selected_memory:
+            do_not_inject_reasons.append(
+                {
+                    "reason": "no_selected_memory",
+                    "count": 0,
+                    "detail": "No memory candidate was confident enough for injection.",
+                }
+            )
+
+        return {
+            "version": "memory_injection_pack_v3",
+            "mode": tier,
+            "query": user_query,
+            "sessionId": session_id,
+            "runId": run_id,
+            "targetRole": target_role,
+            "scope": {
+                "active": scope,
+                "chain": normalized_chain,
+            },
+            "selectedMemory": selected_memory,
+            "whySelected": [item.get("whySelected") for item in selected_memory],
+            "rejectedMemory": rejected_memory,
+            "doNotInjectReasons": do_not_inject_reasons,
+            "visualEvidence": list(visual_evidence or []),
+            "stats": {
+                "selectedCount": len(selected_memory),
+                "rejectedPreviewCount": len(rejected_memory),
+                "candidateCount": len(preview.get("items") or []),
+                "acceptedCount": len(preview.get("accepted_items") or []),
+                "latencyTier": tier,
+                "visualEvidenceCount": len(visual_evidence or []),
+            },
+            "diagnostics": diagnostics,
+        }
+
     def unified_recall(self, query: str, limit: int = 5, scope: Optional[str] = None, scopes: Optional[List[str]] = None) -> List[Dict]:
         preview = self._execute_unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
         return list(preview.get("accepted_items") or [])

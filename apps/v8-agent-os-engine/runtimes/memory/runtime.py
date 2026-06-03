@@ -578,6 +578,29 @@ class MemoryRuntime:
             target_role=target_role,
         )
 
+    def build_memory_injection_pack(
+        self,
+        *,
+        user_query: str,
+        scope: str = "global",
+        scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        target_role: str = "supervisor",
+        latency_tier: str = "balanced",
+        visual_evidence: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return injection_service.build_memory_injection_pack(
+            user_query=user_query,
+            scope=scope,
+            scope_chain=scope_chain,
+            session_id=session_id,
+            run_id=run_id,
+            target_role=target_role,
+            latency_tier=latency_tier,
+            visual_evidence=visual_evidence,
+        )
+
     def record_workflow_episode(
         self,
         *,

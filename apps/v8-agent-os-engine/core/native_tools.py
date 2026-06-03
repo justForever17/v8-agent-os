@@ -1183,6 +1183,44 @@ def _creative_media_recipe_summary(recipe: Any) -> dict[str, Any]:
     )
 
 
+def _creative_media_work_order_summary(work_order: Any) -> dict[str, Any]:
+    if not isinstance(work_order, dict):
+        return {}
+    provider_plan = dict(work_order.get("providerPlan") or {})
+    image_plan = dict(provider_plan.get("imageGeneration") or provider_plan.get("imageStoryboard") or {})
+    video_plan = dict(provider_plan.get("videoGeneration") or {})
+    image_primary = dict(image_plan.get("primary") or {})
+    video_primary = dict(video_plan.get("primary") or {})
+    return _agent_compact_dict(
+        {
+            "workOrderId": work_order.get("workOrderId"),
+            "status": work_order.get("status"),
+            "workOrderKind": work_order.get("workOrderKind"),
+            "modality": work_order.get("modality"),
+            "assetRole": work_order.get("assetRole"),
+            "requestingRuntime": work_order.get("requestingRuntime"),
+            "briefPreview": _agent_preview_text(work_order.get("brief"), limit=500),
+            "recipeRefs": _agent_limited_list(work_order.get("recipeRefs"), limit=6),
+            "artifactRefs": _agent_limited_list(work_order.get("artifactRefs"), limit=6),
+            "shotCount": len(list(work_order.get("shotPlan") or [])),
+            "storyboardAssetCount": len(list(work_order.get("storyboardAssets") or [])),
+            "imageModel": image_primary.get("modelId"),
+            "videoModel": video_primary.get("modelId"),
+            "videoOperationKind": video_plan.get("operationKind"),
+            "capabilityGaps": [
+                item.get("capabilityGap")
+                for item in (image_plan, video_plan)
+                if isinstance(item, dict) and item.get("capabilityGap")
+            ],
+            "safetyStatus": work_order.get("safetyStatus"),
+            "costEstimate": work_order.get("costEstimate"),
+            "dryRunOnly": work_order.get("dryRunOnly"),
+            "createdAt": work_order.get("createdAt"),
+            "updatedAt": work_order.get("updatedAt"),
+        }
+    )
+
+
 def _creative_media_edit_plan_summary(plan: Any, *, detail: bool = False) -> dict[str, Any]:
     if not isinstance(plan, dict):
         return {}
@@ -6369,6 +6407,40 @@ def creative_media_compile_recipe(request: dict[str, Any]) -> str:
         return json.dumps({"recipe": _creative_media_recipe_summary(recipe)}, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error compiling CreativeMedia recipe: {str(e)}"
+
+
+@tool
+def creative_media_compile_work_order(request: dict[str, Any]) -> str:
+    """Compile a CreativeAssetRequest into a dry-run work order for simple assets or storyboard-driven video."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        work_order = creative_media_runtime.compile_work_order(dict(request or {}))
+        return json.dumps({"workOrder": _creative_media_work_order_summary(work_order)}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error compiling CreativeMedia work order: {str(e)}"
+
+
+@tool
+def creative_media_list_work_orders(status: Optional[str] = None, requesting_runtime: Optional[str] = None, limit: int = 20) -> str:
+    """List CreativeMedia work orders produced for upstream runtimes."""
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        work_orders = creative_media_runtime.list_work_orders(status=status, requesting_runtime=requesting_runtime)
+        effective_limit = max(1, min(int(limit or 20), 50))
+        return json.dumps(
+            {
+                "workOrders": [_creative_media_work_order_summary(item) for item in work_orders[:effective_limit]],
+                "count": len(work_orders),
+                "limit": effective_limit,
+                "hasMore": len(work_orders) > effective_limit,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as e:
+        return f"Error listing CreativeMedia work orders: {str(e)}"
 
 
 @tool
@@ -13929,6 +14001,8 @@ NATIVE_TOOLS = [
     creative_media_list_jobs,
     creative_media_job_artifacts,
     creative_media_compile_recipe,
+    creative_media_compile_work_order,
+    creative_media_list_work_orders,
     creative_media_get_recipe,
     creative_media_list_recipes,
     creative_media_register_asset,

@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 type CreativeMediaData = {
     catalog?: Record<string, unknown>;
     resolutions?: Record<string, unknown>;
+    workOrders: Array<Record<string, unknown>>;
     recipes: Array<Record<string, unknown>>;
     assets: Array<Record<string, unknown>>;
     characterBibles: Array<Record<string, unknown>>;
@@ -67,6 +68,7 @@ type CreativeModelPreferences = {
 };
 
 const EMPTY_DATA: CreativeMediaData = {
+    workOrders: [],
     recipes: [],
     assets: [],
     characterBibles: [],
@@ -147,9 +149,10 @@ export default function CreativeMediaPage() {
         setLoading(true);
         setError("");
         try {
-            const [catalog, resolutions, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders, qualityJobs, costLedger, safetyEvents, modelPreferences] = await Promise.all([
+            const [catalog, resolutions, workOrders, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders, qualityJobs, costLedger, safetyEvents, modelPreferences] = await Promise.all([
                 fetch("/api/creative-media/catalog", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/resolutions", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetch("/api/creative-media/work-orders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/recipes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/assets", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/character-bibles", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
@@ -165,6 +168,7 @@ export default function CreativeMediaPage() {
             setData({
                 catalog,
                 resolutions,
+                workOrders: Array.isArray(workOrders.workOrders) ? workOrders.workOrders : [],
                 recipes: Array.isArray(recipes.recipes) ? recipes.recipes : [],
                 assets: Array.isArray(assets.assets) ? assets.assets : [],
                 characterBibles: Array.isArray(characterBibles.characterBibles) ? characterBibles.characterBibles : [],
@@ -302,7 +306,7 @@ export default function CreativeMediaPage() {
             <div className="grid gap-3 md:grid-cols-6">
                 {[
                     { key: "catalog", label: t("app.admin.dashboard.creativeMedia.statCatalog"), value: countCatalogModalities(data.catalog), icon: Box },
-                    { key: "recipes", label: t("app.admin.dashboard.creativeMedia.statRecipes"), value: data.recipes.length, icon: Sparkles },
+                    { key: "workOrders", label: t("app.admin.dashboard.creativeMedia.statWorkOrders"), value: data.workOrders.length, icon: Sparkles },
                     { key: "assets", label: t("app.admin.dashboard.creativeMedia.statAssets"), value: data.assets.length, icon: Box },
                     { key: "characters", label: t("app.admin.dashboard.creativeMedia.statCharacters"), value: data.characterBibles.length, icon: UserRound },
                     { key: "keyframes", label: t("app.admin.dashboard.creativeMedia.statKeyframesJobs"), value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
@@ -319,6 +323,74 @@ export default function CreativeMediaPage() {
                     </Card>
                 ))}
             </div>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>
+                        <AdminHoverInfo
+                            content={
+                                <span>
+                                    {t("app.admin.dashboard.creativeMedia.workflowsHover")}
+                                </span>
+                            }
+                            panelClassName="text-sm leading-6"
+                        >
+                            <span>{t("app.admin.dashboard.creativeMedia.workflowsTitle")}</span>
+                        </AdminHoverInfo>
+                    </CardTitle>
+                    <CardDescription>{t("app.admin.dashboard.creativeMedia.workflowsDescription")}</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+                    <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-xl border bg-background p-4">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="font-semibold">{t("app.admin.dashboard.creativeMedia.simpleAssetTitle")}</div>
+                                <Badge variant="secondary">simple_asset</Badge>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                                {t("app.admin.dashboard.creativeMedia.simpleAssetDescription")}
+                            </p>
+                        </div>
+                        <div className="rounded-xl border bg-background p-4">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="font-semibold">{t("app.admin.dashboard.creativeMedia.storyboardVideoTitle")}</div>
+                                <Badge variant="secondary">storyboard_to_video</Badge>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                                {t("app.admin.dashboard.creativeMedia.storyboardVideoDescription")}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="rounded-xl border">
+                        <div className="border-b px-4 py-3 text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.recentWorkOrdersTitle")}</div>
+                        <div className="max-h-64 overflow-auto">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableType")}</TableHead>
+                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableSource")}</TableHead>
+                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
+                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableUpdated")}</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {data.workOrders.length ? data.workOrders.slice(0, 8).map((workOrder) => (
+                                        <TableRow key={text(workOrder.workOrderId)}>
+                                            <TableCell>
+                                                <div className="font-medium">{text(workOrder.workOrderKind)}</div>
+                                                <div className="max-w-56 truncate text-xs text-muted-foreground">{text(workOrder.brief, "")}</div>
+                                            </TableCell>
+                                            <TableCell>{text(workOrder.requestingRuntime, t("app.admin.dashboard.creativeMedia.manualSource"))}</TableCell>
+                                            <TableCell><Badge variant="outline">{text(workOrder.status)}</Badge></TableCell>
+                                            <TableCell className="text-xs text-muted-foreground">{text(workOrder.updatedAt || workOrder.createdAt)}</TableCell>
+                                        </TableRow>
+                                    )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyWorkOrders")} />}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
 
             <Card>
                 <CardHeader>
@@ -733,22 +805,55 @@ export default function CreativeMediaPage() {
             <div className="grid gap-6 xl:grid-cols-2">
                 <Card>
                     <CardHeader>
-                        <CardTitle>{t("app.admin.dashboard.creativeMedia.musicRecipesTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.musicRecipesDescription")}</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.governanceTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.governanceDescription")}</CardDescription>
                     </CardHeader>
-                    <CardContent>
-                        {musicRecipes.length ? <CompactJson value={musicRecipes.slice(0, 3)} /> : (
-                            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">{t("app.admin.dashboard.creativeMedia.emptyMusicRecipes")}</div>
-                        )}
+                    <CardContent className="grid gap-3 md:grid-cols-3">
+                        <div className="rounded-lg border p-3">
+                            <div className="text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.cleanableTitle")}</div>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.creativeMedia.cleanableDescription")}</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                            <div className="text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.archiveOnlyTitle")}</div>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.creativeMedia.archiveOnlyDescription")}</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                            <div className="text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.liveLimitTitle")}</div>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.creativeMedia.liveLimitDescription")}</p>
+                        </div>
                     </CardContent>
                 </Card>
                 <Card>
                     <CardHeader>
-                        <CardTitle>{t("app.admin.dashboard.creativeMedia.catalogTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.catalogDescription")}</CardDescription>
+                        <CardTitle>{t("app.admin.dashboard.creativeMedia.diagnosticsTitle")}</CardTitle>
+                        <CardDescription>{t("app.admin.dashboard.creativeMedia.diagnosticsDescription")}</CardDescription>
                     </CardHeader>
-                    <CardContent>
-                        <CompactJson value={data.catalog} />
+                    <CardContent className="space-y-3">
+                        <details className="rounded-lg border p-3">
+                            <summary className="cursor-pointer text-sm font-medium">{t("app.admin.dashboard.creativeMedia.musicDiagnosticsTitle")}</summary>
+                            <div className="mt-3">
+                                {musicRecipes.length ? <CompactJson value={musicRecipes.slice(0, 3)} /> : (
+                                    <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">{t("app.admin.dashboard.creativeMedia.emptyMusicRecipes")}</div>
+                                )}
+                            </div>
+                        </details>
+                        <details className="rounded-lg border p-3">
+                            <summary className="cursor-pointer text-sm font-medium">Provider catalog</summary>
+                            <div className="mt-3"><CompactJson value={data.catalog} /></div>
+                        </details>
+                        <details className="rounded-lg border p-3">
+                            <summary className="cursor-pointer text-sm font-medium">{t("app.admin.dashboard.creativeMedia.unavailableModelDiagnosticsTitle")}</summary>
+                            <div className="mt-3">
+                                <CompactJson value={diagnosticCandidates.map((candidate) => ({
+                                    modality: candidate.modality,
+                                    operationKind: candidate.operationKind,
+                                    provider: candidate.providerName || candidate.providerId,
+                                    model: candidate.modelId,
+                                    source: candidate.source,
+                                    available: candidate.available,
+                                }))} />
+                            </div>
+                        </details>
                     </CardContent>
                 </Card>
             </div>

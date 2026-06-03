@@ -97,6 +97,8 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
             "creative_media_list_jobs",
             "creative_media_job_artifacts",
             "creative_media_compile_recipe",
+            "creative_media_compile_work_order",
+            "creative_media_list_work_orders",
             "creative_media_get_recipe",
             "creative_media_list_recipes",
             "creative_media_register_asset",

@@ -220,9 +220,10 @@ function asConfig(value: unknown): EngineeringLaneConfig {
 }
 
 function JsonDebug({ value }: {value: unknown;}) {
+  const t = useT();
   return (
     <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <summary className="cursor-pointer text-xs font-medium uppercase tracking-[0.18em] text-slate-500">JSON</summary>
+            <summary className="cursor-pointer text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{t("app.admin.dashboard.engineeringLane.rawDiagnostics")}</summary>
             <pre className="mt-3 max-h-[360px] overflow-auto rounded-xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">
                 {JSON.stringify(value ?? {}, null, 2)}
             </pre>
@@ -288,6 +289,7 @@ function SummaryCard({ label, value, hint, tone = "slate" }: {label: string;valu
 }
 
 function AdvancedPanel({ title, description, children, defaultOpen = false }: {title: string;description?: string;children: ReactNode;defaultOpen?: boolean;}) {
+  const t = useT();
   return (
     <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <summary className="cursor-pointer list-none">
@@ -296,7 +298,7 @@ function AdvancedPanel({ title, description, children, defaultOpen = false }: {t
                         <h3 className="text-base font-semibold text-slate-950">{title}</h3>
                         {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
                     </div>
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">Advanced</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">{t("app.admin.dashboard.engineeringLane.diagnosticBadge")}</span>
                 </div>
             </summary>
             <div className="mt-4 border-t border-slate-100 pt-4">{children}</div>
@@ -688,17 +690,17 @@ export default function EngineeringLanePage() {
                                 </div>
                                 {dryRunResult ?
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                                        <SummaryCard label="trigger" value={String(triggerDecision.active ?? false)} hint={String(triggerDecision.reason || "")} tone={triggerDecision.active ? "emerald" : "slate"} />
-                                        <SummaryCard label="scope" value={repoBrief.repoDetected ? "repo" : "no repo"} hint={String(repoBrief.workspaceRoot || repoBrief.repoRoot || "-")} />
+                                        <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryTrigger")} value={String(triggerDecision.active ?? false)} hint={String(triggerDecision.reason || "")} tone={triggerDecision.active ? "emerald" : "slate"} />
+                                        <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryScope")} value={repoBrief.repoDetected ? "repo" : "no repo"} hint={String(repoBrief.workspaceRoot || repoBrief.repoRoot || "-")} />
                                         <SummaryCard
-                    label="memory"
-                    value={memorySuppression.suppressDailyMemory || memorySuppression.suppressMemoryMap ? "suppressed" : "normal"}
+                    label={t("app.admin.dashboard.engineeringLane.summaryMemory")}
+                    value={memorySuppression.suppressDailyMemory || memorySuppression.suppressMemoryMap ? t("app.admin.dashboard.engineeringLane.memorySuppressed") : t("app.admin.dashboard.engineeringLane.memoryNormal")}
                     hint={`workflow=${String(memorySuppression.workflowHintsRetained ?? true)}`}
                     tone="amber" />
 
-                                        <SummaryCard label="broker risk" value={dryRunBrokerRisk} hint={String(dryRunSoftGate.suggestedAction || brokerDispatch.recommendedAction || "-")} tone={dryRunBrokerRisk === "outside_write_set" || dryRunBrokerRisk === "missing_write_set" ? "amber" : "slate"} />
-                                        <SummaryCard label="proof" value={String(dryRunProofDraft.verificationStatus || "planned")} hint={String(dryRunProofDraft.reason || "")} />
-                                        <SummaryCard label="learning" value={String(learningEligibility.status || learningEligibility.eligible || "dry-run only")} hint={String(learningEligibility.reason || t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote"))} />
+                                        <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryDispatchRisk")} value={dryRunBrokerRisk} hint={String(dryRunSoftGate.suggestedAction || brokerDispatch.recommendedAction || "-")} tone={dryRunBrokerRisk === "outside_write_set" || dryRunBrokerRisk === "missing_write_set" ? "amber" : "slate"} />
+                                        <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryProofDraft")} value={String(dryRunProofDraft.verificationStatus || "planned")} hint={String(dryRunProofDraft.reason || "")} />
+                                        <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryLearning")} value={String(learningEligibility.status || learningEligibility.eligible || "dry-run only")} hint={String(learningEligibility.reason || t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote"))} />
                                     </div> :
 
                 <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
@@ -737,9 +739,9 @@ export default function EngineeringLanePage() {
 
                         <ConfigCard title="app.admin.dashboard.engineeringLane.recentRiskTitle" description="app.admin.dashboard.engineeringLane.recentRiskDescription" bodyHeight="auto">
                             <div className="grid gap-3 md:grid-cols-3">
-                                <SummaryCard label="verification" value={selectedProof?.verificationStatus || "none"} hint={selectedProof?.runId || selectedProof?.createdAt || "-"} />
-                                <SummaryCard label="workset" value={selectedRisk} hint={`changed ${String(selectedProof?.changedFiles?.length || 0)}`} tone={selectedRisk === "outside_write_set" ? "amber" : "slate"} />
-                                <SummaryCard label="workflow memory" value={String(engineeringWorkflowCandidates.length)} hint={t("app.admin.dashboard.engineeringLane.workflowMemoryReadOnly")} />
+                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryVerification")} value={selectedProof?.verificationStatus || "none"} hint={selectedProof?.runId || selectedProof?.createdAt || "-"} />
+                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryWorkset")} value={selectedRisk} hint={`changed ${String(selectedProof?.changedFiles?.length || 0)}`} tone={selectedRisk === "outside_write_set" ? "amber" : "slate"} />
+                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryWorkflowMemory")} value={String(engineeringWorkflowCandidates.length)} hint={t("app.admin.dashboard.engineeringLane.workflowMemoryReadOnly")} />
                             </div>
                         </ConfigCard>
                     </div>
@@ -1128,7 +1130,7 @@ export default function EngineeringLanePage() {
                   }
                             </ConfigCard>
 
-                            <ConfigCard title="Workset Observation" description={tg(t, "e3dcd9d4")} bodyScroll="auto" bodyHeight={360}>
+                            <ConfigCard title="app.admin.dashboard.engineeringLane.worksetObservationTitle" description="app.admin.dashboard.engineeringLane.worksetObservationDescription" bodyScroll="auto" bodyHeight={360}>
                                 {visibleWorksetObservations.length ?
                   <div className="space-y-3">
                                         {visibleWorksetObservations.slice(0, 16).map((entry) => {
@@ -1142,19 +1144,19 @@ export default function EngineeringLanePage() {
                                                             <div className="mt-1 text-xs text-slate-500">{String(entry.phase || "dispatch")} · {String(entry.decisionSource || "planner_auto")}</div>
                                                         </div>
                                                         <div className="text-right text-xs text-slate-500">
-                                                            <div>risk: {risk}</div>
-                                                            <div>outside: {(entry.outsideWriteSetFiles || []).length}</div>
+                                                            <div>{t("app.admin.dashboard.engineeringLane.labelRisk")}: {risk}</div>
+                                                            <div>{t("app.admin.dashboard.engineeringLane.labelOutside")}: {(entry.outsideWriteSetFiles || []).length}</div>
                                                         </div>
                                                     </div>
                                                     {entry.warningOrBlockReason ? <p className="mt-2 text-xs text-slate-600">{entry.warningOrBlockReason}</p> : null}
                                                     {typeof decision["reason"] === "string" && decision["reason"] && decision["reason"] !== entry.warningOrBlockReason ?
-                          <p className="mt-1 text-[11px] text-slate-500">reason={String(decision["reason"])}</p> :
+                          <p className="mt-1 text-[11px] text-slate-500">{t("app.admin.dashboard.engineeringLane.labelReason")}: {String(decision["reason"])}</p> :
                           null}
                                                     <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                                                        <span>manualOverride={String(Boolean(entry.manualOverride))}</span>
-                                                        {entry.correlationStatus ? <span>correlation={String(entry.correlationStatus)}</span> : null}
-                                                        {entry.metadata?.scenarioId ? <span>scenario={String(entry.metadata.scenarioId)}</span> : null}
-                                                        {entry.metadata?.proofEntryId ? <span>proof={String(entry.metadata.proofEntryId)}</span> : null}
+                                                        <span>{t("app.admin.dashboard.engineeringLane.labelManualOverride")}: {String(Boolean(entry.manualOverride))}</span>
+                                                        {entry.correlationStatus ? <span>{t("app.admin.dashboard.engineeringLane.labelCorrelation")}: {String(entry.correlationStatus)}</span> : null}
+                                                        {entry.metadata?.scenarioId ? <span>{t("app.admin.dashboard.engineeringLane.labelScenario")}: {String(entry.metadata.scenarioId)}</span> : null}
+                                                        {entry.metadata?.proofEntryId ? <span>{t("app.admin.dashboard.engineeringLane.labelProof")}: {String(entry.metadata.proofEntryId)}</span> : null}
                                                     </div>
                                                 </div>);
 
@@ -1192,55 +1194,55 @@ export default function EngineeringLanePage() {
                     <div className="space-y-4">
                                             <div className="grid gap-3 md:grid-cols-3">
                                                 <div className="rounded-xl border border-slate-200 p-4">
-                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">risk</div>
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelModifyRisk")}</div>
                                                     <div className="mt-1 text-lg font-semibold text-slate-900">{resolveWorksetRisk(selectedProof)}</div>
                                                     {worksetRisk.note ? <p className="mt-1 text-xs text-slate-500">{String(worksetRisk.note)}</p> : null}
                                                 </div>
                                                 <div className="rounded-xl border border-slate-200 p-4">
-                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">observations</div>
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelObservations")}</div>
                                                     <div className="mt-1 text-lg font-semibold text-slate-900">{String(worksetObservation.observationCount ?? 0)}</div>
-                                                    <p className="mt-1 text-xs text-slate-500">warnings {String(worksetCorrelation.warningCount ?? 0)}</p>
+                                                    <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.labelWarnings")} {String(worksetCorrelation.warningCount ?? 0)}</p>
                                                 </div>
                                                 <div className="rounded-xl border border-slate-200 p-4">
-                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">outside</div>
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelOutsideFiles")}</div>
                                                     <div className="mt-1 text-lg font-semibold text-slate-900">{String((selectedProof.outsideWriteSetFiles || []).length)}</div>
-                                                    <p className="mt-1 text-xs text-slate-500">manual override {String((selectedProof.manualOverride || {}).present ?? false)}</p>
+                                                    <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.labelManualOverride")} {String((selectedProof.manualOverride || {}).present ?? false)}</p>
                                                 </div>
                                             </div>
                                             <div className="grid gap-4 lg:grid-cols-2">
                                                 <div>
-                                                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Broker Preflight</h4>
+                                                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.preflightCheckTitle")}</h4>
                                                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                                                        <div>source: {String(worksetDispatchDecision.worksetDecisionSource || "—")}</div>
-                                                        <div>risk: {normalizeWorksetRisk(worksetDispatchDecision.risk || "not_evaluated")}</div>
-                                                        <div>blocked: {String(worksetDispatchDecision.blocked ?? false)}</div>
-                                                        <div>warning: {String(worksetDispatchDecision.warning ?? false)}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelSource")}: {String(worksetDispatchDecision.worksetDecisionSource || "—")}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelRisk")}: {normalizeWorksetRisk(worksetDispatchDecision.risk || "not_evaluated")}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelBlocked")}: {String(worksetDispatchDecision.blocked ?? false)}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelWarning")}: {String(worksetDispatchDecision.warning ?? false)}</div>
                                                         {worksetDispatchDecision.rawRisk ? <div>rawRisk: {String(worksetDispatchDecision.rawRisk)}</div> : null}
                                                         {worksetDispatchDecision.reason ? <div className="mt-2">{String(worksetDispatchDecision.reason)}</div> : null}
                                                         {worksetDispatchDecision.repairSuggestion ? <div className="mt-2 text-amber-700">{String(worksetDispatchDecision.repairSuggestion)}</div> : null}
                                                     </div>
                                                 </div>
                                                 <div>
-                                                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Proof Correlation</h4>
+                                                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.proofCorrelationTitle")}</h4>
                                                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                                                        <div>risk: {normalizeWorksetRisk(worksetCorrelation.risk || "not_evaluated")}</div>
-                                                        <div>warnings: {String(worksetCorrelation.warningCount ?? 0)}</div>
-                                                        <div>blocked: {String(worksetCorrelation.blockedCount ?? 0)}</div>
-                                                        <div>matched: {String(Array.isArray(worksetCorrelation.matchedWriteSetFiles) ? worksetCorrelation.matchedWriteSetFiles.length : 0)}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelRisk")}: {normalizeWorksetRisk(worksetCorrelation.risk || "not_evaluated")}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelWarnings")}: {String(worksetCorrelation.warningCount ?? 0)}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelBlocked")}: {String(worksetCorrelation.blockedCount ?? 0)}</div>
+                                                        <div>{t("app.admin.dashboard.engineeringLane.labelMatched")}: {String(Array.isArray(worksetCorrelation.matchedWriteSetFiles) ? worksetCorrelation.matchedWriteSetFiles.length : 0)}</div>
                                                         {worksetCorrelation.suggestedAction ? <div className="mt-2">{String(worksetCorrelation.suggestedAction)}</div> : null}
                                                     </div>
                                                 </div>
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">outsideWriteSetFiles</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.outsideFilesTitle")}</h4>
                                                 <FieldList items={selectedProof.outsideWriteSetFiles || []} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">readSet</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.readSetTitle")}</h4>
                                                 <FieldList items={selectedProof.readSet} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">writeSet</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.writeSetTitle")}</h4>
                                                 <FieldList items={selectedProof.writeSet} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                     <JsonDebug value={{ worksetRisk, worksetObservation, worksetCorrelation }} />

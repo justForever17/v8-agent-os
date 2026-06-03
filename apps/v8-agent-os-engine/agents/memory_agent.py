@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from typing import Any, List, Optional, Dict
 from datetime import datetime, timezone
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from langchain_core.messages import SystemMessage, HumanMessage
 import logging
@@ -45,6 +46,14 @@ from runtimes.memory.scope_resolution import (
 )
 
 logger = logging.getLogger(__name__)
+
+_VISUAL_ENRICHMENT_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+_VISUAL_ENRICHMENT_MAX_IMAGES_DEFAULT = 2
+_VISION_RESULT_MARKERS = (
+    "vision_media_analyzer",
+    "--- Vision Analysis Complete ---",
+    "Vision Analysis Complete",
+)
 
 _NOISY_KNOWLEDGE_HINTS = (
     "oauth",
@@ -322,6 +331,299 @@ def _safe_json_excerpt(value: Any, *, limit: int = 1200) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 3].rstrip() + "..."
+
+
+def _memory_visual_enrichment_policy() -> Dict[str, Any]:
+    memory_config = storage.get_memory_config() or {}
+    raw_config = memory_config.get("visual_enrichment")
+    config = raw_config if isinstance(raw_config, dict) else {}
+    enabled_value = config.get("enabled", memory_config.get("visual_enrichment_enabled", True))
+    try:
+        max_images = int(config.get("max_images", memory_config.get("visual_enrichment_max_images", _VISUAL_ENRICHMENT_MAX_IMAGES_DEFAULT)))
+    except (TypeError, ValueError):
+        max_images = _VISUAL_ENRICHMENT_MAX_IMAGES_DEFAULT
+    return {
+        "enabled": enabled_value is not False,
+        "max_images": max(0, min(max_images, 5)),
+    }
+
+
+def _is_image_media_source(value: str, mime_type: str = "") -> bool:
+    mime = str(mime_type or "").strip().lower()
+    if mime.startswith("image/"):
+        return True
+    source = str(value or "").strip().strip("'\"")
+    if not source:
+        return False
+    lower_source = source.lower().split("?", 1)[0].split("#", 1)[0]
+    return any(lower_source.endswith(ext) for ext in _VISUAL_ENRICHMENT_IMAGE_EXTENSIONS)
+
+
+def _clean_media_source(value: Any) -> str:
+    source = str(value or "").strip()
+    source = source.strip(" \t\r\n'\"`")
+    source = source.rstrip(".,;)")
+    return source
+
+
+def _candidate_source_kind(source: str) -> str:
+    normalized = str(source or "").strip()
+    if re.match(r"^https?://", normalized, re.IGNORECASE):
+        return "source_url"
+    if re.match(r"^[A-Za-z]:[\\/]", normalized) or normalized.startswith("\\\\") or normalized.startswith("/"):
+        return "file_path"
+    return "unknown"
+
+
+def _add_visual_candidate(
+    candidates: List[Dict[str, Any]],
+    seen: set[str],
+    *,
+    source: Any,
+    mime_type: str = "",
+    message_id: str = "",
+    origin: str = "",
+) -> None:
+    cleaned = _clean_media_source(source)
+    if not cleaned or not _is_image_media_source(cleaned, mime_type):
+        return
+    source_kind = _candidate_source_kind(cleaned)
+    if source_kind == "unknown":
+        return
+    key = cleaned.lower()
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(
+        {
+            "source": cleaned,
+            "sourceKind": source_kind,
+            "mimeType": str(mime_type or "").strip(),
+            "messageId": message_id,
+            "origin": origin,
+        }
+    )
+
+
+def _extract_media_sources_from_text(text: str) -> List[str]:
+    content = str(text or "")
+    sources: List[str] = []
+    for match in re.finditer(r"\[User uploaded file:\s*([^\]]+)\]", content, flags=re.IGNORECASE):
+        sources.append(match.group(1))
+    for match in re.finditer(
+        r"https?://[^\s\]\)\"']+\.(?:png|jpg|jpeg|webp|bmp|gif)(?:\?[^\s\]\)\"']*)?",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        sources.append(match.group(0))
+    for match in re.finditer(
+        r"[A-Za-z]:[\\/][^\r\n\"'\]]+\.(?:png|jpg|jpeg|webp|bmp|gif)",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        sources.append(match.group(0))
+    return sources
+
+
+def _collect_visual_media_candidates(
+    *,
+    durable_messages: List[Dict[str, Any]],
+    transcript_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for message in durable_messages:
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get("id") or "")
+        for image in list(message.get("images") or []):
+            _add_visual_candidate(candidates, seen, source=image, message_id=message_id, origin="durable.images")
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        for attachment in list(metadata.get("attachments") or []):
+            if not isinstance(attachment, dict):
+                continue
+            mime_type = str(attachment.get("mimeType") or attachment.get("mime_type") or attachment.get("type") or "")
+            for key in ("workspacePath", "workspace_path", "path", "filePath", "file_path", "url", "publicUrl", "public_url"):
+                _add_visual_candidate(
+                    candidates,
+                    seen,
+                    source=attachment.get(key),
+                    mime_type=mime_type,
+                    message_id=message_id,
+                    origin=f"durable.attachments.{key}",
+                )
+        for source in _extract_media_sources_from_text(str(message.get("content") or "")):
+            _add_visual_candidate(candidates, seen, source=source, message_id=message_id, origin="durable.content")
+
+    for entry in transcript_entries:
+        if not isinstance(entry, dict):
+            continue
+        message_id = str(entry.get("id") or "")
+        content = str(entry.get("content") or "")
+        for source in _extract_media_sources_from_text(content):
+            _add_visual_candidate(candidates, seen, source=source, message_id=message_id, origin="transcript.content")
+        for match in re.finditer(
+            r'"(?:sourcePath|externalUrl|previewUrl|workspacePath|workspaceRelativePath|url)"\s*:\s*"([^"]+)"',
+            content,
+            flags=re.IGNORECASE,
+        ):
+            _add_visual_candidate(candidates, seen, source=match.group(1), message_id=message_id, origin="transcript.artifact_json")
+
+    return candidates
+
+
+def _candidate_already_analyzed(candidate: Dict[str, Any], transcript_text: str) -> bool:
+    text = str(transcript_text or "")
+    if not any(marker in text for marker in _VISION_RESULT_MARKERS):
+        return False
+    source = str(candidate.get("source") or "").strip()
+    if not source:
+        return False
+    if f"Source: {source}" in text or f"source: {source}" in text:
+        return True
+    for marker in _VISION_RESULT_MARKERS:
+        start = text.find(marker)
+        while start >= 0:
+            if source in text[start : start + 1600]:
+                return True
+            start = text.find(marker, start + len(marker))
+    return False
+
+
+def _invoke_memory_visual_analyzer(candidate: Dict[str, Any], *, session_id: str, run_id: str | None) -> str:
+    from erc.runtime_context import bind_runtime_context
+    from core.tools import vision_media_analyzer as vision_tool_module
+
+    prompt = (
+        "Memory Visual Enrichment：请只输出可供记忆抽取使用的客观文本证据。"
+        "提取图片中的可见文字、界面/对象、错误信息、项目或用户偏好线索；"
+        "不要推测身份，不要编造图片外信息；不确定的内容请标注为不确定。"
+    )
+    payload = {"prompt": prompt}
+    source = str(candidate.get("source") or "").strip()
+    if candidate.get("sourceKind") == "source_url":
+        payload["source_url"] = source
+        payload["mime_type_hint"] = str(candidate.get("mimeType") or "image/*")
+    else:
+        payload["file_path"] = source
+
+    tool = getattr(vision_tool_module, "vision_media_analyzer")
+    with bind_runtime_context(
+        session_id=session_id,
+        run_id=run_id,
+        runtime_kind="memory",
+        memory_visual_enrichment=True,
+    ):
+        if hasattr(tool, "invoke"):
+            return str(tool.invoke(payload))
+        return str(tool(**payload))
+
+
+def _build_memory_visual_enrichment(
+    *,
+    session_id: str,
+    durable_messages: List[Dict[str, Any]],
+    transcript_entries: List[Dict[str, Any]],
+    transcript_text: str,
+    run_handle: Any | None = None,
+) -> tuple[str, Dict[str, Any]]:
+    policy = _memory_visual_enrichment_policy()
+    candidates = _collect_visual_media_candidates(
+        durable_messages=durable_messages,
+        transcript_entries=transcript_entries,
+    )
+    diagnostics: Dict[str, Any] = {
+        "enabled": bool(policy.get("enabled")),
+        "scannedMediaCount": len(candidates),
+        "enrichedCount": 0,
+        "skippedCount": 0,
+        "errorCount": 0,
+        "maxImages": int(policy.get("max_images") or 0),
+        "items": [],
+    }
+    if not policy.get("enabled"):
+        diagnostics["skippedReason"] = "disabled"
+        diagnostics["skippedCount"] = len(candidates)
+        return "", diagnostics
+    if not candidates:
+        diagnostics["skippedReason"] = "no_unanalyzed_images"
+        return "", diagnostics
+
+    run_id = str(getattr(run_handle, "run_id", "") or "").strip() or None
+    evidence_lines: List[str] = []
+    processed = 0
+    for candidate in candidates:
+        item = {
+            "source": candidate.get("source"),
+            "sourceKind": candidate.get("sourceKind"),
+            "messageId": candidate.get("messageId"),
+            "origin": candidate.get("origin"),
+        }
+        if processed >= int(policy.get("max_images") or 0):
+            item["status"] = "skipped"
+            item["reason"] = "max_images_reached"
+            diagnostics["skippedCount"] += 1
+            diagnostics["items"].append(item)
+            continue
+        if _candidate_already_analyzed(candidate, transcript_text):
+            item["status"] = "skipped"
+            item["reason"] = "already_analyzed"
+            diagnostics["skippedCount"] += 1
+            diagnostics["items"].append(item)
+            continue
+        if candidate.get("sourceKind") == "file_path":
+            source_path = Path(str(candidate.get("source") or ""))
+            if not source_path.exists() or not source_path.is_file():
+                item["status"] = "skipped"
+                item["reason"] = "file_missing"
+                diagnostics["skippedCount"] += 1
+                diagnostics["items"].append(item)
+                continue
+        try:
+            result = _invoke_memory_visual_analyzer(candidate, session_id=session_id, run_id=run_id)
+            result_text = str(result or "").strip()
+            if not result_text or result_text.lower().startswith(("error:", "vision media analysis failed")):
+                item["status"] = "error"
+                item["reason"] = "vision_result_error"
+                item["preview"] = _safe_json_excerpt(result, limit=400)
+                diagnostics["errorCount"] += 1
+                diagnostics["items"].append(item)
+                processed += 1
+                continue
+            item["status"] = "enriched"
+            item["preview"] = _safe_json_excerpt(result, limit=400)
+            diagnostics["enrichedCount"] += 1
+            diagnostics["items"].append(item)
+            processed += 1
+            evidence_lines.append(
+                "\n".join(
+                    [
+                        f"- source: {candidate.get('source')}",
+                        f"  messageId: {candidate.get('messageId') or ''}",
+                        f"  origin: {candidate.get('origin') or ''}",
+                        "  analysis:",
+                        "  " + _safe_json_excerpt(result, limit=1800).replace("\n", "\n  "),
+                    ]
+                )
+            )
+        except Exception as exc:
+            item["status"] = "error"
+            item["reason"] = "vision_call_failed"
+            item["error"] = str(exc)
+            diagnostics["errorCount"] += 1
+            diagnostics["items"].append(item)
+            processed += 1
+
+    if not evidence_lines:
+        return "", diagnostics
+    block = (
+        "\n\n[Memory Visual Evidence]\n"
+        "以下内容由 vision_media_analyzer 在记忆维护阶段从会话图片生成。Memory agent 只能消费这些文本证据，不直接读取图片。\n"
+        + "\n".join(evidence_lines)
+        + "\n[/Memory Visual Evidence]\n"
+    )
+    return block, diagnostics
 
 
 def _coerce_json_object(text: str) -> dict[str, Any]:
@@ -1727,6 +2029,42 @@ def analyze_session_memory(
         content = msg.get("content", "")
         if content:
             chat_history_text += f"{role.upper()}: {content}\n"
+
+    incremental_message_ids = {
+        str(msg.get("id") or "").strip()
+        for msg in incremental_messages
+        if str(msg.get("id") or "").strip()
+    }
+    incremental_durable_messages = [
+        item
+        for item in durable_messages
+        if isinstance(item, dict) and str(item.get("id") or "").strip() in incremental_message_ids
+    ]
+    visual_enrichment_block, visual_enrichment = _build_memory_visual_enrichment(
+        session_id=session_id,
+        durable_messages=incremental_durable_messages,
+        transcript_entries=incremental_messages,
+        transcript_text=str(transcript.get("text") or ""),
+        run_handle=run_handle,
+    )
+    if visual_enrichment.get("scannedMediaCount") or visual_enrichment.get("enrichedCount") or visual_enrichment.get("errorCount"):
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_visual_enrichment": visual_enrichment,
+            },
+        )
+        _emit_memory_event(
+            run_handle,
+            "memory.visual_enrichment.completed",
+            {
+                "session_id": session_id,
+                "parent_run_id": parent_run_id,
+                **visual_enrichment,
+            },
+        )
+    if visual_enrichment_block:
+        chat_history_text += visual_enrichment_block
     
     if len(chat_history_text.strip()) < 50:
         logger.info(f"[MemoryAgent] Session too short, skipping extraction.")
@@ -1740,6 +2078,7 @@ def analyze_session_memory(
                     "latestSeq": transcript["latest_seq"],
                     "entryCount": len(incremental_messages),
                     "contentLength": len(chat_history_text.strip()),
+                    "visualEnrichment": visual_enrichment,
                 }
             },
         )
@@ -1759,6 +2098,7 @@ def analyze_session_memory(
                 "parent_run_id": parent_run_id,
                 "transcript_source": transcript["source"],
                 "entry_count": len(incremental_messages),
+                "visual_enrichment": visual_enrichment,
             },
         )
         return {
@@ -1769,6 +2109,7 @@ def analyze_session_memory(
             "content_length": len(chat_history_text.strip()),
             "parent_run_id": parent_run_id,
             "transcript_source": transcript["source"],
+            "visual_enrichment": visual_enrichment,
         }
     
     logger.info(f"[MemoryAgent] === System Command: Analyze Session {session_id[:8]} ===")
@@ -1783,6 +2124,7 @@ def analyze_session_memory(
                 "incrementalEntryCount": len(incremental_messages),
                 "extractionMode": extraction_mode,
                 "contentLength": len(chat_history_text.strip()),
+                "visualEnrichment": visual_enrichment,
             }
         },
     )
@@ -1799,6 +2141,7 @@ def analyze_session_memory(
                 "latest_seq": transcript["latest_seq"],
                 "extraction_mode": extraction_mode,
                 "previous_checkpoint": extraction_state or {},
+                "visual_enrichment": visual_enrichment,
             },
         )
     
@@ -2042,6 +2385,7 @@ def analyze_session_memory(
             "provenance_class": provenance_class,
             "memory_policy": memory_policy,
             "extractorModel": extraction_attempt.extractor_model or None,
+            "visualEnrichment": visual_enrichment,
             "scopeDecisions": scope_decisions[:20],
             "canonicalization": canonicalization,
             "rawOutputPreview": extraction_attempt.raw_output_preview or None,
@@ -2205,6 +2549,7 @@ def analyze_session_memory(
                 "memoryPolicy": memory_policy,
                 "provenanceClass": provenance_class,
                 "sourceRuntime": source_runtime,
+                "visualEnrichment": visual_enrichment,
                 "canonicalization": canonicalization,
                 "transcriptSource": transcript["source"],
                 "latestSeq": transcript["latest_seq"],
@@ -2311,6 +2656,7 @@ def analyze_session_memory(
         "provenance_class": provenance_class,
         "memory_policy": memory_policy,
         "canonicalization": canonicalization,
+        "visual_enrichment": visual_enrichment,
     }
 
 async def generate_periodic_summary(

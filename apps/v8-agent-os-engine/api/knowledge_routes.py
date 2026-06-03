@@ -641,12 +641,19 @@ async def memory_fts_search(q: str, scope: str = None):
 
 
 @router.get("/memory/recall-preview")
-async def memory_recall_preview(q: str, scope: str = None):
+async def memory_recall_preview(q: str, scope: str = None, latency_tier: str = "balanced"):
     try:
         preview = memory_runtime.preview_unified_recall(query=q, scope=scope, limit=8)
+        injection_pack = memory_runtime.build_memory_injection_pack(
+            user_query=q,
+            scope=scope or "global",
+            latency_tier=latency_tier,
+            target_role="diagnostic_preview",
+        )
         metadata = storage.get_memory_config_metadata()
         return {
             **preview,
+            "memoryInjectionPack": injection_pack,
             "threshold_source": metadata["retrievalThresholdSource"],
             "recommended_retrieval_threshold": metadata["recommendedRetrievalThreshold"],
             "retrieval_threshold_is_default": metadata["retrievalThresholdIsDefault"],

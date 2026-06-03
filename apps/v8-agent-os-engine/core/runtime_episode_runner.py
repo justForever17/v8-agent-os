@@ -1021,7 +1021,7 @@ class RuntimeEpisodeRunner:
         return deduped
 
     async def _execute_creative_media(self, episode: dict[str, Any]) -> dict[str, Any]:
-        self._heartbeat(str(episode.get("episodeId")), "creative_media: recipe compile")
+        self._heartbeat(str(episode.get("episodeId")), "creative_media: compile")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
         request = dict(inputs.get("request") or {})
@@ -1029,6 +1029,43 @@ class RuntimeEpisodeRunner:
         request.setdefault("prompt", inputs.get("prompt") or need.get("reason") or "Create supporting visual asset.")
         try:
             from runtimes.creative_media.runtime import creative_media_runtime
+
+            should_compile_work_order = bool(
+                request.get("workOrderKind")
+                or request.get("work_order_kind")
+                or request.get("assetRole")
+                or request.get("asset_role")
+                or request.get("requestingRuntime")
+                or request.get("referenceAssetIds")
+                or str(request.get("intent") or "").strip() in {"simple_asset", "storyboard_to_video"}
+            )
+            if should_compile_work_order:
+                work_order = creative_media_runtime.compile_work_order(
+                    {
+                        **request,
+                        "requestingRuntime": request.get("requestingRuntime") or need.get("requestingRuntime") or "runtime_episode",
+                    }
+                )
+                work_order_id = str(work_order.get("workOrderId") or "")
+                summary = f"Creative Media work order planned: {work_order.get('workOrderKind') or work_order_id}"
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="creative_media",
+                    compact_summary=summary,
+                    status="ready",
+                    confidence="medium",
+                    consumer_hint="Use workOrderId/artifactRefs/providerPlan to request or reference generated media.",
+                    extra={
+                        "workOrderId": work_order_id,
+                        "workOrderKind": work_order.get("workOrderKind"),
+                        "recipeRefs": work_order.get("recipeRefs") or [],
+                        "artifactRefs": work_order.get("artifactRefs") or [],
+                        "providerPlan": work_order.get("providerPlan"),
+                        "qualityChecks": work_order.get("qualityChecks") or [],
+                        "costEstimate": work_order.get("costEstimate") or {},
+                        "safetyStatus": work_order.get("safetyStatus") or {},
+                    },
+                )
 
             recipe = creative_media_runtime.compile_recipe(request)
             recipe_id = str(recipe.get("recipeId") or recipe.get("id") or "")

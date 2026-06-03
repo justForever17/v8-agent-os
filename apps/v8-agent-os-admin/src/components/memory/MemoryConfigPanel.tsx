@@ -149,6 +149,34 @@ interface RecallPreviewItem {
   accepted?: boolean;
   reject_reason?: string;
 }
+interface MemoryInjectionPackItem {
+  id?: string;
+  content?: string;
+  category?: string;
+  scope?: string;
+  source?: string;
+  confidence?: number;
+  whySelected?: string;
+  doNotInjectReason?: string;
+}
+interface MemoryInjectionPack {
+  version?: string;
+  mode?: string;
+  selectedMemory?: MemoryInjectionPackItem[];
+  rejectedMemory?: MemoryInjectionPackItem[];
+  doNotInjectReasons?: Array<{
+    reason?: string;
+    count?: number;
+    detail?: string;
+  }>;
+  stats?: {
+    selectedCount?: number;
+    rejectedPreviewCount?: number;
+    candidateCount?: number;
+    latencyTier?: string;
+    visualEvidenceCount?: number;
+  };
+}
 interface RecallPreviewResponse {
   query?: string;
   threshold_snapshot?: number;
@@ -165,6 +193,7 @@ interface RecallPreviewResponse {
     rejected_count?: number;
   };
   items?: RecallPreviewItem[];
+  memoryInjectionPack?: MemoryInjectionPack;
 }
 export default function MemoryConfigPanel() {
   const t = useT();
@@ -609,6 +638,38 @@ export default function MemoryConfigPanel() {
                                     <div>{t("components.memory.MemoryConfigPanel.k501e6a4b")}: {recallPreview.diagnostics?.recall_strategy || "balanced"}</div>
                                     <div>{t("components.memory.MemoryConfigPanel.kc52ea7d5")}: {recallPreview.diagnostics?.graph_allowed ? t("components.memory.MemoryConfigPanel.k6cccddd7") : recallPreview.diagnostics?.graph_reject_reason || t("components.memory.MemoryConfigPanel.k2634a52d")}</div>
                                 </div>
+                                {recallPreview.memoryInjectionPack ? <div className="rounded-md border bg-muted/20 p-3 text-xs">
+                                    <div className="mb-2 flex flex-wrap items-center gap-2 font-medium">
+                                        <span>MemoryInjectionPack</span>
+                                        <span className="rounded-full bg-background px-2 py-0.5 text-muted-foreground">{recallPreview.memoryInjectionPack.mode || "balanced"}</span>
+                                        <span className="text-muted-foreground">
+                                            selected {recallPreview.memoryInjectionPack.stats?.selectedCount ?? recallPreview.memoryInjectionPack.selectedMemory?.length ?? 0}
+                                            {" · "}
+                                            rejected {recallPreview.memoryInjectionPack.stats?.rejectedPreviewCount ?? recallPreview.memoryInjectionPack.rejectedMemory?.length ?? 0}
+                                        </span>
+                                    </div>
+                                    <div className="max-h-48 space-y-2 overflow-auto">
+                                        {(recallPreview.memoryInjectionPack.selectedMemory || []).slice(0, 4).map(item => <div key={`selected-${item.id || item.content}`} className="rounded border border-emerald-200 bg-emerald-50/40 p-2">
+                                            <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                                                <span>{item.source || "memory"}</span>
+                                                <span>{item.scope || "global"}</span>
+                                                <span>{(item.confidence ?? 0).toFixed(3)}</span>
+                                            </div>
+                                            <div className="mt-1 line-clamp-2 text-foreground">{item.content || item.id}</div>
+                                            <div className="mt-1 text-[11px] text-emerald-700">{item.whySelected}</div>
+                                        </div>)}
+                                        {(recallPreview.memoryInjectionPack.rejectedMemory || []).slice(0, 4).map(item => <div key={`rejected-${item.id || item.content}`} className="rounded border p-2">
+                                            <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                                                <span>{item.source || "memory"}</span>
+                                                <span>{item.scope || "global"}</span>
+                                                <span>{(item.confidence ?? 0).toFixed(3)}</span>
+                                            </div>
+                                            <div className="mt-1 line-clamp-2">{item.content || item.id}</div>
+                                            <div className="mt-1 text-[11px] text-muted-foreground">{item.doNotInjectReason}</div>
+                                        </div>)}
+                                        {!(recallPreview.memoryInjectionPack.selectedMemory || []).length && !(recallPreview.memoryInjectionPack.rejectedMemory || []).length ? <div className="text-muted-foreground">No memory candidates.</div> : null}
+                                    </div>
+                                </div> : null}
                                 <div className="max-h-72 space-y-2 overflow-auto rounded-md border p-3">
                                     {(recallPreview.items || []).length ? recallPreview.items?.map(item => <div key={item.id} className="rounded-md border p-3 text-sm">
                                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

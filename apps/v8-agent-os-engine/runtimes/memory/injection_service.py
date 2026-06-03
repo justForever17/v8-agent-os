@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.memory.store import memory_store
 
@@ -30,6 +30,29 @@ class InjectionService:
             suppress_daily_memory=suppress_daily_memory,
             suppress_memory_map=suppress_memory_map,
             target_role=target_role,
+        )
+
+    def build_memory_injection_pack(
+        self,
+        *,
+        user_query: str,
+        scope: str = "global",
+        scope_chain: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        target_role: str = "supervisor",
+        latency_tier: str = "balanced",
+        visual_evidence: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return memory_store.build_memory_injection_pack(
+            user_query=user_query,
+            scope=scope,
+            scope_chain=scope_chain,
+            session_id=session_id,
+            run_id=run_id,
+            target_role=target_role,
+            latency_tier=latency_tier,
+            visual_evidence=visual_evidence,
         )
 
     def get_recent_logs(self, *, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:

@@ -44,6 +44,7 @@ from .recipe import prepare_provider_prompt_policy
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
+WORK_ORDER_STORE_FILE = "creative_media/work_orders.json"
 EDIT_PLAN_STORE_FILE = "creative_media/edit_plans.json"
 RENDER_JOB_STORE_FILE = "creative_media/render_jobs.json"
 MODEL_PREFERENCES_STORE_FILE = "creative_media/model_preferences.json"
@@ -122,6 +123,14 @@ POLICY_REJECT_MARKERS = (
     "safety",
     "content security",
 )
+PREFERRED_IMAGE_MODEL_IDS = ("gpt-image-2", "gpt-image-1")
+PREFERRED_SEEDANCE2_MODEL_IDS = (
+    "doubao-seedance-2-0-260128",
+    "doubao-seedance-2-0",
+    "doubao-seedance-2-0-fast",
+    "doubao-seed-2-0-lite-260428",
+)
+LOWER_TIER_EXECUTABLE_VIDEO_MODELS = {"doubao-seed-2-0-lite-260428"}
 
 
 def utc_now_iso() -> str:
@@ -335,6 +344,8 @@ class CreativeMediaRuntime:
                     "creative_media_retry_job",
                     "creative_media_cost_ledger",
                     "creative_media_safety_events",
+                    "creative_media_compile_work_order",
+                    "creative_media_list_work_orders",
                 ],
             },
         }
@@ -970,6 +981,284 @@ class CreativeMediaRuntime:
         next_request.setdefault("modelId", candidate.get("modelId"))
         next_request["operationKind"] = candidate.get("operationKind")
         return next_request
+
+    def _compact_model_candidate(self, candidate: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(candidate, dict) or not candidate:
+            return None
+        return {
+            "candidateId": candidate.get("candidateId"),
+            "providerId": candidate.get("providerId"),
+            "providerName": candidate.get("providerName"),
+            "modelId": candidate.get("modelId"),
+            "modelRef": candidate.get("modelRef"),
+            "adapter": candidate.get("adapter"),
+            "operationKind": candidate.get("operationKind"),
+            "modality": candidate.get("modality"),
+            "source": candidate.get("source"),
+            "available": bool(candidate.get("available", False)),
+            "nativeAudio": bool(candidate.get("nativeAudio", False)),
+            "capabilityProfile": candidate.get("capabilityProfile") or {},
+        }
+
+    def _is_incompatible_media_candidate(self, candidate: dict[str, Any], operation_kind: str) -> bool:
+        modality = _modality_for_operation(operation_kind)
+        if str(candidate.get("modality") or "") != modality:
+            return True
+        return False
+
+    def _provider_plan_for_operation(
+        self,
+        operation_kind: str,
+        *,
+        preferred_model_ids: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        preferred = tuple(str(item or "").strip() for item in preferred_model_ids if str(item or "").strip())
+        candidates = [
+            item
+            for item in self._preferred_model_candidates(operation_kind)
+            if not self._is_incompatible_media_candidate(item, operation_kind)
+        ]
+        if not candidates:
+            candidates = [
+                item
+                for item in self._all_model_candidates_for_operation(operation_kind)
+                if bool(item.get("available", False)) and not self._is_incompatible_media_candidate(item, operation_kind)
+            ]
+        candidates.sort(
+            key=lambda item: (
+                preferred.index(str(item.get("modelId") or ""))
+                if str(item.get("modelId") or "") in preferred
+                else len(preferred),
+                _safe_priority(item.get("priority"), 999),
+                str(item.get("providerName") or ""),
+                str(item.get("modelId") or ""),
+            )
+        )
+        primary = candidates[0] if candidates else None
+        return {
+            "operationKind": operation_kind,
+            "selectionPolicy": {
+                "preferredModelIds": list(preferred),
+                "requiresExactCapability": True,
+                "fallbackEnabled": True,
+            },
+            "primary": self._compact_model_candidate(primary),
+            "fallbacks": [self._compact_model_candidate(item) for item in candidates[1:4]],
+            "capabilityGap": None
+            if primary
+            else {
+                "code": "creative_media_capability_gap",
+                "message": f"No available model candidate for {operation_kind}.",
+            },
+        }
+
+    def _work_order_kind_for_request(self, payload: dict[str, Any]) -> str:
+        explicit = str(
+            payload.get("workOrderKind")
+            or payload.get("work_order_kind")
+            or payload.get("workflow")
+            or payload.get("intent")
+            or ""
+        ).strip().lower()
+        modality = str(payload.get("modality") or "").strip().lower()
+        if "storyboard" in explicit or "video" in explicit and "simple" not in explicit:
+            return "storyboard_to_video"
+        if modality == "video":
+            return "storyboard_to_video"
+        return "simple_asset"
+
+    def _video_operation_for_work_order(self, payload: dict[str, Any]) -> str:
+        reference_ids = _list_of_strings(payload.get("referenceAssetIds") or payload.get("reference_asset_ids"))
+        image_urls = _list_of_strings(payload.get("imageUrls") or payload.get("image_urls"))
+        reference_assets = payload.get("referenceAssets") or payload.get("reference_assets") or []
+        if not isinstance(reference_assets, list):
+            reference_assets = []
+        reference_haystack = " ".join(
+            " ".join(str(asset.get(key) or "") for key in ("modality", "assetRole", "role", "type"))
+            for asset in reference_assets
+            if isinstance(asset, dict)
+        ).lower()
+        if (
+            payload.get("referenceVideoUrl")
+            or payload.get("reference_video_url")
+            or payload.get("referenceAudioUrl")
+            or payload.get("reference_audio_url")
+            or any(token in reference_haystack for token in ("video", "audio", "music", "sound", "camera_motion"))
+        ):
+            return "video.reference_to_video"
+        if payload.get("firstFrame") or payload.get("lastFrame") or len(reference_ids) >= 2 or len(image_urls) >= 2:
+            return "video.first_last_frame"
+        if reference_ids or image_urls or payload.get("referenceImageUrl") or payload.get("reference_image_url"):
+            return "video.image_to_video"
+        return "video.text_to_video"
+
+    def _save_work_order(self, work_order: dict[str, Any]) -> dict[str, Any]:
+        store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
+        values = dict(store.get("workOrders") or {})
+        values[str(work_order["workOrderId"])] = dict(work_order)
+        self._write_versioned_store(WORK_ORDER_STORE_FILE, "workOrders", values)
+        return dict(work_order)
+
+    def list_work_orders(self, *, status: str | None = None, requesting_runtime: str | None = None) -> list[dict[str, Any]]:
+        store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
+        items = list(dict(store.get("workOrders") or {}).values())
+        if status:
+            items = [item for item in items if str(item.get("status") or "") == status]
+        if requesting_runtime:
+            items = [
+                item
+                for item in items
+                if str(item.get("requestingRuntime") or item.get("requesting_runtime") or "") == requesting_runtime
+            ]
+        items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return items
+
+    def compile_work_order(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(request or {})
+        payload.update(self._scope_fields(payload))
+        work_order_kind = self._work_order_kind_for_request(payload)
+        if work_order_kind == "storyboard_to_video":
+            return self._compile_storyboard_work_order(payload)
+        return self._compile_simple_asset_work_order(payload)
+
+    def _compile_simple_asset_work_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        brief = str(payload.get("brief") or payload.get("prompt") or "Create a supporting visual asset.").strip()
+        asset_role = str(payload.get("assetRole") or payload.get("asset_role") or "supporting_visual").strip()
+        aspect_ratio = str(payload.get("aspectRatio") or payload.get("ratio") or "16:9").strip()
+        recipe = self.compile_recipe(
+            {
+                **payload,
+                "modality": "image",
+                "prompt": brief,
+                "ratio": aspect_ratio,
+                "recipeKind": "simple_asset",
+                "hardRequirements": {
+                    **dict(payload.get("hardRequirements") or {}),
+                    "assetRole": asset_role,
+                    "costMode": "low_cost_single_image",
+                },
+            }
+        )
+        provider_plan = self._provider_plan_for_operation("image.generate", preferred_model_ids=PREFERRED_IMAGE_MODEL_IDS)
+        now = utc_now_iso()
+        work_order = {
+            "version": 1,
+            "workOrderId": f"cmwo_{uuid.uuid4().hex[:16]}",
+            "status": "planned",
+            "workOrderKind": "simple_asset",
+            "intent": str(payload.get("intent") or "simple_asset"),
+            "modality": "image",
+            "assetRole": asset_role,
+            "brief": brief,
+            "aspectRatio": aspect_ratio,
+            "requestingRuntime": str(payload.get("requestingRuntime") or payload.get("requesting_runtime") or ""),
+            "qualityTier": str(payload.get("qualityTier") or payload.get("quality_tier") or "draft"),
+            "costLimit": payload.get("costLimit") or payload.get("cost_limit"),
+            "shotPlan": [],
+            "storyboardAssets": [],
+            "providerPlan": {"imageGeneration": provider_plan},
+            "jobIds": [],
+            "artifactRefs": [],
+            "recipeRefs": [recipe.get("recipeId")] if recipe.get("recipeId") else [],
+            "qualityChecks": [
+                {"id": "brief_retention", "status": "planned"},
+                {"id": "aspect_ratio", "status": "planned", "value": aspect_ratio},
+            ],
+            "costEstimate": {
+                "mode": "dry_run",
+                "liveSmokeLimit": "max 1 image when explicitly requested",
+                "costLimit": payload.get("costLimit") or payload.get("cost_limit"),
+            },
+            "safetyStatus": {
+                "status": "planned_only",
+                "defaultPolicy": "provider safety checks still apply during live generation",
+            },
+            "dryRunOnly": not _truthy(payload.get("live") or payload.get("execute")),
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        return self._save_work_order(work_order)
+
+    def _compile_storyboard_work_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        brief = str(payload.get("brief") or payload.get("prompt") or "Create a short storyboard-driven video.").strip()
+        aspect_ratio = str(payload.get("aspectRatio") or payload.get("ratio") or "16:9").strip()
+        duration = int(payload.get("duration") or payload.get("durationSeconds") or payload.get("duration_seconds") or 5)
+        recipe = self.compile_recipe(
+            {
+                **payload,
+                "modality": "video",
+                "prompt": brief,
+                "ratio": aspect_ratio,
+                "duration": duration,
+                "recipeKind": "storyboard_to_video",
+            }
+        )
+        neutral = dict(recipe.get("providerNeutralRecipe") or {})
+        timed_segments = list(neutral.get("timedSegments") or [])
+        image_plan = self._provider_plan_for_operation("image.generate", preferred_model_ids=PREFERRED_IMAGE_MODEL_IDS)
+        video_operation = self._video_operation_for_work_order(payload)
+        video_plan = self._provider_plan_for_operation(video_operation, preferred_model_ids=PREFERRED_SEEDANCE2_MODEL_IDS)
+        storyboard_assets: list[dict[str, Any]] = []
+        for index, segment in enumerate(timed_segments[:8], start=1):
+            role = "first_frame" if index == 1 else "last_frame" if index == len(timed_segments[:8]) else "reference_image"
+            storyboard_assets.append(
+                {
+                    "shotId": segment.get("id") or f"shot_{index:02d}",
+                    "assetRole": role,
+                    "brief": segment.get("description") or segment.get("visual") or brief,
+                    "plannedModality": "image",
+                    "providerPlan": image_plan,
+                }
+            )
+        now = utc_now_iso()
+        work_order = {
+            "version": 1,
+            "workOrderId": f"cmwo_{uuid.uuid4().hex[:16]}",
+            "status": "planned",
+            "workOrderKind": "storyboard_to_video",
+            "intent": str(payload.get("intent") or "storyboard_to_video"),
+            "modality": "video",
+            "assetRole": str(payload.get("assetRole") or payload.get("asset_role") or "short_video"),
+            "brief": brief,
+            "aspectRatio": aspect_ratio,
+            "durationSeconds": duration,
+            "referenceAssetIds": _list_of_strings(payload.get("referenceAssetIds") or payload.get("reference_asset_ids")),
+            "requestingRuntime": str(payload.get("requestingRuntime") or payload.get("requesting_runtime") or ""),
+            "qualityTier": str(payload.get("qualityTier") or payload.get("quality_tier") or "draft"),
+            "costLimit": payload.get("costLimit") or payload.get("cost_limit"),
+            "shotPlan": timed_segments,
+            "storyboardAssets": storyboard_assets,
+            "providerPlan": {
+                "imageStoryboard": image_plan,
+                "videoGeneration": video_plan,
+                "directorOrReview": {
+                    "allowedRoles": ["director", "prompt_compression", "quality_review"],
+                    "lowerTierExecutableVideoModels": sorted(LOWER_TIER_EXECUTABLE_VIDEO_MODELS),
+                    "note": "doubao-seed-2-0-lite-260428 is an executable video model with image/video/audio references; it is treated as a lower-tier fallback behind Seedance 2.0 exact profiles.",
+                },
+            },
+            "jobIds": [],
+            "artifactRefs": [],
+            "recipeRefs": [recipe.get("recipeId")] if recipe.get("recipeId") else [],
+            "qualityChecks": [
+                {"id": "shot_continuity", "status": "planned"},
+                {"id": "reference_roles", "status": "planned", "operationKind": video_operation},
+                {"id": "hard_requirement_retention", "status": "planned"},
+            ],
+            "costEstimate": {
+                "mode": "dry_run",
+                "liveSmokeLimit": "max 1 storyboard image + 1 short 3-5s video when explicitly requested",
+                "costLimit": payload.get("costLimit") or payload.get("cost_limit"),
+            },
+            "safetyStatus": {
+                "status": "planned_only",
+                "defaultPolicy": "provider safety checks still apply during live generation",
+            },
+            "dryRunOnly": not _truthy(payload.get("live") or payload.get("execute")),
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        return self._save_work_order(work_order)
 
     def compile_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})

@@ -62,6 +62,26 @@ async def get_creative_media_recipe(recipe_id: str):
     return {"recipe": recipe}
 
 
+@router.post("/work-orders/compile")
+async def compile_creative_media_work_order(body: dict = Body(...)):
+    try:
+        return {"workOrder": creative_media_runtime.compile_work_order(body)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/work-orders")
+async def list_creative_media_work_orders(status: str | None = None, requestingRuntime: str | None = None):
+    return {
+        "workOrders": creative_media_runtime.list_work_orders(
+            status=status,
+            requesting_runtime=requestingRuntime,
+        )
+    }
+
+
 @router.post("/assets")
 async def register_creative_media_asset(body: dict = Body(...)):
     try:

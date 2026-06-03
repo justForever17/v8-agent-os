@@ -1,20 +1,28 @@
 {
-  "generatedAt": "2026-04-29T15:39:58.990684+00:00",
+  "generatedAt": "2026-06-03T10:42:16.159362+00:00",
   "stats": {
-    "providers": 47,
-    "models": 97,
+    "providers": 65,
+    "models": 133,
     "byModality": {
-      "image": 20,
-      "model3d": 21,
-      "music": 7,
-      "video": 25,
-      "voice": 24
+      "image": 26,
+      "model3d": 28,
+      "music": 8,
+      "video": 40,
+      "voice": 31
     }
   },
   "missingProviderLogos": [],
   "missingModelLogos": [],
   "missingAssetFiles": [],
-  "sameModelIdAcrossProviders": [],
+  "sameModelIdAcrossProviders": [
+    {
+      "modelId": "vidu-2.0",
+      "providerIds": [
+        "vidu_video",
+        "zhipu_bigmodel_video"
+      ]
+    }
+  ],
   "catalogOnlyModels": [
     "black_forest_labs_image::flux.2",
     "google_gemini_image::nano-banana-pro",

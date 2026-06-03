@@ -55,6 +55,53 @@ def _resolve_default_model_profile() -> str:
     )
 
 
+def _normalize_model_lookup_key(value: str) -> str:
+    return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
+
+
+def _find_configured_model_ref(model_profile: str) -> tuple[str, str] | None:
+    """Resolve friendly model names against configured providers without exposing credentials."""
+    profile = str(model_profile or "").strip()
+    if not profile or "::" in profile:
+        return None
+
+    routes = storage.get_routes()
+    providers = routes.get("providers") or {}
+    normalized_profile = _normalize_model_lookup_key(profile)
+
+    exact_matches: list[tuple[str, str]] = []
+    normalized_matches: list[tuple[str, str]] = []
+    for provider_id, provider_data in providers.items():
+        models = (provider_data or {}).get("models") or {}
+        for model_id, model_payload in models.items():
+            model_id_text = str(model_id or "").strip()
+            if model_id_text == profile:
+                exact_matches.append((str(provider_id), model_id_text))
+                continue
+            candidates = [model_id_text]
+            if isinstance(model_payload, dict):
+                candidates.extend(
+                    str(model_payload.get(key) or "").strip()
+                    for key in [
+                        "id",
+                        "model_id",
+                        "modelId",
+                        "model_name",
+                        "modelName",
+                        "name",
+                        "displayName",
+                    ]
+                    if str(model_payload.get(key) or "").strip()
+                )
+            if any(_normalize_model_lookup_key(item) == normalized_profile for item in candidates):
+                normalized_matches.append((str(provider_id), model_id_text))
+
+    matches = exact_matches or normalized_matches
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _resolve_openai_compatible_model(model_profile: str, *, role: str = "default") -> dict[str, Any]:
     profile = str(model_profile or "").strip()
     if profile:
@@ -62,6 +109,10 @@ def _resolve_openai_compatible_model(model_profile: str, *, role: str = "default
         model_ref = profile
         if "::" in profile:
             provider_id, model_ref = profile.split("::", 1)
+        else:
+            configured = _find_configured_model_ref(profile)
+            if configured:
+                provider_id, model_ref = configured
         resolved = resolve_engine_config_for_model_ref(
             model_ref,
             provider_id=provider_id,
@@ -129,6 +180,114 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text or "", encoding="utf-8")
 
 
+def _safe_read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _metrics_score(metrics: dict[str, Any]) -> float | None:
+    score = metrics.get("score")
+    if isinstance(score, (int, float)):
+        return float(score)
+    overall = metrics.get("overall")
+    if isinstance(overall, dict):
+        overall_score = overall.get("overall_full_set")
+        if isinstance(overall_score, (int, float)):
+            return float(overall_score)
+    return None
+
+
+def _metrics_count(metrics: dict[str, Any]) -> int:
+    count = metrics.get("count")
+    if isinstance(count, int):
+        return count
+    overall = metrics.get("overall")
+    if isinstance(overall, dict):
+        overall_count = overall.get("count_all_questions")
+        if isinstance(overall_count, int):
+            return overall_count
+    return 0
+
+
+def _evaluation_summary(output_dir: Path, *, domain: str, tier: str) -> dict[str, Any]:
+    metrics = _safe_read_json(output_dir / "aggregated_metrics.json")
+    score = _metrics_score(metrics)
+    per_question_path = output_dir / "per_question.jsonl"
+    reader_errors = 0
+    evaluator_errors = 0
+    script_errors = 0
+    taxonomy_counts: dict[str, int] = {}
+    question_count = 0
+    if per_question_path.exists():
+        with per_question_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    script_errors += 1
+                    continue
+                question_count += 1
+                if item.get("reader_error"):
+                    reader_errors += 1
+                if item.get("evaluator_error") or item.get("score_error"):
+                    evaluator_errors += 1
+                metadata = item.get("memory_post_query_metadata")
+                if isinstance(metadata, dict):
+                    taxonomy = metadata.get("failureTaxonomy")
+                    if isinstance(taxonomy, dict):
+                        for key, value in taxonomy.items():
+                            if value:
+                                taxonomy_counts[str(key)] = taxonomy_counts.get(str(key), 0) + 1
+    min_score = 0.382 if domain == "web" else 0.20
+    return {
+        "domain": domain,
+        "tier": tier,
+        "score": score,
+        "questionCount": question_count or _metrics_count(metrics),
+        "readerErrors": reader_errors,
+        "evaluatorErrors": evaluator_errors,
+        "scriptErrors": script_errors,
+        "failureTaxonomyCounts": taxonomy_counts,
+        "acceptance": {
+            "scoreMin": min_score,
+            "scorePassed": isinstance(score, (int, float)) and float(score) >= min_score,
+            "readerErrorsPassed": reader_errors == 0,
+            "evaluatorErrorsPassed": evaluator_errors == 0,
+            "scriptErrorsPassed": script_errors == 0,
+        },
+    }
+
+
+def _weighted_combined_summary(web_dir: Path, enterprise_dir: Path) -> dict[str, Any]:
+    web = _evaluation_summary(web_dir, domain="web", tier="small")
+    enterprise = _evaluation_summary(enterprise_dir, domain="enterprise", tier="small")
+    web_score = web.get("score")
+    enterprise_score = enterprise.get("score")
+    web_count = int(web.get("questionCount") or 0)
+    enterprise_count = int(enterprise.get("questionCount") or 0)
+    combined: float | None = None
+    if isinstance(web_score, (int, float)) and isinstance(enterprise_score, (int, float)) and web_count + enterprise_count > 0:
+        combined = (float(web_score) * web_count + float(enterprise_score) * enterprise_count) / (web_count + enterprise_count)
+    return {
+        "web": web,
+        "enterprise": enterprise,
+        "weightedCombined": combined,
+        "acceptance": {
+            "webPassed": bool(web.get("acceptance", {}).get("scorePassed")),
+            "enterprisePassed": bool(enterprise.get("acceptance", {}).get("scorePassed")),
+            "combinedMin": 0.30,
+            "combinedPassed": isinstance(combined, float) and combined >= 0.30,
+            "readerErrorsPassed": int(web.get("readerErrors") or 0) == 0 and int(enterprise.get("readerErrors") or 0) == 0,
+            "evaluatorErrorsPassed": int(web.get("evaluatorErrors") or 0) == 0 and int(enterprise.get("evaluatorErrors") or 0) == 0,
+        },
+    }
+
+
 def _write_report(output_dir: Path, payload: dict[str, Any]) -> Path:
     metrics_path = output_dir / "aggregated_metrics.json"
     metrics: dict[str, Any] = {}
@@ -137,6 +296,11 @@ def _write_report(output_dir: Path, payload: dict[str, Any]) -> Path:
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         except Exception:
             metrics = {}
+    evaluation_summary = payload.get("evaluationSummary") or _evaluation_summary(
+        output_dir,
+        domain=str(payload.get("domain") or "web"),
+        tier=str(payload.get("tier") or "small"),
+    )
     report_path = output_dir / "LONGMEMEVAL_V2_OFFICIAL_BENCHMARK_ZH.md"
     lines = [
         "# LongMemEval-V2 官方 Harness Benchmark 报告",
@@ -155,6 +319,12 @@ def _write_report(output_dir: Path, payload: dict[str, Any]) -> Path:
         "",
         "```json",
         json.dumps(metrics, ensure_ascii=False, indent=2) if metrics else "{}",
+        "```",
+        "",
+        "## 错误与验收摘要",
+        "",
+        "```json",
+        json.dumps(evaluation_summary, ensure_ascii=False, indent=2),
         "```",
         "",
         "## 边界说明",
@@ -315,6 +485,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         str(args.reader_top_k),
         "--reader-max-concurrent-requests",
         str(args.reader_max_concurrent_requests),
+        "--reader-request-timeout-seconds",
+        str(args.reader_request_timeout_seconds),
+        "--reader-max-retries",
+        str(args.reader_max_retries),
         "--max-completion-tokens",
         str(args.max_completion_tokens),
         "--memory-context-max-tokens",
@@ -327,6 +501,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "V8_LME_EVALUATOR_API_KEY",
         "--evaluator-max-completion-tokens",
         str(args.evaluator_max_completion_tokens),
+        "--evaluator-timeout-seconds",
+        str(args.evaluator_timeout_seconds),
         "--prompt-build-max-workers",
         str(args.prompt_build_max_workers),
     ]
@@ -343,6 +519,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     _write_text(output_dir / "run_eval_stderr.txt", result["stderr"])
     payload["runEval"] = {k: v for k, v in result.items() if k not in {"stdout", "stderr"}}
     payload["status"] = "completed" if result["returnCode"] == 0 else "failed"
+    payload["evaluationSummary"] = _evaluation_summary(output_dir, domain=args.domain, tier=args.tier)
     _write_report(output_dir, payload)
     (output_dir / "result.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
@@ -368,10 +545,13 @@ def main() -> None:
     parser.add_argument("--reader-top-p", type=float, default=0.8)
     parser.add_argument("--reader-top-k", type=int, default=20)
     parser.add_argument("--reader-max-concurrent-requests", type=int, default=2)
+    parser.add_argument("--reader-request-timeout-seconds", type=float, default=240.0)
+    parser.add_argument("--reader-max-retries", type=int, default=2)
     parser.add_argument("--max-completion-tokens", type=int, default=4096)
     parser.add_argument("--memory-context-max-tokens", type=int, default=180000)
     parser.add_argument("--memory-include-images", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--evaluator-max-completion-tokens", type=int, default=4096)
+    parser.add_argument("--evaluator-timeout-seconds", type=float, default=240.0)
     parser.add_argument("--prompt-build-max-workers", type=int, default=1)
     parser.add_argument("--disable-reader-thinking", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=43200)

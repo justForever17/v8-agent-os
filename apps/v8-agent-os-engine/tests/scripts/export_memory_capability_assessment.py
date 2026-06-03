@@ -45,7 +45,8 @@ from runtimes.network_supervisor.memory_adapter import network_supervisor_memory
 
 REPO_ROOT = ENGINE_ROOT.parents[1]
 DOCS_ROOT = REPO_ROOT / "docs" / "chatruntime"
-OUTPUT_ROOT = DOCS_ROOT / "memory_capability_reports"
+OUTPUT_ROOT = Path.home() / ".v8-agent-os" / "reports" / "memory_capability"
+LONGMEMEVAL_REPORT_ROOT = Path.home() / ".v8-agent-os" / "reports" / "longmemeval_v2"
 RUNBOOK_PATH = DOCS_ROOT / "ASSESSMENT_DIAGNOSTICS_RUNBOOK_ZH.md"
 EVALS_ROOT = ENGINE_ROOT / "tests" / "evals"
 LONGMEMEVAL_HARNESS_ROOT = EVALS_ROOT / "longmemeval"
@@ -96,6 +97,142 @@ def _longmemeval_official_harness_status() -> dict[str, Any]:
             "Generate question_id/hypothesis JSONL with the adapter, then run LongMemEval src/evaluation/evaluate_qa.py for official scoring.",
             "Report model, data version, split, date, and whether cleaned data was used when publishing a score.",
         ],
+    }
+
+
+def _safe_read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _metrics_score(metrics: dict[str, Any]) -> float | None:
+    score = metrics.get("score")
+    if isinstance(score, (int, float)):
+        return float(score)
+    overall = metrics.get("overall")
+    if isinstance(overall, dict):
+        overall_score = overall.get("overall_full_set")
+        if isinstance(overall_score, (int, float)):
+            return float(overall_score)
+    return None
+
+
+def _metrics_count(metrics: dict[str, Any]) -> int:
+    count = metrics.get("count")
+    if isinstance(count, int):
+        return count
+    overall = metrics.get("overall")
+    if isinstance(overall, dict):
+        overall_count = overall.get("count_all_questions")
+        if isinstance(overall_count, int):
+            return overall_count
+    return 0
+
+
+def _latest_longmemeval_domain_run(domain: str) -> Path | None:
+    if not LONGMEMEVAL_REPORT_ROOT.exists():
+        return None
+    candidates: list[tuple[float, Path]] = []
+    for metrics_path in LONGMEMEVAL_REPORT_ROOT.rglob("aggregated_metrics.json"):
+        run_dir = metrics_path.parent
+        payload = _safe_read_json(run_dir / "result.json")
+        metrics = _safe_read_json(metrics_path)
+        payload_domain = str(payload.get("domain") or metrics.get("domain") or run_dir.name).lower()
+        if domain.lower() not in payload_domain:
+            continue
+        try:
+            mtime = metrics_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, run_dir))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _longmemeval_domain_summary(domain: str) -> dict[str, Any]:
+    run_dir = _latest_longmemeval_domain_run(domain)
+    if not run_dir:
+        return {"available": False, "domain": domain, "status": "no_report_found"}
+    metrics = _safe_read_json(run_dir / "aggregated_metrics.json")
+    score = _metrics_score(metrics)
+    count = _metrics_count(metrics)
+    reader_errors = 0
+    evaluator_errors = 0
+    script_errors = 0
+    taxonomy_counts: dict[str, int] = {}
+    per_question_path = run_dir / "per_question.jsonl"
+    if per_question_path.exists():
+        count = 0
+        with per_question_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    script_errors += 1
+                    continue
+                count += 1
+                if item.get("reader_error"):
+                    reader_errors += 1
+                if item.get("evaluator_error") or item.get("score_error"):
+                    evaluator_errors += 1
+                metadata = item.get("memory_post_query_metadata")
+                if isinstance(metadata, dict):
+                    taxonomy = metadata.get("failureTaxonomy")
+                    if isinstance(taxonomy, dict):
+                        for key, value in taxonomy.items():
+                            if value:
+                                taxonomy_counts[str(key)] = taxonomy_counts.get(str(key), 0) + 1
+    min_score = 0.382 if domain == "web" else 0.20
+    return {
+        "available": True,
+        "domain": domain,
+        "runDir": str(run_dir),
+        "score": score,
+        "count": count,
+        "readerErrors": reader_errors,
+        "evaluatorErrors": evaluator_errors,
+        "scriptErrors": script_errors,
+        "failureTaxonomyCounts": taxonomy_counts,
+        "acceptance": {
+            "scoreMin": min_score,
+            "scorePassed": isinstance(score, (int, float)) and float(score) >= min_score,
+            "readerErrorsPassed": reader_errors == 0,
+            "evaluatorErrorsPassed": evaluator_errors == 0,
+            "scriptErrorsPassed": script_errors == 0,
+        },
+    }
+
+
+def _longmemeval_latest_summary() -> dict[str, Any]:
+    web = _longmemeval_domain_summary("web")
+    enterprise = _longmemeval_domain_summary("enterprise")
+    weighted: float | None = None
+    web_score = web.get("score")
+    enterprise_score = enterprise.get("score")
+    web_count = int(web.get("count") or 0)
+    enterprise_count = int(enterprise.get("count") or 0)
+    if isinstance(web_score, (int, float)) and isinstance(enterprise_score, (int, float)) and web_count + enterprise_count:
+        weighted = (float(web_score) * web_count + float(enterprise_score) * enterprise_count) / (web_count + enterprise_count)
+    return {
+        "web": web,
+        "enterprise": enterprise,
+        "weightedCombined": weighted,
+        "acceptance": {
+            "webPassed": bool(web.get("acceptance", {}).get("scorePassed")),
+            "enterprisePassed": bool(enterprise.get("acceptance", {}).get("scorePassed")),
+            "combinedMin": 0.30,
+            "combinedPassed": isinstance(weighted, float) and weighted >= 0.30,
+            "readerErrorsPassed": int(web.get("readerErrors") or 0) == 0 and int(enterprise.get("readerErrors") or 0) == 0,
+            "evaluatorErrorsPassed": int(web.get("evaluatorErrors") or 0) == 0 and int(enterprise.get("evaluatorErrors") or 0) == 0,
+            "scriptErrorsPassed": int(web.get("scriptErrors") or 0) == 0 and int(enterprise.get("scriptErrors") or 0) == 0,
+        },
     }
 
 
@@ -465,13 +602,26 @@ def _harsh_question_matrix() -> list[dict[str, Any]]:
 
 def _build_report(results: dict[str, Any]) -> str:
     lines = [
-        "# 记忆能力双轨评分报告",
+        "# V8OS_MEMORY_CAPABILITY_ASSESSMENT_ZH",
         "",
         f"- 生成时间: `{results['generatedAt']}`",
-        "- 背景文档: `E:\\Projects\\v8chat\\v8-agent-os\\docs\\chatruntime\\参与 agent 记忆能力测评.md`",
+        "- 报告边界: LongMemEval-V2 是外部官方压力测试；产品 Memory 评估是 V8OS 内部真实可用性检查，二者不可互相替代。",
         f"- 统一运行说明: `{RUNBOOK_PATH}`",
         "",
-        "## 双轨评分",
+        "## 官方 Benchmark 能力（LongMemEval-V2 small）",
+        "",
+        f"- web score: `{results['longMemEvalV2']['web'].get('score')}`",
+        f"- enterprise score: `{results['longMemEvalV2']['enterprise'].get('score')}`",
+        f"- weighted combined: `{results['longMemEvalV2'].get('weightedCombined')}`",
+        f"- reader errors passed: `{'是' if results['longMemEvalV2']['acceptance']['readerErrorsPassed'] else '否'}`",
+        f"- evaluator errors passed: `{'是' if results['longMemEvalV2']['acceptance']['evaluatorErrorsPassed'] else '否'}`",
+        f"- strict acceptance passed: `{'是' if results['longMemEvalV2']['acceptance']['webPassed'] and results['longMemEvalV2']['acceptance']['enterprisePassed'] and results['longMemEvalV2']['acceptance']['combinedPassed'] else '否'}`",
+        "",
+        "```json",
+        json.dumps(results["longMemEvalV2"], ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## 产品内实际记忆能力",
         "",
         f"- 对外 benchmark 映射分: `{results['scoreSummary']['publicScore']}/10`",
         f"- 内部 runtime-first 苛刻治理分: `{results['scoreSummary']['internalScore']}/10`",
@@ -482,8 +632,9 @@ def _build_report(results: dict[str, Any]) -> str:
         "",
         "## 总体判断",
         "",
-        "- 当前报告采用双层评分：守门评分保留当前结构/配置自检，最终结论优先看 `tests/evals` 的真实可复跑评测。",
-        "- LongMemEval 只显示 official harness 接入状态；未运行官方 `evaluate_qa.py` 前，不将任何内部结果表述为官方成绩。",
+        "- LongMemEval-V2 当前只代表 benchmark evidence selection / compression 压力测试，不能直接代表 V8OS 产品内长期记忆能力。",
+        "- 产品内记忆能力优先看 scope 隔离、同 key 覆写、工程续接污染控制、external API thread 隔离、后台 maintenance 不污染会话状态等真实链路。",
+        "- 当前报告采用双层评分：守门评分保留结构/配置自检，最终结论优先看 `tests/evals` 的真实可复跑评测。",
         "- 同 key 覆写、语义 key 归一、项目隔离、external API 隔离已经进入可执行通过状态。",
         "- 未达门槛时，优先排查真实 eval 失败项，其次排查 durable policy 是否仍停留在旧低阈值模板，以及 workflow learning 是否缺少更多 proof-backed 成功样本。",
         "",
@@ -505,6 +656,18 @@ def _build_report(results: dict[str, Any]) -> str:
         f"- officialScoreAvailable: `{results['officialHarnessStatus']['officialScoreAvailable']}`",
         f"- supportedSplits: `{', '.join(results['officialHarnessStatus']['supportedSplits'])}`",
         "- 发布任何 LongMemEval 分数前，必须记录模型、数据版本、split、评估日期和官方评估日志路径。",
+        "",
+        "## 当前不可宣称能力",
+        "",
+        "- 不可宣称 LongMemEval-V2 已稳定过线，除非 web / enterprise / weighted combined 三项同时达到验收线且 reader/evaluator error 为 0。",
+        "- 不可宣称 Memory 可以无条件跨 workspace / external thread 注入；当前能力依赖 scope chain 和 adapter 隔离策略。",
+        "- 不可宣称 vector backend 是 memory 保存真相；JSON/SQLite canonical memory 才是保存真相，vector sync 只是增强索引。",
+        "",
+        "## 下一轮优化点",
+        "",
+        "- LongMemEval-V2: 继续补 web gotcha/abstention 的负证据、enterprise 高频词碰撞和 visual evidence missing。",
+        "- 产品 Memory: 把 answer-oriented memory pack 接入更多真实 Supervisor live session，记录 selected/rejected memory 和拒答原因。",
+        "- 诊断: 将 failureTaxonomy 与产品 Memory audit report 串起来，避免把脚本错误误判成记忆能力失败。",
         "",
         "## 逐项结果",
         "",
@@ -571,8 +734,9 @@ def _build_report(results: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = _now_stamp()
+    run_root = OUTPUT_ROOT / stamp
+    run_root.mkdir(parents=True, exist_ok=True)
     storage.ensure_memory_runtime_defaults()
 
     executed_checks = [
@@ -615,11 +779,12 @@ def main() -> None:
         },
         "realEvalSummary": real_eval_summary,
         "officialHarnessStatus": official_harness_status,
+        "longMemEvalV2": _longmemeval_latest_summary(),
         "harshQuestionMatrix": _harsh_question_matrix(),
     }
     markdown = _build_report(results)
-    md_path = OUTPUT_ROOT / f"{stamp}_memory_capability_assessment.md"
-    json_path = OUTPUT_ROOT / f"{stamp}_memory_capability_assessment.json"
+    md_path = run_root / "V8OS_MEMORY_CAPABILITY_ASSESSMENT_ZH.md"
+    json_path = run_root / "memory_capability_assessment.json"
     md_path.write_text(markdown, encoding="utf-8")
     json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"markdown": str(md_path), "json": str(json_path)}, ensure_ascii=False))

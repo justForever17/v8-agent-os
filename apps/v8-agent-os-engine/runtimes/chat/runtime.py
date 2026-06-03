@@ -52,6 +52,7 @@ from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
 from core.context_window_guard import context_window_guard
 from core.agents import build_specialist_family_registry, normalize_specialist_family_id
+from core.task_boundary_resolver import attach_task_boundary_decision
 from core.task_shape_classifier import classify_task_shape
 from core.tool_invocation_ids import make_tool_invocation_id
 from core.workspace_capability import build_workspace_binding
@@ -3786,6 +3787,11 @@ class ChatRuntime:
                 )
                 prepared.task_shape_hint = hint
                 prepared.engineering_mode = "force"
+            prepared.task_shape_hint = attach_task_boundary_decision(
+                prepared.task_shape_hint,
+                user_query=prepared.latest_user_content,
+                planner_plan=prepared.planner_plan if isinstance(prepared.planner_plan, dict) else None,
+            )
             primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
             shape_reason = str(prepared.task_shape_hint.get("reason") or "").strip()
             secondary_shapes = {

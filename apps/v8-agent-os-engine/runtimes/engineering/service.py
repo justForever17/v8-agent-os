@@ -194,7 +194,9 @@ class EngineeringLaneService:
             "visibility": "secondary",
             "promptHints": [
                 "project_coding 任务优先参考 Engineering Runtime 的 ContextPack / Proof Ledger；不要把内部工程步骤展开成 Supervisor todos。",
+                "科普、课程、产品介绍、讲解类视频默认优先走可编辑代码视频链路，例如 Remotion、Hyperframes、Manim、HTML video 或 ffmpeg。",
                 "Remotion、Manim、ffmpeg、Three.js、p5.js 等用代码生成媒体的任务优先视为工程实现，Creative Media 只作为素材或 provider 子能力参与。",
+                "用户说打开终端安装、启动或运行命令时，默认解释为逻辑命令会话，优先使用 run_system_command / command_session_broker，而不是拉起真实 GUI 终端。",
             ],
             "capabilities": [
                 {

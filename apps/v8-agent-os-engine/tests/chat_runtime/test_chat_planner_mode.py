@@ -640,6 +640,80 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertFalse(any(item.get("skillName") == "skill-creator" for item in reads))
         self.assertFalse(any(item.get("relativePath") == "references/skill-template.md" for item in reads))
 
+    def test_planner_contract_verifier_repairs_explainer_video_to_engineering(self):
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                skill_references=[],
+                task_shape_hint={
+                    "boundaryDecision": {
+                        "primaryRuntime": "engineering",
+                        "executionMode": "code_video_runtime",
+                        "reason": "explainer_or_course_video_prefers_editable_code_timeline",
+                        "forbiddenRoutes": ["creative_media_as_primary_unless_provider_named"],
+                    }
+                },
+            )
+        )
+
+        repaired = ChatRuntime._verify_and_repair_planner_contract(
+            {
+                "planId": "model-plan",
+                "executionStrategy": "delegate",
+                "capabilityPlan": [{"kind": "creative_media", "taskBriefId": "task-1"}],
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "Make an explainer video",
+                        "familyHint": "creative_media",
+                        "executionLaneHint": "creative_media",
+                    }
+                ],
+                "qualityFlags": [],
+                "repairCount": 0,
+            },
+            fallback_plan=None,
+            chat_run=chat_run,
+        )
+
+        self.assertEqual(repaired["taskBriefs"][0]["familyHint"], "engineering")
+        self.assertEqual(repaired["taskBriefs"][0]["executionLaneHint"], "auto")
+        self.assertIn("creative_media", repaired["taskBriefs"][0]["supportingRuntimes"])
+        self.assertTrue(any(item.get("kind") == "engineering" for item in repaired["capabilityPlan"]))
+        self.assertIn("planner_boundary_primary_engineering_repaired", repaired["qualityFlags"])
+
+    def test_planner_contract_verifier_repairs_literal_terminal_to_native_command_route(self):
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                skill_references=[],
+                task_shape_hint={
+                    "boundaryDecision": {
+                        "primaryRuntime": "engineering",
+                        "executionMode": "native_terminal_command",
+                        "reason": "logical_terminal_request_prefers_native_command_session",
+                        "forbiddenRoutes": ["computer_use_for_literal_terminal_only"],
+                    }
+                },
+            )
+        )
+
+        repaired = ChatRuntime._verify_and_repair_planner_contract(
+            {
+                "planId": "model-plan",
+                "executionStrategy": "delegate",
+                "capabilityPlan": [{"kind": "computer_use", "taskBriefId": "task-1"}],
+                "taskBriefs": [{"taskBriefId": "task-1", "goal": "Open terminal and install a skill", "familyHint": "computer_use"}],
+                "qualityFlags": [],
+                "repairCount": 0,
+            },
+            fallback_plan=None,
+            chat_run=chat_run,
+        )
+
+        self.assertEqual(repaired["taskBriefs"][0]["familyHint"], "engineering")
+        self.assertFalse(any(item.get("kind") == "computer_use" for item in repaired["capabilityPlan"]))
+        self.assertTrue(any(item.get("kind") == "engineering" for item in repaired["capabilityPlan"]))
+        self.assertIn("planner_boundary_terminal_native_command_repaired", repaired["qualityFlags"])
+
     def test_planner_auto_dispatch_suggest_never_dispatches(self):
         decision = ChatRuntime._decide_planner_auto_dispatch(
             {

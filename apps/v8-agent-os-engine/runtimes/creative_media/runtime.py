@@ -308,6 +308,11 @@ class CreativeMediaRuntime:
             "supportsResume": True,
             "supportsRepair": False,
             "visibility": "internal",
+            "promptHints": [
+                "明确点名 Seedance、Sora、图生视频、文生视频、参考视频、首尾帧、参考音频/音乐或 provider 视频模型时，Creative Media 可作为主 runtime。",
+                "Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐或关键帧素材时，Creative Media 作为素材支持 runtime。",
+                "科普、课程、讲解、产品介绍这类需要可编辑时间线的视频，默认由 Engineering 的代码视频链路主导，Creative Media 只提供素材和媒体 provider 子能力。",
+            ],
             "metadata": {
                 "p1": True,
                 "p2": True,

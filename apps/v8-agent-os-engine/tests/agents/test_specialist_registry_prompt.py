@@ -154,6 +154,35 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("creative-media-director | class=", specialist_context)
         self.assertNotIn("implementation-engineer | class=", specialist_context)
 
+    def test_execution_hints_block_is_closed(self):
+        with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(
+            "graph.supervisor_context._build_workspace_rules_context",
+            return_value=("", []),
+        ), patch(
+            "graph.supervisor_context._build_artifact_awareness_context",
+            return_value=("", []),
+        ), patch(
+            "graph.supervisor_context._render_engineering_context",
+            return_value=("", []),
+        ):
+            result = build_supervisor_system_content(
+                state={},
+                config=SimpleNamespace(system_prompt="Base prompt."),
+                user_query="hello",
+                current_scope="global",
+                scope_chain=["global"],
+                session_id="sess_test",
+                messages=[],
+                loaded_agents=[],
+                supervisor_tools=[],
+                memory_runtime=_MemoryRuntimeStub(),
+            )
+
+        system_content = result["system_content"]
+        self.assertIn("[Execution Hints]", system_content)
+        self.assertIn("[/Execution Hints]", system_content)
+        self.assertLess(system_content.index("[Execution Hints]"), system_content.index("[/Execution Hints]"))
+
 
 if __name__ == "__main__":
     unittest.main()

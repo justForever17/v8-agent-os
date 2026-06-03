@@ -5,6 +5,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.delegation_broker import normalize_task_brief
 from core.native_tools import (
@@ -24,7 +25,7 @@ from core.runtime_tool_access import (
     filter_visible_tools_for_actor,
     runtime_access_from_route_context,
 )
-from erc.capability_registry import capability_registry
+from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
 from graph.agent_factories import _select_contextual_subagent_native_tools
 
 
@@ -448,6 +449,54 @@ def test_research_runtime_appears_in_capability_registry_summary():
 
     assert "kind=research" in summary
     assert "research.core" in summary
+
+
+def test_capability_registry_summary_renders_multiple_runtime_prompt_hints():
+    registry = CapabilityRegistry()
+    registry.register(
+        {
+            "kind": "creative_media",
+            "displayName": "CreativeMediaRuntime",
+            "summary": "media",
+            "promptHints": ["第一条边界规则", "第二条边界规则"],
+        }
+    )
+
+    summary = registry.build_supervisor_summary(user_query="做视频")
+
+    assert "何时使用:" in summary
+    assert "    - 第一条边界规则" in summary
+    assert "    - 第二条边界规则" in summary
+
+
+def test_capability_registry_summary_hides_disabled_runtime_prompt_hints():
+    registry = CapabilityRegistry()
+    registry.register(
+        {
+            "kind": "creative_media",
+            "displayName": "CreativeMediaRuntime",
+            "summary": "media",
+            "promptHints": ["停用后不应注入"],
+        }
+    )
+
+    def _policy(kind: str):
+        if kind == "creative_media":
+            return RuntimePolicy(enabled=False)
+        return RuntimePolicy()
+
+    with patch.object(registry, "get_policy", side_effect=_policy):
+        summary = registry.build_supervisor_summary(user_query="做视频")
+
+    assert "停用后不应注入" not in summary
+
+
+def test_engineering_config_disabled_hides_runtime_boundary_hints():
+    with patch("core.storage.storage.get_engineering_lane_config", return_value={"enabled": False}):
+        summary = capability_registry.build_supervisor_summary(user_query="用 Remotion 做科普视频")
+
+    assert "kind=engineering" not in summary
+    assert "Remotion" not in summary
 
 
 def test_creative_media_tools_can_call_runtime_facade(monkeypatch):

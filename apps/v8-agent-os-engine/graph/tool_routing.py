@@ -243,6 +243,18 @@ def _route_kind_for_blocked_tool(tool_name: str, *, route_required: bool) -> str
     return "delegation"
 
 
+def _task_boundary_from_state(state_mapping: dict[str, Any]) -> dict[str, Any]:
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    task_shape = dict(state_mapping.get("task_shape_hint") or route_context.get("taskShapeHint") or {})
+    boundary = task_shape.get("boundaryDecision") if isinstance(task_shape.get("boundaryDecision"), dict) else {}
+    return dict(boundary or {})
+
+
+def _boundary_primary_runtime(boundary: dict[str, Any]) -> str:
+    value = str(boundary.get("primaryRuntime") or "").strip()
+    return value if value in {"engineering", "research", "creative_media", "computer_use", "rpa", "delegation"} else ""
+
+
 def _workspace_from_state(state_mapping: dict[str, Any], args: dict[str, Any]) -> str:
     for key in ("workspace_path", "workspacePath", "project_workspace", "projectWorkspace"):
         value = state_mapping.get(key)
@@ -270,6 +282,12 @@ def _route_intent_for_blocked_tool(
 ) -> dict[str, Any]:
     args = _safe_tool_args(tool_call.get("args"))
     route_kind = _route_kind_for_blocked_tool(tool_name, route_required=route_required)
+    boundary = _task_boundary_from_state(state_mapping)
+    boundary_primary = _boundary_primary_runtime(boundary)
+    if "task_boundary_route_correction" in set(hard_reasons) and boundary_primary:
+        route_kind = boundary_primary
+    elif route_required and boundary_primary in {"engineering", "research", "creative_media", "computer_use", "rpa"}:
+        route_kind = boundary_primary
     workspace = _workspace_from_state(state_mapping, args)
     inputs: dict[str, Any] = {
         "blockedTool": tool_name,
@@ -490,6 +508,7 @@ def _supervisor_direct_scope_approved(run_id: str, operation_fingerprint: str) -
 def _supervisor_direct_scope_requires_engineering_route(state_mapping: dict[str, Any]) -> bool:
     route_context = dict(state_mapping.get("current_route_context") or {})
     task_shape = dict(state_mapping.get("task_shape_hint") or route_context.get("taskShapeHint") or {})
+    boundary = task_shape.get("boundaryDecision") if isinstance(task_shape.get("boundaryDecision"), dict) else {}
     primary = str(task_shape.get("primaryTaskShape") or "").strip()
     secondary = {
         str(item or "").strip()
@@ -501,6 +520,7 @@ def _supervisor_direct_scope_requires_engineering_route(state_mapping: dict[str,
         route_context.get("explicitEngineeringRequested")
         or route_context.get("engineeringRequired")
         or str(route_context.get("engineeringMode") or "").strip() == "force"
+        or str(boundary.get("primaryRuntime") or "").strip() == "engineering"
         or primary == "project_coding"
         or ("research" in secondary and primary in {"creative_media", "automation"})
         or bool(engineering_trigger.get("active"))
@@ -578,6 +598,21 @@ def _supervisor_direct_scope_hard_block_message(
         return None
 
     hard_reasons: list[str] = []
+    boundary = _task_boundary_from_state(state_mapping)
+    forbidden_routes = {
+        str(item or "").strip()
+        for item in list(boundary.get("forbiddenRoutes") or [])
+        if str(item or "").strip()
+    }
+    boundary_primary = str(boundary.get("primaryRuntime") or "").strip()
+    if tool_name.startswith("computer_use_") and "computer_use_for_literal_terminal_only" in forbidden_routes:
+        hard_reasons.append("task_boundary_route_correction")
+    if (
+        tool_name.startswith("creative_media_")
+        and boundary_primary == "engineering"
+        and "creative_media_as_primary_unless_provider_named" in forbidden_routes
+    ):
+        hard_reasons.append("task_boundary_route_correction")
     if bool(planner_dispatch_status.get("blocked")):
         hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
     if route_required:
@@ -617,8 +652,8 @@ def _supervisor_direct_scope_hard_block_message(
         "[route required]\n"
         f"Blocked direct Supervisor tool: {tool_name}\n"
         f"Reason: {raw_reasons}\n"
-        "This run is classified as a complex Engineering/project task. Direct exception is not available for "
-        "mutating, research, or long-running tools.\n"
+        f"Boundary route: {route_intent.get('kind') or 'runtime'} via {route_intent.get('source') or 'runtime gate'}.\n"
+        "Direct exception is not available for mutating, research, media, desktop, or long-running tools that must be owned by a runtime.\n"
         f"{next_instruction}"
     )
     return ToolMessage(

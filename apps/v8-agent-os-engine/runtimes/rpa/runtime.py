@@ -687,7 +687,8 @@ class RPARuntime:
             "supportsRepair": True,
             "visibility": "specialized",
             "promptHints": [
-                "已经存在稳定流程、希望快速复现或导出脚本时，优先交给 RPARuntime。",
+                "已经存在稳定流程、希望快速复现、对象库复用、录制模板或导出脚本时，优先交给 RPARuntime。",
+                "一次性探索和真实桌面试探可由 ComputerUseRuntime 完成；需要固化为可重复流程时转 RPA。",
                 "当 RPA 失败时，允许它局部回退到 ComputerUse，而不是让 Supervisor 自己重跑整段流程。",
             ],
             "capabilities": [

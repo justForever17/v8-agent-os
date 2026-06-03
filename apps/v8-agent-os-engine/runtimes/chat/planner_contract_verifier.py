@@ -176,6 +176,92 @@ def _ensure_skill_read_contract(
     return repair_count
 
 
+def _ensure_boundary_contract(
+    repaired: dict[str, Any],
+    *,
+    task_shape_hint: dict[str, Any],
+    quality_flags: list[str],
+) -> int:
+    boundary = task_shape_hint.get("boundaryDecision") if isinstance(task_shape_hint.get("boundaryDecision"), dict) else {}
+    if not boundary:
+        return 0
+    primary_runtime = str(boundary.get("primaryRuntime") or "").strip()
+    execution_mode = str(boundary.get("executionMode") or "").strip()
+    forbidden = {str(item).strip() for item in _as_list(boundary.get("forbiddenRoutes")) if str(item).strip()}
+    repair_count = 0
+    tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
+    capability_plan = [dict(item) for item in _as_list(repaired.get("capabilityPlan")) if isinstance(item, dict)]
+
+    def _has_capability(kind: str) -> bool:
+        return any(str(item.get("kind") or item.get("runtimeKind") or "").strip() == kind for item in capability_plan)
+
+    def _append_capability(kind: str, reason: str) -> None:
+        nonlocal repair_count
+        if _has_capability(kind):
+            return
+        task_id = str((tasks[0] if tasks else {}).get("taskBriefId") or "task-1")
+        capability_plan.append(
+            {
+                "kind": kind,
+                "source": "task_boundary_resolver",
+                "reason": reason,
+                "taskBriefId": task_id,
+                "state": "detected",
+            }
+        )
+        repair_count += 1
+
+    if primary_runtime == "engineering":
+        _append_capability("engineering", str(boundary.get("reason") or "task_boundary_requires_engineering"))
+        for task in tasks:
+            family = str(task.get("familyHint") or "").strip()
+            lane = str(task.get("executionLaneHint") or "").strip()
+            if family in {"creative_media", "computer_use"} or lane in {"creative_media", "computer_use"}:
+                task["familyHint"] = "engineering"
+                task["executionLaneHint"] = "auto"
+                if "computer_use_for_literal_terminal_only" in forbidden and (
+                    family == "computer_use" or lane == "computer_use"
+                ):
+                    quality_flags.append("planner_boundary_terminal_native_command_repaired")
+                else:
+                    quality_flags.append("planner_boundary_primary_engineering_repaired")
+                repair_count += 1
+            if execution_mode == "code_video_runtime":
+                support = [str(item).strip() for item in _as_list(task.get("supportingRuntimes")) if str(item).strip()]
+                if "creative_media" not in support:
+                    support.append("creative_media")
+                    task["supportingRuntimes"] = support
+                    quality_flags.append("planner_boundary_code_video_supports_creative_media")
+                    repair_count += 1
+    elif primary_runtime == "creative_media":
+        _append_capability("creative_media", str(boundary.get("reason") or "task_boundary_requires_creative_media"))
+    elif primary_runtime == "research":
+        _append_capability("research", str(boundary.get("reason") or "task_boundary_requires_research"))
+    elif primary_runtime == "rpa":
+        _append_capability("rpa", str(boundary.get("reason") or "task_boundary_requires_rpa"))
+    elif primary_runtime == "computer_use":
+        _append_capability("computer_use", str(boundary.get("reason") or "task_boundary_requires_computer_use"))
+
+    if "computer_use_for_literal_terminal_only" in forbidden:
+        for task in tasks:
+            if str(task.get("familyHint") or "").strip() == "computer_use":
+                task["familyHint"] = "engineering"
+                task["executionLaneHint"] = "auto"
+                quality_flags.append("planner_boundary_terminal_native_command_repaired")
+                repair_count += 1
+        capability_plan = [
+            item
+            for item in capability_plan
+            if str(item.get("kind") or item.get("runtimeKind") or "").strip() != "computer_use"
+        ]
+
+    repaired["taskBriefs"] = tasks
+    repaired["capabilityPlan"] = capability_plan
+    if repair_count:
+        repaired["taskBoundaryDecision"] = boundary
+    return repair_count
+
+
 def verify_and_repair_planner_contract(
     plan: dict[str, Any],
     *,
@@ -198,6 +284,13 @@ def verify_and_repair_planner_contract(
     tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
     skill_name = _skill_name_from_context(skill_references=skill_refs, task_shape_hint=hint)
     requires_skill = _requires_skill_execution(skill_references=skill_refs, task_shape_hint=hint)
+
+    repair_count += _ensure_boundary_contract(
+        repaired,
+        task_shape_hint=hint,
+        quality_flags=quality_flags,
+    )
+    tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
 
     if requires_skill and tasks:
         repaired_any = False

@@ -38,6 +38,9 @@ def test_remotion_is_project_coding_with_creative_media_secondary() -> None:
     assert hint["suggestedFamilies"][0] == "engineering"
     assert hint["autoRevealRecommendation"]["eligible"] is True
     assert hint["autoRevealRecommendation"]["families"] == ["engineering"]
+    assert hint["boundaryDecision"]["primaryRuntime"] == "engineering"
+    assert hint["boundaryDecision"]["executionMode"] == "code_video_runtime"
+    assert "creative_media" in hint["boundaryDecision"]["supportingRuntimes"]
     assert hint["policy"] == "hint_only_conservative_auto_reveal_recommendation_no_grant"
 
 
@@ -49,6 +52,8 @@ def test_seedance_provider_request_is_creative_media_hint_only() -> None:
     assert "creative_media.core" in hint["optionalRuntimeGrants"]
     assert hint["autoRevealRecommendation"]["eligible"] is True
     assert hint["autoRevealRecommendation"]["families"] == ["creative_media"]
+    assert hint["boundaryDecision"]["primaryRuntime"] == "creative_media"
+    assert hint["boundaryDecision"]["executionMode"] == "provider_video_generation"
 
 
 def test_research_request_recommends_research_family_and_runtime_grant() -> None:
@@ -122,6 +127,34 @@ def test_output_modality_only_does_not_auto_reveal() -> None:
     assert hint["primaryTaskShape"] == "creative_media"
     assert "output_modality_only" in hint["ambiguityFlags"]
     assert hint["autoRevealRecommendation"]["eligible"] is False
+    assert hint["boundaryDecision"]["askUserNeeded"] is True
+    assert hint["boundaryDecision"]["executionMode"] == "clarify_video_route"
+
+
+def test_explainer_video_prefers_engineering_with_creative_media_support() -> None:
+    hint = classify_task_shape("帮我做一个 2 分钟的科普讲解视频，主题是量子纠缠")
+
+    assert hint["boundaryDecision"]["primaryRuntime"] == "engineering"
+    assert hint["boundaryDecision"]["executionMode"] == "code_video_runtime"
+    assert hint["boundaryDecision"]["reason"] == "explainer_or_course_video_prefers_editable_code_timeline"
+    assert "creative_media" in hint["boundaryDecision"]["supportingRuntimes"]
+    assert "creative_media_as_primary_unless_provider_named" in hint["boundaryDecision"]["forbiddenRoutes"]
+
+
+def test_literal_terminal_request_prefers_native_command_not_computer_use() -> None:
+    hint = classify_task_shape("打开终端帮我安装 huashu-nuwa skill")
+
+    assert hint["boundaryDecision"]["primaryRuntime"] == "engineering"
+    assert hint["boundaryDecision"]["executionMode"] == "native_terminal_command"
+    assert "computer_use_for_literal_terminal_only" in hint["boundaryDecision"]["forbiddenRoutes"]
+    assert hint["boundaryDecision"]["routeCorrections"][0]["to"] == "run_system_command_or_command_session_broker"
+
+
+def test_visible_gui_terminal_request_routes_to_computer_use() -> None:
+    hint = classify_task_shape("让我看着真实终端窗口启动 Claude")
+
+    assert hint["boundaryDecision"]["primaryRuntime"] == "computer_use"
+    assert hint["boundaryDecision"]["executionMode"] == "gui_terminal_session"
 
 
 def test_safety_eval_language_does_not_trigger_engineering_or_media_from_single_cjk_terms() -> None:

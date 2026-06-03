@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from core.task_boundary_resolver import attach_task_boundary_decision
+
 
 _ASCII_WORD_RE = re.compile(r"^[a-z0-9_+-]+$", re.IGNORECASE)
 _CJK_SINGLE_CHAR_RE = re.compile(r"^[\u3400-\u9fff\uf900-\ufaff]$")
@@ -847,7 +849,7 @@ def classify_task_shape(
         ambiguity_flags=ambiguity_flags,
     )
 
-    return {
+    result = {
         "primaryTaskShape": primary,
         "secondaryTaskShapes": secondary[:4],
         "confidence": round(confidence, 2),
@@ -864,6 +866,7 @@ def classify_task_shape(
         "lexiconSignature": _lexicon_signature(),
         "policy": "hint_only_conservative_auto_reveal_recommendation_no_grant",
     }
+    return attach_task_boundary_decision(result, user_query=user_query, planner_plan=planner_plan)
 
 
 def render_task_shape_hint(hint: dict[str, Any] | None) -> str:

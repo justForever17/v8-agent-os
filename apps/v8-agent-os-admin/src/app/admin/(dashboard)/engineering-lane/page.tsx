@@ -231,7 +231,34 @@ function JsonDebug({ value }: {value: unknown;}) {
 
 }
 
+function getStatusLabel(value: string, t: (key: string) => string): string {
+  const map: Record<string, string> = {
+    verified: "app.admin.dashboard.engineeringLane.statusVerified",
+    unverified: "app.admin.dashboard.engineeringLane.statusUnverified",
+    failed_verification: "app.admin.dashboard.engineeringLane.statusFailedVerification",
+    planned: "app.admin.dashboard.engineeringLane.statusPlanned",
+    observed_no_change: "app.admin.dashboard.engineeringLane.statusObservedNoChange",
+    pass: "app.admin.dashboard.engineeringLane.statusPass",
+    warning: "app.admin.dashboard.engineeringLane.statusWarning",
+    fail: "app.admin.dashboard.engineeringLane.statusFail",
+  };
+  return t(map[value] || value);
+}
+
+function getRiskLabel(value: string, t: (key: string) => string): string {
+  const map: Record<string, string> = {
+    within_write_set: "app.admin.dashboard.engineeringLane.riskWithinWriteSet",
+    outside_write_set: "app.admin.dashboard.engineeringLane.riskOutsideWriteSet",
+    missing_write_set: "app.admin.dashboard.engineeringLane.riskMissingWriteSet",
+    unknown_write_set: "app.admin.dashboard.engineeringLane.riskUnknownWriteSet",
+    read_only_safe: "app.admin.dashboard.engineeringLane.riskReadOnlySafe",
+    not_evaluated: "app.admin.dashboard.engineeringLane.riskNotEvaluated",
+  };
+  return t(map[value] || value);
+}
+
 function StatusPill({ value }: {value?: string;}) {
+  const t = useT();
   const normalized = String(value || "planned");
   const palette =
   normalized === "verified" ?
@@ -241,10 +268,11 @@ function StatusPill({ value }: {value?: string;}) {
   normalized === "unverified" ?
   "bg-amber-100 text-amber-700" :
   "bg-slate-100 text-slate-600";
-  return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{normalized}</span>;
+  return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{getStatusLabel(normalized, t)}</span>;
 }
 
 function MatrixStatusPill({ value }: {value?: string;}) {
+  const t = useT();
   const normalized = String(value || "warning");
   const palette =
   normalized === "pass" ?
@@ -252,7 +280,7 @@ function MatrixStatusPill({ value }: {value?: string;}) {
   normalized === "fail" ?
   "bg-rose-100 text-rose-700" :
   "bg-amber-100 text-amber-700";
-  return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{normalized}</span>;
+  return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{getStatusLabel(normalized, t)}</span>;
 }
 
 function FieldList({ items, empty }: {items?: string[];empty: string;}) {

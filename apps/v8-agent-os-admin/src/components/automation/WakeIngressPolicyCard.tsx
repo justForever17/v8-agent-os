@@ -3,7 +3,7 @@ import * as React from "react";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, } from "@/components/ui/select";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -106,13 +106,14 @@ export function WakeIngressPolicyCard() {
                     {t("components.automation.WakeIngressPolicyCard.k175f5ac7")}
                 </div>
 
-                <label className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-                    <div className="pr-4">
-                        <div className="text-sm font-medium text-slate-900">{t("components.automation.WakeIngressPolicyCard.k0d5eba4e")}</div>
-                        <div className="text-xs text-slate-500">{t("components.automation.WakeIngressPolicyCard.kdc65f966")}</div>
-                    </div>
-                    <Switch checked={config.allowNudgeWithoutTarget} disabled={loading || saving} onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, allowNudgeWithoutTarget: checked }))}/>
-                </label>
+                <SettingToggleCard
+                    title={t("components.automation.WakeIngressPolicyCard.k0d5eba4e")}
+                    description={t("components.automation.WakeIngressPolicyCard.kdc65f966")}
+                    checked={config.allowNudgeWithoutTarget}
+                    disabled={loading || saving}
+                    onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, allowNudgeWithoutTarget: checked }))}
+                    className="rounded-2xl border-slate-200 p-4"
+                />
 
                 <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">

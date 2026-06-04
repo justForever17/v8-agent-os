@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -390,13 +390,13 @@ function PolicyToggleCard({ title, description, checked, onCheckedChange, childr
 
 }: {title: string;description: string;checked: boolean;onCheckedChange: (checked: boolean) => void;children?: ReactNode;}) {
   return <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-            <div className="flex items-start justify-between gap-4">
-                <div className="space-y-1">
-                    <div className="text-sm font-semibold text-slate-900">{title}</div>
-                    <div className="text-xs leading-5 text-slate-500">{description}</div>
-                </div>
-                <Switch checked={checked} onCheckedChange={onCheckedChange} />
-            </div>
+            <SettingToggleCard
+                title={title}
+                description={description}
+                checked={checked}
+                onCheckedChange={onCheckedChange}
+                className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-4 items-start"
+            />
             {children}
         </div>;
 }
@@ -1064,13 +1064,13 @@ export default function ExtensionsPage() {
             <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"}>
                 <div className="space-y-5">
                     <div className="space-y-5">
-                        <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.extensions.page.k74dc7104")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.extensions.page.k758d3280")}</div>
-                            </div>
-                            <Switch checked={prefilterEnabled} onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "two_stage" } })} />
-                        </div>
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.extensions.page.k74dc7104")}
+                            description={t("app.admin.dashboard.extensions.page.k758d3280")}
+                            checked={prefilterEnabled}
+                            onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "two_stage" } })}
+                            className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
+                        />
 
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.extensions.page.k4c4359c1")}</Label>

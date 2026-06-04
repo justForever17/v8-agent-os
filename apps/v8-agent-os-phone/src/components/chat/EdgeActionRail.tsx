@@ -144,7 +144,7 @@ const styles = StyleSheet.create({
     edgeHandle: {
         position: "absolute",
         zIndex: 31,
-        height: 50,
+        height: 35,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -171,7 +171,7 @@ const styles = StyleSheet.create({
     },
     handleAccent: {
         width: 3,
-        height: 28,
+        height: 18,
         borderRadius: 999,
         opacity: 0.62,
     },

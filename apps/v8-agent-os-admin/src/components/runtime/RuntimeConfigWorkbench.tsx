@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowRight, Loader2 } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
@@ -131,31 +131,26 @@ export function RuntimeConfigWorkbench({
                     </div>
                 ) : (
                     <>
-                        <div className="flex items-center justify-between gap-4">
-                            <div className="space-y-2">
-                                <div className="text-sm font-semibold text-slate-900">{displayName}</div>
-                                <div className="text-xs text-slate-500">
-                                    {runtime
-                                        ? (
-                                            availability === "not_installed"
-                                                ? t("components.runtime.RuntimeConfigWorkbench.k67cba518")
-                                                : availability === "disabled_by_config"
-                                                    ? t("components.runtime.RuntimeConfigWorkbench.k23b359ee")
-                                                : enabled
-                                                    ? t("components.runtime.RuntimeConfigWorkbench.k465806e6")
-                                                    : t("components.runtime.RuntimeConfigWorkbench.kc3525b80")
-                                        )
-                                        : t("components.runtime.RuntimeConfigWorkbench.k7fa15272")}
-                                </div>
-                            </div>
-                            <Switch
-                                checked={enabled}
-                                disabled={disabled || saving}
-                                onCheckedChange={(checked) => void handleToggle(checked)}
-                                aria-label={`${displayName} toggle`}
-                                className={disabled ? "data-[state=checked]:bg-slate-300 data-[state=unchecked]:bg-slate-200" : undefined}
-                            />
-                        </div>
+                        <SettingToggleCard
+                            title={displayName}
+                            description={
+                                runtime
+                                    ? (
+                                        availability === "not_installed"
+                                            ? t("components.runtime.RuntimeConfigWorkbench.k67cba518")
+                                            : availability === "disabled_by_config"
+                                                ? t("components.runtime.RuntimeConfigWorkbench.k23b359ee")
+                                            : enabled
+                                                ? t("components.runtime.RuntimeConfigWorkbench.k465806e6")
+                                                : t("components.runtime.RuntimeConfigWorkbench.kc3525b80")
+                                    )
+                                    : t("components.runtime.RuntimeConfigWorkbench.k7fa15272")
+                            }
+                            checked={enabled}
+                            disabled={disabled || saving}
+                            onCheckedChange={(checked) => void handleToggle(checked)}
+                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
+                        />
                         {showGovernanceLink ? (
                             <div className="flex justify-end">
                                 <Link

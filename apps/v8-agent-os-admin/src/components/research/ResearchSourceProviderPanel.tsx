@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
@@ -245,8 +245,8 @@ export function ResearchSourceProviderPanel() {
                             const helpUrl = provider.credentialHelp?.url || "";
                             return (
                                 <div key={provider.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0 space-y-2">
+                                    <SettingToggleCard
+                                        title={
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <span className="truncate text-sm font-semibold text-slate-900">{provider.displayName}</span>
                                                 <Badge variant={provider.implemented ? "secondary" : "outline"} className={provider.implemented ? "bg-emerald-50 text-emerald-700" : "text-slate-500"}>
@@ -255,12 +255,12 @@ export function ResearchSourceProviderPanel() {
                                                 <Badge variant="outline">{REGION_LABELS[provider.region] ? t(REGION_LABELS[provider.region]) : provider.region}</Badge>
                                                 <Badge variant="outline">{ROLE_LABELS[provider.role] ? t(ROLE_LABELS[provider.role]) : provider.role}</Badge>
                                             </div>
-                                            <div className="text-xs text-slate-500">
-                                                {provider.id} · {provider.outputFormats.join(" / ")} · {provider.supports.slice(0, 5).join(" / ")}
-                                            </div>
-                                        </div>
-                                        <Switch checked={provider.enabled} onCheckedChange={(value) => updateProvider(provider.id, { enabled: Boolean(value) })} />
-                                    </div>
+                                        }
+                                        description={`${provider.id} · ${provider.outputFormats.join(" / ")} · ${provider.supports.slice(0, 5).join(" / ")}`}
+                                        checked={provider.enabled}
+                                        onCheckedChange={(value) => updateProvider(provider.id, { enabled: Boolean(value) })}
+                                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
+                                    />
                                     <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                                         <label className="grid gap-1 text-xs font-medium text-slate-600">
                                             {t("app.admin.research.sourceProviders.envLabel")}

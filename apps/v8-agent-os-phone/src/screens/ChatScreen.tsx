@@ -18,6 +18,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
+import * as ScreenOrientation from "expo-screen-orientation";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import {
@@ -2425,9 +2426,24 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, desktopLiveStatus, t]);
 
+    const restoreDesktopPreviewOrientation = useCallback(() => {
+        void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => undefined);
+    }, []);
+
+    const toggleDesktopPreviewFullscreen = useCallback(() => {
+        setDesktopPreviewFullscreen((current) => {
+            const next = !current;
+            void ScreenOrientation.lockAsync(
+                next ? ScreenOrientation.OrientationLock.LANDSCAPE : ScreenOrientation.OrientationLock.PORTRAIT_UP,
+            ).catch(() => undefined);
+            return next;
+        });
+    }, []);
+
     const closeDesktopPreview = useCallback(async () => {
         desktopPreviewRequestIdRef.current += 1;
         desktopLiveUserIntentRef.current = false;
+        restoreDesktopPreviewOrientation();
         const sessionId = desktopPreviewSessionId.trim();
         desktopPreviewNegotiatedSessionRef.current = "";
         desktopPreviewWebViewRef.current?.injectJavaScript(buildDesktopLiveBridgeInjection({ type: "close" }));
@@ -2454,7 +2470,7 @@ export default function ChatScreen() {
             bridgeWarming: false,
             retryAllowed: false,
         } : current);
-    }, [authorizedFetch, desktopPreviewSessionId]);
+    }, [authorizedFetch, desktopPreviewSessionId, restoreDesktopPreviewOrientation]);
 
     const waitForDesktopLiveAvailability = useCallback(async (requestId: number) => {
         let lastError = "";
@@ -2627,6 +2643,33 @@ export default function ChatScreen() {
     }, [authorizedFetch, closeDesktopPreview, desktopPreviewOpen, desktopPreviewBusy, desktopPreviewState, maybeStartDesktopPreviewNegotiation, prepareDesktopLiveBridge, refreshDesktopLiveStatus, t, waitForDesktopLiveAvailability]);
 
     const desktopPreviewHtml = useMemo(() => buildDesktopLivePreviewHtml(), []);
+    const desktopPreviewFullscreenCardStyle = useMemo(() => {
+        if (!desktopPreviewFullscreen) {
+            return null;
+        }
+        const safeWidth = Math.max(1, width - safeAreaInsets.left - safeAreaInsets.right);
+        const safeHeight = Math.max(1, height - safeAreaInsets.top - safeAreaInsets.bottom);
+        if (isLandscape) {
+            return {
+                width: safeWidth,
+                height: safeHeight,
+                maxWidth: undefined,
+            };
+        }
+        return {
+            width: safeHeight,
+            height: safeWidth,
+            maxWidth: undefined,
+            transform: [{ rotate: "90deg" }],
+        };
+    }, [desktopPreviewFullscreen, height, isLandscape, safeAreaInsets.bottom, safeAreaInsets.left, safeAreaInsets.right, safeAreaInsets.top, width]);
+    const desktopPreviewControlTop = desktopPreviewFullscreen ? Math.max(18, safeAreaInsets.top + 14) : 52;
+    const desktopPreviewCloseRight = desktopPreviewFullscreen ? Math.max(14, safeAreaInsets.right + 14) : 18;
+    const desktopPreviewFullscreenRight = desktopPreviewCloseRight + 60;
+
+    useEffect(() => () => {
+        restoreDesktopPreviewOrientation();
+    }, [restoreDesktopPreviewOrientation]);
 
     const handleDesktopPreviewMessage = useCallback(async (event: WebViewMessageEvent) => {
         let payload: Record<string, unknown> = {};
@@ -6527,8 +6570,16 @@ export default function ChatScreen() {
                     >
                         <Pressable style={StyleSheet.absoluteFill} onPress={() => void closeDesktopPreview()} />
                         <Pressable
-                            style={[styles.previewFullscreenButton, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}
-                            onPress={() => setDesktopPreviewFullscreen((current) => !current)}
+                            style={[
+                                styles.previewFullscreenButton,
+                                {
+                                    top: desktopPreviewControlTop,
+                                    right: desktopPreviewFullscreenRight,
+                                    backgroundColor: palette.surfaceStrong,
+                                    borderColor: palette.border,
+                                },
+                            ]}
+                            onPress={toggleDesktopPreviewFullscreen}
                         >
                             <MaterialCommunityIcons
                                 name={desktopPreviewFullscreen ? "fullscreen-exit" : "fullscreen"}
@@ -6537,7 +6588,15 @@ export default function ChatScreen() {
                             />
                         </Pressable>
                         <Pressable
-                            style={[styles.previewCloseButton, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}
+                            style={[
+                                styles.previewCloseButton,
+                                {
+                                    top: desktopPreviewControlTop,
+                                    right: desktopPreviewCloseRight,
+                                    backgroundColor: palette.surfaceStrong,
+                                    borderColor: palette.border,
+                                },
+                            ]}
                             onPress={() => void closeDesktopPreview()}
                         >
                             <MaterialCommunityIcons name="close" size={22} color={palette.text} />
@@ -6547,6 +6606,7 @@ export default function ChatScreen() {
                             style={[
                                 styles.previewCard,
                                 desktopPreviewFullscreen && styles.previewCardFullscreen,
+                                desktopPreviewFullscreenCardStyle,
                                 { backgroundColor: themeMode === "dark" ? "#020617" : "#000000" },
                             ]}
                         >

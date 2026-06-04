@@ -5,7 +5,7 @@ import { Database, Loader2, Save, ShieldCheck, TrafficCone } from "lucide-react"
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { cn } from "@/lib/utils";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
@@ -151,19 +151,16 @@ export function RuntimeStabilityPanel() {
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="flex items-center justify-between rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium">{ti(t, "k38c8aca2ba")}</div>
-                                <div className="text-xs text-muted-foreground">
-                                    {ti(t, "k16fe2a63d8")}
-                                </div>
-                            </div>
-                            <Switch checked={Boolean(config.strictSupervisorDurability)} onCheckedChange={checked => setConfig(current => ({
-              ...current,
-              strictSupervisorDurability: checked
-            }))} />
-
-                        </div>
+                        <SettingToggleCard
+                            title={ti(t, "k38c8aca2ba")}
+                            description={ti(t, "k16fe2a63d8")}
+                            checked={Boolean(config.strictSupervisorDurability)}
+                            onCheckedChange={checked => setConfig(current => ({
+                                ...current,
+                                strictSupervisorDurability: checked
+                            }))}
+                            className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 shadow-none hover:bg-muted/40"
+                        />
 
                         <div className="rounded-xl border border-border/60 bg-background px-4 py-3 text-sm">
                             <div className="font-medium">{ti(t, "kbf1a6e9f9c")}</div>

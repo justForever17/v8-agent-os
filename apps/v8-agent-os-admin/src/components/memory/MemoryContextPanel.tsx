@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { cn } from "@/lib/utils";
 import { ik, tg, ti } from "@/i18n/admin-legacy";
@@ -445,15 +445,15 @@ export function MemoryContextPanel() {
                 <div className="grid gap-6 xl:grid-cols-2">
                     <ConfigCard title={tg(t, "b7778df4")} description={tg(t, "b6ca53e1")}>
                         <div className="space-y-5">
-                            <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{tg(t, "f59328c7")}</div>
-                                    <div className="text-xs leading-5 text-slate-500">{tg(t, "7d9870f2")}</div>
-                                </div>
-                                <Switch checked={policyForm.compression?.enabled ?? true} onCheckedChange={checked => updateCompression({
-                enabled: checked
-              })} />
-                            </div>
+                            <SettingToggleCard
+                                title={tg(t, "f59328c7")}
+                                description={tg(t, "7d9870f2")}
+                                checked={policyForm.compression?.enabled ?? true}
+                                onCheckedChange={checked => updateCompression({
+                                    enabled: checked
+                                })}
+                                className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
+                            />
 
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">
@@ -554,15 +554,15 @@ export function MemoryContextPanel() {
                                 </div>
                             </div>
 
-                            <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{tg(t, "b42d73ff")}</div>
-                                    <div className="text-xs leading-5 text-slate-500">{tg(t, "359daca3")}</div>
-                                </div>
-                                <Switch checked={policyForm.compression?.use_llm_summary ?? false} onCheckedChange={checked => updateCompression({
-                use_llm_summary: checked
-              })} />
-                            </div>
+                            <SettingToggleCard
+                                title={tg(t, "b42d73ff")}
+                                description={tg(t, "359daca3")}
+                                checked={policyForm.compression?.use_llm_summary ?? false}
+                                onCheckedChange={checked => updateCompression({
+                                    use_llm_summary: checked
+                                })}
+                                className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
+                            />
 
                             <div className="grid gap-5 md:grid-cols-2">
                                 <div className="space-y-1.5">

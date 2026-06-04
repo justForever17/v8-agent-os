@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
@@ -585,13 +585,13 @@ export default function EngineeringLanePage() {
                             </div> :
 
             <div className="space-y-4">
-                                <div className="flex items-center justify-between rounded-2xl border border-slate-200 p-4">
-                                    <div>
-                                        <Label>{t("app.admin.dashboard.engineeringLane.enabled")}</Label>
-                                        <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.enabledHint")}</p>
-                                    </div>
-                                    <Switch checked={config.enabled} onCheckedChange={(enabled) => patchConfig({ enabled })} />
-                                </div>
+                                <SettingToggleCard
+                                    title={t("app.admin.dashboard.engineeringLane.enabled")}
+                                    description={t("app.admin.dashboard.engineeringLane.enabledHint")}
+                                    checked={config.enabled}
+                                    onCheckedChange={(enabled) => patchConfig({ enabled })}
+                                    className="border-slate-200 p-4 rounded-2xl"
+                                />
                                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.engineeringLane.triggerMode")}</Label>
@@ -604,13 +604,13 @@ export default function EngineeringLanePage() {
                                             </SelectContent>
                                         </Select>
                                     </div>
-                                    <div className="flex items-center justify-between rounded-2xl border border-slate-200 p-4">
-                                        <div>
-                                            <Label>{t("app.admin.dashboard.engineeringLane.autoProofCollection")}</Label>
-                                            <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.autoProofCollectionHint")}</p>
-                                        </div>
-                                        <Switch checked={config.autoProofCollectionEnabled} onCheckedChange={(autoProofCollectionEnabled) => patchConfig({ autoProofCollectionEnabled })} />
-                                    </div>
+                                    <SettingToggleCard
+                                        title={t("app.admin.dashboard.engineeringLane.autoProofCollection")}
+                                        description={t("app.admin.dashboard.engineeringLane.autoProofCollectionHint")}
+                                        checked={config.autoProofCollectionEnabled}
+                                        onCheckedChange={(autoProofCollectionEnabled) => patchConfig({ autoProofCollectionEnabled })}
+                                        className="border-slate-200 p-4 rounded-2xl"
+                                    />
                                 </div>
                                 <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                                     <summary className="cursor-pointer text-sm font-semibold text-slate-800">
@@ -650,13 +650,14 @@ export default function EngineeringLanePage() {
                   ["suppressDailyMemory", "suppressDaily"],
                   ["suppressMemoryMap", "suppressMap"]] as
                   const).map(([key, label]) =>
-                  <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
-                                                <div>
-                                                    <Label>{t(`app.admin.dashboard.engineeringLane.${label}`)}</Label>
-                                                    <p className="mt-1 text-xs text-slate-500">{t(`app.admin.dashboard.engineeringLane.${label}Hint`)}</p>
-                                                </div>
-                                                <Switch checked={Boolean(config[key])} onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)} />
-                                            </div>
+                  <SettingToggleCard
+                      key={key}
+                      title={t(`app.admin.dashboard.engineeringLane.${label}`)}
+                      description={t(`app.admin.dashboard.engineeringLane.${label}Hint`)}
+                      checked={Boolean(config[key])}
+                      onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)}
+                      className="border-slate-200 bg-white p-3 rounded-xl"
+                  />
                   )}
                                     </div>
                                 </details>

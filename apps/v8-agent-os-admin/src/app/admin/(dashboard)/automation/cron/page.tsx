@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { createTranslator, type TranslationKey } from "@/lib/locale";
@@ -550,15 +550,15 @@ export default function ScheduledTasksPage() {
                                 </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
-                                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                                    <span className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.k37f0aa42")}</span>
-                                    <Switch
-                                        checked={systemMemoryJob.enabled}
-                                        onCheckedChange={(checked) =>
-                                            void saveJobs(jobs.map((item) => (item.id === systemMemoryJob.id ? { ...item, enabled: checked } : item)))
-                                        }
-                                    />
-                                </div>
+                                 <SettingToggleCard
+                                     title={t("app.admin.dashboard.automation.cron.page.k37f0aa42")}
+                                     checked={systemMemoryJob.enabled}
+                                     onCheckedChange={(checked) =>
+                                         void saveJobs(jobs.map((item) => (item.id === systemMemoryJob.id ? { ...item, enabled: checked } : item)))
+                                     }
+                                     className="border border-slate-200 bg-white px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-slate-50/50"
+                                     titleClassName="text-xs text-slate-500 font-normal cursor-pointer"
+                                 />
                                 <Button variant="outline" size="sm" onClick={() => void handleRunNow(systemMemoryJob.id)}>
                                     <Play className="mr-2 h-4 w-4" />
                                     {t("app.admin.dashboard.automation.cron.page.k95433853")}
@@ -600,10 +600,13 @@ export default function ScheduledTasksPage() {
                                         </div>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
-                                            <span className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.k37f0aa42")}</span>
-                                            <Switch checked={job.enabled} onCheckedChange={(checked) => void saveJobs(jobs.map((item) => (item.id === job.id ? { ...item, enabled: checked } : item)))} />
-                                        </div>
+                                        <SettingToggleCard
+                                            title={t("app.admin.dashboard.automation.cron.page.k37f0aa42")}
+                                            checked={job.enabled}
+                                            onCheckedChange={(checked) => void saveJobs(jobs.map((item) => (item.id === job.id ? { ...item, enabled: checked } : item)))}
+                                            className="border border-slate-200 bg-white px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-slate-50/50"
+                                            titleClassName="text-xs text-slate-500 font-normal cursor-pointer"
+                                        />
                                         <Button variant="outline" size="sm" onClick={() => void handleRunNow(job.id)}>
                                             <Play className="mr-2 h-4 w-4" />
                                             {t("app.admin.dashboard.automation.cron.page.k95433853")}
@@ -846,15 +849,13 @@ export default function ScheduledTasksPage() {
                     </AdvancedSection>
                     ) : null}
 
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                        <div className="flex items-center justify-between gap-4">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.automation.cron.page.k3936c4f6")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.automation.cron.page.k135979e8")}</div>
-                            </div>
-                            <Switch checked={draftJob.enabled} onCheckedChange={(checked) => setDraftJob((current) => ({ ...current, enabled: checked }))} />
-                        </div>
-                    </div>
+                    <SettingToggleCard
+                        title={t("app.admin.dashboard.automation.cron.page.k3936c4f6")}
+                        description={t("app.admin.dashboard.automation.cron.page.k135979e8")}
+                        checked={draftJob.enabled}
+                        onCheckedChange={(checked) => setDraftJob((current) => ({ ...current, enabled: checked }))}
+                        className="border-slate-200 bg-slate-50/70 px-4 py-3 rounded-2xl"
+                    />
 
                     {scheduleError ? <div className="text-sm text-rose-600">{scheduleError}</div> : null}
 

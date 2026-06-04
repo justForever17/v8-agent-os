@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { ti } from "@/i18n/admin-legacy";
@@ -677,20 +677,19 @@ export default function SafetyControlPage() {
             } : previous)} />
 
                         </div>
-                        <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{ti(t, "k4d4a2abe6e")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{ti(t, "ke57511582a")}</div>
-                            </div>
-                            <Switch checked={Boolean(data.enabled)} onCheckedChange={checked => setEnvelope(previous => previous ? {
-              ...previous,
-              data: {
-                ...previous.data,
-                enabled: checked
-              }
-            } : previous)} />
-
-                        </div>
+                        <SettingToggleCard
+                            title={ti(t, "k4d4a2abe6e")}
+                            description={ti(t, "ke57511582a")}
+                            checked={Boolean(data.enabled)}
+                            onCheckedChange={checked => setEnvelope(previous => previous ? {
+                                ...previous,
+                                data: {
+                                    ...previous.data,
+                                    enabled: checked
+                                }
+                            } : previous)}
+                            className="border-slate-200 px-4 py-3 rounded-2xl"
+                        />
                     </CardContent>
                 </Card>
 
@@ -793,27 +792,22 @@ export default function SafetyControlPage() {
                                 <CardDescription>{ti(t, "k53b0056fae")}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                                <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 p-4">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">
-                                            {data.activeDefense?.enabled ? ti(t, "k938cd2b63d") : ti(t, "kb3eb9f1698")}
-                                        </div>
-                                        <div className="text-xs leading-5 text-slate-500">
-                                            {ti(t, "k01f122f48b")} {data.activeDefense?.sampleIntervalSeconds || 20}{ti(t, "k4d7902113a")} {data.activeDefense?.maxInjectedProcesses || 3} {ti(t, "k4b584a4a03")}
-                                        </div>
-                                    </div>
-                                    <Switch checked={Boolean(data.activeDefense?.enabled)} onCheckedChange={checked => setEnvelope(previous => previous ? {
-                  ...previous,
-                  data: normalizeSafetyData({
-                    ...previous.data,
-                    activeDefense: {
-                      ...(previous.data.activeDefense || {}),
-                      enabled: checked
-                    }
-                  })
-                } : previous)} />
-
-                                </div>
+                                <SettingToggleCard
+                                    title={data.activeDefense?.enabled ? ti(t, "k938cd2b63d") : ti(t, "kb3eb9f1698")}
+                                    description={`${ti(t, "k01f122f48b")} ${data.activeDefense?.sampleIntervalSeconds || 20}${ti(t, "k4d7902113a")} ${data.activeDefense?.maxInjectedProcesses || 3} ${ti(t, "k4b584a4a03")}`}
+                                    checked={Boolean(data.activeDefense?.enabled)}
+                                    onCheckedChange={checked => setEnvelope(previous => previous ? {
+                                        ...previous,
+                                        data: normalizeSafetyData({
+                                            ...previous.data,
+                                            activeDefense: {
+                                                ...(previous.data.activeDefense || {}),
+                                                enabled: checked
+                                            }
+                                        })
+                                    } : previous)}
+                                    className="border-slate-200 p-4 rounded-2xl"
+                                />
 
                                 <div className="grid gap-3 md:grid-cols-3">
                                     <div className="rounded-2xl border border-slate-200 p-4">

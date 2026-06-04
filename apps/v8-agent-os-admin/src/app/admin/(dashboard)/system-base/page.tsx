@@ -15,7 +15,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { resolveAdminLabel } from "@/lib/admin-labels";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
@@ -623,21 +623,18 @@ export default function SystemBasePage() {
                     bodyScroll="auto"
                 >
                     <div className="space-y-4">
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.remoteLink.enabled")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.enabledHelp")}</div>
-                            </div>
-                            <Switch
-                                checked={remoteLink.enabled !== false}
-                                onCheckedChange={(checked) =>
-                                    updateData((current) => ({
-                                        ...current,
-                                        remoteLink: { ...(current.remoteLink || {}), enabled: checked },
-                                    }))
-                                }
-                            />
-                        </div>
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.system.base.remoteLink.enabled")}
+                            description={t("app.admin.dashboard.system.base.remoteLink.enabledHelp")}
+                            checked={remoteLink.enabled !== false}
+                            onCheckedChange={(checked) =>
+                                updateData((current) => ({
+                                    ...current,
+                                    remoteLink: { ...(current.remoteLink || {}), enabled: checked },
+                                }))
+                            }
+                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                        />
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.system.base.remoteLink.activeProfile")}</Label>
@@ -768,17 +765,14 @@ export default function SystemBasePage() {
                                     const providerConfig = meshProviders.find((item) => item.id === providerStatus.id || item.kind === providerStatus.kind) || {};
                                     return (
                                         <div key={providerStatus.id || providerStatus.kind} className="rounded-2xl border border-slate-200 bg-white p-4">
-                                            <div className="flex flex-wrap items-start justify-between gap-3">
-                                                <div className="space-y-1">
-                                                    <div className="text-sm font-semibold text-slate-900">
-                                                        {providerStatus.kind === "headscale" ? "Headscale" : "Tailscale"}
-                                                        <span className="ml-2 text-xs font-medium text-slate-500">{providerStatus.status || "unknown"}</span>
-                                                    </div>
-                                                    <div className="text-xs leading-5 text-slate-500">
-                                                        {providerStatus.dnsName || providerStatus.addresses?.[0] || providerStatus.recommendedNextAction || t("app.admin.dashboard.system.base.remoteLink.noMeshAddress")}
-                                                    </div>
-                                                </div>
-                                                <Switch
+                                                <SettingToggleCard
+                                                    title={
+                                                        <div className="text-sm font-semibold text-slate-900">
+                                                            {providerStatus.kind === "headscale" ? "Headscale" : "Tailscale"}
+                                                            <span className="ml-2 text-xs font-medium text-slate-500">{providerStatus.status || "unknown"}</span>
+                                                        </div>
+                                                    }
+                                                    description={providerStatus.dnsName || providerStatus.addresses?.[0] || providerStatus.recommendedNextAction || t("app.admin.dashboard.system.base.remoteLink.noMeshAddress")}
                                                     checked={providerConfig.enabled !== false && providerStatus.enabled !== false}
                                                     onCheckedChange={(checked) =>
                                                         updateData((current) => {
@@ -796,8 +790,8 @@ export default function SystemBasePage() {
                                                             };
                                                         })
                                                     }
+                                                    className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-start"
                                                 />
-                                            </div>
                                             {providerStatus.recommendedUrls ? (
                                                 <div className="mt-3 grid gap-2 text-xs md:grid-cols-3">
                                                     <div className="rounded-xl bg-slate-50 px-3 py-2">
@@ -985,36 +979,30 @@ export default function SystemBasePage() {
                     bodyScroll="auto"
                 >
                     <div className="space-y-4">
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.page.k628c31f2")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.ka8d7f9a8")}</div>
-                            </div>
-                            <Switch
-                                checked={Boolean(webFetch.bypassProxyEnv)}
-                                onCheckedChange={(checked) =>
-                                    updateData((current) => ({
-                                        ...current,
-                                        webFetch: { ...(current.webFetch || {}), bypassProxyEnv: checked },
-                                    }))
-                                }
-                            />
-                        </div>
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.webFetch.agentProfile.title")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.webFetch.agentProfile.description")}</div>
-                            </div>
-                            <Switch
-                                checked={Boolean(webFetch.useAgentBrowserProfile)}
-                                onCheckedChange={(checked) =>
-                                    updateData((current) => ({
-                                        ...current,
-                                        webFetch: { ...(current.webFetch || {}), useAgentBrowserProfile: checked },
-                                    }))
-                                }
-                            />
-                        </div>
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.system.base.page.k628c31f2")}
+                            description={t("app.admin.dashboard.system.base.page.ka8d7f9a8")}
+                            checked={Boolean(webFetch.bypassProxyEnv)}
+                            onCheckedChange={(checked) =>
+                                updateData((current) => ({
+                                    ...current,
+                                    webFetch: { ...(current.webFetch || {}), bypassProxyEnv: checked },
+                                }))
+                            }
+                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                        />
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.system.base.webFetch.agentProfile.title")}
+                            description={t("app.admin.dashboard.system.base.webFetch.agentProfile.description")}
+                            checked={Boolean(webFetch.useAgentBrowserProfile)}
+                            onCheckedChange={(checked) =>
+                                updateData((current) => ({
+                                    ...current,
+                                    webFetch: { ...(current.webFetch || {}), useAgentBrowserProfile: checked },
+                                }))
+                            }
+                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                        />
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.system.base.webFetch.agentProfile.allowlist")}</Label>
                             <Textarea
@@ -1166,21 +1154,18 @@ export default function SystemBasePage() {
                     bodyScroll="auto"
                 >
                     <div className="space-y-4">
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.page.k93bfc0dd")}</div>
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k2fc16829")}</div>
-                            </div>
-                            <Switch
-                                checked={Boolean(desktopLive.enabled)}
-                                onCheckedChange={(checked) =>
-                                    updateData((current) => ({
-                                        ...current,
-                                        desktopLive: { ...(current.desktopLive || {}), enabled: checked },
-                                    }))
-                                }
-                            />
-                        </div>
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.system.base.page.k93bfc0dd")}
+                            description={t("app.admin.dashboard.system.base.page.k2fc16829")}
+                            checked={Boolean(desktopLive.enabled)}
+                            onCheckedChange={(checked) =>
+                                updateData((current) => ({
+                                    ...current,
+                                    desktopLive: { ...(current.desktopLive || {}), enabled: checked },
+                                }))
+                            }
+                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                        />
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.system.base.page.k41d6637a")}</Label>
                             <Select
@@ -1240,25 +1225,21 @@ export default function SystemBasePage() {
                                 <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k4d40211f")}</div>
                             </div>
                             <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.system.base.page.kae23a462")}</Label>
-                                <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.page.k2171c5c0")}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k7812276c")}</div>
-                                    </div>
-                                    <Switch
-                                        checked={Boolean(desktopLive.singleViewerOnly ?? true)}
-                                        onCheckedChange={(checked) =>
-                                            updateData((current) => ({
-                                                ...current,
-                                                desktopLive: {
-                                                    ...(current.desktopLive || {}),
-                                                    singleViewerOnly: checked,
-                                                },
-                                            }))
-                                        }
-                                    />
-                                </div>
+                                <SettingToggleCard
+                                    title={t("app.admin.dashboard.system.base.page.k2171c5c0")}
+                                    description={t("app.admin.dashboard.system.base.page.k7812276c")}
+                                    checked={Boolean(desktopLive.singleViewerOnly ?? true)}
+                                    onCheckedChange={(checked) =>
+                                        updateData((current) => ({
+                                            ...current,
+                                            desktopLive: {
+                                                ...(current.desktopLive || {}),
+                                                singleViewerOnly: checked,
+                                            },
+                                        }))
+                                    }
+                                    className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                                />
                             </div>
                         </div>
 

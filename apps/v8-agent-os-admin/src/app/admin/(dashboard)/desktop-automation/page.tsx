@@ -13,7 +13,7 @@ import { StatusNotice } from "@/components/admin-shell/StatusNotice";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 
@@ -508,12 +508,9 @@ export default function DesktopAutomationPage() {
                                 onValueChange={(value) => updateBinding("visualJudgeModel", value)}
                             />
                     </div>
-                        <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                            <div className="space-y-1">
-                                <Label>{t("app.admin.dashboard.desktop.automation.page.kb8f544bf")}</Label>
-                                <p className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.desktop.automation.page.kdc8cc070")}</p>
-                            </div>
-                        <Switch
+                        <SettingToggleCard
+                            title={t("app.admin.dashboard.desktop.automation.page.kb8f544bf")}
+                            description={t("app.admin.dashboard.desktop.automation.page.kdc8cc070")}
                             checked={Boolean(envelope.data.candidateRerankEnabled)}
                             onCheckedChange={(checked) =>
                                 setEnvelope({
@@ -524,8 +521,8 @@ export default function DesktopAutomationPage() {
                                     },
                                 })
                             }
+                            className="rounded-2xl border-slate-200 bg-slate-50/80 p-4"
                         />
-                    </div>
                     <div className="space-y-2">
                         <Label>{t("app.admin.dashboard.desktop.automation.page.kfef16620")}</Label>
                         <ModelSelect

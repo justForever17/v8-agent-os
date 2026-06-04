@@ -1,22 +1,20 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
-import { CANONICAL_RUNTIME_KINDS, CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isCoreRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
-import { cn } from "@/lib/utils";
+import { CANONICAL_RUNTIME_KINDS, CORE_RUNTIME_KINDS, isCoreRuntimeKind, getRuntimeDisplayName, isCanonicalRuntimeKind, getRuntimeControlHref, getRuntimeDisplayText, isLockedRuntimeKind } from "@/lib/runtime-admin";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 
 type RuntimePolicy = {
     enabled?: boolean;
     priority?: number;
 };
 
-type RuntimeDescriptor = {
+export type RuntimeDescriptor = {
     kind: string;
     displayName: string;
     policy?: RuntimePolicy;
@@ -91,18 +89,6 @@ function mergeRuntimeSnapshot(items: RuntimeDescriptor[]) {
     return sortRuntimes(merged).filter((runtime) => !HIDDEN_DASHBOARD_RUNTIME_KINDS.has(runtime.kind));
 }
 
-function StatusDot({ enabled }: { enabled: boolean }) {
-    return (
-        <span
-            className={cn(
-                "inline-flex h-2.5 w-2.5 shrink-0 rounded-full",
-                enabled ? "bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]" : "bg-rose-500 shadow-[0_0_0_4px_rgba(244,63,94,0.12)]",
-            )}
-            aria-hidden="true"
-        />
-    );
-}
-
 function resolveRuntimeStateLabel(t: ReturnType<typeof useT>, runtime: RuntimeDescriptor) {
     const availability = String(runtime.availabilityReason || runtime.availability || "installed").trim();
     if (availability === "not_installed") {
@@ -166,12 +152,7 @@ export function RuntimeDashboardCards() {
         ].filter((group) => group.items.length > 0);
     }, [runtimes, t]);
 
-    const resolveRuntimeLabel = useCallback((runtime: RuntimeDescriptor) => {
-        if (isCanonicalRuntimeKind(runtime.kind)) {
-            return t(getRuntimeDisplayText(runtime.kind));
-        }
-        return getRuntimeDisplayName(runtime);
-    }, [t]);
+
 
     const handleToggle = useCallback(async (runtime: RuntimeDescriptor, checked: boolean) => {
         if (isCoreRuntimeKind(runtime.kind)) {
@@ -229,35 +210,29 @@ export function RuntimeDashboardCards() {
                                     const pending = busyKind === runtime.kind;
                                     const stateLabel = resolveRuntimeStateLabel(t, runtime);
                                     const onDemand = availability === "installed" && !runtime.registered && isCanonicalRuntimeKind(runtime.kind);
+                                    
+                                    const label = isCanonicalRuntimeKind(runtime.kind)
+                                        ? t(getRuntimeDisplayText(runtime.kind))
+                                        : getRuntimeDisplayName(runtime);
+
                                     return (
-                                        <Card key={runtime.kind} className="rounded-2xl border-slate-200 bg-slate-50/70 shadow-none">
-                                            <CardContent className="flex items-center justify-between gap-4 p-4">
-                                                <div className="min-w-0 space-y-2">
-                                                    <Link
-                                                        href={href}
-                                                        className="block truncate text-sm font-semibold text-slate-900 transition hover:text-sky-700"
-                                                    >
-                                                        {resolveRuntimeLabel(runtime)}
-                                                    </Link>
-                                                    <div className="flex items-center gap-2 text-xs text-slate-500">
-                                                        <StatusDot enabled={enabled} />
-                                                        <span>{stateLabel}</span>
-                                                        {onDemand ? (
-                                                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                                                                {t("components.runtime.RuntimeDashboardCards.k37f55da8")}
-                                                            </span>
-                                                        ) : null}
-                                                    </div>
-                                                </div>
-                                                <Switch
-                                                    checked={enabled}
-                                                    disabled={disabled || pending}
-                                                    onCheckedChange={(checked) => void handleToggle(runtime, checked)}
-                                                    aria-label={`${resolveRuntimeLabel(runtime)} toggle`}
-                                                    className={disabled ? "data-[state=checked]:bg-slate-300 data-[state=unchecked]:bg-slate-200" : undefined}
-                                                />
-                                            </CardContent>
-                                        </Card>
+                                        <SettingToggleCard
+                                            key={runtime.kind}
+                                            title={label}
+                                            href={href}
+                                            checked={enabled}
+                                            disabled={disabled || pending}
+                                            onCheckedChange={(checked) => void handleToggle(runtime, checked)}
+                                            showStatusDot={true}
+                                            statusDotEnabled={enabled}
+                                            statusLabel={stateLabel}
+                                            extraBadge={onDemand ? (
+                                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                                                    {t("components.runtime.RuntimeDashboardCards.k37f55da8")}
+                                                </span>
+                                            ) : null}
+                                            className="rounded-2xl border-slate-200 bg-slate-50/70 shadow-none p-4"
+                                        />
                                     );
                                 })}
                             </div>

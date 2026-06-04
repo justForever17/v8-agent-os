@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -351,10 +352,14 @@ export default function HooksPage() {
               <Label htmlFor="sourceMetadata">{t("app.admin.dashboard.automation.hooks.page.k01d4c959")}</Label>
               <Textarea id="sourceMetadata" rows={4} value={sourceMetadataText} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setSourceMetadataText(e.target.value)} className="font-mono text-xs"/>
             </div>
-            <div className="flex items-center gap-2 mt-2">
-              <Switch id="enabled" checked={formData.enabled} onCheckedChange={(c) => setFormData({ ...formData, enabled: c })}/>
-              <Label htmlFor="enabled">{t("app.admin.dashboard.automation.hooks.page.ke682839a")}</Label>
-            </div>
+            <SettingToggleCard
+              id="enabled"
+              title={t("app.admin.dashboard.automation.hooks.page.ke682839a")}
+              checked={formData.enabled}
+              onCheckedChange={(c) => setFormData({ ...formData, enabled: c })}
+              className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-2 items-center"
+              titleClassName="text-sm font-normal cursor-pointer"
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsDialogOpen(false)}>

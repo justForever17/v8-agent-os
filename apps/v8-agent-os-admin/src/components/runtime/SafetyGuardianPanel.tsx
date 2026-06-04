@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ti } from "@/i18n/admin-legacy";
@@ -299,16 +299,16 @@ export function SafetyGuardianPanel() {
           }]} />
 
                     </div>
-                    <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
-                        <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{ti(t, "k3ba0189e84")}</div>
-                            <div className="text-xs text-slate-500">{ti(t, "k47ef7efee1")}</div>
-                        </div>
-                        <Switch checked={config.enabled} onCheckedChange={checked => updateAndSync(previous => ({
-            ...previous,
-            enabled: checked
-          }))} />
-                    </div>
+                    <SettingToggleCard
+                        title={ti(t, "k3ba0189e84")}
+                        description={ti(t, "k47ef7efee1")}
+                        checked={config.enabled}
+                        onCheckedChange={checked => updateAndSync(previous => ({
+                            ...previous,
+                            enabled: checked
+                        }))}
+                        className="border-slate-200 px-4 py-3 rounded-xl"
+                    />
                     <div className="space-y-2">
                         <Label>{ti(t, "kca5e86463f")}</Label>
                         <VerdictSelect<"allow" | "audit" | "review"> value={config.skillRules?.declarationVerdict ?? "audit"} onChange={next => updateAndSync(previous => ({
@@ -373,34 +373,32 @@ export function SafetyGuardianPanel() {
           }))} options={verdictOptions(t, ["review", "block"])} />
 
                     </div>
-                    <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
-                        <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{ti(t, "k87828ffb47")}</div>
-                            <div className="text-xs text-slate-500">{ti(t, "k196fd9bec5")}</div>
-                        </div>
-                        <Switch checked={Boolean(config.channelGroupGuard?.auditOnly)} onCheckedChange={checked => updateAndSync(previous => ({
-            ...previous,
-            channelGroupGuard: {
-              ...previous.channelGroupGuard,
-              auditOnly: checked
-            }
-          }))} />
-
-                    </div>
-                    <div className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
-                        <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{ti(t, "kb33c9229a3")}</div>
-                            <div className="text-xs text-slate-500">{ti(t, "k8a574f21e1")}</div>
-                        </div>
-                        <Switch checked={Boolean(config.skillRules?.llmReviewEnabledFor?.includes("review"))} onCheckedChange={checked => updateAndSync(previous => ({
-            ...previous,
-            skillRules: {
-              ...previous.skillRules,
-              llmReviewEnabledFor: checked ? ["review"] : []
-            }
-          }))} />
-
-                    </div>
+                    <SettingToggleCard
+                        title={ti(t, "k87828ffb47")}
+                        description={ti(t, "k196fd9bec5")}
+                        checked={Boolean(config.channelGroupGuard?.auditOnly)}
+                        onCheckedChange={checked => updateAndSync(previous => ({
+                            ...previous,
+                            channelGroupGuard: {
+                                ...previous.channelGroupGuard,
+                                auditOnly: checked
+                            }
+                        }))}
+                        className="border-slate-200 px-4 py-3 rounded-xl"
+                    />
+                    <SettingToggleCard
+                        title={ti(t, "kb33c9229a3")}
+                        description={ti(t, "k8a574f21e1")}
+                        checked={Boolean(config.skillRules?.llmReviewEnabledFor?.includes("review"))}
+                        onCheckedChange={checked => updateAndSync(previous => ({
+                            ...previous,
+                            skillRules: {
+                                ...previous.skillRules,
+                                llmReviewEnabledFor: checked ? ["review"] : []
+                            }
+                        }))}
+                        className="border-slate-200 px-4 py-3 rounded-xl"
+                    />
                 </CardContent>
             </Card>
 

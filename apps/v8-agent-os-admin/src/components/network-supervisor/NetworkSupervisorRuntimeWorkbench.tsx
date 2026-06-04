@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
@@ -983,30 +983,36 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                                 </div>)}
                         </div>
                         <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="flex items-center justify-between gap-4">
-                                <div>
+                            <SettingToggleCard
+                                title={
                                     <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnableDescription")} panelClassName="text-xs leading-5">
                                         <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnable")}</span>
                                     </AdminHoverInfo>
-                                </div>
-                                <Switch checked={config.openaiCompat.enabled} onCheckedChange={(checked) => setOpenAICompat({ enabled: checked })} aria-label="openai-compat-enabled"/>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                                <div>
+                                }
+                                checked={config.openaiCompat.enabled}
+                                onCheckedChange={(checked) => setOpenAICompat({ enabled: checked })}
+                                className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
+                            />
+                            <SettingToggleCard
+                                title={
                                     <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")} panelClassName="text-xs leading-5">
                                         <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</span>
                                     </AdminHoverInfo>
-                                </div>
-                                <Switch checked={config.openaiCompat.allowWorkspaceHeaders} onCheckedChange={(checked) => setOpenAICompat({ allowWorkspaceHeaders: checked })} aria-label="openai-compat-workspace-headers"/>
-                            </div>
-                            <div className="flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
-                                <div>
+                                }
+                                checked={config.openaiCompat.allowWorkspaceHeaders}
+                                onCheckedChange={(checked) => setOpenAICompat({ allowWorkspaceHeaders: checked })}
+                                className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
+                            />
+                            <SettingToggleCard
+                                title={
                                     <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")} panelClassName="text-xs leading-5">
                                         <span className="cursor-help text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</span>
                                     </AdminHoverInfo>
-                                </div>
-                                <Switch checked={config.openaiCompat.allowRawWorkspacePath} onCheckedChange={(checked) => setOpenAICompat({ allowRawWorkspacePath: checked })} aria-label="openai-compat-raw-workspace-path"/>
-                            </div>
+                                }
+                                checked={config.openaiCompat.allowRawWorkspacePath}
+                                onCheckedChange={(checked) => setOpenAICompat({ allowRawWorkspacePath: checked })}
+                                className="border-amber-200 bg-amber-50 px-3 py-3 shadow-none hover:bg-amber-100/50"
+                            />
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="openai-compat-max-tools">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMaxExternalTools")}</Label>
@@ -1061,13 +1067,13 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                 <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.networkNodeTitle"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.networkNodeDescription"} variant="editor" bodyHeight="auto">
                     <div className="grid gap-5 lg:grid-cols-2">
                         <div className="space-y-4">
-                            <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-                                <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0fcd82fa")}</div>
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51ccd94e")}</div>
-                                </div>
-                                <Switch checked={config.enabled} onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, enabled: checked }))} aria-label="network-supervisor-enabled"/>
-                            </div>
+                            <SettingToggleCard
+                                title={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0fcd82fa")}
+                                description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51ccd94e")}
+                                checked={config.enabled}
+                                onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, enabled: checked }))}
+                                className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                            />
 
                             <div className="space-y-2">
                                 <Label htmlFor="network-node-name">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8c78324d")}</Label>
@@ -1088,13 +1094,13 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                         </div>
 
                         <div className="space-y-4">
-                            <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-                                <div className="space-y-1">
-                                    <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf6ca0e75")}</div>
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2288dd56")}</div>
-                                </div>
-                                <Switch checked={config.discovery.lanEnabled} onCheckedChange={(checked) => setDiscovery({ lanEnabled: checked })} aria-label="network-discovery-enabled"/>
-                            </div>
+                            <SettingToggleCard
+                                title={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf6ca0e75")}
+                                description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2288dd56")}
+                                checked={config.discovery.lanEnabled}
+                                onCheckedChange={(checked) => setDiscovery({ lanEnabled: checked })}
+                                className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                            />
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="network-group">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k653864a4")}</Label>
@@ -1146,20 +1152,20 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     </div>
 
                     <div className="grid gap-5 lg:grid-cols-2">
-                        <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc4940ac2")}</div>
-                                <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kad9d78ed")}</div>
-                            </div>
-                            <Switch checked={config.wake.enabled} onCheckedChange={(checked) => setWake({ enabled: checked })} aria-label="network-wake-enabled"/>
-                        </div>
-                        <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
-                            <div className="space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5c9b4ab7")}</div>
-                                <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k17b60019")}</div>
-                            </div>
-                            <Switch checked={config.delegation.enabled} onCheckedChange={(checked) => setDelegation({ enabled: checked })} aria-label="network-delegation-enabled"/>
-                        </div>
+                        <SettingToggleCard
+                            title={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc4940ac2")}
+                            description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kad9d78ed")}
+                            checked={config.wake.enabled}
+                            onCheckedChange={(checked) => setWake({ enabled: checked })}
+                            className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                        />
+                        <SettingToggleCard
+                            title={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5c9b4ab7")}
+                            description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k17b60019")}
+                            checked={config.delegation.enabled}
+                            onCheckedChange={(checked) => setDelegation({ enabled: checked })}
+                            className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                        />
                     </div>
 
                     <div className="grid gap-4 lg:grid-cols-2">

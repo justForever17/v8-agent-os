@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
@@ -811,17 +811,39 @@ export function RuntimeGovernanceWorkbench({
                                                             <Button variant="outline" onClick={() => void resetPolicy(runtime.kind)} disabled={busyKey === `reset:${runtime.kind}` || busyKey === `save:${runtime.kind}`}>{tg(t, "616090e7")}</Button>
                                                             <Button onClick={() => void savePolicy(runtime.kind)} disabled={busyKey === `save:${runtime.kind}` || busyKey === `reset:${runtime.kind}`}><Save className="mr-2 h-4 w-4" />{t("app.admin.dashboard.creativeMedia.saving")}</Button>
                                                         </div>
+                                                        <div className="mt-4 grid gap-4 md:grid-cols-3">
+                                                         <SettingToggleCard
+                                                             id={`${runtime.kind}-enabled`}
+                                                             title={t("app.admin.dashboard.creativeMedia.tableEnabled")}
+                                                             description={isLockedRuntime ? tg(t, "e4d0d527") : tg(t, "7abc4e39")}
+                                                             checked={Boolean(policy.enabled)}
+                                                             onCheckedChange={checked => patchPolicy(runtime.kind, {
+                                                                 enabled: checked
+                                                             })}
+                                                             disabled={isLockedRuntime}
+                                                             className="rounded-xl border border-border/50 p-3 shadow-none bg-transparent hover:bg-slate-50/20"
+                                                         />
+                                                         <SettingToggleCard
+                                                             id={`${runtime.kind}-auto`}
+                                                             title={tg(t, "8b713b45")}
+                                                             description={tg(t, "c70e191c")}
+                                                             checked={Boolean(policy.auto_route)}
+                                                             onCheckedChange={checked => patchPolicy(runtime.kind, {
+                                                                 auto_route: checked
+                                                             })}
+                                                             className="rounded-xl border border-border/50 p-3 shadow-none bg-transparent hover:bg-slate-50/20"
+                                                         />
+                                                         <SettingToggleCard
+                                                             id={`${runtime.kind}-direct`}
+                                                             title={tg(t, "d3374d07")}
+                                                             description={tg(t, "f4a0b48a")}
+                                                             checked={Boolean(policy.expose_direct_tools)}
+                                                             onCheckedChange={checked => patchPolicy(runtime.kind, {
+                                                                 expose_direct_tools: checked
+                                                             })}
+                                                             className="rounded-xl border border-border/50 p-3 shadow-none bg-transparent hover:bg-slate-50/20"
+                                                         />
                                                     </div>
-                                                    <div className="mt-4 grid gap-4 md:grid-cols-3">
-                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-enabled`}>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</Label><Switch id={`${runtime.kind}-enabled`} checked={policy.enabled} onCheckedChange={checked => patchPolicy(runtime.kind, {
-                            enabled: checked
-                          })} disabled={isLockedRuntime} /></div><p className="mt-2 text-xs text-muted-foreground">{isLockedRuntime ? tg(t, "e4d0d527") : tg(t, "7abc4e39")}</p></div>
-                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-auto`}>{tg(t, "8b713b45")}</Label><Switch id={`${runtime.kind}-auto`} checked={policy.auto_route} onCheckedChange={checked => patchPolicy(runtime.kind, {
-                            auto_route: checked
-                          })} /></div><p className="mt-2 text-xs text-muted-foreground">{tg(t, "c70e191c")}</p></div>
-                                                        <div className="rounded-xl border border-border/50 p-3"><div className="flex items-center justify-between"><Label htmlFor={`${runtime.kind}-direct`}>{tg(t, "d3374d07")}</Label><Switch id={`${runtime.kind}-direct`} checked={policy.expose_direct_tools} onCheckedChange={checked => patchPolicy(runtime.kind, {
-                            expose_direct_tools: checked
-                          })} /></div><p className="mt-2 text-xs text-muted-foreground">{tg(t, "f4a0b48a")}</p></div>
                                                     </div>
                                                     <div className="mt-4 grid gap-4 xl:grid-cols-[0.38fr_0.62fr]">
                                                         <div className="rounded-xl border border-border/50 p-3">

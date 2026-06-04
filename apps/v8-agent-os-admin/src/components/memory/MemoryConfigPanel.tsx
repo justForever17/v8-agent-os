@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Loader2, Save } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ModelSelect } from "@/components/models/ModelSelect";
@@ -441,46 +441,46 @@ export default function MemoryConfigPanel() {
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div className="flex items-center justify-between rounded-lg border p-3">
-                            <div className="space-y-1">
-                                <Label>{t("components.memory.MemoryConfigPanel.k034122e3")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k4346976f")}</p>
-                            </div>
-                            <Switch checked={config.passive_injection_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-              ...prev,
-              passive_injection_enabled: checked
-            }))} />
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg border p-3">
-                            <div className="space-y-1">
-                                <Label>{t("components.memory.MemoryConfigPanel.k2fda3796")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k77cf7080")}</p>
-                            </div>
-                            <Switch checked={config.graph_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-              ...prev,
-              graph_enabled: checked
-            }))} />
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg border p-3">
-                            <div className="space-y-1">
-                                <Label>{t("components.memory.MemoryConfigPanel.k1b7acecd")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.kd8da426a")}</p>
-                            </div>
-                            <Switch checked={config.fts_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-              ...prev,
-              fts_enabled: checked
-            }))} />
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg border p-3">
-                            <div className="space-y-1">
-                                <Label>{t("components.memory.MemoryConfigPanel.k70809028")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k60bfdf7d")}</p>
-                            </div>
-                            <Switch checked={config.extraction_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-              ...prev,
-              extraction_enabled: checked
-            }))} />
-                        </div>
+                        <SettingToggleCard
+                            title={t("components.memory.MemoryConfigPanel.k034122e3")}
+                            description={t("components.memory.MemoryConfigPanel.k4346976f")}
+                            checked={config.passive_injection_enabled ?? true}
+                            onCheckedChange={checked => setConfig(prev => ({
+                                ...prev,
+                                passive_injection_enabled: checked
+                            }))}
+                            className="rounded-lg border p-3 bg-white"
+                        />
+                        <SettingToggleCard
+                            title={t("components.memory.MemoryConfigPanel.k2fda3796")}
+                            description={t("components.memory.MemoryConfigPanel.k77cf7080")}
+                            checked={config.graph_enabled ?? true}
+                            onCheckedChange={checked => setConfig(prev => ({
+                                ...prev,
+                                graph_enabled: checked
+                            }))}
+                            className="rounded-lg border p-3 bg-white"
+                        />
+                        <SettingToggleCard
+                            title={t("components.memory.MemoryConfigPanel.k1b7acecd")}
+                            description={t("components.memory.MemoryConfigPanel.kd8da426a")}
+                            checked={config.fts_enabled ?? true}
+                            onCheckedChange={checked => setConfig(prev => ({
+                                ...prev,
+                                fts_enabled: checked
+                            }))}
+                            className="rounded-lg border p-3 bg-white"
+                        />
+                        <SettingToggleCard
+                            title={t("components.memory.MemoryConfigPanel.k70809028")}
+                            description={t("components.memory.MemoryConfigPanel.k60bfdf7d")}
+                            checked={config.extraction_enabled ?? true}
+                            onCheckedChange={checked => setConfig(prev => ({
+                                ...prev,
+                                extraction_enabled: checked
+                            }))}
+                            className="rounded-lg border p-3 bg-white"
+                        />
                     </div>
 
                     <div className="space-y-4 rounded-lg border p-4">
@@ -489,129 +489,129 @@ export default function MemoryConfigPanel() {
                             <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.description")}</p>
                         </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                            <div className="flex items-center justify-between rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.extraction")}</Label>
-                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.extractionDesc")}</p>
-                                </div>
-                                <Switch checked={config.workflowMemory?.enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  enabled: checked
-                }
-              }))} />
-                            </div>
-                            <div className="flex items-center justify-between rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.hints")}</Label>
-                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.hintsDesc")}</p>
-                                </div>
-                                <Switch checked={config.workflowMemory?.hintInjectionEnabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  hintInjectionEnabled: checked
-                }
-              }))} />
-                            </div>
-                            <div className="flex items-center justify-between rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.quarantine")}</Label>
-                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.quarantineDesc")}</p>
-                                </div>
-                                <Switch checked={config.workflowMemory?.quarantineOnNegativeFeedback ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  quarantineOnNegativeFeedback: checked
-                }
-              }))} />
-                            </div>
+                            <SettingToggleCard
+                                title={t("components.memory.MemoryConfigPanel.workflowMemory.extraction")}
+                                description={t("components.memory.MemoryConfigPanel.workflowMemory.extractionDesc")}
+                                checked={config.workflowMemory?.enabled ?? true}
+                                onCheckedChange={checked => setConfig(prev => ({
+                                    ...prev,
+                                    workflowMemory: {
+                                        ...(prev.workflowMemory || {}),
+                                        enabled: checked
+                                    }
+                                }))}
+                                className="rounded-lg border p-3 bg-white"
+                            />
+                            <SettingToggleCard
+                                title={t("components.memory.MemoryConfigPanel.workflowMemory.hints")}
+                                description={t("components.memory.MemoryConfigPanel.workflowMemory.hintsDesc")}
+                                checked={config.workflowMemory?.hintInjectionEnabled ?? true}
+                                onCheckedChange={checked => setConfig(prev => ({
+                                    ...prev,
+                                    workflowMemory: {
+                                        ...(prev.workflowMemory || {}),
+                                        hintInjectionEnabled: checked
+                                    }
+                                }))}
+                                className="rounded-lg border p-3 bg-white"
+                            />
+                            <SettingToggleCard
+                                title={t("components.memory.MemoryConfigPanel.workflowMemory.quarantine")}
+                                description={t("components.memory.MemoryConfigPanel.workflowMemory.quarantineDesc")}
+                                checked={config.workflowMemory?.quarantineOnNegativeFeedback ?? true}
+                                onCheckedChange={checked => setConfig(prev => ({
+                                    ...prev,
+                                    workflowMemory: {
+                                        ...(prev.workflowMemory || {}),
+                                        quarantineOnNegativeFeedback: checked
+                                    }
+                                }))}
+                                className="rounded-lg border p-3 bg-white"
+                            />
                         </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                            <div className="flex items-center justify-between rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.progressive")}</Label>
-                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.progressiveDesc")}</p>
-                                </div>
-                                <Switch checked={config.workflowMemory?.progressiveHintsEnabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  progressiveHintsEnabled: checked
-                }
-              }))} />
-                            </div>
-                            <div className="flex items-center justify-between rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApproval")}</Label>
-                                    <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApprovalDesc")}</p>
-                                </div>
-                                <Switch checked={config.workflowMemory?.requireApprovalForSideEffects ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  requireApprovalForSideEffects: checked
-                }
-              }))} />
-                            </div>
+                            <SettingToggleCard
+                                title={t("components.memory.MemoryConfigPanel.workflowMemory.progressive")}
+                                description={t("components.memory.MemoryConfigPanel.workflowMemory.progressiveDesc")}
+                                checked={config.workflowMemory?.progressiveHintsEnabled ?? true}
+                                onCheckedChange={checked => setConfig(prev => ({
+                                    ...prev,
+                                    workflowMemory: {
+                                        ...(prev.workflowMemory || {}),
+                                        progressiveHintsEnabled: checked
+                                    }
+                                }))}
+                                className="rounded-lg border p-3 bg-white"
+                            />
+                            <SettingToggleCard
+                                title={t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApproval")}
+                                description={t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApprovalDesc")}
+                                checked={config.workflowMemory?.requireApprovalForSideEffects ?? true}
+                                onCheckedChange={checked => setConfig(prev => ({
+                                    ...prev,
+                                    workflowMemory: {
+                                        ...(prev.workflowMemory || {}),
+                                        requireApprovalForSideEffects: checked
+                                    }
+                                }))}
+                                className="rounded-lg border p-3 bg-white"
+                            />
                             <div className="space-y-1.5">
                                 <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxGuides")}</Label>
                                 <Input type="number" value={config.workflowMemory?.maxActiveWorkflowGuidesPerRun ?? 2} onChange={e => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  maxActiveWorkflowGuidesPerRun: Number(e.target.value)
-                }
-              }))} min={0} max={10} />
+                                ...prev,
+                                workflowMemory: {
+                                  ...(prev.workflowMemory || {}),
+                                  maxActiveWorkflowGuidesPerRun: Number(e.target.value)
+                                }
+                              }))} min={0} max={10} />
                             </div>
                         </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                             <div className="space-y-1.5">
                                 <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.minSuccess")}</Label>
                                 <Input type="number" value={config.workflowMemory?.minSuccessCount ?? 2} onChange={e => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  minSuccessCount: Number(e.target.value)
-                }
-              }))} min={1} max={10} />
+                                ...prev,
+                                workflowMemory: {
+                                  ...(prev.workflowMemory || {}),
+                                  minSuccessCount: Number(e.target.value)
+                                }
+                              }))} min={1} max={10} />
                             </div>
                             <div className="space-y-1.5">
                                 <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxHints")}</Label>
                                 <Input type="number" value={config.workflowMemory?.maxInjectedHints ?? 2} onChange={e => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  maxInjectedHints: Number(e.target.value)
-                }
-              }))} min={0} max={5} />
+                                ...prev,
+                                workflowMemory: {
+                                  ...(prev.workflowMemory || {}),
+                                  maxInjectedHints: Number(e.target.value)
+                                }
+                              }))} min={0} max={5} />
                             </div>
                             <div className="space-y-1.5">
                                 <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxChars")}</Label>
                                 <Input type="number" value={config.workflowMemory?.maxHintChars ?? 900} onChange={e => setConfig(prev => ({
-                ...prev,
-                workflowMemory: {
-                  ...(prev.workflowMemory || {}),
-                  maxHintChars: Number(e.target.value)
-                }
-              }))} min={240} max={2400} step={50} />
+                                ...prev,
+                                workflowMemory: {
+                                  ...(prev.workflowMemory || {}),
+                                  maxHintChars: Number(e.target.value)
+                                }
+                              }))} min={240} max={2400} step={50} />
                             </div>
                         </div>
-                        <div className="flex items-center justify-between rounded-lg border p-3">
-                            <div className="space-y-1">
-                                <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.errorfulSuccess")}</Label>
-                                <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.workflowMemory.errorfulSuccessDesc")}</p>
-                            </div>
-                            <Switch checked={config.workflowMemory?.errorfulSuccessRequiresUserAcceptance ?? true} onCheckedChange={checked => setConfig(prev => ({
-              ...prev,
-              workflowMemory: {
-                ...(prev.workflowMemory || {}),
-                errorfulSuccessRequiresUserAcceptance: checked
-              }
-            }))} />
-                        </div>
+                        <SettingToggleCard
+                            title={t("components.memory.MemoryConfigPanel.workflowMemory.errorfulSuccess")}
+                            description={t("components.memory.MemoryConfigPanel.workflowMemory.errorfulSuccessDesc")}
+                            checked={config.workflowMemory?.errorfulSuccessRequiresUserAcceptance ?? true}
+                            onCheckedChange={checked => setConfig(prev => ({
+                                ...prev,
+                                workflowMemory: {
+                                    ...(prev.workflowMemory || {}),
+                                    errorfulSuccessRequiresUserAcceptance: checked
+                                }
+                            }))}
+                            className="rounded-lg border p-3 bg-white"
+                        />
                     </div>
 
                     <div className="space-y-3 rounded-lg border p-4">
@@ -825,36 +825,33 @@ export default function MemoryConfigPanel() {
                     </div>
                     {showAdvancedContextSettings ? <div className="space-y-4 rounded-lg border p-4">
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                                <div className="flex items-center justify-between rounded-lg border p-3">
-                                    <div className="space-y-1">
-                                        <Label>{t("components.memory.MemoryConfigPanel.k3d2ee76a")}</Label>
-                                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k36c29574")}</p>
-                                    </div>
-                                    <Switch checked={config.passive_summary_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                passive_summary_enabled: checked
-              }))} />
-                                </div>
-                                <div className="flex items-center justify-between rounded-lg border p-3">
-                                    <div className="space-y-1">
-                                        <Label>{t("components.memory.MemoryConfigPanel.ka8377e16")}</Label>
-                                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k1551bd08")}</p>
-                                    </div>
-                                    <Switch checked={config.passive_memory_map_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                passive_memory_map_enabled: checked
-              }))} />
-                                </div>
-                                <div className="flex items-center justify-between rounded-lg border p-3">
-                                    <div className="space-y-1">
-                                        <Label>{t("components.memory.MemoryConfigPanel.k924f6ae8")}</Label>
-                                        <p className="text-xs text-muted-foreground">{t("components.memory.MemoryConfigPanel.k84ef5137")}</p>
-                                    </div>
-                                    <Switch checked={config.passive_recent_activity_teaser_enabled ?? true} onCheckedChange={checked => setConfig(prev => ({
-                ...prev,
-                passive_recent_activity_teaser_enabled: checked
-              }))} />
-                                </div>
+                                <SettingToggleCard
+                                    title={t("components.memory.MemoryConfigPanel.k3d2ee76a")}
+                                    description={t("components.memory.MemoryConfigPanel.k36c29574")}
+                                    checked={config.passive_summary_enabled ?? true}
+                                    onCheckedChange={checked => setConfig(prev => ({
+                                        ...prev,
+                                        passive_summary_enabled: checked
+                                    }))}
+                                />
+                                <SettingToggleCard
+                                    title={t("components.memory.MemoryConfigPanel.ka8377e16")}
+                                    description={t("components.memory.MemoryConfigPanel.k1551bd08")}
+                                    checked={config.passive_memory_map_enabled ?? true}
+                                    onCheckedChange={checked => setConfig(prev => ({
+                                        ...prev,
+                                        passive_memory_map_enabled: checked
+                                    }))}
+                                />
+                                <SettingToggleCard
+                                    title={t("components.memory.MemoryConfigPanel.k924f6ae8")}
+                                    description={t("components.memory.MemoryConfigPanel.k84ef5137")}
+                                    checked={config.passive_recent_activity_teaser_enabled ?? true}
+                                    onCheckedChange={checked => setConfig(prev => ({
+                                        ...prev,
+                                        passive_recent_activity_teaser_enabled: checked
+                                    }))}
+                                />
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">

@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { type ConfigRegistryEnvelope, fetchConfigDomain, saveConfigDomain } from "@/lib/config-registry";
@@ -835,24 +835,20 @@ export function PluginHostWorkbench() {
                         </CardHeader>
                         <CardContent className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="flex items-center justify-between gap-4">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.k7feca8fc")}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{t("components.plugin.host.PluginHostWorkbench.k3d2b235a")}</div>
-                                    </div>
-                                    <Switch checked={config.enabled} onCheckedChange={(checked) => setConfig((current) => ({ ...current, enabled: checked }))}/>
-                                </div>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="flex items-center justify-between gap-4">
-                                    <div className="space-y-1">
-                                        <div className="text-sm font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.kddfeca27")}</div>
-                                        <div className="text-xs leading-5 text-slate-500">{t("components.plugin.host.PluginHostWorkbench.kd4541260")}</div>
-                                    </div>
-                                    <Switch checked={config.scanOnStartup} onCheckedChange={(checked) => setConfig((current) => ({ ...current, scanOnStartup: checked }))}/>
-                                </div>
-                            </div>
+                            <SettingToggleCard
+                                title={t("components.plugin.host.PluginHostWorkbench.k7feca8fc")}
+                                description={t("components.plugin.host.PluginHostWorkbench.k3d2b235a")}
+                                checked={config.enabled}
+                                onCheckedChange={(checked) => setConfig((current) => ({ ...current, enabled: checked }))}
+                                className="rounded-2xl border border-slate-200 bg-slate-50/70 shadow-none p-4"
+                            />
+                            <SettingToggleCard
+                                title={t("components.plugin.host.PluginHostWorkbench.kddfeca27")}
+                                description={t("components.plugin.host.PluginHostWorkbench.kd4541260")}
+                                checked={config.scanOnStartup}
+                                onCheckedChange={(checked) => setConfig((current) => ({ ...current, scanOnStartup: checked }))}
+                                className="rounded-2xl border border-slate-200 bg-slate-50/70 shadow-none p-4"
+                            />
                         </div>
 
                         <div className="space-y-2">
@@ -991,18 +987,16 @@ export function PluginHostWorkbench() {
                             {extensionsMeta ? <SourceMetaRow source={extensionsMeta.source} savePath={extensionsMeta.savePath} reloadRequired={extensionsMeta.reloadRequired}/> : null}
                             <div className="grid gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
                                 <div className="space-y-4">
-                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                        <div className="flex items-center justify-between gap-4">
-                                            <div className="space-y-1">
-                                                <div className="text-sm font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.kfd8be435")}</div>
-                                                <div className="text-xs leading-5 text-slate-500">{t("components.plugin.host.PluginHostWorkbench.k7ee2e644")}</div>
-                                            </div>
-                                            <Switch checked={prefilterEnabled} onCheckedChange={(checked) => setExtensionsConfig((current) => ({
-            ...current,
-            prefilterPolicy: { ...(current.prefilterPolicy || {}), enabled: checked, mode: "llm_tree" },
-        }))}/>
-                                        </div>
-                                    </div>
+                                    <SettingToggleCard
+                                        title={t("components.plugin.host.PluginHostWorkbench.kfd8be435")}
+                                        description={t("components.plugin.host.PluginHostWorkbench.k7ee2e644")}
+                                        checked={prefilterEnabled}
+                                        onCheckedChange={(checked) => setExtensionsConfig((current) => ({
+                                            ...current,
+                                            prefilterPolicy: { ...(current.prefilterPolicy || {}), enabled: checked, mode: "llm_tree" },
+                                        }))}
+                                        className="rounded-2xl border border-slate-200 bg-slate-50/70 shadow-none p-4"
+                                    />
 
                                     <div className="space-y-2">
                                         <Label htmlFor="plugin-host-prefilter">{t("components.plugin.host.PluginHostWorkbench.kdf4fce29")}</Label>

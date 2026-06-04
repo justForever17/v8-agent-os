@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
+import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ArrowLeft, BrainCircuit, Cable, ChevronDown, Loader2, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
@@ -1476,10 +1476,13 @@ export default function SubagentsPage() {
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs">{tg(t, "7074eefa")}：{maxMembersPerFamily}</Label>
-                            <Switch checked={familyModeEnabled} onCheckedChange={setFamilyModeEnabled} />
-                        </div>
+                        <SettingToggleCard
+                            title={<span>{tg(t, "7074eefa")}：{maxMembersPerFamily}</span>}
+                            checked={familyModeEnabled}
+                            onCheckedChange={setFamilyModeEnabled}
+                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                            titleClassName="text-xs font-normal"
+                        />
                         <Slider value={[maxMembersPerFamily]} min={1} max={MAX_SPECIALIST_FAMILY_MEMBERS} step={1} disabled={!familyModeEnabled} onValueChange={([value]) => setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Math.round(value))))} />
 
                     </div>
@@ -1508,10 +1511,13 @@ export default function SubagentsPage() {
                         </div>
                     </div>
                     <div className="space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                            <Label className="text-xs">{tg(t, "2a5c9f81")}</Label>
-                            <Switch checked={researchEnabled} onCheckedChange={setResearchEnabled} />
-                        </div>
+                        <SettingToggleCard
+                            title={<span>{tg(t, "2a5c9f81")}</span>}
+                            checked={researchEnabled}
+                            onCheckedChange={setResearchEnabled}
+                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                            titleClassName="text-xs font-normal"
+                        />
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
                                 <Label className="text-xs">{tg(t, "d6c520d8")}：{researchDefaultShards}</Label>
@@ -1568,10 +1574,12 @@ export default function SubagentsPage() {
                         </div>
                     </div>
                     <div className="space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                            <HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />
-                            <Switch checked={recursiveDelegationEnabled} onCheckedChange={setRecursiveDelegationEnabled} />
-                        </div>
+                        <SettingToggleCard
+                            title={<HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />}
+                            checked={recursiveDelegationEnabled}
+                            onCheckedChange={setRecursiveDelegationEnabled}
+                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                        />
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
                                 <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })} tooltip={t("admin.pages.subagents.recursive.maxDepthTooltip")} />

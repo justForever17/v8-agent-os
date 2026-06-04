@@ -3,7 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "r
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { buildMessageTimelineSegments, isRuntimeEpisodeGraphActivity, type AdminProcessRef } from "@v8/session-realtime";
+import { buildMessageTimelineSegments, type AdminProcessRef } from "@v8/session-realtime";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -27,13 +27,212 @@ import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
-import { RuntimeEpisodeBoard } from "@/src/components/chat/RuntimeTimelinePanel";
-import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
+import {
+    formatPhoneRelativeRuntimeTime,
+    getPhoneRuntimeDescriptor,
+    type PhoneRuntimeStageActivity,
+} from "@/src/lib/runtime-stage";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
+const BUBBLE_COLLABORATION_LIMIT = 10;
+const BUBBLE_TASK_RUNTIME_IDS = new Set([
+    "engineering",
+    "research",
+    "creative_media",
+    "computer_use",
+    "rpa",
+    "desktop_live",
+    "network_supervisor",
+]);
 
 function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode {
     return node.kind === "execution";
+}
+
+function isSupervisorVisibleActivityNode(node: PhoneUiTimelineNode) {
+    if (node.kind === "narrative") {
+        return parsePhoneContentBlocks(String(node.content || ""))
+            .some((block) => block.type !== "voice" && block.content.trim().length > 0);
+    }
+
+    if (!isExecutionNode(node)) {
+        return false;
+    }
+
+    const executionType = String(node.executionType || "").trim();
+    return executionType === "reasoning"
+        || executionType === "tool_call"
+        || executionType === "tool_result";
+}
+
+function readActivityData(activity: PhoneRuntimeStageActivity): Record<string, unknown> {
+    if (activity.node.kind !== "execution" || !activity.node.data || typeof activity.node.data !== "object") {
+        return {};
+    }
+    return activity.node.data as Record<string, unknown>;
+}
+
+function readActivityString(value: unknown) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function getActivityTopic(activity: PhoneRuntimeStageActivity) {
+    return String(activity.topic || ("topic" in activity.node ? activity.node.topic || "" : "")).trim();
+}
+
+function getActivityRunId(activity: PhoneRuntimeStageActivity) {
+    const data = readActivityData(activity);
+    return readActivityString(data.runId)
+        || readActivityString(data.run_id)
+        || readActivityString(data.rootRunId)
+        || readActivityString(data.root_run_id)
+        || activity.messageId;
+}
+
+function isMissingDelegationActivity(activity: PhoneRuntimeStageActivity) {
+    const data = readActivityData(activity);
+    const topic = getActivityTopic(activity).toLowerCase();
+    const dispatchStatus = readActivityString(data.dispatchStatus || data.dispatch_status).toLowerCase();
+    return Boolean(
+        data.missingTasks
+        || data.missing_tasks
+        || data.missingResult
+        || data.missing_result
+        || data.diagnosticKey === "delegation_missing_tasks"
+        || dispatchStatus === "missing_tasks"
+        || topic.includes("missing_tasks")
+    );
+}
+
+function isBubbleSubagentActivity(activity: PhoneRuntimeStageActivity) {
+    const topic = getActivityTopic(activity);
+    if (activity.runtimeId === "subagent_swarm") {
+        return !isMissingDelegationActivity(activity);
+    }
+    return (
+        topic.startsWith("subagent.task.")
+        || topic.startsWith("delegation.child.")
+        || topic.startsWith("delegation.")
+        || topic.startsWith("delegation_broker.")
+    ) && !isMissingDelegationActivity(activity);
+}
+
+function normalizeRuntimeKind(value: string) {
+    const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    if (normalized.includes("research") || normalized.includes("evidence")) return "research";
+    if (normalized.includes("engineering") || normalized.includes("patch") || normalized.includes("verification")) return "engineering";
+    if (normalized.includes("creative") || normalized.includes("media") || normalized.includes("asset")) return "creative_media";
+    if (normalized.includes("computer") || normalized.includes("desktop") || normalized.includes("browser")) return "computer_use";
+    if (normalized.includes("rpa") || normalized.includes("trace")) return "rpa";
+    if (normalized.includes("network")) return "network_supervisor";
+    return normalized;
+}
+
+function isTaskRuntimeActivity(activity: PhoneRuntimeStageActivity) {
+    if (activity.synthetic || activity.kind === "governance") {
+        return false;
+    }
+    const topic = getActivityTopic(activity);
+    if (!topic.startsWith("runtime.episode.") && !topic.startsWith("handoff.ref.")) {
+        return false;
+    }
+    const data = readActivityData(activity);
+    const runtimeKind = normalizeRuntimeKind(
+        readActivityString(data.kind)
+        || readActivityString(data.runtimeKind)
+        || readActivityString(data.runtime_kind)
+        || String(activity.runtimeId || ""),
+    );
+    return BUBBLE_TASK_RUNTIME_IDS.has(String(activity.runtimeId))
+        || BUBBLE_TASK_RUNTIME_IDS.has(runtimeKind);
+}
+
+function isBubbleCollaborationActivity(activity: PhoneRuntimeStageActivity) {
+    return isBubbleSubagentActivity(activity) || isTaskRuntimeActivity(activity);
+}
+
+function selectBubbleCollaborationActivities(
+    activities: PhoneRuntimeStageActivity[],
+    runId?: string | null,
+) {
+    const normalizedRunId = String(runId || "").trim();
+    const selected = activities
+        .filter((activity) => {
+            if (!isBubbleCollaborationActivity(activity)) {
+                return false;
+            }
+            if (!normalizedRunId) {
+                return true;
+            }
+            return getActivityRunId(activity) === normalizedRunId;
+        })
+        .sort((left, right) => left.timestamp - right.timestamp);
+    return selected.slice(Math.max(0, selected.length - BUBBLE_COLLABORATION_LIMIT));
+}
+
+type CollaborationActivityStatus = "active" | "completed" | "failed" | "pending" | "attempted";
+
+function inferCollaborationStatus(activity: PhoneRuntimeStageActivity): CollaborationActivityStatus {
+    const data = readActivityData(activity);
+    const topic = getActivityTopic(activity).toLowerCase();
+    const value = [
+        readActivityString(data.status),
+        readActivityString(data.state),
+        readActivityString(data.phase),
+        topic,
+        activity.summary,
+    ].join(" ").toLowerCase();
+    if (/(fail|error|reject|blocked|cancel|stalled)/.test(value)) return "failed";
+    if (/(complete|finish|done|success|succeeded|merged|ready|handoff)/.test(value)) return "completed";
+    if (/(attempt|revealed|unconfirmed)/.test(value)) return "attempted";
+    if (/(queued|pending|waiting)/.test(value)) return "pending";
+    return "active";
+}
+
+function getCollaborationActorLabel(activity: PhoneRuntimeStageActivity, locale: "zh-CN" | "en") {
+    const data = readActivityData(activity);
+    if (isBubbleSubagentActivity(activity)) {
+        return readActivityString(data.subagentName)
+            || readActivityString(data.subagent_name)
+            || readActivityString(data.targetLabel)
+            || readActivityString(data.target_label)
+            || readActivityString(data.workerType)
+            || readActivityString(data.worker_type)
+            || readActivityString(data.agentName)
+            || readActivityString(data.agent_name)
+            || activity.actorLabel
+            || getPhoneRuntimeDescriptor("subagent_swarm", locale).label;
+    }
+    return getPhoneRuntimeDescriptor(activity.runtimeId, locale).label;
+}
+
+function getCollaborationSummary(activity: PhoneRuntimeStageActivity) {
+    const data = readActivityData(activity);
+    return readActivityString(data.compactSummary)
+        || readActivityString(data.taskGoal)
+        || readActivityString(data.task_goal)
+        || readActivityString(data.summary)
+        || readActivityString(data.reason)
+        || activity.summary;
+}
+
+function statusTone(
+    status: CollaborationActivityStatus,
+    colors: ReturnType<typeof useUiPrefs>["colors"],
+) {
+    switch (status) {
+        case "completed":
+            return { color: colors.success, icon: "check-circle" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_completed" as const };
+        case "failed":
+            return { color: colors.danger, icon: "alert-circle" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_failed" as const };
+        case "attempted":
+            return { color: colors.warning, icon: "alert-circle-outline" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_attempted" as const };
+        case "pending":
+            return { color: colors.textMuted, icon: "clock-outline" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_pending" as const };
+        case "active":
+        default:
+            return { color: colors.accent, icon: "progress-clock" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_active" as const };
+    }
 }
 
 function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode & { toolCallId: string } {
@@ -202,6 +401,67 @@ function AssistantActivityDots({
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotAStyle]} />
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotBStyle]} />
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotCStyle]} />
+        </View>
+    );
+}
+
+function AssistantCollaborationTrail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
+    const { colors, t, themeMode, locale } = useUiPrefs();
+    const dark = themeMode === "dark";
+
+    if (activities.length === 0) {
+        return null;
+    }
+
+    return (
+        <View style={[
+            styles.collaborationTrail,
+            {
+                backgroundColor: dark ? "rgba(15,23,42,0.42)" : "rgba(248,250,252,0.72)",
+                borderColor: dark ? "rgba(148,163,184,0.18)" : "rgba(148,163,184,0.24)",
+            },
+        ]}>
+            {activities.map((activity, index) => {
+                const status = inferCollaborationStatus(activity);
+                const tone = statusTone(status, colors);
+                const isLastNode = index === activities.length - 1;
+                const actorLabel = getCollaborationActorLabel(activity, locale);
+                const summary = getCollaborationSummary(activity);
+                const timeLabel = formatPhoneRelativeRuntimeTime(activity.timestamp, locale);
+                return (
+                    <View key={activity.id || `${activity.runtimeId}:${activity.timestamp}:${index}`} style={styles.collaborationNode}>
+                        <View style={styles.collaborationRail}>
+                            <View style={[styles.collaborationDot, { backgroundColor: tone.color, shadowColor: tone.color }]}>
+                                <MaterialCommunityIcons name={tone.icon} size={10} color="#FFFFFF" />
+                            </View>
+                            {!isLastNode ? (
+                                <View style={[
+                                    styles.collaborationLine,
+                                    { backgroundColor: dark ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.3)" },
+                                ]} />
+                            ) : null}
+                        </View>
+                        <View style={styles.collaborationBody}>
+                            <View style={styles.collaborationMetaRow}>
+                                <Text style={[styles.collaborationActor, { color: colors.text }]} numberOfLines={1}>
+                                    {actorLabel}
+                                </Text>
+                                <Text style={[styles.collaborationStatus, { color: tone.color }]} numberOfLines={1}>
+                                    {t(tone.labelKey)}
+                                </Text>
+                                <Text style={[styles.collaborationTime, { color: colors.textSoft }]} numberOfLines={1}>
+                                    {timeLabel}
+                                </Text>
+                            </View>
+                            {summary ? (
+                                <Text style={[styles.collaborationSummary, { color: colors.textMuted }]} numberOfLines={2}>
+                                    {summary}
+                                </Text>
+                            ) : null}
+                        </View>
+                    </View>
+                );
+            })}
         </View>
     );
 }
@@ -582,14 +842,21 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
     const assistantActive = !isUser && isLast && isLoading;
     const bubbleExecutionActivities = useMemo(
-        () => (!isUser && isLast ? runtimeActivities.filter((activity) => isRuntimeEpisodeGraphActivity({ topic: activity.topic })) : []),
-        [isLast, isUser, runtimeActivities],
+        () => (!isUser && isLast ? selectBubbleCollaborationActivities(runtimeActivities, message.runId) : []),
+        [isLast, isUser, message.runId, runtimeActivities],
     );
     const timelineSegments = useMemo(
         () => buildMessageTimelineSegments(renderableNodes, { active: assistantActive }),
         [assistantActive, renderableNodes],
     );
     const assistantEmptyActive = assistantActive && !hasStructuredNodes && fallbackBlocks.length === 0;
+    const hasSupervisorVisibleActivity = useMemo(() => {
+        if (hasStructuredNodes) {
+            return renderableNodes.some(isSupervisorVisibleActivityNode);
+        }
+        return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim().length > 0);
+    }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
+    const visibleBubbleExecutionActivities = hasSupervisorVisibleActivity ? bubbleExecutionActivities : [];
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
             phase?: string;
@@ -885,9 +1152,9 @@ export const MessageBubble = memo(function MessageBubble({
                             <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
                         ) : null}
                         <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
-                            {bubbleExecutionActivities.length > 0 ? (
+                            {visibleBubbleExecutionActivities.length > 0 ? (
                                 <View style={styles.assistantExecutionMap}>
-                                    <RuntimeEpisodeBoard activities={bubbleExecutionActivities} />
+                                    <AssistantCollaborationTrail activities={visibleBubbleExecutionActivities} />
                                 </View>
                             ) : null}
                             {hasStructuredNodes ? (
@@ -1231,6 +1498,82 @@ const styles = StyleSheet.create({
     },
     assistantExecutionMap: {
         marginBottom: 2,
+    },
+    collaborationTrail: {
+        width: "100%",
+        borderRadius: 15,
+        borderWidth: 1,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
+        gap: 0,
+    },
+    collaborationNode: {
+        flexDirection: "row",
+        alignItems: "stretch",
+        gap: 9,
+        minWidth: 0,
+    },
+    collaborationRail: {
+        width: 15,
+        alignItems: "center",
+        paddingTop: 2,
+    },
+    collaborationDot: {
+        width: 15,
+        height: 15,
+        borderRadius: 999,
+        alignItems: "center",
+        justifyContent: "center",
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+        elevation: 2,
+    },
+    collaborationLine: {
+        width: 1,
+        flex: 1,
+        minHeight: 22,
+        marginTop: 3,
+        marginBottom: 3,
+    },
+    collaborationBody: {
+        flex: 1,
+        minWidth: 0,
+        paddingBottom: 10,
+        gap: 3,
+    },
+    collaborationMetaRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+        minWidth: 0,
+    },
+    collaborationActor: {
+        flexShrink: 1,
+        minWidth: 0,
+        fontSize: 12,
+        lineHeight: 16,
+        fontWeight: "800",
+        letterSpacing: 0,
+    },
+    collaborationStatus: {
+        fontSize: 10,
+        lineHeight: 14,
+        fontWeight: "800",
+        letterSpacing: 0,
+    },
+    collaborationTime: {
+        marginLeft: "auto",
+        fontSize: 10,
+        lineHeight: 14,
+        fontWeight: "700",
+        letterSpacing: 0,
+    },
+    collaborationSummary: {
+        fontSize: 11,
+        lineHeight: 16,
+        fontWeight: "600",
+        letterSpacing: 0,
     },
     assistantInner: {
         paddingHorizontal: 16,

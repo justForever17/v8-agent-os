@@ -23,6 +23,8 @@ export async function GET(
 
     const { id } = await params;
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: true });
+    const compactPhone = req.nextUrl.searchParams.get("surface") === "phone"
+        || req.nextUrl.searchParams.get("compact") === "1";
 
     try {
         const res = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
@@ -32,7 +34,7 @@ export async function GET(
         });
         const data = normalizeSnapshotForRealtimeSurface(
             await res.json().catch(() => ({})),
-            { publicBaseUrl },
+            { publicBaseUrl, compactPhone },
         );
         const elapsedMs = Date.now() - startedAt;
         const payloadBytes = jsonSizeBytes(data);

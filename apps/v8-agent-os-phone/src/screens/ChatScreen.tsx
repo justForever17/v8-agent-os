@@ -70,6 +70,11 @@ import { buildDesktopLiveBridgeInjection, buildDesktopLivePreviewHtml } from "@/
 import { mergeSessionHistoryOverlay, sortSessionHistory } from "@/src/lib/session-history";
 import { saveResponseToCache } from "@/src/lib/file-transfer";
 import { createTranslator, translateCurrent } from "@/src/lib/locale";
+import {
+    emitPhonePerfAuditSample,
+    isPhonePerfAuditEnabled,
+    postPhonePerfAuditSamples,
+} from "@/src/lib/phone-perf-audit";
 import { getDayGreeting } from "@/src/lib/time";
 import {
     approvePendingItem,
@@ -145,6 +150,7 @@ import {
 } from "@v8/session-realtime";
 
 const REPLY_POP_SOUND = require("../../assets/audio/message-pop.mp3");
+const PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT = 240;
 
 type RuntimeSummary = {
     status: string;
@@ -1668,6 +1674,11 @@ function debugRealtimeTrace(stage: string, payload: Record<string, unknown>) {
 }
 
 function debugPerfTrace(stage: string, payload: Record<string, unknown>) {
+    const auditEnabled = isPhonePerfAuditEnabled();
+    if (!__DEV__ && !auditEnabled) {
+        return;
+    }
+    emitPhonePerfAuditSample(stage, payload);
     if (!__DEV__) {
         return;
     }
@@ -1686,7 +1697,7 @@ function getPerfNowMs() {
 }
 
 function measureJsonBytes(value: unknown) {
-    if (!__DEV__) {
+    if (!__DEV__ && !isPhonePerfAuditEnabled()) {
         return 0;
     }
     try {
@@ -1990,6 +2001,14 @@ export default function ChatScreen() {
     const [processes, setProcesses] = useState<AdminProcessRef[]>([]);
     const processesRef = useRef<AdminProcessRef[]>([]);
     const lastProcessSurfaceAtRef = useRef(0);
+    const projectionInputRefsRef = useRef<{
+        messages?: ChatMessage[];
+        runtimeTimeline?: PhoneRuntimeTimelineEntry[];
+        processes?: AdminProcessRef[];
+        todos?: SessionTodoItem[];
+        runtimeLatestSeq?: number;
+        selectedRuntimeId?: PhoneRuntimeId | null;
+    }>({});
     const [contextReferences, setContextReferences] = useState<ContextReferenceItem[]>([]);
     const [contextGovernance, setContextGovernance] = useState<ContextGovernanceView | null>(null);
     const [contextGovernanceHistory, setContextGovernanceHistory] = useState<ContextGovernanceView[]>([]);
@@ -2006,6 +2025,7 @@ export default function ChatScreen() {
     const [bottomLayerHeight, setBottomLayerHeight] = useState(132);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
+    const runtimeTimelineRef = useRef<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
     const [leftRailOpen, setLeftRailOpen] = useState(false);
     const [rightRailOpen, setRightRailOpen] = useState(false);
@@ -2162,7 +2182,7 @@ export default function ChatScreen() {
         streamLatencyStatsRef.current.clear();
     }, []);
 
-    const applySessionProcessSurface = useCallback((incoming: AdminProcessRef[], options?: { forceClear?: boolean }) => {
+    const applySessionProcessSurface = useCallback((incoming: AdminProcessRef[], options?: { forceClear?: boolean; stale?: boolean }) => {
         const normalizedIncoming = incoming || [];
         setProcesses((current) => {
             if (normalizedIncoming.length > 0) {
@@ -2175,11 +2195,11 @@ export default function ChatScreen() {
                 processesRef.current = [];
                 return [];
             }
-            if (current.length === 0) {
+            if (options?.stale) {
+                processesRef.current = current;
                 return current;
             }
-            if ((Date.now() - lastProcessSurfaceAtRef.current) <= 3000) {
-                processesRef.current = current;
+            if (current.length === 0) {
                 return current;
             }
             processesRef.current = [];
@@ -2204,6 +2224,7 @@ export default function ChatScreen() {
         setRuntime({ status: "idle", latestSeq: 0 });
         runtimeRef.current = { status: "idle", latestSeq: 0 };
         activeRunIdRef.current = "";
+        runtimeTimelineRef.current = [];
         setRuntimeTimeline([]);
         latestSeqRef.current = 0;
         lastAppliedSnapshotSeqRef.current = 0;
@@ -2218,7 +2239,11 @@ export default function ChatScreen() {
         if (!entry) {
             return;
         }
-        setRuntimeTimeline((current) => mergePhoneRuntimeTimeline(current, [entry]));
+        setRuntimeTimeline((current) => {
+            const next = mergePhoneRuntimeTimeline(current, [entry]);
+            runtimeTimelineRef.current = next;
+            return next;
+        });
     }, []);
 
     const flushPendingRuntimeEvents = useCallback(() => {
@@ -3103,7 +3128,9 @@ export default function ChatScreen() {
         if (Array.isArray(view.processes) && view.processes.length > 0) {
             applySessionProcessSurface(view.processes);
         }
-        setRuntimeTimeline(normalizePhoneRuntimeTimeline(nextRuntimeEvents));
+        const normalizedRuntimeTimeline = normalizePhoneRuntimeTimeline(nextRuntimeEvents);
+        runtimeTimelineRef.current = normalizedRuntimeTimeline;
+        setRuntimeTimeline(normalizedRuntimeTimeline);
         const nextRuntime: RuntimeSummary = {
             status: String(
                 hasAskUserPending
@@ -3167,8 +3194,10 @@ export default function ChatScreen() {
             });
         }
         const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
-        if (__DEV__ && (elapsedMs >= 16 || nextRuntimeEvents.length >= 40)) {
+        const auditEnabled = isPhonePerfAuditEnabled();
+        if ((__DEV__ || auditEnabled) && (auditEnabled || elapsedMs >= 16 || nextRuntimeEvents.length >= 40)) {
             debugPerfTrace("projection-state", {
+                sessionId: activeConversationIdRef.current || undefined,
                 elapsedMs,
                 latestSeq: nextRuntime.latestSeq,
                 runtimeEventCount: nextRuntimeEvents.length,
@@ -3254,8 +3283,10 @@ export default function ChatScreen() {
         }
         applyConversationProjection(payload);
         const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
-        if (__DEV__ && (elapsedMs >= 24 || payloadBytes >= 120000)) {
+        const auditEnabled = isPhonePerfAuditEnabled();
+        if ((__DEV__ || auditEnabled) && (auditEnabled || elapsedMs >= 24 || payloadBytes >= 120000)) {
             debugPerfTrace("snapshot-apply", {
+                sessionId: targetConversationId || undefined,
                 elapsedMs,
                 payloadBytes,
                 snapshotSeq,
@@ -3293,11 +3324,12 @@ export default function ChatScreen() {
                 }
                 const fetchStartedAt = getPerfNowMs();
                 const snapshot = await getRealtimeSnapshot(authorizedFetch, targetConversationId);
-                if (__DEV__) {
+                if (__DEV__ || isPhonePerfAuditEnabled()) {
                     const elapsedMs = Math.round(getPerfNowMs() - fetchStartedAt);
                     const payloadBytes = measureJsonBytes(snapshot);
-                    if (elapsedMs >= 200 || payloadBytes >= 120000) {
+                    if (isPhonePerfAuditEnabled() || elapsedMs >= 200 || payloadBytes >= 120000) {
                         debugPerfTrace("snapshot-fetch", {
+                            sessionId: targetConversationId,
                             elapsedMs,
                             payloadBytes,
                             latestSeq: buildSnapshotSequence(snapshot),
@@ -3376,6 +3408,7 @@ export default function ChatScreen() {
         if (!normalized) {
             return;
         }
+        const eventApplyStartedAt = getPerfNowMs();
 
         const dedupKey = buildRealtimeEventDedupKey(normalized);
         if (seenRealtimeEventKeysRef.current.has(dedupKey)) {
@@ -3449,6 +3482,20 @@ export default function ChatScreen() {
             adminForwardedAt: upstreamDiagnostics.adminForwardedAt,
             phoneReceivedAt,
         });
+        if (isPhonePerfAuditEnabled()) {
+            debugPerfTrace("runtime-event-apply", {
+                sessionId: normalized.session_id || normalized.conversation_id || activeConversationIdRef.current || undefined,
+                elapsedMs: Math.round(getPerfNowMs() - eventApplyStartedAt),
+                payloadBytes: measureJsonBytes(payload),
+                eventName,
+                eventType: normalized.type,
+                topic: normalized.topic,
+                seq: normalized.seq,
+                runtimeEventCount: runtimeTimelineRef.current.length,
+                messageCount: messagesRef.current.length,
+                processCount: processesRef.current.length,
+            });
+        }
 
         const nowMs = getEngineNowMs();
         const shouldFallbackRefresh = shouldAuthoritativelyRefreshOnRuntimeEvent(normalized);
@@ -4226,7 +4273,7 @@ export default function ChatScreen() {
         try {
             const [detail, processSurface] = await Promise.all([
                 getConversationDetail(authorizedFetch, conversationId),
-                getSessionProcesses(authorizedFetch, conversationId).catch(() => ({ processes: [] as AdminProcessRef[] })),
+                getSessionProcesses(authorizedFetch, conversationId).catch(() => ({ processes: [] as AdminProcessRef[], stale: true })),
             ]);
             if (
                 activeConversationIdRef.current !== conversationId
@@ -4263,8 +4310,8 @@ export default function ChatScreen() {
             setMessages(normalized);
             setQueuedMessages(extractQueuedMessages(detail) || []);
             applyConversationProjection(detail);
-            if (Array.isArray(processSurface.processes) && processSurface.processes.length > 0) {
-                applySessionProcessSurface(processSurface.processes);
+            if (Array.isArray(processSurface.processes) && (processSurface.processes.length > 0 || processSurface.stale)) {
+                applySessionProcessSurface(processSurface.processes, { stale: processSurface.stale });
             }
             lastAppliedSnapshotSeqRef.current = buildSnapshotSequence(detail);
             lastAppliedSnapshotFingerprintRef.current = buildMessagesFingerprint(normalized);
@@ -4305,15 +4352,43 @@ export default function ChatScreen() {
         }
 
         applySessionProcessSurface([], { forceClear: true });
+        const initialProcessPollStartedAt = getPerfNowMs();
         void getSessionProcesses(authorizedFetch, activeConversationId)
             .then((payload) => {
-                applySessionProcessSurface(payload.processes || []);
+                applySessionProcessSurface(payload.processes || [], { stale: payload.stale });
+                debugPerfTrace("process-poll", {
+                    sessionId: activeConversationId,
+                    elapsedMs: Math.round(getPerfNowMs() - initialProcessPollStartedAt),
+                    processCount: payload.processes?.length || 0,
+                    runtimeEventCount: runtimeTimelineRef.current.length,
+                    messageCount: messagesRef.current.length,
+                    stale: payload.stale || false,
+                    cacheAgeMs: payload.cacheAgeMs ?? undefined,
+                    processPanelError: payload.processPanelError,
+                    phase: "initial",
+                });
             })
             .catch((error) => {
                 console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
-                applySessionProcessSurface([]);
+                debugPerfTrace("process-poll", {
+                    sessionId: activeConversationId,
+                    elapsedMs: Math.round(getPerfNowMs() - initialProcessPollStartedAt),
+                    processCount: processesRef.current.length,
+                    runtimeEventCount: runtimeTimelineRef.current.length,
+                    messageCount: messagesRef.current.length,
+                    stale: true,
+                    processPanelError: error instanceof Error ? error.message : String(error),
+                    phase: "initial_error",
+                });
             });
 
+        const normalizedRuntimeStatusForPolling = String(runtime.status || "").trim().toLowerCase();
+        const pollIntervalMs = runtimePanelOpen
+            || normalizedRuntimeStatusForPolling === "running"
+            || normalizedRuntimeStatusForPolling === "waiting_input"
+            || normalizedRuntimeStatusForPolling === "waiting_approval"
+            ? 9000
+            : 20000;
         const timer = setInterval(() => {
             const runtimeStatus = String(runtimeRef.current.status || "").trim().toLowerCase();
             const shouldPollProcesses = Boolean(
@@ -4326,24 +4401,58 @@ export default function ChatScreen() {
             if (!shouldPollProcesses) {
                 return;
             }
+            const pollStartedAt = getPerfNowMs();
             void getSessionProcesses(authorizedFetch, activeConversationId)
                 .then((payload) => {
                     if (activeConversationIdRef.current === activeConversationId) {
-                        applySessionProcessSurface(payload.processes || []);
+                        applySessionProcessSurface(payload.processes || [], { stale: payload.stale });
+                        debugPerfTrace("process-poll", {
+                            sessionId: activeConversationId,
+                            elapsedMs: Math.round(getPerfNowMs() - pollStartedAt),
+                            processCount: payload.processes?.length || 0,
+                            runtimeEventCount: runtimeTimelineRef.current.length,
+                            messageCount: messagesRef.current.length,
+                            stale: payload.stale || false,
+                            cacheAgeMs: payload.cacheAgeMs ?? undefined,
+                            processPanelError: payload.processPanelError,
+                            phase: "interval",
+                        });
                     }
                 })
                 .catch((error) => {
                     if (activeConversationIdRef.current === activeConversationId) {
                         console.warn("[phone/chat] session process polling failed", error instanceof Error ? error.message : error);
-                        applySessionProcessSurface([]);
+                        debugPerfTrace("process-poll", {
+                            sessionId: activeConversationId,
+                            elapsedMs: Math.round(getPerfNowMs() - pollStartedAt),
+                            processCount: processesRef.current.length,
+                            runtimeEventCount: runtimeTimelineRef.current.length,
+                            messageCount: messagesRef.current.length,
+                            stale: true,
+                            processPanelError: error instanceof Error ? error.message : String(error),
+                            phase: "interval_error",
+                        });
                     }
                 });
-        }, 5000);
+        }, pollIntervalMs);
 
         return () => {
             clearInterval(timer);
         };
-    }, [activeConversationId, applySessionProcessSurface, authorizedFetch]);
+    }, [activeConversationId, applySessionProcessSurface, authorizedFetch, runtime.status, runtimePanelOpen]);
+
+    useEffect(() => {
+        if (status !== "authenticated" || !isPhonePerfAuditEnabled()) {
+            return;
+        }
+        const timer = setInterval(() => {
+            void postPhonePerfAuditSamples(authorizedFetch);
+        }, 5000);
+        return () => {
+            clearInterval(timer);
+            void postPhonePerfAuditSamples(authorizedFetch);
+        };
+    }, [authorizedFetch, status]);
 
     useEffect(() => {
         if (status !== "authenticated") {
@@ -4921,9 +5030,23 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
 
+    const runtimeTimelineForProjection = useMemo(
+        () => runtimeTimeline.slice(0, PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT),
+        [runtimeTimeline],
+    );
+
     const projection = useMemo(
         () => {
             const profileStartedAt = getPerfNowMs();
+            const previousInputs = projectionInputRefsRef.current;
+            const changedInputs = [
+                previousInputs.messages !== messages ? "messages" : "",
+                previousInputs.runtimeTimeline !== runtimeTimelineForProjection ? "runtimeTimeline" : "",
+                previousInputs.processes !== processes ? "processes" : "",
+                previousInputs.todos !== todos ? "todos" : "",
+                previousInputs.runtimeLatestSeq !== runtime.latestSeq ? "runtime" : "",
+                previousInputs.selectedRuntimeId !== selectedRuntimeId ? "selectedRuntime" : "",
+            ].filter(Boolean);
             const nextProjection = buildPhoneChatProjection({
                 conversations,
                 activeConversationId,
@@ -4936,26 +5059,38 @@ export default function ChatScreen() {
                 contextGovernance,
                 contextGovernanceHistory,
                 runtime,
-                runtimeTimeline,
+                runtimeTimeline: runtimeTimelineForProjection,
                 selectedRuntimeId,
                 t,
                 locale,
             });
             const elapsedMs = Math.round(getPerfNowMs() - profileStartedAt);
-            if (__DEV__ && (elapsedMs >= 16 || runtimeTimeline.length >= 40 || messages.length >= 30)) {
+            const auditEnabled = isPhonePerfAuditEnabled();
+            if ((__DEV__ || auditEnabled) && (auditEnabled || elapsedMs >= 16 || runtimeTimeline.length >= 40 || messages.length >= 30)) {
                 debugPerfTrace("projection-build", {
+                    sessionId: activeConversationId || undefined,
                     elapsedMs,
                     messageCount: messages.length,
                     projectedMessageCount: nextProjection.projectedMessages.length,
                     runtimeEventCount: runtimeTimeline.length,
+                    runtimeEventProjectionCount: runtimeTimelineForProjection.length,
                     processCount: processes.length,
                     todoCount: todos.length,
                     selectedRuntimeId,
+                    projectionInputChanged: changedInputs.join(",") || "unknown",
                 });
             }
+            projectionInputRefsRef.current = {
+                messages,
+                runtimeTimeline: runtimeTimelineForProjection,
+                processes,
+                todos,
+                runtimeLatestSeq: runtime.latestSeq,
+                selectedRuntimeId,
+            };
             return nextProjection;
         },
-        [activeConversationId, approvals, askUserInteractions, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline, selectedRuntimeId, t, todos],
+        [activeConversationId, approvals, askUserInteractions, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline.length, runtimeTimelineForProjection, selectedRuntimeId, t, todos],
     );
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
@@ -6231,19 +6366,13 @@ export default function ChatScreen() {
                         </View>
                     </View>
                     {overlayDockContent}
-                    {Platform.OS === "ios" ? (
-                        <KeyboardStickyView
-                            pointerEvents="box-none"
-                            style={styles.keyboardDockHost}
-                            offset={{ closed: 0, opened: 0 }}
-                        >
-                            {composerDockContent}
-                        </KeyboardStickyView>
-                    ) : (
-                        <View pointerEvents="box-none" style={styles.keyboardDockHost}>
-                            {composerDockContent}
-                        </View>
-                    )}
+                    <KeyboardStickyView
+                        pointerEvents="box-none"
+                        style={styles.keyboardDockHost}
+                        offset={{ closed: 0, opened: Platform.OS === "android" ? -8 : 0 }}
+                    >
+                        {composerDockContent}
+                    </KeyboardStickyView>
                 </View>
 
                 <RuntimeTimelinePanel

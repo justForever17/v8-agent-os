@@ -166,6 +166,8 @@ export type AuthoritativeRuntimeTimelineEntry = {
   actorLabel?: string;
   timestamp: number;
   status?: string;
+  dedupeKey?: string;
+  replacesEventId?: string;
   metadata?: Record<string, unknown>;
 };
 

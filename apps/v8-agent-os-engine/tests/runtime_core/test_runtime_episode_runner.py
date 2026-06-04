@@ -74,6 +74,37 @@ def test_runtime_episode_build_inherits_runtime_context_binding():
     assert queue_row["run_id"] == run_id
 
 
+def test_engineering_plan_only_without_workers_returns_ready_handoff():
+    episode = build_runtime_episode(
+        need={
+            "kind": "engineering",
+            "source": "test",
+            "reason": "请执行长任务压测方案，只输出执行地图和阶段状态，不需要真实写文件。",
+            "deliverableKind": "plan_only",
+            "writeRequired": False,
+        },
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "task": "规划一个包含 Research、Engineering、Subagent 的压测方案，不写文件。",
+                "deliverableKind": "plan_only",
+                "writeRequired": False,
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "work_plan_ready"
+    assert handoff["deliverableKind"] == "plan_only"
+    assert handoff["writeRequired"] is False
+    assert handoff.get("recoverable") is not True
+    assert "errorCode" not in handoff
+
+
 def test_runtime_episode_retry_policy_requeues_before_final_failure():
     kind = "test_retry_episode"
     episode = build_runtime_episode(

@@ -43,6 +43,8 @@ export async function GET(
 
     const { id } = await params;
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: true });
+    const compactPhone = req.nextUrl.searchParams.get("surface") === "phone"
+        || req.nextUrl.searchParams.get("compact") === "1";
     const encoder = new TextEncoder();
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -52,6 +54,7 @@ export async function GET(
             let latestSeq = 0;
             let lastSnapshotFingerprint = "";
             const seenEventIds = new Set<string>();
+            const seenDedupeKeys = new Map<string, number>();
             let idleBackoffMs = 350;
             let idlePollCount = 0;
             let lastForwardedAt = 0;
@@ -116,7 +119,7 @@ export async function GET(
 
                     const snapshotData = normalizeSnapshotForRealtimeSurface(
                         await snapshotRes.json().catch(() => null),
-                        { publicBaseUrl },
+                        { publicBaseUrl, compactPhone },
                     );
                     recordAdminApiMetric({
                         route: "admin.realtime.stream.snapshot",
@@ -201,7 +204,23 @@ export async function GET(
                 if (seq > latestSeq) {
                     latestSeq = seq;
                 }
-                sendSse(normalizeRuntimeEventForRealtimeSurface(normalizedEvent, { publicBaseUrl }), "runtime");
+                const surfaceEvent = normalizeRuntimeEventForRealtimeSurface(normalizedEvent, { publicBaseUrl });
+                const topic = String(surfaceEvent && typeof surfaceEvent === "object" ? (surfaceEvent as Record<string, unknown>).topic || "" : "").trim().toLowerCase();
+                const dedupeKey = String(surfaceEvent && typeof surfaceEvent === "object" ? (surfaceEvent as Record<string, unknown>).dedupeKey || "" : "").trim();
+                if (dedupeKey && !topic.endsWith(".delta")) {
+                    const lastSeq = seenDedupeKeys.get(dedupeKey) || 0;
+                    if (lastSeq) {
+                        return;
+                    }
+                    seenDedupeKeys.set(dedupeKey, seq || Date.now());
+                    if (seenDedupeKeys.size > 512) {
+                        const first = seenDedupeKeys.keys().next();
+                        if (!first.done) {
+                            seenDedupeKeys.delete(first.value);
+                        }
+                    }
+                }
+                sendSse(surfaceEvent, "runtime");
                 if (shouldAuthoritativelyRefreshOnRuntimeEvent(normalizedEvent)) {
                     queueSnapshotPush();
                 }

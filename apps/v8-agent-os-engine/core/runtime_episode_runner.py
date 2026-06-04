@@ -820,24 +820,65 @@ class RuntimeEpisodeRunner:
                 },
             )
         reason = str(inputs.get("task") or need.get("reason") or "engineering episode").strip()
+        plan_only = self._is_engineering_plan_only_request(need=need, inputs=inputs)
         return build_handoff_ref(
             producer_episode_id=str(episode.get("episodeId") or ""),
             kind="engineering",
             compact_summary=(
-                f"Engineering work_plan_ready, but no executable worker brief/task was available yet.\n"
+                (
+                    "Engineering work_plan_ready for plan-only request.\n"
+                    if plan_only
+                    else "Engineering work_plan_ready, but no executable worker brief/task was available yet.\n"
+                )
+                +
                 f"Reason: {reason}\n{_preview(context_summary or digest_text, limit=700)}"
             ),
             status="ready",
             confidence="medium",
-            consumer_hint="Provide workerBriefs/taskBriefs or reroute with blockedToolIntent; Supervisor should not batch-write directly.",
+            consumer_hint=(
+                "Use this plan-only handoff as the engineering planning result; no file write was requested."
+                if plan_only
+                else "Provide workerBriefs/taskBriefs or reroute with blockedToolIntent; Supervisor should not batch-write directly."
+            ),
             extra={
                 "engineeringState": "work_plan_ready",
-                "recoverable": True,
-                "errorCode": "engineering_missing_executable_tasks",
+                "deliverableKind": "plan_only" if plan_only else inputs.get("deliverableKind") or need.get("deliverableKind"),
+                "writeRequired": False if plan_only else inputs.get("writeRequired") if "writeRequired" in inputs else need.get("writeRequired"),
+                **({} if plan_only else {
+                    "recoverable": True,
+                    "errorCode": "engineering_missing_executable_tasks",
+                }),
                 "workspaceDigestRef": f"workspace_digest:{episode.get('episodeId')}",
                 "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
                 "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],
             },
+        )
+
+    @staticmethod
+    def _is_engineering_plan_only_request(*, need: dict[str, Any], inputs: dict[str, Any]) -> bool:
+        deliverable_kind = str(inputs.get("deliverableKind") or need.get("deliverableKind") or "").strip().lower()
+        if deliverable_kind == "plan_only":
+            return True
+        if inputs.get("writeRequired") is False or need.get("writeRequired") is False:
+            return True
+        blob = json.dumps({"need": need, "inputs": inputs}, ensure_ascii=False).lower()
+        return any(
+            marker in blob
+            for marker in (
+                "plan_only",
+                "只输出计划",
+                "只要计划",
+                "输出执行计划",
+                "不需要真实写文件",
+                "无需真实写文件",
+                "不用真实写文件",
+                "不写文件",
+                "不保存",
+                "不创建",
+                "do not write files",
+                "no file writes",
+                "plan only",
+            )
         )
 
     def _prepare_engineering_worker_briefs_for_delegation(

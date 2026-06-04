@@ -114,6 +114,62 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("planner.plan.created", topics)
         self.assertTrue((chat_run.prepared.planner_plan or {}).get("planId"))
 
+    def test_planner_first_turn_timeout_defers_without_fallback_plan(self):
+        class SlowPlannerModel:
+            def with_structured_output(self, _schema):
+                return self
+
+            async def ainvoke(self, _messages):
+                await asyncio.sleep(0.5)
+                return {}
+
+        emitted: list[tuple[str, dict]] = []
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            active_run_id="run-planner-defer",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_deferred=False,
+                planner_intent_diagnostics={"reason": "test"},
+                latest_user_content="请规划一次调研和工程实现",
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="suggest",
+                task_shape_hint={},
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path="E:/Projects/v8chat",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda topic, payload, **_: emitted.append((topic, payload)),
+        )
+
+        with (
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=SlowPlannerModel()),
+            patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
+        ):
+            plan = asyncio.run(runtime.ensure_planner_plan(
+                chat_run=chat_run,
+                timeout_seconds=0.1,
+                defer_on_timeout=True,
+            ))
+
+        topics = [topic for topic, _payload in emitted]
+        self.assertIsNone(plan)
+        self.assertTrue(chat_run.prepared.planner_deferred)
+        self.assertIsNone(chat_run.prepared.planner_plan)
+        self.assertIn("planner.deferred", topics)
+        self.assertNotIn("planner.fallback.used", topics)
+        self.assertNotIn("planner.plan.created", topics)
+
     def test_planner_structured_failure_repairs_with_plain_json_before_fallback(self):
         class BrokenStructuredPlanner:
             def with_structured_output(self, _schema):

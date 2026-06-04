@@ -32,6 +32,8 @@ export type PhoneRuntimeCardStatus = "idle" | "recent" | "active" | "attention";
 
 export type PhoneRuntimeTimelineEntry = Omit<AuthoritativeRuntimeTimelineEntry, "runtimeId"> & {
     runtimeId: PhoneRuntimeId;
+    dedupeKey?: string;
+    replacesEventId?: string;
 };
 
 export type PhoneRuntimeStageCard = {
@@ -399,9 +401,9 @@ export function mergePhoneRuntimeTimeline(
     const map = new Map<string, PhoneRuntimeTimelineEntry>();
 
     for (const item of [...current, ...incoming]) {
-        const key = item.id || `${item.runtimeId}:${item.topic}:${item.timestamp}`;
+        const key = item.dedupeKey || item.id || `${item.runtimeId}:${item.topic}:${item.timestamp}`;
         const existing = map.get(key);
-        if (!existing || item.timestamp >= existing.timestamp) {
+        if (!existing || item.seq >= existing.seq || item.timestamp >= existing.timestamp) {
             map.set(key, item);
         }
     }

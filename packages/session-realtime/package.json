@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "clean": "if exist dist rmdir /s /q dist",
     "prepare": "npm run build",
-    "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs",
+    "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs && node scripts/verify-runtime-timeline-dedupe.mjs",
     "verify:episode-graph": "npm run build && node scripts/verify-runtime-episode-graph.mjs"
   },
   "exports": {

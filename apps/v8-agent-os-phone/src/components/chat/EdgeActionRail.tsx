@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Animated, PanResponder, Pressable, StyleSheet, View } from "react-native";
 
+import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 
 export const EdgeActionRail = memo(function EdgeActionRail({
@@ -22,8 +23,12 @@ export const EdgeActionRail = memo(function EdgeActionRail({
     onOpen: () => void;
     onClose: () => void;
 }) {
+    const { colors, themeMode } = useUiPrefs();
     const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
-    const closedOffset = side === "left" ? -(expandedWidth - collapsedPeekWidth) : expandedWidth - collapsedPeekWidth;
+    const edgeHandleWidth = Math.max(12, Math.min(16, collapsedPeekWidth - 8));
+    const closedOffset = side === "left" ? -expandedWidth : expandedWidth;
+    const handleBackground = themeMode === "dark" ? "rgba(15,23,42,0.84)" : "rgba(255,255,255,0.92)";
+    const handleBorder = themeMode === "dark" ? "rgba(148,163,184,0.24)" : "rgba(148,163,184,0.32)";
 
     useEffect(() => {
         Animated.timing(progress, {
@@ -50,10 +55,44 @@ export const EdgeActionRail = memo(function EdgeActionRail({
         inputRange: [0, 1],
         outputRange: [closedOffset, 0],
     });
+    const collapsedHandleOpacity = progress.interpolate({
+        inputRange: [0, 0.72, 1],
+        outputRange: [1, 0.18, 0],
+    });
 
     return (
         <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
             {open ? <Pressable style={StyleSheet.absoluteFill} onPress={onClose} /> : null}
+            <Animated.View
+                {...panResponder.panHandlers}
+                pointerEvents={open ? "none" : "auto"}
+                style={[
+                    styles.edgeHandle,
+                    side === "left" ? styles.leftEdgeHandle : styles.rightEdgeHandle,
+                    {
+                        top: top + 2,
+                        width: edgeHandleWidth,
+                        borderColor: handleBorder,
+                        backgroundColor: handleBackground,
+                        shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
+                        opacity: collapsedHandleOpacity,
+                    },
+                ]}
+            >
+                <Pressable
+                    accessibilityRole="button"
+                    style={StyleSheet.absoluteFill}
+                    onPress={onOpen}
+                    hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
+                />
+                <View
+                    style={[
+                        styles.handleAccent,
+                        side === "left" ? styles.leftHandleAccent : styles.rightHandleAccent,
+                        { backgroundColor: colors.textSoft },
+                    ]}
+                />
+            </Animated.View>
             <Animated.View
                 {...panResponder.panHandlers}
                 style={[
@@ -68,28 +107,7 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     },
                 ]}
             >
-                {!open ? (
-                    <Pressable
-                        accessibilityRole="button"
-                        style={[
-                            styles.collapsedPressTarget,
-                            side === "left" ? styles.collapsedPressTargetLeft : styles.collapsedPressTargetRight,
-                            { width: collapsedPeekWidth + 18 },
-                        ]}
-                        onPress={onOpen}
-                        hitSlop={8}
-                    />
-                ) : null}
-                <Pressable
-                    style={[
-                        styles.peekHandle,
-                        side === "left" ? styles.leftHandle : styles.rightHandle,
-                        { borderColor: "transparent", backgroundColor: "transparent" },
-                    ]}
-                    onPress={open ? onClose : onOpen}
-                    hitSlop={10}
-                />
-                <View pointerEvents={open ? "auto" : "none"} style={styles.content}>
+                <View pointerEvents={open ? "auto" : "none"} style={[styles.content, !open && styles.contentClosed]}>
                     {children}
                 </View>
             </Animated.View>
@@ -104,7 +122,7 @@ const styles = StyleSheet.create({
         minHeight: 48,
         borderWidth: 0,
         borderRadius: radii.pill,
-        paddingHorizontal: 2,
+        paddingHorizontal: 0,
         paddingVertical: 2,
         shadowOpacity: 0,
         elevation: 0,
@@ -120,37 +138,47 @@ const styles = StyleSheet.create({
         minWidth: 0,
         justifyContent: "center",
     },
-    collapsedPressTarget: {
+    contentClosed: {
+        opacity: 0,
+    },
+    edgeHandle: {
         position: "absolute",
-        top: 0,
-        bottom: 0,
-        zIndex: 4,
-        backgroundColor: "transparent",
+        zIndex: 31,
+        height: 50,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        shadowOpacity: 0.12,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 5 },
+        elevation: 3,
     },
-    collapsedPressTargetLeft: {
-        right: 0,
-    },
-    collapsedPressTargetRight: {
+    leftEdgeHandle: {
         left: 0,
-    },
-    peekHandle: {
-        position: "absolute",
-        top: 7,
-        width: 20,
-        height: 38,
-        borderWidth: 0,
-        zIndex: 5,
-    },
-    leftHandle: {
-        right: -9,
-        borderTopRightRadius: 999,
-        borderBottomRightRadius: 999,
         borderLeftWidth: 0,
+        borderTopRightRadius: 12,
+        borderBottomRightRadius: 12,
+        borderTopLeftRadius: 0,
+        borderBottomLeftRadius: 0,
     },
-    rightHandle: {
-        left: -9,
-        borderTopLeftRadius: 999,
-        borderBottomLeftRadius: 999,
+    rightEdgeHandle: {
+        right: 0,
         borderRightWidth: 0,
+        borderTopLeftRadius: 12,
+        borderBottomLeftRadius: 12,
+        borderTopRightRadius: 0,
+        borderBottomRightRadius: 0,
+    },
+    handleAccent: {
+        width: 3,
+        height: 28,
+        borderRadius: 999,
+        opacity: 0.62,
+    },
+    leftHandleAccent: {
+        marginRight: 2,
+    },
+    rightHandleAccent: {
+        marginLeft: 2,
     },
 });

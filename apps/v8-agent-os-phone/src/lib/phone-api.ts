@@ -429,6 +429,10 @@ export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: 
         currentRunId?: string | null;
         latestSeq?: number;
         processes?: AdminProcessRef[];
+        stale?: boolean;
+        processPanelError?: string;
+        lastUpdatedAt?: string | null;
+        cacheAgeMs?: number | null;
     }>(
         authorizedFetch,
         `/api/client/sessions/${encodeURIComponent(id)}/processes`,
@@ -440,6 +444,10 @@ export async function getSessionProcesses(authorizedFetch: AuthorizedFetch, id: 
         currentRunId: typeof payload.currentRunId === "string" ? payload.currentRunId : null,
         latestSeq: Number(payload.latestSeq || 0) || 0,
         processes: normalizeArray<AdminProcessRef>(payload.processes),
+        stale: Boolean(payload.stale),
+        processPanelError: typeof payload.processPanelError === "string" ? payload.processPanelError : undefined,
+        lastUpdatedAt: typeof payload.lastUpdatedAt === "string" ? payload.lastUpdatedAt : null,
+        cacheAgeMs: Number.isFinite(Number(payload.cacheAgeMs)) ? Number(payload.cacheAgeMs) : null,
     };
 }
 
@@ -636,7 +644,7 @@ export async function dispatchRunCommand(
 export async function getRealtimeSnapshot(authorizedFetch: AuthorizedFetch, conversationId: string) {
     return authorizedJson<RealtimeSessionSnapshot>(
         authorizedFetch,
-        `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/snapshot`,
+        `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/snapshot?surface=phone&compact=1`,
         translateCurrent("src.lib.phone_api.text_32"),
         { cache: "no-store" },
     );
@@ -649,7 +657,7 @@ export async function streamRealtimeSession(
     signal?: AbortSignal,
 ) {
     await authorizedRealtimeStream(
-        `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/stream`,
+        `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/stream?surface=phone&compact=1`,
         onEvent,
         signal,
     );

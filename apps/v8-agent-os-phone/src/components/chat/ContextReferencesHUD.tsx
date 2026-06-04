@@ -12,8 +12,9 @@ type ContextReferencesHUDProps = {
 
 export const ContextReferencesHUD = memo(function ContextReferencesHUD({ contextReferences }: ContextReferencesHUDProps) {
     const { colors, themeMode } = useUiPrefs();
+    const visibleReferences = contextReferences.filter((ref) => ref.type !== "memory");
 
-    if (contextReferences.length === 0) {
+    if (visibleReferences.length === 0) {
         return null;
     }
 
@@ -34,7 +35,7 @@ export const ContextReferencesHUD = memo(function ContextReferencesHUD({ context
 
     return (
         <View style={styles.wrap}>
-            {contextReferences.slice(-10).map((ref) => {
+            {visibleReferences.slice(-10).map((ref) => {
                 const icon = iconName(ref.type);
                 return (
                     <View

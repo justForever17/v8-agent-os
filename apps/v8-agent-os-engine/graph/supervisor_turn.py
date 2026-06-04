@@ -317,6 +317,18 @@ def _runtime_recoverable_failure_message(state) -> HumanMessage:
     )
 
 
+def _has_runtime_recoverable_failure_message(messages, reason: str) -> bool:
+    marker = "[Runtime Recoverable Failure]"
+    normalized_reason = str(reason or "").strip()
+    for message in messages or []:
+        content = str(getattr(message, "content", "") or "")
+        if marker not in content:
+            continue
+        if not normalized_reason or normalized_reason in content:
+            return True
+    return False
+
+
 def _response_has_tool_calls(response) -> bool:
     if getattr(response, "tool_calls", None):
         return True
@@ -524,7 +536,10 @@ def execute_supervisor_turn(
             filtered_supervisor_tools = []
             prepared_messages.append(_runtime_handoff_final_message())
         elif _runtime_episode_recoverable_failure(state):
-            prepared_messages.append(_runtime_recoverable_failure_message(state))
+            dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+            failure_reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
+            if not _has_runtime_recoverable_failure_message(prepared_messages, failure_reason):
+                prepared_messages.append(_runtime_recoverable_failure_message(state))
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],

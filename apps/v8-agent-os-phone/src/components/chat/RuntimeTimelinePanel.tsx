@@ -30,6 +30,9 @@ import {
     type RuntimeEpisodeGraphActivity,
 } from "@v8/session-realtime";
 
+const CHAT_RUNTIME_ACTIVITY_WINDOW = 80;
+type ChatExecutionSection = "episodes" | "swarm";
+
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
     switch (kind) {
         case "governance":
@@ -678,6 +681,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
 }) {
     const { colors, themeMode, t, locale } = useUiPrefs();
     const contentScrollRef = useRef<FlatList<PhoneRuntimeStageActivity> | null>(null);
+    const chatContentScrollRef = useRef<FlatList<ChatExecutionSection> | null>(null);
     const runtimeTabsScrollRef = useRef<GestureScrollView | null>(null);
     const shouldForceScrollTopRef = useRef(false);
     const [tabsContainerWidth, setTabsContainerWidth] = useState(0);
@@ -731,8 +735,26 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         () => activities.filter((activity) => activity.runtimeId === "subagent_swarm"),
         [activities],
     );
+    const globalEpisodeActivitiesWindow = useMemo(
+        () => globalEpisodeActivities.slice(0, CHAT_RUNTIME_ACTIVITY_WINDOW),
+        [globalEpisodeActivities],
+    );
+    const swarmActivitiesWindow = useMemo(
+        () => swarmActivities.slice(0, CHAT_RUNTIME_ACTIVITY_WINDOW),
+        [swarmActivities],
+    );
     const isChatRuntime = effectiveSelectedRuntimeId === "chat";
     const hasChatExecutionMap = globalEpisodeActivities.length > 0 || swarmActivities.length > 0;
+    const chatExecutionSections = useMemo(() => {
+        const sections: ChatExecutionSection[] = [];
+        if (globalEpisodeActivitiesWindow.length > 0) {
+            sections.push("episodes");
+        }
+        if (swarmActivitiesWindow.length > 0) {
+            sections.push("swarm");
+        }
+        return sections;
+    }, [globalEpisodeActivitiesWindow.length, swarmActivitiesWindow.length]);
     const runtimeListKey = useMemo(
         () => `${visible ? "open" : "closed"}:${effectiveSelectedRuntimeId || "runtime"}`,
         [effectiveSelectedRuntimeId, visible],
@@ -742,6 +764,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
             return;
         }
         contentScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
+        chatContentScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
         shouldForceScrollTopRef.current = false;
     }, [visible]);
 
@@ -850,6 +873,15 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
             </View>
         ),
         [colors.border, colors.surfaceStrong, colors.textMuted, t],
+    );
+    const renderChatExecutionSection = useCallback(
+        ({ item }: { item: "episodes" | "swarm" }) => (
+            <View>
+                {item === "episodes" ? <RuntimeEpisodeBoard activities={globalEpisodeActivitiesWindow} /> : null}
+                {item === "swarm" ? <SwarmNodeBoard activities={swarmActivitiesWindow} /> : null}
+            </View>
+        ),
+        [globalEpisodeActivitiesWindow, swarmActivitiesWindow],
     );
 
     return (
@@ -1007,17 +1039,18 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                         </View>
 
                         {isChatRuntime ? (
-                            <GestureScrollView
+                            <FlatList
                                 key={runtimeListKey}
+                                ref={chatContentScrollRef}
+                                data={chatExecutionSections}
+                                keyExtractor={(item) => item}
+                                renderItem={renderChatExecutionSection}
                                 style={styles.contentList}
                                 contentContainerStyle={[styles.content, !hasChatExecutionMap && styles.contentEmpty]}
-                                showsVerticalScrollIndicator={false}
+                                ItemSeparatorComponent={() => <View style={styles.feedGap} />}
                                 overScrollMode="never"
-                            >
-                                {globalEpisodeActivities.length > 0 ? <RuntimeEpisodeBoard activities={globalEpisodeActivities} /> : null}
-                                {swarmActivities.length > 0 ? <SwarmNodeBoard activities={swarmActivities} /> : null}
-                                {!hasChatExecutionMap ? renderEmptyState() : null}
-                            </GestureScrollView>
+                                ListEmptyComponent={renderEmptyState}
+                            />
                         ) : effectiveSelectedRuntimeId === "subagent_swarm" ? (
                             <GestureScrollView
                                 key={runtimeListKey}

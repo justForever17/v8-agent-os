@@ -333,15 +333,19 @@ function deriveRunControlState({
         "",
     );
     const optimisticStatus = normalizeRunStatus(runtime.status);
-    const runIdentity = String(
+    const activeRunIdentity = String(
         activeConversation?.currentRunId
-        || activeConversation?.lastRunId
         || runtime.runId
         || "",
     ).trim() || undefined;
+    const historicalRunIdentity = String(
+        activeRunIdentity
+        || activeConversation?.lastRunId
+        || "",
+    ).trim() || undefined;
     const hasPendingApproval = approvals.length > 0 || Boolean(activeConversation?.hasPendingApproval);
-    const hasActiveProcess = processes.some((process) => isActiveProcess(process, runIdentity));
-    const canInterrupt = Boolean(controls?.canInterrupt || hasActiveProcess);
+    const hasActiveProcess = processes.some((process) => isActiveProcess(process, activeRunIdentity));
+    const canInterrupt = Boolean((controls?.canInterrupt && activeRunIdentity) || hasActiveProcess);
     const canRetry = Boolean(controls?.canRetry);
     const canResume = Boolean(controls?.canResume);
     const canOpenApproval = Boolean(hasPendingApproval || controls?.canOpenApproval);
@@ -360,7 +364,7 @@ function deriveRunControlState({
     } else if (optimisticStatus === "running") {
         const authoritativeRunning = authoritativeStatus === "running";
         const hasCurrentRun = Boolean(activeConversation?.currentRunId);
-        status = authoritativeRunning || hasCurrentRun || canInterrupt || hasActiveProcess
+        status = (authoritativeRunning && Boolean(activeRunIdentity)) || hasCurrentRun || canInterrupt || hasActiveProcess
             ? "running"
             : (authoritativeStatus || "idle");
     } else if (authoritativeStatus && optimisticStatus === "idle") {
@@ -368,7 +372,7 @@ function deriveRunControlState({
     }
 
     const shouldKeepRunId = Boolean(
-        runIdentity
+        historicalRunIdentity
         && (
             status === "running"
             || status === "waiting_approval"
@@ -382,7 +386,7 @@ function deriveRunControlState({
     );
 
     return {
-        runId: shouldKeepRunId ? runIdentity : undefined,
+        runId: shouldKeepRunId ? historicalRunIdentity : undefined,
         status,
         pendingApproval: hasPendingApproval,
         canOpenApproval,

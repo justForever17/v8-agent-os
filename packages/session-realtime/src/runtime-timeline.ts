@@ -15,6 +15,82 @@ function parseTimelineTimestamp(raw: unknown): number {
   return Date.now();
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function readString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function readNestedString(record: Record<string, unknown>, ...paths: string[]) {
+  for (const path of paths) {
+    const parts = path.split(".");
+    let current: unknown = record;
+    for (const part of parts) {
+      current = asRecord(current)[part];
+    }
+    const normalized = readString(current);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function buildTimelineDedupeKey(input: {
+  runtimeId?: string;
+  topic?: string;
+  runId?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+  fallbackId?: string;
+}) {
+  const topic = readString(input.topic).toLowerCase();
+  const runtimeId = readString(input.runtimeId) || "runtime";
+  const runId = readString(input.runId) || "run";
+  const status = readString(input.status) || "state";
+  const metadata = asRecord(input.metadata);
+  const explicit = readString(metadata.dedupeKey, metadata.dedupe_key);
+  if (explicit) {
+    return explicit;
+  }
+  if (topic.startsWith("runtime.episode.")) {
+    const episodeId = readNestedString(
+      metadata,
+      "episode.episodeId",
+      "episode.episode_id",
+      "episode.id",
+      "episode.needId",
+      "episodeId",
+      "episode_id",
+      "needId",
+    ) || readString(input.fallbackId);
+    return `runtime-episode:${runId}:${episodeId || topic}:${topic}:${status}`;
+  }
+  if (topic.startsWith("delegation.") || topic.startsWith("subagent.")) {
+    const dispatchGroup = readString(
+      metadata.dispatchGroup,
+      metadata.dispatch_group,
+      metadata.episodeId,
+      metadata.episode_id,
+      input.fallbackId,
+    );
+    if (dispatchGroup || /missing|未形成|未确认/i.test(readString(metadata.summary, metadata.message))) {
+      return `delegation:${runId}:${dispatchGroup || topic}:${topic}:${status}`;
+    }
+  }
+  return "";
+}
+
 export function normalizeAuthoritativeRuntimeTimeline(input: unknown[]): AuthoritativeRuntimeTimelineEntry[] {
   const entries: AuthoritativeRuntimeTimelineEntry[] = [];
   const seen = new Set<string>();
@@ -48,25 +124,45 @@ export function normalizeAuthoritativeRuntimeTimeline(input: unknown[]): Authori
       ? record.kind
       : "progress";
 
+    const metadata =
+      record.metadata && typeof record.metadata === "object"
+        ? record.metadata as Record<string, unknown>
+        : record.data && typeof record.data === "object"
+          ? record.data as Record<string, unknown>
+          : undefined;
+    const status = typeof record.status === "string" ? record.status : undefined;
+    const runId = readString(record.runId, record.run_id, metadata?.runId, metadata?.run_id);
+    const dedupeKey = typeof record.dedupeKey === "string" && record.dedupeKey.trim()
+      ? record.dedupeKey.trim()
+      : buildTimelineDedupeKey({ runtimeId, topic, runId, status, metadata, fallbackId: id });
+
     entries.push({
       id,
       seq,
-      runId: typeof record.runId === "string" ? record.runId : undefined,
+      runId: runId || undefined,
       runtimeId,
       topic,
       kind,
       summary,
       actorLabel: typeof record.actorLabel === "string" ? record.actorLabel : undefined,
       timestamp: parseTimelineTimestamp(record.timestamp),
-      status: typeof record.status === "string" ? record.status : undefined,
-      metadata: record.metadata && typeof record.metadata === "object"
-        ? record.metadata as Record<string, unknown>
-        : undefined,
+      status,
+      dedupeKey: dedupeKey || undefined,
+      replacesEventId: typeof record.replacesEventId === "string" ? record.replacesEventId : undefined,
+      metadata,
     });
   }
 
-  entries.sort((left, right) => right.timestamp - left.timestamp);
-  return entries;
+  const merged = new Map<string, AuthoritativeRuntimeTimelineEntry>();
+  for (const entry of entries) {
+    const key = entry.dedupeKey || `${entry.id}:${entry.seq}`;
+    const existing = merged.get(key);
+    if (!existing || entry.seq >= existing.seq || entry.timestamp >= existing.timestamp) {
+      merged.set(key, entry);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => right.timestamp - left.timestamp);
 }
 
 export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
@@ -127,8 +223,14 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
             ? "tool"
             : "progress";
 
+  const metadata = normalized.data;
+  const status = normalized.status || (typeof normalized.data?.status === "string" ? normalized.data.status : undefined);
+  const eventId = normalized.event_id || `timeline-${topic}-${normalized.seq || summary}`;
+  const dedupeKey = readString(normalized.data?.dedupeKey, normalized.data?.dedupe_key)
+    || buildTimelineDedupeKey({ runtimeId, topic, runId: normalized.run_id, status, metadata, fallbackId: eventId });
+
   return {
-    id: normalized.event_id || `timeline-${topic}-${normalized.seq || summary}`,
+    id: eventId,
     seq: normalized.seq || 0,
     runId: normalized.run_id,
     runtimeId,
@@ -137,7 +239,9 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
     summary,
     actorLabel: normalized.actorLabel || getRuntimeRegistryEntry(runtimeId, options.locale).label,
     timestamp: parseTimelineTimestamp(normalized.ts || normalized.data?.timestamp),
-    status: normalized.status || (typeof normalized.data?.status === "string" ? normalized.data.status : undefined),
-    metadata: normalized.data,
+    status,
+    dedupeKey: dedupeKey || undefined,
+    replacesEventId: typeof normalized.data?.replacesEventId === "string" ? normalized.data.replacesEventId : undefined,
+    metadata,
   };
 }

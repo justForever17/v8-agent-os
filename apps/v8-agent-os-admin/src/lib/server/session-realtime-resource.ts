@@ -9,7 +9,11 @@ import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resourc
 type JsonRecord = Record<string, unknown>;
 type SurfaceNormalizationOptions = {
     publicBaseUrl?: string;
+    compactPhone?: boolean;
+    runtimeTimelineLimit?: number;
 };
+
+const DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT = 160;
 
 const SURFACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/[^\s"'<>\\]+/gi;
 const SURFACE_RELATIVE_URL_PATTERN = /(?:^|[\s("'=])((?:\/)?(?:workspace\/[^\s"'<>\\]+|api\/workspace\/files\/[^\s"'<>\\]+|api\/client\/workspace\/files\/[^\s"'<>\\]+|api\/workspace\/resource\?[^\s"'<>\\]+|api\/client\/workspace\/resource\?[^\s"'<>\\]+|(?:v1|api(?:\/client)?)\/artifacts\/[^/\s"'<>\\]+\/content(?:\?[^\s"'<>\\]+)?))/gi;
@@ -182,6 +186,64 @@ function normalizeContextReference(raw: unknown, options?: SurfaceNormalizationO
     };
 }
 
+function readString(...values: unknown[]) {
+    for (const value of values) {
+        if (typeof value === "string" && value.trim()) {
+            return value.trim();
+        }
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return String(value);
+        }
+    }
+    return "";
+}
+
+function readNestedString(record: JsonRecord, path: string) {
+    let current: unknown = record;
+    for (const part of path.split(".")) {
+        current = asRecord(current)[part];
+    }
+    return readString(current);
+}
+
+function buildRuntimeEventDedupeKey(record: JsonRecord, data: JsonRecord, payload: JsonRecord) {
+    const topic = readString(record.topic, data.topic, payload.topic, record.name).toLowerCase();
+    const runId = readString(record.run_id, record.runId, data.run_id, data.runId, payload.run_id, payload.runId, "run");
+    const runtimeId = readString(record.runtimeId, record.runtime_id, data.runtimeId, data.runtime_id, payload.runtimeId, payload.runtime_id, "runtime");
+    const status = readString(record.status, data.status, payload.status, "state");
+    const explicit = readString(record.dedupeKey, data.dedupeKey, data.dedupe_key, payload.dedupeKey, payload.dedupe_key);
+    if (explicit) {
+        return explicit;
+    }
+    if (topic.startsWith("runtime.episode.")) {
+        const episodeId = readString(
+            readNestedString(data, "episode.episodeId"),
+            readNestedString(data, "episode.episode_id"),
+            readNestedString(data, "episode.id"),
+            readNestedString(payload, "episode.episodeId"),
+            readNestedString(payload, "episode.episode_id"),
+            readNestedString(payload, "episode.id"),
+            data.episodeId,
+            data.episode_id,
+            payload.episodeId,
+            payload.episode_id,
+            record.event_id,
+        );
+        return `runtime-episode:${runId}:${episodeId || topic}:${topic}:${status}`;
+    }
+    if (topic.startsWith("delegation.") || topic.startsWith("subagent.")) {
+        const dispatchGroup = readString(data.dispatchGroup, data.dispatch_group, payload.dispatchGroup, payload.dispatch_group, data.episodeId, payload.episodeId);
+        const summary = readString(data.summary, data.message, payload.summary, payload.message, record.content);
+        if (dispatchGroup || /missing|未形成|未确认/i.test(summary)) {
+            return `delegation:${runId}:${dispatchGroup || topic}:${topic}:${status}`;
+        }
+    }
+    if (topic.endsWith(".delta") || topic === "run.text.delta" || topic === "run.reasoning.delta") {
+        return `stream:${runId}:${runtimeId}:${topic}`;
+    }
+    return "";
+}
+
 function normalizeMessagePartForRealtimeSurface(raw: unknown, options?: SurfaceNormalizationOptions) {
     const record = asRecord(raw);
     if (!Object.keys(record).length) {
@@ -301,75 +363,92 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
     const projection = asRecord(record.projection);
     const workflowProjection = asRecord(record.workflowProjection);
 
-    return {
-        ...record,
-        messages: Array.isArray(record.messages)
-            ? record.messages.map((message) => normalizeMessageForRealtimeSurface(message, options))
-            : record.messages,
-        artifacts: Array.isArray(record.artifacts)
-            ? record.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
-            : record.artifacts,
-        runtimeTimeline: Array.isArray(record.runtimeTimeline)
-            ? record.runtimeTimeline.map((entry) => normalizeRuntimeTimelineEntry(entry, options))
-            : record.runtimeTimeline,
-        processes: Array.isArray(record.processes)
-            ? record.processes
-                .map((item) => normalizeProcessForRealtimeSurface(item))
-                .filter(Boolean)
-            : record.processes,
-        contextReferences: Array.isArray(record.contextReferences)
-            ? record.contextReferences.map((item) => normalizeContextReference(item, options))
-            : record.contextReferences,
-        projection: Object.keys(projection).length ? {
-            ...projection,
-            messages: Array.isArray(projection.messages)
-                ? projection.messages.map((message) => normalizeMessageForRealtimeSurface(message, options))
-                : projection.messages,
-            artifacts: Array.isArray(projection.artifacts)
-                ? projection.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
-                : projection.artifacts,
-            runtimeTimeline: Array.isArray(projection.runtimeTimeline)
-                ? projection.runtimeTimeline.map((entry) => normalizeRuntimeTimelineEntry(entry, options))
-                : projection.runtimeTimeline,
-            processes: Array.isArray(projection.processes)
-                ? projection.processes
-                    .map((item) => normalizeProcessForRealtimeSurface(item))
-                    .filter(Boolean)
-                : projection.processes,
-            contextReferences: Array.isArray(projection.contextReferences)
-                ? projection.contextReferences.map((item) => normalizeContextReference(item, options))
-                : projection.contextReferences,
-        } : record.projection,
-        workflowProjection: Object.keys(workflowProjection).length ? {
-            ...workflowProjection,
-            artifacts: Array.isArray(workflowProjection.artifacts)
-                ? workflowProjection.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
-                : workflowProjection.artifacts,
-            runtimeTimeline: Array.isArray(workflowProjection.runtimeTimeline)
-                ? workflowProjection.runtimeTimeline.map((entry) => normalizeRuntimeTimelineEntry(entry, options))
-                : workflowProjection.runtimeTimeline,
-        } : record.workflowProjection,
-        snapshot: Object.keys(snapshot).length ? {
-            ...snapshot,
-            messages: Array.isArray(snapshot.messages)
-                ? snapshot.messages.map((message) => normalizeMessageForRealtimeSurface(message, options))
-                : snapshot.messages,
-            artifacts: Array.isArray(snapshot.artifacts)
-                ? snapshot.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
-                : snapshot.artifacts,
-            runtimeTimeline: Array.isArray(snapshot.runtimeTimeline)
-                ? snapshot.runtimeTimeline.map((entry) => normalizeRuntimeTimelineEntry(entry, options))
-                : snapshot.runtimeTimeline,
-            processes: Array.isArray(snapshot.processes)
-                ? snapshot.processes
-                    .map((item) => normalizeProcessForRealtimeSurface(item))
-                    .filter(Boolean)
-                : snapshot.processes,
-            contextReferences: Array.isArray(snapshot.contextReferences)
-                ? snapshot.contextReferences.map((item) => normalizeContextReference(item, options))
-                : snapshot.contextReferences,
-        } : record.snapshot,
+    const normalizeRuntimeTimeline = (value: unknown) => {
+        if (!Array.isArray(value)) {
+            return value;
+        }
+        const normalized = value.map((entry) => normalizeRuntimeTimelineEntry(entry, options));
+        if (!options?.compactPhone) {
+            return normalized;
+        }
+        const limit = Math.max(1, Number(options.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT);
+        return normalized
+            .slice()
+            .sort((left, right) => {
+                const leftRecord = asRecord(left);
+                const rightRecord = asRecord(right);
+                const leftSeq = Number(leftRecord.seq || 0) || 0;
+                const rightSeq = Number(rightRecord.seq || 0) || 0;
+                if (leftSeq !== rightSeq) {
+                    return rightSeq - leftSeq;
+                }
+                const leftTime = Date.parse(String(leftRecord.timestamp || ""));
+                const rightTime = Date.parse(String(rightRecord.timestamp || ""));
+                return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+            })
+            .slice(0, limit);
     };
+    const normalizeProcesses = (value: unknown) => Array.isArray(value)
+        ? value
+            .map((item) => normalizeProcessForRealtimeSurface(item))
+            .filter(Boolean)
+        : value;
+    const normalizeMessages = (value: unknown) => Array.isArray(value)
+        ? value.map((message) => normalizeMessageForRealtimeSurface(message, options))
+        : value;
+    const normalizeArtifacts = (value: unknown) => Array.isArray(value)
+        ? value.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
+        : value;
+    const normalizeContextReferences = (value: unknown) => Array.isArray(value)
+        ? value.map((item) => normalizeContextReference(item, options))
+        : value;
+
+    const normalizedProjection = Object.keys(projection).length ? {
+        ...projection,
+        messages: options?.compactPhone ? undefined : normalizeMessages(projection.messages),
+        artifacts: normalizeArtifacts(projection.artifacts),
+        runtimeTimeline: options?.compactPhone ? undefined : normalizeRuntimeTimeline(projection.runtimeTimeline),
+        processes: options?.compactPhone ? undefined : normalizeProcesses(projection.processes),
+        contextReferences: normalizeContextReferences(projection.contextReferences),
+    } : record.projection;
+
+    const normalizedWorkflowProjection = Object.keys(workflowProjection).length ? {
+        ...workflowProjection,
+        artifacts: normalizeArtifacts(workflowProjection.artifacts),
+        runtimeTimeline: normalizeRuntimeTimeline(workflowProjection.runtimeTimeline),
+    } : record.workflowProjection;
+
+    const normalizedSnapshot = Object.keys(snapshot).length ? {
+        ...snapshot,
+        messages: normalizeMessages(snapshot.messages),
+        artifacts: normalizeArtifacts(snapshot.artifacts),
+        runtimeTimeline: normalizeRuntimeTimeline(snapshot.runtimeTimeline),
+        processes: normalizeProcesses(snapshot.processes),
+        contextReferences: normalizeContextReferences(snapshot.contextReferences),
+    } : record.snapshot;
+
+    const normalized: JsonRecord = {
+        ...record,
+        messages: options?.compactPhone ? undefined : normalizeMessages(record.messages),
+        artifacts: normalizeArtifacts(record.artifacts),
+        runtimeTimeline: options?.compactPhone ? undefined : normalizeRuntimeTimeline(record.runtimeTimeline),
+        processes: options?.compactPhone ? undefined : normalizeProcesses(record.processes),
+        contextReferences: normalizeContextReferences(record.contextReferences),
+        projection: normalizedProjection,
+        workflowProjection: normalizedWorkflowProjection,
+        snapshot: normalizedSnapshot,
+    };
+    if (options?.compactPhone) {
+        normalized.runtimeTimelineWindow = {
+            limit: Math.max(1, Number(options.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT),
+            sourceCount: Array.isArray(snapshot.runtimeTimeline)
+                ? snapshot.runtimeTimeline.length
+                : Array.isArray(record.runtimeTimeline)
+                    ? record.runtimeTimeline.length
+                    : 0,
+        };
+    }
+    return normalized;
 }
 
 export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: SurfaceNormalizationOptions) {
@@ -383,9 +462,11 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: 
     const payload = asRecord(rawPayload.payload);
 
     const normalizedContent = normalizeSurfaceContent(record.content, options);
+    const dedupeKey = buildRuntimeEventDedupeKey(record, data, payload);
 
     return {
         ...record,
+        dedupeKey: dedupeKey || record.dedupeKey,
         content: normalizedContent,
         artifact: record.artifact
             ? normalizeArtifactForRealtimeSurface(record.artifact, options)

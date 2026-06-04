@@ -1419,6 +1419,64 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(command.update["planner_dispatch_status"]["state"], "episode_failed")
         self.assertEqual(command.update["planner_dispatch_status"]["failedHandoffCount"], 1)
 
+    def test_runtime_episode_wait_node_resumes_when_only_optional_lane_failed(self):
+        node = build_runtime_episode_wait_node()
+        research_id = f"episode_wait_node_optional_research_{uuid4().hex}"
+        delegation_id = f"episode_wait_node_optional_delegation_{uuid4().hex}"
+        research = build_runtime_episode(
+            need={"episodeId": research_id, "kind": "research", "reason": "need evidence"},
+            kind="research",
+            state="completed",
+            continuation_target="runtime_episode_runner",
+        )
+        optional_delegation = build_runtime_episode(
+            need={"episodeId": delegation_id, "kind": "delegation", "reason": "optional review"},
+            kind="delegation",
+            state="queued",
+            continuation_target="runtime_episode_runner",
+            extra={"optional": True, "dependencyMode": "optional"},
+        )
+        db.upsert_runtime_episode_record(research, enqueue=False)
+        db.upsert_runtime_episode_record(optional_delegation, enqueue=False)
+        research_handoff = build_handoff_ref(
+            producer_episode_id=research_id,
+            kind="research",
+            compact_summary="Research evidence bundle ready.",
+            status="ready",
+        )
+        delegation_handoff = build_handoff_ref(
+            producer_episode_id=delegation_id,
+            kind="delegation",
+            compact_summary="Optional subagent review failed.",
+            status="failed",
+            extra={"errorCode": "optional_subagent_failed"},
+        )
+        db.add_runtime_episode_handoff(episode_id=research_id, handoff=research_handoff)
+        db.complete_runtime_episode(research_id, state="completed", result_ref=research_handoff["handoffRefId"])
+        db.add_runtime_episode_handoff(episode_id=delegation_id, handoff=delegation_handoff)
+        db.complete_runtime_episode(
+            delegation_id,
+            state="failed",
+            result_ref=delegation_handoff["handoffRefId"],
+            error_code="optional_subagent_failed",
+            error_message="Optional lane failed.",
+        )
+
+        command = asyncio.run(
+            node(
+                {
+                    "current_route_context": {
+                        "capabilityEpisodes": [research, optional_delegation],
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(getattr(command, "goto", None), "supervisor")
+        self.assertEqual(command.update["planner_dispatch_status"]["nextAction"], "resume_supervisor")
+        self.assertEqual(command.update["planner_dispatch_status"]["state"], "degraded_handoff_ready")
+        self.assertEqual(command.update["planner_dispatch_status"]["degradedEpisodeCount"], 1)
+
     def test_runtime_episode_wait_node_does_not_resume_on_partial_handoff(self):
         node = build_runtime_episode_wait_node()
         research_id = "episode_wait_node_partial_research"

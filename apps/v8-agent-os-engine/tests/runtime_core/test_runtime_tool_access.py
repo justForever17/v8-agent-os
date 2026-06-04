@@ -411,6 +411,23 @@ def test_normalize_task_brief_preserves_child_delegation_policy():
     assert brief["writeSetPartitions"] == [{"path": "src/**", "owner": "worker-a"}]
 
 
+def test_normalize_task_brief_adds_tiered_acceptance_contract():
+    brief = normalize_task_brief(
+        {
+            "taskBriefId": "task-tiered",
+            "acceptanceContract": {
+                "must": ["Return a concrete artifact."],
+                "should": ["Include residual risks."],
+                "nice": ["Include benchmark numbers."],
+            },
+        }
+    )
+
+    assert brief["acceptanceTiers"]["must"] == ["Return a concrete artifact."]
+    assert brief["acceptanceTiers"]["should"] == ["Include residual risks."]
+    assert brief["acceptanceTiers"]["nice"] == ["Include benchmark numbers."]
+
+
 def test_research_runtime_group_is_brokered_and_not_raw_web_tools():
     assert RUNTIME_TOOL_GROUPS["research.core"]["toolNames"] == ["research_broker"]
     tools = [
@@ -449,6 +466,16 @@ def test_research_runtime_appears_in_capability_registry_summary():
 
     assert "kind=research" in summary
     assert "research.core" in summary
+
+
+def test_memory_runtime_card_mentions_memory_agent_maintenance():
+    summary = capability_registry.build_supervisor_summary(user_query="记忆是怎么写入和维护的")
+
+    assert "kind=memory" in summary
+    assert "Memory Agent" in summary
+    assert "on_chat_end" in summary
+    assert "memory.maintain" in summary
+    assert "不要直接伪写 persistent memory" in summary
 
 
 def test_capability_registry_summary_renders_multiple_runtime_prompt_hints():

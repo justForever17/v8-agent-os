@@ -430,7 +430,11 @@ def build_planner_auto_dispatch_node():
                 state=state,
                 required_runtime_access=list(item.get("requiredRuntimeAccess") or []),
                 continuation_target=str(item.get("continuationTarget") or "planner_auto_dispatch"),
-                extra={"taskBriefId": str(item.get("taskBriefId") or "")},
+                extra={
+                    "taskBriefId": str(item.get("taskBriefId") or ""),
+                    "optional": bool(item.get("optional") or item.get("optionalLane") or item.get("degradedOk")),
+                    "dependencyMode": str(item.get("dependencyMode") or "").strip(),
+                },
             )
             if session_id:
                 episode["sessionId"] = session_id
@@ -649,7 +653,12 @@ def build_runtime_episode_wait_node():
             except Exception:
                 episode = None
             if episode:
-                by_id[str(episode.get("episodeId") or episode.get("id") or episode_id)] = dict(episode)
+                route_episode = {}
+                for item in list(route_context.get("capabilityEpisodes") or []):
+                    if _string_value(item.get("episodeId"), item.get("needId"), item.get("id")) == episode_id:
+                        route_episode = dict(item)
+                        break
+                by_id[str(episode.get("episodeId") or episode.get("id") or episode_id)] = {**route_episode, **dict(episode)}
             else:
                 for item in list(route_context.get("capabilityEpisodes") or []):
                     if _string_value(item.get("episodeId"), item.get("needId"), item.get("id")) == episode_id:
@@ -664,7 +673,7 @@ def build_runtime_episode_wait_node():
         for episode in db_rows:
             episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
             if episode_id:
-                by_id[episode_id] = dict(episode)
+                by_id[episode_id] = {**dict(by_id.get(episode_id) or {}), **dict(episode)}
         return list(by_id.values())
 
     def _active_episodes(episodes: list[dict]) -> list[dict]:
@@ -754,12 +763,48 @@ def build_runtime_episode_wait_node():
             if str(handoff.get("status") or "").strip().lower() in {"failed", "blocked", "error", "recoverable_failed"}
         ]
 
+    def _is_optional_episode(episode: dict) -> bool:
+        inputs = dict(episode.get("inputs") or {}) if isinstance(episode.get("inputs"), dict) else {}
+        metadata = dict(episode.get("metadata") or {}) if isinstance(episode.get("metadata"), dict) else {}
+        if any(
+            bool(source.get("optional") or source.get("optionalLane") or source.get("degradedOk"))
+            for source in (episode, inputs, metadata)
+            if isinstance(source, dict)
+        ):
+            return True
+        return str(inputs.get("dependencyMode") or metadata.get("dependencyMode") or episode.get("dependencyMode") or "").strip().lower() in {
+            "optional",
+            "degraded_ok",
+        }
+
+    def _episode_map(episodes: list[dict]) -> dict[str, dict]:
+        mapped: dict[str, dict] = {}
+        for episode in episodes:
+            episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+            if episode_id:
+                mapped[episode_id] = episode
+        return mapped
+
+    def _required_failed_handoffs(handoffs: list[dict], episodes: list[dict]) -> list[dict]:
+        by_id = _episode_map(episodes)
+        required: list[dict] = []
+        for handoff in _failed_handoffs(handoffs):
+            episode_id = _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId"))
+            episode = by_id.get(episode_id) if episode_id else None
+            if episode and _is_optional_episode(episode):
+                continue
+            required.append(handoff)
+        return required
+
     def _failed_episodes(episodes: list[dict]) -> list[dict]:
         return [
             episode
             for episode in episodes
             if str(episode.get("state") or "").strip().lower() in {"failed", "cancelled", "canceled"}
         ]
+
+    def _required_failed_episodes(episodes: list[dict]) -> list[dict]:
+        return [episode for episode in _failed_episodes(episodes) if not _is_optional_episode(episode)]
 
     async def runtime_episode_wait_node(state):
         session_id, run_id, workspace_path = _state_runtime_identity(state)
@@ -794,14 +839,16 @@ def build_runtime_episode_wait_node():
             if episodes and not active:
                 failed_handoffs = _failed_handoffs(handoffs)
                 failed_episodes = _failed_episodes(terminal or episodes)
-                if failed_handoffs or failed_episodes:
+                required_failed_handoffs = _required_failed_handoffs(handoffs, terminal or episodes)
+                required_failed_episodes = _required_failed_episodes(terminal or episodes)
+                if required_failed_handoffs or required_failed_episodes:
                     failure_reason = _string_value(
-                        (failed_episodes[0] if failed_episodes else {}).get("errorCode"),
-                        (failed_episodes[0] if failed_episodes else {}).get("error_code"),
-                        (failed_episodes[0] if failed_episodes else {}).get("errorMessage"),
-                        (failed_episodes[0] if failed_episodes else {}).get("error_message"),
-                        (failed_handoffs[0] if failed_handoffs else {}).get("errorCode"),
-                        (failed_handoffs[0] if failed_handoffs else {}).get("compactSummary"),
+                        (required_failed_episodes[0] if required_failed_episodes else {}).get("errorCode"),
+                        (required_failed_episodes[0] if required_failed_episodes else {}).get("error_code"),
+                        (required_failed_episodes[0] if required_failed_episodes else {}).get("errorMessage"),
+                        (required_failed_episodes[0] if required_failed_episodes else {}).get("error_message"),
+                        (required_failed_handoffs[0] if required_failed_handoffs else {}).get("errorCode"),
+                        (required_failed_handoffs[0] if required_failed_handoffs else {}).get("compactSummary"),
                         "runtime_episode_failed",
                     )
                     return Command(
@@ -815,20 +862,23 @@ def build_runtime_episode_wait_node():
                                 "state": "episode_failed",
                                 "episodeCount": len(episodes),
                                 "handoffCount": len(handoffs),
-                                "failedEpisodeCount": len(failed_episodes),
-                                "failedHandoffCount": len(failed_handoffs),
+                                "failedEpisodeCount": len(required_failed_episodes),
+                                "failedHandoffCount": len(required_failed_handoffs),
+                                "degradedEpisodeCount": len(failed_episodes) - len(required_failed_episodes),
+                                "degradedHandoffCount": len(failed_handoffs) - len(required_failed_handoffs),
                                 "reason": failure_reason,
                             },
                             "messages": [
                                 _summary_message(
-                                    episodes=failed_episodes or terminal or episodes,
-                                    handoffs=failed_handoffs or handoffs,
+                                    episodes=required_failed_episodes or terminal or episodes,
+                                    handoffs=required_failed_handoffs or handoffs,
                                     status="Recoverable Failure",
                                     reason=failure_reason,
                                 )
                             ],
                         },
                     )
+                degraded_count = len(failed_episodes) + len(failed_handoffs)
                 return Command(
                     goto="supervisor",
                     update={
@@ -837,11 +887,20 @@ def build_runtime_episode_wait_node():
                         "planner_dispatch_status": {
                             "mode": "runtime_episode",
                             "nextAction": "resume_supervisor",
-                            "state": "handoff_ready" if handoffs else "episode_terminal",
+                            "state": "degraded_handoff_ready" if degraded_count else ("handoff_ready" if handoffs else "episode_terminal"),
                             "episodeCount": len(episodes),
                             "handoffCount": len(handoffs),
+                            "degradedEpisodeCount": len(failed_episodes),
+                            "degradedHandoffCount": len(failed_handoffs),
                         },
-                        "messages": [_summary_message(episodes=terminal or episodes, handoffs=handoffs, status="Handoff Ready")],
+                        "messages": [
+                            _summary_message(
+                                episodes=terminal or episodes,
+                                handoffs=handoffs,
+                                status="Degraded Handoff Ready" if degraded_count else "Handoff Ready",
+                                reason="optional_lane_degraded" if degraded_count else "",
+                            )
+                        ],
                     },
                 )
 

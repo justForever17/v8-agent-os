@@ -27,8 +27,13 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     },
     "memory": {
         "displayName": "MemoryRuntime",
-        "summary": "负责长期记忆、检索、摘要与会话范围内的知识注入。",
+        "summary": "负责长期记忆检索、注入、抽取与维护；写入由同步运行的 Memory Agent/Memory Runtime 在 on_chat_end、周期维护或显式 memory 任务中完成。",
         "visibility": "primary",
+        "promptHints": [
+            "Memory Agent 会在 on_chat_end、周期维护和显式 memory 任务中抽取、写入、维护长期记忆。",
+            "Supervisor 默认只查询记忆、消费注入或请求受控维护；不要直接伪写 persistent memory。",
+            "memory.maintain 是受管工具组，只有通过 MemoryRuntime/授权路径才能执行维护写入。",
+        ],
     },
     "creative_media": {
         "displayName": "CreativeMediaRuntime",

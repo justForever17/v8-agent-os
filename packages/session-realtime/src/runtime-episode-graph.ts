@@ -97,7 +97,7 @@ function normalizeStatus(value: string): RuntimeEpisodeGraphStatus | null {
   if (!normalized) return null;
   if (/(fail|error|reject|blocked|cancel|stalled)/.test(normalized)) return "failed";
   if (/(complete|finish|done|success|succeeded|merged|ready)/.test(normalized)) return "completed";
-  if (/(attempt|revealed|missing|no_task|no-task|no_tasks|no-tasks|unconfirmed)/.test(normalized)) return "attempted";
+  if (/(attempt|revealed|missing|no_task|no-task|no_tasks|no-tasks|unconfirmed|degraded)/.test(normalized)) return "attempted";
   if (/(start|dispatch|run|active|progress|queued|waiting|leased|routed|detected)/.test(normalized)) return "active";
   return null;
 }
@@ -239,6 +239,12 @@ export function buildSessionExecutionGraph(
 
     const data = getEpisodePayload(activity);
     const dispatchStatus = readString(data.dispatchStatus) || readString(data.dispatch_status);
+    const degraded = Boolean(
+      data.degraded
+      || data.degradedReason
+      || data.degraded_reason
+      || dispatchStatus === "delegation_degraded"
+    );
     const missingTasks = Boolean(
       data.missingTasks
       || data.missing_tasks
@@ -288,6 +294,8 @@ export function buildSessionExecutionGraph(
       : [];
     const inferredStatus = missingTasks
       ? "attempted"
+      : degraded
+        ? "attempted"
       : inferStatus(activity, { ...data, status: dispatchStatus || data.status });
 
     upsertNode(nodes, {
@@ -301,7 +309,7 @@ export function buildSessionExecutionGraph(
       timestamp,
       runtimeId: kind === "delegation" ? "subagent_swarm" : kind,
       kind,
-      diagnostic: missingTasks ? "dispatch_missing_tasks" : dispatchStatus || undefined,
+      diagnostic: missingTasks ? "dispatch_missing_tasks" : (degraded ? "delegation_degraded" : dispatchStatus || undefined),
     });
     const edgeId = `${parentId}->${id}`;
     edges.set(edgeId, {

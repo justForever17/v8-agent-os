@@ -89,6 +89,45 @@ def _normalize_worker_briefs(value: Any) -> list[dict[str, Any]]:
     return items
 
 
+def _normalize_acceptance_tiers(value: Any) -> dict[str, list[str]]:
+    parsed = value
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = raw
+        else:
+            parsed = ""
+    tiers: dict[str, list[str]] = {"must": [], "should": [], "nice": []}
+    if isinstance(parsed, dict):
+        aliases = {
+            "must": ("must", "required", "hard", "mustHave", "must_have"),
+            "should": ("should", "recommended", "soft", "shouldHave", "should_have"),
+            "nice": ("nice", "niceToHave", "nice_to_have", "optional"),
+        }
+        for tier, keys in aliases.items():
+            values: list[Any] = []
+            for key in keys:
+                raw = parsed.get(key)
+                if isinstance(raw, (list, tuple, set)):
+                    values.extend(list(raw))
+                elif raw:
+                    values.append(raw)
+            tiers[tier] = _unique_str_list(values)
+        if not any(tiers.values()):
+            tiers["must"] = _unique_str_list(parsed.values())
+        return tiers
+    if isinstance(parsed, (list, tuple, set)):
+        tiers["must"] = _unique_str_list(parsed)
+        return tiers
+    text = str(parsed or "").strip()
+    if text:
+        tiers["must"] = [text]
+    return tiers
+
+
 def _default_task_brief(index: int = 0) -> dict[str, Any]:
     return {
         "taskBriefId": f"task-{index + 1}",
@@ -100,6 +139,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "requiredCapabilities": [],
         "runtimeAccess": [],
         "acceptanceContract": "",
+        "acceptanceTiers": {"must": [], "should": [], "nice": []},
         "dependency": [],
         "parallelGroup": "",
         "executionLaneHint": "auto",
@@ -145,6 +185,9 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         target_count = max(target_count, len(worker_briefs))
     child_delegation_budget = _first_present(payload, ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"))
     write_set_partitions = _first_present(payload, ("writeSetPartitions", "write_set_partitions", "writePartitions", "write_partitions"))
+    acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract"))
+    acceptance_tiers = _first_present(payload, ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"))
+    normalized_acceptance_tiers = _normalize_acceptance_tiers(acceptance_tiers if acceptance_tiers is not None else acceptance_contract)
     normalized = {
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
         "goal": str(payload.get("goal") or "").strip(),
@@ -154,7 +197,8 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "behaviorScope": _normalize_scope_values(payload.get("behaviorScope") or payload.get("behavior_scope")),
         "requiredCapabilities": _normalize_scope_values(payload.get("requiredCapabilities") or payload.get("required_capabilities")),
         "runtimeAccess": _normalize_scope_values(payload.get("runtimeAccess") or payload.get("runtime_access")),
-        "acceptanceContract": payload.get("acceptanceContract") if isinstance(payload.get("acceptanceContract"), dict) else str(payload.get("acceptanceContract") or payload.get("acceptance_contract") or "").strip(),
+        "acceptanceContract": acceptance_contract if isinstance(acceptance_contract, dict) else str(acceptance_contract or "").strip(),
+        "acceptanceTiers": normalized_acceptance_tiers,
         "dependency": _normalize_scope_values(payload.get("dependency")),
         "parallelGroup": str(payload.get("parallelGroup") or payload.get("parallel_group") or "").strip(),
         "executionLaneHint": str(payload.get("executionLaneHint") or payload.get("execution_lane_hint") or "auto").strip().lower() or "auto",

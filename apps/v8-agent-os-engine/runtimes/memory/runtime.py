@@ -26,7 +26,7 @@ class MemoryRuntime:
         return {
             "kind": self.kind,
             "displayName": "MemoryRuntime",
-            "summary": "负责记忆 provenance、长期记忆提取、时序日志与 RAG 注入，不承担通用对话编排。",
+            "summary": "负责记忆 provenance、长期记忆提取、时序日志与 RAG 注入；长期记忆由同步运行的 Memory Agent/Memory Runtime 在 on_chat_end、周期维护和显式 memory 任务中写入维护。",
             "responsibilities": [
                 "维护分层记忆和知识图谱",
                 "执行带 provenance 的记忆提取、聚合与健康检查",
@@ -42,7 +42,9 @@ class MemoryRuntime:
             "supportsRepair": False,
             "visibility": "internal",
             "promptHints": [
-                "需要写入或维护记忆时，交给 MemoryRuntime；不要让 Supervisor 自己承担脏数据写入。",
+                "Memory Agent 会在 on_chat_end、周期维护和显式 memory 任务中抽取、写入、维护长期记忆。",
+                "Supervisor 默认只查询记忆、消费注入或请求受控维护；不要直接伪写 persistent memory。",
+                "memory.maintain 是受管工具组，只有通过 MemoryRuntime/授权路径才能执行维护写入。",
             ],
             "capabilities": [
                 {

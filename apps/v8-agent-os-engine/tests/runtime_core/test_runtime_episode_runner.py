@@ -650,6 +650,64 @@ def test_delegation_episode_fails_when_all_workers_are_child_budget_blocked(monk
     assert "child_budget_blocked=1" in handoff["compactSummary"]
 
 
+def test_delegation_episode_returns_degraded_handoff_after_failure_threshold(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "three workers fail"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": f"brief-{index}",
+                        "title": f"Worker {index}",
+                        "goal": f"Worker {index} should inspect one area.",
+                        "acceptanceTiers": {
+                            "must": ["Return a concrete finding."],
+                            "should": ["Include residual risks."],
+                            "nice": ["Include timing metrics."],
+                        },
+                    }
+                    for index in range(3)
+                ],
+                "targetCount": 3,
+                "delegationCircuitBreakerThreshold": 3,
+            }
+        },
+    )
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command
+
+    def _fake_dispatch(**kwargs):
+        return Command(
+            update={
+                "parallel_results": [
+                    {
+                        "status": "failed",
+                        "delegationId": f"delegation-failed-{index}",
+                        "targetLabel": f"Worker {index}",
+                        "error": "worker_failed",
+                    }
+                    for index in range(3)
+                ]
+            }
+        )
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    assert handoff["kind"] == "delegation_degraded"
+    assert handoff["status"] == "degraded"
+    assert handoff["dispatchStatus"] == "delegation_degraded"
+    assert handoff["failedDelegationCount"] == 3
+    assert handoff["acceptanceCheck"]["must"]["items"] == ["Return a concrete finding."]
+    assert "narrow_contract" in handoff["recoveryHints"]
+    assert "direct" not in " ".join(handoff["recoveryHints"]).lower()
+
+
 def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkeypatch):
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},

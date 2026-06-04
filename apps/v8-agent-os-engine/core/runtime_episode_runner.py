@@ -385,6 +385,28 @@ class RuntimeEpisodeRunner:
         nested = handoff.get("delegationHandoff")
         return isinstance(nested, dict) and bool(nested.get("childEpisodeIds"))
 
+    def _is_optional_episode(self, episode: dict[str, Any]) -> bool:
+        if not isinstance(episode, dict):
+            return False
+        inputs = dict(episode.get("inputs") or {})
+        metadata = dict(episode.get("metadata") or {})
+        return any(
+            bool(source.get("optional") or source.get("optionalLane") or source.get("degradedOk"))
+            for source in (episode, inputs, metadata)
+            if isinstance(source, dict)
+        ) or str(inputs.get("dependencyMode") or metadata.get("dependencyMode") or "").strip().lower() in {
+            "optional",
+            "degraded_ok",
+        }
+
+    def _is_degraded_handoff(self, payload: dict[str, Any]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        status = str(payload.get("status") or "").strip().lower()
+        kind = str(payload.get("kind") or "").strip().lower()
+        state = str(payload.get("delegationState") or payload.get("engineeringState") or "").strip().lower()
+        return status == "degraded" or kind.endswith("_degraded") or state.endswith("_degraded")
+
     def _should_dispatch_child_needs(self, episode: dict[str, Any]) -> bool:
         metadata = dict(episode.get("metadata") or {})
         if metadata.get("childNeedsDispatched"):
@@ -495,9 +517,21 @@ class RuntimeEpisodeRunner:
                 for item in child_handoffs
                 if isinstance(item, dict)
             )
-            if budget_boundary_only:
+            optional_or_degraded_only = bool(failed_children) and all(
+                self._is_optional_episode(child)
+                for child in failed_children
+            )
+            degraded_handoff_only = bool(child_handoffs) and all(
+                self._is_degraded_handoff(item) or _is_budget_boundary_handoff(item)
+                for item in child_handoffs
+                if isinstance(item, dict)
+            )
+            if budget_boundary_only or optional_or_degraded_only or degraded_handoff_only:
                 resume_token["failedChildCount"] = 0
-                resume_token["budgetBoundaryChildCount"] = len(failed_children)
+                if budget_boundary_only:
+                    resume_token["budgetBoundaryChildCount"] = len(failed_children)
+                if optional_or_degraded_only or degraded_handoff_only:
+                    resume_token["degradedChildCount"] = len(failed_children)
                 resumed = db.resume_runtime_episode(parent_id, resume_token=resume_token) or parent
                 self._emit(
                     "runtime.episode.resumed",
@@ -507,8 +541,12 @@ class RuntimeEpisodeRunner:
                     handoffBundle=child_handoffs,
                     resumeToken=resume_token,
                     warning={
-                        "code": "child_delegation_budget_boundary",
-                        "message": "Child delegation reached its recursion budget; parent episode can continue with a warning.",
+                        "code": "child_lane_degraded" if optional_or_degraded_only or degraded_handoff_only else "child_delegation_budget_boundary",
+                        "message": (
+                            "Optional child lane degraded; parent episode can continue with degraded synthesis."
+                            if optional_or_degraded_only or degraded_handoff_only
+                            else "Child delegation reached its recursion budget; parent episode can continue with a warning."
+                        ),
                     },
                 )
                 return
@@ -1513,6 +1551,24 @@ class RuntimeEpisodeRunner:
                 status = "failed" if len(hard_failed) == len(results) else "ready"
             else:
                 status = "ready"
+            try:
+                failure_degrade_threshold = max(
+                    1,
+                    int(
+                        inputs.get("delegationCircuitBreakerThreshold")
+                        or inputs.get("delegation_failure_degrade_threshold")
+                        or inputs.get("failureDegradeThreshold")
+                        or 3
+                    ),
+                )
+            except Exception:
+                failure_degrade_threshold = 3
+            should_degrade = (
+                status == "failed"
+                and bool(results)
+                and len(failed) >= failure_degrade_threshold
+                and not waiting_child
+            )
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
             if local_results:
                 summary = f"Delegation executed {len(local_results)} local subagent worker(s)."
@@ -1525,17 +1581,73 @@ class RuntimeEpisodeRunner:
             if not results:
                 status = "failed"
                 summary = "Delegation dispatch did not produce confirmed worker tasks."
+                should_degrade = False
+            if should_degrade:
+                status = "degraded"
+                summary += f" degraded_after_failures={len(failed)} threshold={failure_degrade_threshold}"
+            acceptance_tiers = {
+                "must": [],
+                "should": [],
+                "nice": [],
+            }
+            for brief in worker_briefs:
+                if not isinstance(brief, dict):
+                    continue
+                tiers = brief.get("acceptanceTiers") if isinstance(brief.get("acceptanceTiers"), dict) else {}
+                for tier in acceptance_tiers:
+                    acceptance_tiers[tier].extend([str(item).strip() for item in list(tiers.get(tier) or []) if str(item).strip()])
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
-                kind="delegation",
+                kind="delegation_degraded" if should_degrade else "delegation",
                 compact_summary=summary,
                 status=status,
                 confidence="medium",
-                consumer_hint="Parent episode should wait for delegation completion events before merging.",
+                consumer_hint=(
+                    "Use this degraded delegation handoff for synthesis, user clarification, narrowed retry, or alternate runtime route; do not grant Supervisor direct mutating tools."
+                    if should_degrade
+                    else "Parent episode should wait for delegation completion events before merging."
+                ),
                 extra={
+                    **(
+                        {
+                            "delegationState": "delegation_degraded",
+                            "dispatchStatus": "delegation_degraded",
+                            "degraded": True,
+                            "degradedReason": "delegation_failure_threshold_reached",
+                            "failureThreshold": failure_degrade_threshold,
+                        }
+                        if should_degrade
+                        else {}
+                    ),
                     "delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)],
                     "childEpisodeIds": child_episode_ids,
                     "failedDelegationCount": len(hard_failed),
+                    "totalFailedDelegationCount": len(failed),
+                    "attemptedWorkers": [
+                        item.get("targetLabel") or item.get("agentName") or item.get("delegationId") or item.get("id")
+                        for item in results[:12]
+                        if isinstance(item, dict)
+                    ],
+                    "acceptanceCheck": {
+                        "must": {"passed": bool(ready_results), "items": list(dict.fromkeys(acceptance_tiers["must"]))},
+                        "should": {"passed": bool(ready_results) and not hard_failed, "items": list(dict.fromkeys(acceptance_tiers["should"]))},
+                        "nice": {"passed": bool(ready_results), "items": list(dict.fromkeys(acceptance_tiers["nice"]))},
+                    },
+                    "recoveryHints": (
+                        [
+                            "narrow_contract",
+                            "retry_with_explicit_tasks",
+                            "route_to_alternate_runtime",
+                            "ask_user_for_smaller_scope",
+                        ]
+                        if should_degrade
+                        else []
+                    ),
+                    "residualRisks": [
+                        _preview(item.get("error") or item.get("dispatchStatus") or item.get("compactTranscript"), limit=300)
+                        for item in failed[:8]
+                        if isinstance(item, dict)
+                    ],
                     "budgetBlockedChildDelegations": [
                         {
                             "delegationId": item.get("delegationId") or item.get("id"),

@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlparse
 import uuid
 
-from fastapi import APIRouter, Body, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from .models import ModelConnectionTestPayload, ModelReasoningRepairPayload
@@ -766,11 +766,25 @@ async def reload_system():
 
 
 @router.get("/skills/list")
-async def get_skills_list():
+async def get_skills_list(
+    session_id: str | None = Query(default=None, alias="sessionId"),
+    workspace_path: str | None = Query(default=None, alias="workspacePath"),
+    workspace_id: str | None = Query(default=None, alias="workspaceId"),
+    project_id: str | None = Query(default=None, alias="projectId"),
+):
     try:
         supervisor_config = storage.get_supervisor_config() or {}
         return {
-            "skills": list(extensions_runtime_service.list_skills(force_refresh=False)),
+            "skills": list(
+                extensions_runtime_service.list_skills(
+                    force_refresh=False,
+                    session_id=str(session_id or "").strip() or None,
+                    explicit_workspace_path=str(workspace_path or "").strip() or None,
+                    explicit_workspace_id=str(workspace_id or "").strip() or None,
+                    explicit_project_id=str(project_id or "").strip() or None,
+                    runtime_kind="chat",
+                )
+            ),
             "subagentFamilies": build_specialist_family_registry(
                 storage.get_all_agents(),
                 supervisor_config.get("specialistRegistry") if isinstance(supervisor_config.get("specialistRegistry"), dict) else {},

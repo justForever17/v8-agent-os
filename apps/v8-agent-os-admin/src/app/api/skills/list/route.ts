@@ -10,7 +10,14 @@ export async function GET(req: NextRequest) {
     return unauthorizedJson();
   }
   try {
-    const res = await fetch(`${ENGINE_ORIGIN}/v1/skills/list`);
+    const upstream = new URL(`${ENGINE_ORIGIN}/v1/skills/list`);
+    for (const key of ["sessionId", "workspacePath", "workspaceId", "projectId"]) {
+      const value = req.nextUrl.searchParams.get(key);
+      if (value) {
+        upstream.searchParams.set(key, value);
+      }
+    }
+    const res = await fetch(upstream.toString());
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {

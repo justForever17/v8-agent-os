@@ -3079,10 +3079,16 @@ export default function ChatScreen() {
     }, [authorizedFetch, createProjectConversationAtPath, loadFolderRoots, newFolderName, selectedFolderPath, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
+        const skillScope = {
+            sessionId: activeConversationIdRef.current || undefined,
+            workspacePath: scopeBinding?.workspacePath || undefined,
+            workspaceId: scopeBinding?.workspaceId || undefined,
+            projectId: scopeBinding?.projectId || undefined,
+        };
         const [nextConversations, nextCommands, nextReferences] = await Promise.all([
             listConversations(authorizedFetch),
             listCommandPresets(authorizedFetch).catch(() => []),
-            listSkillsAndSubagentFamilies(authorizedFetch).catch(() => ({ skills: [], subagentFamilies: [] })),
+            listSkillsAndSubagentFamilies(authorizedFetch, skillScope).catch(() => ({ skills: [], subagentFamilies: [] })),
         ]);
 
         setConversations(nextConversations);
@@ -3097,7 +3103,7 @@ export default function ChatScreen() {
         ) {
             await setActiveConversationId(null);
         }
-    }, [authorizedFetch, loadProjects, setActiveConversationId]);
+    }, [authorizedFetch, loadProjects, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, setActiveConversationId]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const profileStartedAt = getPerfNowMs();
@@ -4534,6 +4540,40 @@ export default function ChatScreen() {
         }
         void loadSessionScope(activeConversationId);
     }, [activeConversationId, loadSessionScope, status]);
+
+    useEffect(() => {
+        if (status !== "authenticated") {
+            return;
+        }
+        const skillScope = {
+            sessionId: activeConversationId || undefined,
+            workspacePath: scopeBinding?.workspacePath || undefined,
+            workspaceId: scopeBinding?.workspaceId || undefined,
+            projectId: scopeBinding?.projectId || undefined,
+        };
+        let cancelled = false;
+        void listSkillsAndSubagentFamilies(authorizedFetch, skillScope)
+            .then((nextReferences) => {
+                if (cancelled) {
+                    return;
+                }
+                setSkills(nextReferences.skills);
+                setSubagentFamilies(nextReferences.subagentFamilies);
+            })
+            .catch((error) => {
+                console.warn("[phone/chat] scoped skill refresh failed", error instanceof Error ? error.message : error);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        activeConversationId,
+        authorizedFetch,
+        scopeBinding?.projectId,
+        scopeBinding?.workspaceId,
+        scopeBinding?.workspacePath,
+        status,
+    ]);
 
     useEffect(() => {
         if (status !== "authenticated") {

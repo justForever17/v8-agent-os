@@ -12,7 +12,14 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const response = await fetch(`${ENGINE_ORIGIN}/v1/skills/list`);
+        const upstream = new URL(`${ENGINE_ORIGIN}/v1/skills/list`);
+        for (const key of ["sessionId", "workspacePath", "workspaceId", "projectId"]) {
+            const value = req.nextUrl.searchParams.get(key);
+            if (value) {
+                upstream.searchParams.set(key, value);
+            }
+        }
+        const response = await fetch(upstream.toString());
         const data = await response.json();
         return NextResponse.json(data);
     } catch (error) {

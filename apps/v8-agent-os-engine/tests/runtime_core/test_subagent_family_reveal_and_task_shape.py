@@ -141,6 +141,15 @@ def test_explainer_video_prefers_engineering_with_creative_media_support() -> No
     assert "creative_media_as_primary_unless_provider_named" in hint["boundaryDecision"]["forbiddenRoutes"]
 
 
+def test_negated_rpa_in_explainer_video_does_not_override_engineering_route() -> None:
+    hint = classify_task_shape("请设计一个 60 秒科普讲解视频，不要调用桌面或 RPA，判断工程链路还是 Creative Media。")
+
+    assert hint["boundaryDecision"]["primaryRuntime"] == "engineering"
+    assert hint["boundaryDecision"]["executionMode"] == "code_video_runtime"
+    assert "video:explainer_code_video" in hint["boundaryDecision"]["signals"]
+    assert "desktop:rpa_reusable" not in hint["boundaryDecision"]["signals"]
+
+
 def test_literal_terminal_request_prefers_native_command_not_computer_use() -> None:
     hint = classify_task_shape("打开终端帮我安装 huashu-nuwa skill")
 

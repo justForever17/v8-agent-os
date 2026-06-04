@@ -470,20 +470,42 @@ export async function getCommandPreset(authorizedFetch: AuthorizedFetch, name: s
     );
 }
 
-export async function listSkills(authorizedFetch: AuthorizedFetch) {
+type SkillListScope = {
+    sessionId?: string | null;
+    conversationId?: string | null;
+    workspacePath?: string | null;
+    workspaceId?: string | null;
+    projectId?: string | null;
+};
+
+function buildSkillListPath(scope?: SkillListScope | null) {
+    const params = new URLSearchParams();
+    const sessionId = String(scope?.sessionId || scope?.conversationId || "").trim();
+    if (sessionId) params.set("sessionId", sessionId);
+    const workspacePath = String(scope?.workspacePath || "").trim();
+    if (workspacePath) params.set("workspacePath", workspacePath);
+    const workspaceId = String(scope?.workspaceId || "").trim();
+    if (workspaceId) params.set("workspaceId", workspaceId);
+    const projectId = String(scope?.projectId || "").trim();
+    if (projectId) params.set("projectId", projectId);
+    const suffix = params.toString();
+    return suffix ? `/api/client/skills/list?${suffix}` : "/api/client/skills/list";
+}
+
+export async function listSkills(authorizedFetch: AuthorizedFetch, scope?: SkillListScope | null) {
     const payload = await authorizedJson<{ skills?: SkillReferenceSummary[] }>(
         authorizedFetch,
-        "/api/client/skills/list",
+        buildSkillListPath(scope),
         translateCurrent("src.lib.phone_api.text_20"),
         { cache: "no-store" },
     );
     return normalizeArray<SkillReferenceSummary>(payload.skills);
 }
 
-export async function listSkillsAndSubagentFamilies(authorizedFetch: AuthorizedFetch) {
+export async function listSkillsAndSubagentFamilies(authorizedFetch: AuthorizedFetch, scope?: SkillListScope | null) {
     const payload = await authorizedJson<{ skills?: SkillReferenceSummary[]; subagentFamilies?: SubagentFamilySummary[] }>(
         authorizedFetch,
-        "/api/client/skills/list",
+        buildSkillListPath(scope),
         translateCurrent("src.lib.phone_api.text_20"),
         { cache: "no-store" },
     );

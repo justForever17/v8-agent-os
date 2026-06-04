@@ -23,6 +23,38 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term and term in text for term in terms)
 
 
+_NEGATION_TERMS = (
+    "不要",
+    "不调用",
+    "不走",
+    "不用",
+    "禁止",
+    "不要用",
+    "不要走",
+    "不需要",
+    "without",
+    " no ",
+    " not ",
+    "never",
+)
+
+
+def _contains_positive_any(text: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        if not term:
+            continue
+        start = 0
+        while True:
+            index = text.find(term, start)
+            if index < 0:
+                break
+            prefix = text[max(0, index - 18):index]
+            if not any(negation in prefix for negation in _NEGATION_TERMS):
+                return True
+            start = index + len(term)
+    return False
+
+
 def _unique(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -285,7 +317,7 @@ def resolve_task_boundary(
             )
             signals.append("terminal:native_command_preferred")
 
-    if _contains_any(text, _RPA_TERMS):
+    if _contains_positive_any(text, _RPA_TERMS):
         primary_runtime = "rpa"
         execution_mode = "rpa_workflow_or_template"
         reason = "repeatable_workflow_or_object_library_request"

@@ -1259,6 +1259,7 @@
   "app.admin.dashboard.engineeringLane.statusVerified": "已验证",
   "app.admin.dashboard.engineeringLane.statusUnverified": "未验证",
   "app.admin.dashboard.engineeringLane.statusFailedVerification": "验证失败",
+  "app.admin.dashboard.engineeringLane.statusFailedDueToDispatchError": "派发失败",
   "app.admin.dashboard.engineeringLane.statusPlanned": "已规划",
   "app.admin.dashboard.engineeringLane.statusObservedNoChange": "无变更",
   "app.admin.dashboard.engineeringLane.statusPass": "通过",

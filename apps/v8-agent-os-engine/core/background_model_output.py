@@ -5,24 +5,15 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from core.reasoning_payload_contract import (
+    REASONING_KEY_SET,
+    SIGNATURE_KEY_SET,
+    VISIBLE_TEXT_KEYS,
+    VISIBLE_BLOCK_TYPES,
+    REASONING_BLOCK_TYPES,
+    THINK_TAG_PATTERN,
+)
 
-REASONING_KEYS = {
-    "reasoning",
-    "reasoning_content",
-    "reasoningContent",
-    "thinking",
-    "thinking_delta",
-    "reasoning_details",
-    "thought",
-    "thoughts",
-    "analysis",
-    "deliberation",
-}
-SIGNATURE_KEYS = {"thoughtSignature", "thought_signature"}
-VISIBLE_TEXT_KEYS = ("text", "output_text", "content", "value")
-VISIBLE_BLOCK_TYPES = {"text", "output_text", "plain_text", "message"}
-REASONING_BLOCK_TYPES = {"reasoning", "reasoning_content", "thinking", "thought", "analysis", "deliberation"}
-_THINK_RE = re.compile(r"<think\b[^>]*>[\s\S]*?</think>", re.IGNORECASE)
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}|\[[\s\S]*\]")
 
 
@@ -148,7 +139,7 @@ def _extract_visible_text_from_block(block: Any, *, state: _SanitizeState) -> st
         _record_reasoning(block, state=state, key=block_type or "reasoning_block")
         return ""
 
-    for key in REASONING_KEYS | SIGNATURE_KEYS:
+    for key in REASONING_KEY_SET | SIGNATURE_KEY_SET:
         if key in block:
             _record_reasoning(block.get(key), state=state, key=key)
 
@@ -165,10 +156,10 @@ def _collect_reasoning_from_object(value: Any, *, state: _SanitizeState) -> None
     for container_name in ("additional_kwargs", "response_metadata", "generation_info"):
         container = getattr(value, container_name, None)
         if isinstance(container, Mapping):
-            for key in REASONING_KEYS | SIGNATURE_KEYS:
+            for key in REASONING_KEY_SET | SIGNATURE_KEY_SET:
                 if key in container:
                     _record_reasoning(container.get(key), state=state, key=key)
-    for key in REASONING_KEYS | SIGNATURE_KEYS:
+    for key in REASONING_KEY_SET | SIGNATURE_KEY_SET:
         if hasattr(value, key):
             _record_reasoning(getattr(value, key), state=state, key=key)
 
@@ -195,7 +186,7 @@ def _strip_think_tags(text: str, state: _SanitizeState) -> str:
         state.reasoning_chars += len(match.group(0))
         return ""
 
-    return _THINK_RE.sub(_replace, str(text or ""))
+    return THINK_TAG_PATTERN.sub(_replace, str(text or ""))
 
 
 def _json_candidates(text: str) -> Iterable[str]:

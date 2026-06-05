@@ -5,21 +5,13 @@ import json
 import uuid
 from typing import Any, Iterable, Mapping, Tuple
 
-
-REASONING_KEYS = (
-    "reasoning_content",
-    "reasoning",
-    "thinking",
-    "thinking_delta",
-    "reasoning_details",
-    "thought",
-    "analysis",
-    "deliberation",
+from core.reasoning_payload_contract import (
+    REASONING_KEYS,
+    SIGNATURE_KEYS,
+    TEXT_BLOCK_TYPES,
+    REASONING_BLOCK_TYPES,
 )
 
-SIGNATURE_KEYS = ("thoughtSignature", "thought_signature")
-TEXT_BLOCK_TYPES = {"text", "output_text", "plain_text"}
-REASONING_BLOCK_TYPES = {"reasoning", "reasoning_content", "thinking", "thought"}
 V8_CANONICAL_TOOL_CALL_PREFIX = "call_v8_"
 _TOOL_SCOPE_KEY = "v8_tool_scope_key"
 
@@ -113,12 +105,19 @@ def sanitize_model_tool_calls(response: Any, *, provider_standard: str | None = 
     effective_provider_standard = _resolve_provider_standard(response, provider_standard)
     message_scope_key = _ensure_message_tool_scope_key(response)
     tool_calls = normalize_tool_calls(
-        _read_field(response, "tool_calls"),
+        _extract_tool_calls_from_response(response),
         provider_standard=effective_provider_standard,
         message_scope_key=message_scope_key,
     )
     if tool_calls and hasattr(response, "tool_calls"):
         response.tool_calls = tool_calls
+    elif tool_calls and isinstance(response, dict):
+        response["tool_calls"] = tool_calls
+    elif tool_calls:
+        try:
+            setattr(response, "tool_calls", tool_calls)
+        except Exception:
+            pass
 
     additional_kwargs = _read_field(response, "additional_kwargs")
     if isinstance(additional_kwargs, dict) and additional_kwargs.get("tool_calls"):
@@ -244,7 +243,12 @@ def _normalize_tool_call_entry(entry: Any) -> dict[str, Any] | None:
     if not isinstance(entry, Mapping):
         return None
 
-    function_payload = entry.get("function") if isinstance(entry.get("function"), Mapping) else {}
+    function_payload = {}
+    for function_key in ("function", "functionCall", "function_call"):
+        candidate = entry.get(function_key)
+        if isinstance(candidate, Mapping):
+            function_payload = candidate
+            break
     name = (
         _read_field(entry, "name")
         or function_payload.get("name")
@@ -264,6 +268,7 @@ def _normalize_tool_call_entry(entry: Any) -> dict[str, Any] | None:
     )
     args = (
         _read_field(entry, "args")
+        or function_payload.get("args")
         or entry.get("arguments")
         or function_payload.get("arguments")
         or entry.get("input")
@@ -386,6 +391,28 @@ def _resolve_provider_standard(response: Any, explicit: str | None = None) -> st
                 if candidate:
                     return _normalize_provider_standard(candidate)
     return "openai"
+
+
+def _extract_tool_calls_from_response(response: Any) -> Any:
+    explicit = _read_field(response, "tool_calls")
+    content_calls = _extract_function_call_blocks(_read_field(response, "content"))
+    content_block_calls = _extract_function_call_blocks(_read_field(response, "content_blocks"))
+    if explicit and (content_calls or content_block_calls):
+        explicit_list = explicit if isinstance(explicit, list) else [explicit]
+        return [*explicit_list, *content_calls, *content_block_calls]
+    return explicit or content_calls or content_block_calls
+
+
+def _extract_function_call_blocks(content: Any) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+    calls: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, Mapping):
+            continue
+        if isinstance(item.get("functionCall"), Mapping) or isinstance(item.get("function_call"), Mapping):
+            calls.append(dict(item))
+    return calls
 
 
 def _ensure_message_tool_scope_key(response: Any) -> str:

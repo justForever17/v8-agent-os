@@ -15,6 +15,7 @@ import requests
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from core.gemini_cli_oauth import _build_headers, bootstrap_gemini_cli_runtime
+from core.reasoning_payload_contract import is_reasoning_block_type, is_reasoning_key
 
 
 GEMINI_CLI_GENERATE_ENDPOINT = "v1internal:generateContent"
@@ -270,10 +271,8 @@ def _extract_text_and_reasoning(parts: Sequence[Mapping[str, Any]] | None) -> tu
     for part in list(parts or []):
         text_value = str(part.get("text") or "").strip()
         is_reasoning = bool(
-            part.get("thought")
-            or part.get("thinking")
-            or part.get("reasoning")
-            or str(part.get("type") or "").strip().lower() in {"thinking", "reasoning"}
+            any(is_reasoning_key(key) and bool(part.get(key)) for key in part.keys())
+            or is_reasoning_block_type(part.get("type"))
         )
         if is_reasoning:
             if text_value:

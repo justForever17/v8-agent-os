@@ -59,6 +59,54 @@ class ResponseNormalizerToolCallIdTests(unittest.TestCase):
         normalized_again = sanitize_model_tool_calls(normalized, provider_standard="gemini")
         self.assertEqual(normalized_again.tool_calls[0]["id"], tool_call["id"])
 
+    def test_gemini_function_call_content_block_is_normalized(self):
+        message = SimpleNamespace(
+            content=[
+                {
+                    "functionCall": {
+                        "id": "gemini_call_1",
+                        "name": "web_broker",
+                        "args": {"mode": "search", "target": "V8 Agent OS"},
+                    }
+                }
+            ],
+            additional_kwargs={},
+            response_metadata={"providerStandard": "gemini"},
+        )
+
+        normalized = sanitize_model_tool_calls(message)
+        tool_call = normalized.tool_calls[0]
+
+        self.assertTrue(str(tool_call["id"]).startswith("call_v8_"))
+        self.assertEqual(tool_call["providerToolCallId"], "gemini_call_1")
+        self.assertEqual(tool_call["providerStandard"], "gemini")
+        self.assertEqual(tool_call["name"], "web_broker")
+        self.assertEqual(tool_call["args"], {"mode": "search", "target": "V8 Agent OS"})
+
+    def test_gemini_function_call_without_provider_id_is_message_scoped(self):
+        message = SimpleNamespace(
+            content=[
+                {
+                    "function_call": {
+                        "name": "command_session_broker",
+                        "args": {"mode": "start", "command": "npm run dev"},
+                    }
+                }
+            ],
+            additional_kwargs={},
+            response_metadata={"providerStandard": "google"},
+        )
+
+        normalized = sanitize_model_tool_calls(message)
+        tool_call = normalized.tool_calls[0]
+
+        self.assertTrue(str(tool_call["id"]).startswith("call_v8_"))
+        self.assertEqual(tool_call["providerStandard"], "gemini")
+        self.assertNotIn("providerToolCallId", tool_call)
+
+        normalized_again = sanitize_model_tool_calls(normalized)
+        self.assertEqual(normalized_again.tool_calls[0]["id"], tool_call["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

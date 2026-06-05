@@ -6,6 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
+from core.reasoning_payload_contract import REASONING_KEYS
+
 
 ReasoningSurface = dict[str, Any]
 
@@ -28,22 +30,11 @@ _MODEL_CAPABILITY_REGISTRY_PATH = Path(__file__).resolve().parent / "model_catal
 _COMMON_REASONING_FIELDS = (
     "content[type=thinking]",
     "content[type=reasoning]",
-    "additional_kwargs.reasoning_content",
-    "additional_kwargs.reasoning",
-    "additional_kwargs.thinking",
-    "additional_kwargs.thinking_delta",
-    "response_metadata.reasoning_content",
-    "response_metadata.reasoning",
-    "response_metadata.thinking",
-    "generation_info.reasoning_content",
-    "generation_info.reasoning",
+    *tuple(f"additional_kwargs.{key}" for key in REASONING_KEYS),
+    *tuple(f"response_metadata.{key}" for key in REASONING_KEYS),
+    *tuple(f"generation_info.{key}" for key in REASONING_KEYS),
     "reasoning.summary",
-    "reasoning",
-    "reasoning_content",
-    "thinking",
-    "thinking_delta",
-    "thought",
-    "analysis",
+    *REASONING_KEYS,
 )
 
 _KNOWN_MODEL_ALIASES = {

@@ -236,36 +236,28 @@ function getStatusLabel(value: string, t: (key: string) => string): string {
     verified: "app.admin.dashboard.engineeringLane.statusVerified",
     unverified: "app.admin.dashboard.engineeringLane.statusUnverified",
     failed_verification: "app.admin.dashboard.engineeringLane.statusFailedVerification",
+    failed_due_to_dispatch_error: "app.admin.dashboard.engineeringLane.statusFailedDueToDispatchError",
+    failed: "app.admin.dashboard.engineeringLane.statusFail",
     planned: "app.admin.dashboard.engineeringLane.statusPlanned",
     observed_no_change: "app.admin.dashboard.engineeringLane.statusObservedNoChange",
     pass: "app.admin.dashboard.engineeringLane.statusPass",
     warning: "app.admin.dashboard.engineeringLane.statusWarning",
     fail: "app.admin.dashboard.engineeringLane.statusFail",
   };
-  return t(map[value] || value);
-}
-
-function getRiskLabel(value: string, t: (key: string) => string): string {
-  const map: Record<string, string> = {
-    within_write_set: "app.admin.dashboard.engineeringLane.riskWithinWriteSet",
-    outside_write_set: "app.admin.dashboard.engineeringLane.riskOutsideWriteSet",
-    missing_write_set: "app.admin.dashboard.engineeringLane.riskMissingWriteSet",
-    unknown_write_set: "app.admin.dashboard.engineeringLane.riskUnknownWriteSet",
-    read_only_safe: "app.admin.dashboard.engineeringLane.riskReadOnlySafe",
-    not_evaluated: "app.admin.dashboard.engineeringLane.riskNotEvaluated",
-  };
-  return t(map[value] || value);
+  const labelKey = map[value];
+  if (labelKey) return t(labelKey);
+  return value.replace(/[_-]+/g, " ").trim() || "—";
 }
 
 function StatusPill({ value }: {value?: string;}) {
   const t = useT();
   const normalized = String(value || "planned");
   const palette =
-  normalized === "verified" ?
+  normalized === "verified" || normalized === "pass" ?
   "bg-emerald-100 text-emerald-700" :
-  normalized === "failed_verification" ?
+  normalized === "failed_verification" || normalized.includes("fail") ?
   "bg-rose-100 text-rose-700" :
-  normalized === "unverified" ?
+  normalized === "unverified" || normalized === "warning" ?
   "bg-amber-100 text-amber-700" :
   "bg-slate-100 text-slate-600";
   return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{getStatusLabel(normalized, t)}</span>;
@@ -781,7 +773,7 @@ export default function EngineeringLanePage() {
         title={t("app.admin.dashboard.engineeringLane.advancedDiagnosticsTitle")}
         description={t("app.admin.dashboard.engineeringLane.advancedDiagnosticsDescription")}>
 
-            <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
+            <div className="space-y-6">
                 <ConfigCard
             title="app.admin.dashboard.engineeringLane.diagnosticScopeTitle"
             description="app.admin.dashboard.engineeringLane.diagnosticScopeDescription"
@@ -844,7 +836,7 @@ export default function EngineeringLanePage() {
 
                             {dryRunResult ?
                 <div className="space-y-4">
-                                    <div className="grid gap-3 md:grid-cols-4">
+                                    <div className="grid gap-3">
                                         <div className="rounded-xl border border-slate-200 p-3">
                                             <div className="text-xs uppercase tracking-[0.18em] text-slate-400">trigger</div>
                                             <div className="mt-1 text-lg font-semibold text-slate-900">{String(triggerDecision.active ?? false)}</div>
@@ -866,7 +858,7 @@ export default function EngineeringLanePage() {
                                             <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.workflowHintKept")}</p>
                                         </div>
                                     </div>
-                                    <div className="grid gap-4 lg:grid-cols-2">
+                                    <div className="grid gap-4">
                                         <div className="rounded-xl border border-slate-200 p-4">
                                             <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.evidenceGraphTitle")}</h3>
                                             <div className="mt-3 grid gap-2 text-sm text-slate-600">
@@ -902,7 +894,7 @@ export default function EngineeringLanePage() {
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="grid gap-4 lg:grid-cols-2">
+                                    <div className="grid gap-4">
                                         <div className="rounded-xl border border-slate-200 p-4">
                                             <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.gitEvidence")}</h3>
                                             <pre className="mt-3 max-h-[180px] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
@@ -940,9 +932,9 @@ export default function EngineeringLanePage() {
                         empty={t("app.admin.dashboard.engineeringLane.none")} />
 
                                         </div>
-                                        <div className="rounded-xl border border-slate-200 p-4 lg:col-span-2">
+                                        <div className="rounded-xl border border-slate-200 p-4">
                                             <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.dryRunMatrixTitle")}</h3>
-                                            <div className="mt-3 grid gap-2 md:grid-cols-3">
+                                            <div className="mt-3 grid gap-2">
                                                 <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">enabled: {String(dryRunMatrix.enabled ?? false)}</span>
                                                 <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">blocked: {String(dryRunMatrix.blockedScenarioCount ?? 0)}</span>
                                                 <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">warnings: {String(dryRunMatrix.warningScenarioCount ?? 0)}</span>
@@ -961,7 +953,7 @@ export default function EngineeringLanePage() {
                         })}
                                             </div>
                                         </div>
-                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 lg:col-span-2">
+                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
                                             <div className="flex flex-wrap items-start justify-between gap-3">
                                                 <div>
                                                     <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
@@ -969,7 +961,7 @@ export default function EngineeringLanePage() {
                                                 </div>
                                                 <MatrixStatusPill value={Number(crossLinkMatrix.summary?.fail || 0) > 0 ? "fail" : Number(crossLinkMatrix.summary?.warning || 0) > 0 ? "warning" : "pass"} />
                                             </div>
-                                            <div className="mt-4 grid gap-2 sm:grid-cols-4">
+                                            <div className="mt-4 grid gap-2">
                                                 {[
                         ["total", crossLinkMatrix.summary?.total ?? crossLinkScenarios.length],
                         ["pass", crossLinkMatrix.summary?.pass ?? 0],
@@ -982,7 +974,7 @@ export default function EngineeringLanePage() {
                                                     </div>
                         )}
                                             </div>
-                                            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                                            <div className="mt-4 grid gap-3">
                                                 {Object.entries(crossLinkGroups).map(([group, items]) =>
                         <div key={group} className="rounded-xl border border-slate-200 bg-white p-3">
                                                         <div className="mb-2 flex items-center justify-between gap-2">
@@ -1025,7 +1017,7 @@ export default function EngineeringLanePage() {
                         </div>
                     </ConfigCard>
 
-                    <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
+                    <div className="space-y-6">
                         <ConfigCard title="app.admin.dashboard.engineeringLane.proofTitle" description="app.admin.dashboard.engineeringLane.proofDescription" bodyScroll="auto" bodyHeight={520}>
                             <div className="space-y-4">
                                 <div className="grid gap-2">
@@ -1131,7 +1123,7 @@ export default function EngineeringLanePage() {
                                                 </Button>
                                             </div>
                                         </div>
-                                        <div className="grid gap-4 lg:grid-cols-2">
+                                        <div className="grid gap-4">
                                             <div>
                                                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.changedFiles")}</h4>
                                                 <FieldList items={selectedProof.changedFiles} empty={t("app.admin.dashboard.engineeringLane.none")} />
@@ -1198,7 +1190,7 @@ export default function EngineeringLanePage() {
                   }
                             </ConfigCard>
 
-                            <div className="grid gap-6 xl:grid-cols-2">
+                            <div className="space-y-6">
                                 <ConfigCard title="app.admin.dashboard.engineeringLane.diagnosticsTitle" description="app.admin.dashboard.engineeringLane.diagnosticsDescription" bodyScroll="auto" bodyHeight={360}>
                                     {diagnostics.length ?
                     <div className="space-y-3">
@@ -1221,7 +1213,7 @@ export default function EngineeringLanePage() {
                                 <ConfigCard title="app.admin.dashboard.engineeringLane.worksetTitle" description="app.admin.dashboard.engineeringLane.worksetDescription" bodyScroll="auto" bodyHeight={360}>
                                     {selectedProof ?
                     <div className="space-y-4">
-                                            <div className="grid gap-3 md:grid-cols-3">
+                                            <div className="grid gap-3">
                                                 <div className="rounded-xl border border-slate-200 p-4">
                                                     <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelModifyRisk")}</div>
                                                     <div className="mt-1 text-lg font-semibold text-slate-900">{resolveWorksetRisk(selectedProof)}</div>
@@ -1238,7 +1230,7 @@ export default function EngineeringLanePage() {
                                                     <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.labelManualOverride")} {String((selectedProof.manualOverride || {}).present ?? false)}</p>
                                                 </div>
                                             </div>
-                                            <div className="grid gap-4 lg:grid-cols-2">
+                                            <div className="grid gap-4">
                                                 <div>
                                                     <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.preflightCheckTitle")}</h4>
                                                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">

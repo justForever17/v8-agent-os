@@ -43,7 +43,9 @@ export async function GET(
 
     const { id } = await params;
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: true });
-    const compactPhone = req.nextUrl.searchParams.get("surface") === "phone"
+    const surface = req.nextUrl.searchParams.get("surface");
+    const compactPhone = surface === "phone"
+        || surface === "desktop"
         || req.nextUrl.searchParams.get("compact") === "1";
     const encoder = new TextEncoder();
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

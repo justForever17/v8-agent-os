@@ -196,7 +196,7 @@ def _external_tool_budget_adjustments(
     if description_tokens > int(max_description_tokens):
         visible_description, omitted_chars = _line_safe_excerpt(
             description,
-            min(max(1200, int(max_description_tokens) * 4), COMPAT_MODEL_VISIBLE_TOOL_DESCRIPTION_CHARS),
+            min(max(400, int(max_description_tokens) * 4), COMPAT_MODEL_VISIBLE_TOOL_DESCRIPTION_CHARS),
         )
         diagnostics["visibleDescription"] = visible_description
         diagnostics["descriptionOmittedChars"] = omitted_chars
@@ -394,11 +394,6 @@ def select_external_tools_for_request(
     tools = [dict(item) for item in list(raw_tools or []) if isinstance(item, dict)]
     if not tools:
         return []
-    payload_tokens = estimate_prompt_tokens(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
-    if payload_tokens > int(max_tools_payload_tokens):
-        raise ValueError(
-            f"External tools payload is too large: {payload_tokens} estimated tokens > {int(max_tools_payload_tokens)}"
-        )
 
     choice = tool_choice
     if isinstance(choice, str) and choice.strip().lower() == "none":
@@ -412,6 +407,12 @@ def select_external_tools_for_request(
     normalized: list[ExternalToolSpec] = []
     seen_aliases: set[str] = set()
     seen_wire_names: set[str] = set()
+    visible_description_budget = int(max_tool_description_tokens)
+    if int(max_tools_payload_tokens or 0) > 0:
+        visible_description_budget = min(
+            visible_description_budget,
+            max(32, int(max_tools_payload_tokens) // max(1, len(tools) * 3)),
+        )
     for raw in tools:
         if str(raw.get("type") or "function").strip().lower() != "function":
             continue
@@ -428,7 +429,7 @@ def select_external_tools_for_request(
             wire_name=wire_name,
             description=description,
             parameters=parameters,
-            max_description_tokens=max_tool_description_tokens,
+            max_description_tokens=visible_description_budget,
             max_schema_bytes=max_tool_schema_bytes,
         )
         semantics = _infer_external_tool_semantics(wire_name, description, parameters)
@@ -459,6 +460,19 @@ def select_external_tools_for_request(
 
     if len(normalized) > int(max_external_tools):
         raise ValueError(f"Too many external tools: {len(normalized)} > {int(max_external_tools)}")
+    visible_payload = [
+        {
+            "name": item.function.name,
+            "description": item.function.visible_description or item.function.description,
+            "parameters": item.function.parameters,
+        }
+        for item in normalized
+    ]
+    visible_payload_tokens = estimate_prompt_tokens(json.dumps(visible_payload, ensure_ascii=False, separators=(",", ":")))
+    if visible_payload_tokens > int(max_tools_payload_tokens):
+        raise ValueError(
+            f"External tools payload is too large after compaction: {visible_payload_tokens} estimated tokens > {int(max_tools_payload_tokens)}"
+        )
     return normalized
 
 

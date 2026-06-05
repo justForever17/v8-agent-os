@@ -252,6 +252,38 @@ def test_model_control_normalizes_legacy_voice_chat_capability_to_false():
     assert model["capabilities"]["audio"] is True
 
 
+def test_role_cards_expose_role_doctor_readiness():
+    config = model_control_plane.normalize_config(
+        {
+            "providers": {
+                "custom-openai": {
+                    "provider": {"name": "Custom OpenAI"},
+                    "models": {
+                        "tiny-chat": {
+                            "name": "Tiny Chat",
+                            "type": "CHAT",
+                            "contextWindow": 8192,
+                            "maxTokens": 1024,
+                            "capabilityClass": "chat_general",
+                            "capabilities": {"chat": True, "streaming": True},
+                        }
+                    },
+                }
+            },
+            "roles": {"supervisor": make_model_ref("custom-openai", "tiny-chat")},
+        }
+    )
+
+    cards = model_control_plane.get_role_cards(config)
+    supervisor = next(item for item in cards if item["key"] == "supervisor")
+
+    assert supervisor["bindingState"] == "explicit"
+    assert supervisor["readiness"] == "blocked"
+    assert supervisor["readinessReason"] == "below_min_context_window"
+    assert supervisor["roleDoctor"]["role"] == "supervisor"
+    assert supervisor["roleDoctor"]["blocking"] is True
+
+
 def test_anthropic_official_probe_url_stays_v1_models():
     result = model_provider_catalog.probe_provider("anthropic", credential="")
 

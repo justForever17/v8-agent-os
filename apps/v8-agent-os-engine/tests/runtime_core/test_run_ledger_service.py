@@ -25,7 +25,59 @@ def test_run_ledger_aggregates_core_refs(tmp_path, monkeypatch):
         agent_id=None,
         workflow_id=None,
         channel_type="test",
-        metadata={"task": "demo"},
+        metadata={
+            "task": "demo",
+            "pendingExternalTools": {
+                "openai:global:call_wire_1": {
+                    "protocol": "openai",
+                    "wireToolCallId": "call_wire_1",
+                    "internalAliasName": "network_write",
+                    "externalWireName": "Write",
+                    "status": "waiting_external_tool",
+                    "createdAt": "2026-05-01T00:00:00+00:00",
+                }
+            },
+        },
+    )
+    state_db.upsert_runtime_episode_record(
+        {
+            "episodeId": "episode_engineering_1",
+            "kind": "engineering",
+            "state": "queued",
+            "source": "runtime_broker",
+            "reason": "project_change_required",
+            "inputs": {"workspace": "E:/Projects/test7"},
+            "requiredRuntimeAccess": ["engineering.write"],
+            "metadata": {"deliverableKind": "patch"},
+        },
+        session_id="session_1",
+        run_id="run_1",
+        priority=5,
+        enqueue=True,
+    )
+    state_db.add_runtime_episode_handoff(
+        episode_id="episode_engineering_1",
+        session_id="session_1",
+        run_id="run_1",
+        handoff={
+            "handoffId": "handoff_patch_1",
+            "kind": "engineering_patch_bundle",
+            "status": "ready",
+            "compactSummary": "Patch bundle ready",
+            "rawRef": "toolobs://patch_raw_1",
+            "detailTool": "tool_observation_detail",
+        },
+    )
+    state_db.upsert_runtime_episode_record(
+        {
+            "episodeId": "episode_orphan_session_1",
+            "kind": "delegation",
+            "state": "failed",
+            "reason": "legacy_missing_run_id",
+            "errorMessage": "task dispatch failed",
+        },
+        session_id="session_1",
+        run_id=None,
     )
     service.record_event(
         event_type="compat.ingress",
@@ -58,7 +110,15 @@ def test_run_ledger_aggregates_core_refs(tmp_path, monkeypatch):
     assert "run.started" in event_types
     assert "compat.ingress" in event_types
     assert "tool.observation" in event_types
+    assert "runtime_episode.queued" in event_types
+    assert "runtime_episode_queue.queued" in event_types
+    assert "runtime_episode.handoff.engineering_patch_bundle" in event_types
+    assert "external_tool.waiting_external_tool" in event_types
     assert "toolobs://raw_1" in ledger["refs"]["rawEvidenceRefs"]
+    assert "episode_engineering_1" in ledger["refs"]["episodeRefs"]
+    assert "episode_orphan_session_1" in ledger["refs"]["episodeRefs"]
+    assert "handoff_patch_1" in ledger["refs"]["handoffRefs"]
+    assert "openai:global:call_wire_1" in ledger["refs"]["externalToolRefs"]
 
 
 def test_run_ledger_list_summarizes_runs(tmp_path, monkeypatch):

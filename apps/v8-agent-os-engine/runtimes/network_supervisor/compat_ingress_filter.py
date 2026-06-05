@@ -740,7 +740,17 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
     cloned = _safe_clone(payload)
     payload_tokens = _payload_tokens(cloned)
     if payload_tokens > int(max_payload_tokens):
-        raise ValueError(f"external_payload_too_large: {payload_tokens} estimated tokens > {int(max_payload_tokens)}")
+        payload_without_client_tools = dict(cloned)
+        payload_without_client_tools.pop("tools", None)
+        payload_without_client_tools.pop("tool_choice", None)
+        payload_without_client_tools.pop("toolChoice", None)
+        non_tool_payload_tokens = _payload_tokens(payload_without_client_tools)
+        if non_tool_payload_tokens > int(max_payload_tokens):
+            raise ValueError(
+                f"external_payload_too_large: {non_tool_payload_tokens} estimated tokens > {int(max_payload_tokens)}"
+            )
+    else:
+        non_tool_payload_tokens = payload_tokens
 
     messages = [item for item in list(cloned.get("messages") or []) if isinstance(item, dict)]
     tools = [item for item in list(cloned.get("tools") or []) if isinstance(item, dict)]
@@ -867,6 +877,7 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
         "protocol": "anthropic",
         "rawRef": raw_ref,
         "payloadTokens": payload_tokens,
+        "nonToolPayloadTokens": non_tool_payload_tokens,
         "messageCount": len(messages),
         "toolResultCount": tool_result_count,
         "clientToolCount": len(tools),

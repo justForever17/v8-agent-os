@@ -23,6 +23,34 @@ def _clip_summary(value: Any, limit: int = 700) -> str:
     return text[: max(0, limit - 20)].rstrip() + "...[truncated]"
 
 
+def _compact_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _compact_payload(item)
+            for key, item in value.items()
+            if key not in {"rawBody", "raw_body", "body", "content", "rawContent", "raw_content"}
+        }
+    if isinstance(value, list):
+        return [_compact_payload(item) for item in value[:20]]
+    if isinstance(value, str):
+        return _clip_summary(value, limit=1200)
+    return value
+
+
+def _collection_from_metadata(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        items: list[dict[str, Any]] = []
+        for key, item in value.items():
+            if isinstance(item, dict):
+                items.append({"metadataKey": key, **item})
+            else:
+                items.append({"metadataKey": key, "value": item})
+        return items
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 class RunLedgerService:
     """Read model that stitches existing runtime evidence into one run timeline.
 
@@ -109,6 +137,168 @@ class RunLedgerService:
                     "summary": _clip_summary(payload.get("summary") or payload.get("status") or topic),
                     "refs": {"runId": run_id, "sessionId": session_id, "seq": event.get("seq")},
                     "payload": payload,
+                }
+            )
+
+        episodes_by_id: dict[str, dict[str, Any]] = {}
+        for episode in db.list_runtime_episodes(run_id=run_id, limit=300):
+            episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+            if episode_id:
+                episodes_by_id[episode_id] = episode
+        if session_id:
+            for episode in db.list_runtime_episodes(session_id=session_id, limit=300):
+                episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+                episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+                if episode_id and (not episode_run_id or episode_run_id == run_id):
+                    episodes_by_id.setdefault(episode_id, episode)
+        episodes = list(episodes_by_id.values())
+        episode_ids = {str(item.get("episodeId") or item.get("id") or "") for item in episodes if item.get("episodeId") or item.get("id")}
+        for episode in episodes:
+            episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+            kind = str(episode.get("kind") or episode.get("runtimeKind") or "runtime").strip() or "runtime"
+            state = str(episode.get("state") or "updated").strip() or "updated"
+            runtime_episode_kind = kind if kind != "unknown" else runtime_kind
+            metadata = episode.get("metadata") if isinstance(episode.get("metadata"), dict) else {}
+            timeline.append(
+                {
+                    "id": f"{run_id}:episode:{episode_id}",
+                    "type": f"runtime_episode.{state}",
+                    "source": "runtime_episodes",
+                    "runtimeKind": runtime_episode_kind,
+                    "ts": _timestamp(episode.get("updated_at") or episode.get("updatedAt") or episode.get("created_at") or episode.get("createdAt")),
+                    "summary": _clip_summary(
+                        episode.get("lastProgress")
+                        or episode.get("errorMessage")
+                        or episode.get("resultRef")
+                        or episode.get("reason")
+                        or f"{kind} episode {state}"
+                    ),
+                    "refs": {
+                        "runId": run_id,
+                        "sessionId": session_id,
+                        "episodeId": episode_id,
+                        "parentEpisodeId": episode.get("parentEpisodeId"),
+                        "rootEpisodeId": episode.get("rootEpisodeId"),
+                        "idempotencyKey": episode.get("idempotencyKey"),
+                    },
+                    "payload": {
+                        "kind": kind,
+                        "state": state,
+                        "source": episode.get("source"),
+                        "reason": episode.get("reason"),
+                        "targetKind": episode.get("targetKind"),
+                        "targetId": episode.get("targetId"),
+                        "recoverable": episode.get("recoverable"),
+                        "errorCode": episode.get("errorCode"),
+                        "resultRef": episode.get("resultRef"),
+                        "requiredRuntimeAccess": episode.get("requiredRuntimeAccess") or episode.get("runtimeAccess") or [],
+                        "handoffRefs": _compact_payload(episode.get("handoffRefs") or []),
+                        "metadata": _compact_payload(metadata),
+                    },
+                }
+            )
+
+            for handoff in db.list_runtime_episode_handoffs(episode_id):
+                handoff_payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else {}
+                handoff_id = str(handoff.get("id") or handoff_payload.get("handoffId") or "").strip()
+                handoff_kind = str(handoff.get("kind") or handoff_payload.get("kind") or "handoff").strip() or "handoff"
+                handoff_status = str(handoff.get("status") or handoff_payload.get("status") or "ready").strip() or "ready"
+                timeline.append(
+                    {
+                        "id": f"{run_id}:episode_handoff:{handoff_id or episode_id}",
+                        "type": f"runtime_episode.handoff.{handoff_kind}",
+                        "source": "runtime_episode_handoffs",
+                        "runtimeKind": runtime_episode_kind,
+                        "ts": _timestamp(handoff.get("created_at") or handoff.get("createdAt")),
+                        "summary": _clip_summary(
+                            handoff.get("compact_summary")
+                            or handoff_payload.get("compactSummary")
+                            or handoff_payload.get("summary")
+                            or handoff_status
+                        ),
+                        "refs": {
+                            "runId": run_id,
+                            "sessionId": session_id,
+                            "episodeId": episode_id,
+                            "handoffId": handoff_id,
+                            "rawRef": handoff.get("raw_ref") or handoff_payload.get("rawRef"),
+                            "detailTool": handoff.get("detail_tool") or handoff_payload.get("detailTool"),
+                        },
+                        "payload": {
+                            "kind": handoff_kind,
+                            "status": handoff_status,
+                            "confidence": handoff.get("confidence"),
+                            "consumerHint": handoff.get("consumer_hint"),
+                            "refs": _compact_payload(handoff.get("refs") or handoff_payload.get("refs") or []),
+                            "payload": _compact_payload(handoff_payload),
+                        },
+                    }
+                )
+
+        for queue_item in db.list_runtime_episode_queue(limit=300):
+            episode_id = str(queue_item.get("episode_id") or "").strip()
+            if episode_id not in episode_ids and str(queue_item.get("run_id") or "").strip() != run_id:
+                continue
+            state = str(queue_item.get("state") or "queued").strip() or "queued"
+            timeline.append(
+                {
+                    "id": f"{run_id}:episode_queue:{queue_item.get('id') or episode_id}",
+                    "type": f"runtime_episode_queue.{state}",
+                    "source": "runtime_episode_queue",
+                    "runtimeKind": queue_item.get("kind") or runtime_kind,
+                    "ts": _timestamp(queue_item.get("updated_at") or queue_item.get("created_at")),
+                    "summary": _clip_summary(queue_item.get("last_error") or f"Episode queue state is {state}"),
+                    "refs": {
+                        "runId": run_id,
+                        "sessionId": session_id,
+                        "episodeId": episode_id,
+                        "queueId": queue_item.get("id"),
+                    },
+                    "payload": {
+                        "state": state,
+                        "priority": queue_item.get("priority"),
+                        "attemptCount": queue_item.get("attempt_count"),
+                        "maxAttempts": queue_item.get("max_attempts"),
+                        "availableAt": queue_item.get("available_at"),
+                        "retryPolicy": _compact_payload(queue_item.get("retryPolicy") or {}),
+                    },
+                }
+            )
+
+        for tool_item in _collection_from_metadata((run.get("metadata") or {}).get("pendingExternalTools")):
+            status = str(tool_item.get("status") or "waiting_external_tool").strip() or "waiting_external_tool"
+            tool_call_id = tool_item.get("toolCallId") or tool_item.get("wireToolCallId") or tool_item.get("providerToolCallId")
+            timeline.append(
+                {
+                    "id": f"{run_id}:external_tool:{tool_item.get('metadataKey') or tool_call_id or status}",
+                    "type": f"external_tool.{status}",
+                    "source": "run_records.metadata.pendingExternalTools",
+                    "runtimeKind": runtime_kind,
+                    "ts": _timestamp(tool_item.get("updatedAt") or tool_item.get("createdAt") or run.get("started_at")),
+                    "summary": _clip_summary(
+                        tool_item.get("summary")
+                        or tool_item.get("toolName")
+                        or tool_item.get("name")
+                        or tool_item.get("metadataKey")
+                        or status
+                    ),
+                    "refs": {
+                        "runId": run_id,
+                        "sessionId": session_id,
+                        "externalToolId": tool_item.get("metadataKey"),
+                        "toolCallId": tool_call_id,
+                        "providerToolCallId": tool_item.get("providerToolCallId"),
+                    },
+                    "payload": _compact_payload(
+                        {
+                            "status": status,
+                            "name": tool_item.get("name") or tool_item.get("toolName"),
+                            "protocol": tool_item.get("protocol"),
+                            "argumentsPreview": tool_item.get("argumentsPreview"),
+                            "resultPreview": tool_item.get("resultPreview"),
+                            "error": tool_item.get("error"),
+                        }
+                    ),
                 }
             )
 
@@ -248,6 +438,9 @@ class RunLedgerService:
             "approvalRefs": sorted({str(item.get("refs", {}).get("approvalId")) for item in timeline if item.get("refs", {}).get("approvalId")}),
             "artifactRefs": sorted({str(item.get("refs", {}).get("artifactId")) for item in timeline if item.get("refs", {}).get("artifactId")}),
             "compactionRefs": sorted({str(item.get("refs", {}).get("compactionRecordId")) for item in timeline if item.get("refs", {}).get("compactionRecordId")}),
+            "episodeRefs": sorted({str(item.get("refs", {}).get("episodeId")) for item in timeline if item.get("refs", {}).get("episodeId")}),
+            "handoffRefs": sorted({str(item.get("refs", {}).get("handoffId")) for item in timeline if item.get("refs", {}).get("handoffId")}),
+            "externalToolRefs": sorted({str(item.get("refs", {}).get("externalToolId")) for item in timeline if item.get("refs", {}).get("externalToolId")}),
         }
         return {
             "runId": run_id,

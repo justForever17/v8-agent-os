@@ -286,7 +286,7 @@ def build_engine_chat_request_from_anthropic(
     external_tools = select_external_tools_from_anthropic(
         [dict(item) for item in list(payload.get("tools") or []) if isinstance(item, dict)],
         tool_choice=payload.get("tool_choice") or payload.get("toolChoice"),
-        max_external_tools=max_external_tools,
+        max_external_tools=max(max_external_tools, ANTHROPIC_COMPAT_MIN_EXTERNAL_TOOLS),
         max_tool_description_tokens=max_external_tool_description_tokens,
         max_tool_schema_bytes=max_external_tool_schema_bytes,
         max_tools_payload_tokens=max_external_tools_payload_tokens,

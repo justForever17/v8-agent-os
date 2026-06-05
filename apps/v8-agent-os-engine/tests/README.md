@@ -64,6 +64,18 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改 Phone/Web realtime 投影 contract | `tests/contracts/` + `tests/chat_runtime/test_session_realtime_runtime_lane_contract.py` |
 | 做真实长任务或端到端验收 | 先读 [tests/scripts/README.md](scripts/README.md)，再选择对应 `run_*_live_*` |
 
+## 观察报告整改矩阵
+
+`docs/V8OS/观察报告.md` 类整改不新增平行内核，按已有主链落到以下测试入口：
+
+| 整改面 | 事实源 / 验收入口 |
+| --- | --- |
+| Run Ledger / Runtime Lifecycle | `tests/runtime_core/test_run_ledger_service.py`、`tests/runtime_core/test_runtime_episode_runner.py` |
+| External API Compat | `tests/network/test_network_supervisor_openai_compat.py` |
+| Model Role Doctor | `tests/model_control/test_model_ref_control_plane.py`、`tests/model_control/test_model_role_doctor.py` |
+| Skill / Workspace Integrity | `tests/extensions/test_skill_loader_readonly_integrity.py`、`tests/extensions/test_skill_loader_dynamic_discovery.py`、`tests/safety/` |
+| Projection / Phone-Web | `tests/contracts/`、`tests/chat_runtime/test_session_realtime_runtime_lane_contract.py` |
+
 ## 脚本与 pytest 的边界
 
 - `tests/**/*.py` 中以 `test_` 开头的文件是默认 pytest 回归入口，默认应可离线或 mock 化运行。

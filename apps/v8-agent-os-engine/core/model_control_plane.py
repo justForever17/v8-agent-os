@@ -73,6 +73,44 @@ def normalize_config_temperature(value: Any) -> Optional[float]:
         return None
     return max(min(parsed, 2.0), 0.05)
 
+
+def _role_doctor_for_missing_binding(role_key: str, binding_state: str) -> Dict[str, Any]:
+    code = "role_model_unbound" if binding_state == "unbound" else "role_model_invalid"
+    message = (
+        "Role has no resolved model binding."
+        if binding_state == "unbound"
+        else "Role binding does not resolve to an enabled model."
+    )
+    return {
+        "role": role_key,
+        "modelKind": "unknown",
+        "ok": False,
+        "blocking": True,
+        "issues": [{"code": code, "message": message}],
+        "warnings": [],
+        "effectiveInputLimit": None,
+        "notes": [],
+    }
+
+
+def _readiness_from_role_doctor(binding_state: str, role_doctor: Dict[str, Any]) -> Dict[str, Any]:
+    issues = list(role_doctor.get("issues") or [])
+    warnings = list(role_doctor.get("warnings") or [])
+    if binding_state == "unbound":
+        status = "unbound"
+    elif binding_state == "invalid" or role_doctor.get("blocking") or issues:
+        status = "blocked"
+    elif warnings:
+        status = "warning"
+    else:
+        status = "ready"
+    reason = ""
+    if issues:
+        reason = str(issues[0].get("code") or issues[0].get("message") or "")
+    elif warnings:
+        reason = str(warnings[0].get("code") or warnings[0].get("message") or "")
+    return {"status": status, "reason": reason}
+
 DEFAULT_GOVERNANCE = {
     "enabled": True,
     "stickyRunModel": True,
@@ -1090,8 +1128,15 @@ class ModelControlPlane:
                 or model["capabilityClass"] in role_definition.get("capabilityClasses", [])
             ]
             resolution = resolved_roles.get(role_key, {})
-            resolved_model = dict(resolution.get("resolvedModel") or {})
             resolved_provider = dict(resolution.get("resolvedProvider") or {})
+            binding_state = str(resolution.get("bindingState") or "unbound")
+            resolved_model_ref = str(resolution.get("resolvedModelRef") or "")
+            resolved_model_row = next((model for model in models if model.get("modelRef") == resolved_model_ref), None)
+            if resolved_model_row:
+                role_doctor = diagnose_model_role(resolved_model_row, role=role_key)
+            else:
+                role_doctor = _role_doctor_for_missing_binding(role_key, binding_state)
+            role_readiness = _readiness_from_role_doctor(binding_state, role_doctor)
             cards.append(
                 {
                     "key": role_key,
@@ -1104,7 +1149,10 @@ class ModelControlPlane:
                     "resolvedModelRef": resolution.get("resolvedModelRef") or "",
                     "resolvedModelName": resolution.get("resolvedModelId") or "",
                     "resolvedProviderName": resolved_provider.get("name") or "",
-                    "bindingState": resolution.get("bindingState") or "unbound",
+                    "bindingState": binding_state,
+                    "roleDoctor": role_doctor,
+                    "readiness": role_readiness.get("status"),
+                    "readinessReason": role_readiness.get("reason"),
                     "compatibleModels": compatible_models,
                 }
             )

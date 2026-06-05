@@ -3056,7 +3056,7 @@
   "components.memory.MemoryConfigPanel.kf3bf6006": "适用于架构约定、长期规则和全局稳定事实。",
   "components.memory.MemoryConfigPanel.kf6d4fc8c": "轻量",
   "components.memory.MemoryConfigPanel.kf6e4c5df": "提高后会减少进入全局 durable memory 的稳定知识条目。",
-  "components.memory.MemoryConfigPanel.kfc781832": "主要服务 memory / RAG 的二阶段精排；若扩展生态或桌面候选没有单独指定，也会回退使用这里的全局重排模型。",
+  "components.memory.MemoryConfigPanel.kfc781832": "主要服务 memory / RAG 的二阶段精排；可选择专用 Rerank 模型，也可选择 Embedding 模型并通过向量相似度做轻量重排。",
   "components.memory.MemoryConfigPanel.kfff873a0": "用于 project / channel 等非 global scope 的知识条目。",
   "components.memory.MemoryConfigPanel.recallPreview.emptyQuery": "请先输入一条要诊断的查询。",
   "components.memory.MemoryConfigPanel.recallPreview.rejected": "已拒绝",

@@ -19,12 +19,28 @@ interface SysModel {
   modelId: string;
   name: string;
   type: string;
+  capabilityClass?: string | null;
+  capabilities?: Record<string, boolean> | string[] | null;
   provider: {
     id?: string;
     name: string;
     icon?: string;
   };
   providerName?: string;
+}
+function modelHasCapability(model: SysModel, key: string): boolean {
+  const caps = model.capabilities;
+  if (Array.isArray(caps)) return caps.map(item => String(item).toLowerCase()).includes(key.toLowerCase());
+  if (caps && typeof caps === "object") return Boolean(caps[key]);
+  return false;
+}
+function isEmbeddingModel(model: SysModel): boolean {
+  return String(model.type || "").toUpperCase() === "EMBEDDING" || String(model.capabilityClass || "").toLowerCase() === "embedding" || modelHasCapability(model, "embedding");
+}
+function isRerankModel(model: SysModel): boolean {
+  const type = String(model.type || "").toUpperCase();
+  const capabilityClass = String(model.capabilityClass || "").toLowerCase();
+  return type === "RERANK" || type === "RERANKER" || capabilityClass === "rerank" || capabilityClass === "reranker" || modelHasCapability(model, "rerank");
 }
 interface MemoryConfig {
   extraction_model?: string;
@@ -334,8 +350,8 @@ export default function MemoryConfigPanel() {
             </div>;
   }
   const llmModels = models.filter(m => ['TEXT', 'MULTIMODAL', 'chat', 'LLM'].includes(m.type.toUpperCase() || 'LLM'));
-  const embedModels = models.filter(m => ['EMBEDDING'].includes(m.type.toUpperCase()));
-  const rerankModels = models.filter(m => ['RERANK'].includes(m.type.toUpperCase()));
+  const embedModels = models.filter(isEmbeddingModel);
+  const rerankModels = models.filter(m => isRerankModel(m) || isEmbeddingModel(m));
   return <div className="space-y-4">
             <Card>
                 <CardHeader>

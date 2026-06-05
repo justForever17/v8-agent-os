@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from core.llm_factory import RestReranker, _safe_log_text
+from core.llm_factory import EmbeddingSimilarityReranker, LLMFactory, RestReranker, _safe_log_text
 
 
 class _Response:
@@ -65,3 +65,69 @@ def test_reranker_log_text_is_safe_for_gbk_stderr(monkeypatch) -> None:
 
     text.encode("gbk")
     assert "\\u26a0" in text or "\\ufe0f" in text
+
+
+class _FakeEmbedding:
+    def __init__(self, vectors: dict[str, list[float]]):
+        self.vectors = vectors
+        self.calls: list[list[str]] = []
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        return [self.vectors[text] for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.vectors[text]
+
+
+def test_embedding_similarity_reranker_orders_by_cosine_similarity() -> None:
+    embedding = _FakeEmbedding(
+        {
+            "cat": [1.0, 0.0],
+            "dog document": [0.0, 1.0],
+            "mixed document": [0.5, 0.5],
+            "cat document": [1.0, 0.0],
+        }
+    )
+    reranker = EmbeddingSimilarityReranker(embedding_model=embedding, model_name="embed-fixture")
+
+    result = reranker.rerank("cat", ["dog document", "mixed document", "cat document"], top_k=2)
+
+    assert [row["index"] for row in result] == [2, 1]
+    assert embedding.calls == [["cat", "dog document", "mixed document", "cat document"]]
+
+
+def test_embedding_similarity_reranker_keeps_input_order_for_ties() -> None:
+    embedding = _FakeEmbedding({"query": [1.0], "first": [1.0], "second": [1.0]})
+    reranker = EmbeddingSimilarityReranker(embedding_model=embedding, model_name="embed-fixture")
+
+    result = reranker.rerank("query", ["first", "second"], top_k=2)
+
+    assert [row["index"] for row in result] == [0, 1]
+
+
+def test_factory_uses_embedding_similarity_adapter_for_embedding_models(monkeypatch) -> None:
+    metadata = {
+        "is_found": True,
+        "model_id": "embedding-fixture",
+        "model_record": {"type": "EMBEDDING"},
+        "capability_class": "embedding",
+        "capabilities": {"embedding": True},
+        "api_key": "key",
+        "base_url": "https://example.test/v1",
+        "global_context_window": 8192,
+        "provider_id": "fixture-provider",
+        "provider_name": "Fixture Provider",
+    }
+
+    monkeypatch.setattr(
+        LLMFactory,
+        "_resolve_model_metadata",
+        classmethod(lambda cls, model_ref: metadata),
+    )
+
+    reranker = LLMFactory.create_reranker_model("fixture-provider::embedding-fixture")
+
+    assert isinstance(reranker, EmbeddingSimilarityReranker)
+    assert reranker.model_name == "embedding-fixture"
+    assert reranker.capability_class == "embedding"

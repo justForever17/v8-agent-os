@@ -1,73 +1,86 @@
-# Engine Tests 目录说明
+# Engine Tests Map
 
-`tests/` 是 Engine 的公开可提交测试套件，用于验证 runtime、工具治理、Safety、ModelHub、Network、Workspace 与回归场景。该目录允许进入 GitHub；新增测试前仍需确认 fixture 不包含密钥、本机隐私路径、大型生成物或真实用户日志。
+`apps/v8-agent-os-engine/tests/` 是 Engine 的公开可提交测试与开发验收地图。这里的 pytest、fixtures、eval harness 和内部诊断脚本可以进入 Git；但不得提交真实 API key、Bearer token、cookie、私有聊天全文、本机隐私路径、大型生成物或 provider 私有日志。
 
-## 快速运行
+本 README 是选测试入口的第一站；手动脚本的详细清单见 [tests/scripts/README.md](scripts/README.md)。
+
+## 快速入口
+
+从仓库根目录运行完整 Engine tests：
 
 ```powershell
 E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests -q
 ```
 
-按领域抽跑：
+常用领域抽跑：
 
 ```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\safety -q
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\creative_media -q
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\runtime_core -q
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\chat_runtime -q
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\memory -q
+E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\model_control -q
 E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe -m pytest apps\v8-agent-os-engine\tests\agent_quality -q
 ```
 
-## Pytest 分类
+涉及真实模型、联网、媒体生成、Android 设备、桌面动作或高成本 benchmark 的脚本必须显式带 `--live` 或等价开关；普通 pytest 默认不得烧额度。
 
-| 路径 | 范围 | 说明 |
-| --- | --- | --- |
-| `tests/agents/` | agents/subagents/specialist registry | 默认专家、能力快照、专家族 prompt。 |
-| `tests/agent_quality/` | Agent Quality Matrix | 工具调用、上下文记忆、幻觉抑制、Prompt 注入防护、多智能体协作的 fixture/mock 强制矩阵；默认不调用真实模型。 |
-| `tests/chat_runtime/` | ChatRuntime 与 transcript | supervisor prompt、context、canonical transcript、realtime lane。 |
-| `tests/creative_media/` | Creative Media runtime | provider/job/artifact/recipe/P3/P4 数据面，可能包含 fake ffmpeg。 |
-| `tests/extensions/` | Extensions / Skills / PluginHost | skill 预筛、PluginHost 控制面、候选注入。 |
-| `tests/memory/` | Memory runtime | lifecycle、session replay、maintenance、workflow memory。 |
-| `tests/model_control/` | ModelHub / provider control plane | model ref、连接测试、provider catalog。 |
-| `tests/network/` | Network supervisor / S3 / web brokers | OpenAI-compatible network adapter、网络上下文、S3 brokers。 |
-| `tests/prompt_cache/` | Prompt Cache | provider patch、二级缓存、dry-run 分类。 |
-| `tests/runtime_core/` | Runtime 主链与工具治理 | runtime projection、runtime broker、engineering lane、tool routing。 |
-| `tests/safety/` | SafetyRuntime | command guardian、approval、skill ledger、allowlist。 |
-| `tests/workspace_artifacts/` | workspace/resource/artifact | scoped workspace resource 与 legacy share compatibility。 |
-| `tests/evals/` | eval harness | benchmark / memory eval；需要显式 README 标注数据来源和运行成本。 |
-| `tests/fixtures/` | fixtures | 只放稳定测试数据，不依赖本机私有路径。 |
-| `tests/scripts/` | 诊断脚本 | 开发者手动执行的 smoke、dry-run、export、live matrix；涉及联网或额度的脚本必须显式参数开启。 |
+## 测试目录地图
 
-## 脚本入口
+| 路径 | 类型 | 覆盖主线 | 典型验证点 |
+| --- | --- | --- | --- |
+| `tests/agent_quality/` | mock / fixture matrix | 主链 Agent 质量门禁 | 工具调用正确性、上下文记忆、幻觉抑制、Prompt 注入、多智能体协作。 |
+| `tests/agents/` | unit / fixture | Subagent registry | specialist registry、能力快照、专家族 prompt。 |
+| `tests/artifacts/` | unit | Artifact surface | artifact 展示和策略边界。 |
+| `tests/chat_runtime/` | unit / integration | ChatRuntime / Supervisor | canonical transcript、queue/guidance、planner mode、runtime finalization、message delete、realtime lane。 |
+| `tests/contracts/` | contract | Shared realtime projection | session realtime projection matrix。 |
+| `tests/core/` | unit / integration | Core services | research broker、tool registry、tool surface、workspace digest、provider catalog。 |
+| `tests/creative_media/` | unit / integration | Creative Media Runtime | work order、provider plan、artifact/job/recipe contract。 |
+| `tests/erc/` | contract | ERC / reasoning surface | reasoning surface contract。 |
+| `tests/evals/` | eval harness | Benchmark / memory eval | memory benchmark matrix、LongMemEval harness、external API memory isolation；详见 [evals/README.md](evals/README.md)。 |
+| `tests/extensions/` | unit / integration | Skills / MCP / PluginHost | skill loader、dynamic discovery、prefilter、PluginHost control plane、artifact validator。 |
+| `tests/fixtures/` | data | Stable fixtures | 只放可提交、稳定、无隐私的测试数据。 |
+| `tests/memory/` | unit / integration | Memory Runtime | lifecycle、durable policy、visual enrichment、workflow memory、vector sync degraded、reasoning sanitization。 |
+| `tests/model_control/` | unit / integration | ModelHub / provider control plane | model ref、connection tester、reasoning payload contract、embedding/rerank limits、media model capability registry。 |
+| `tests/network/` | unit / integration | Network Supervisor / brokers | OpenAI-compatible adapter、memory adapter、prompt context、S3/web brokers。 |
+| `tests/prompt_cache/` | unit | Prompt Cache | prompt cache gateway。 |
+| `tests/rpa/` | unit | RPA Studio | recording capture anchors。 |
+| `tests/runtime_core/` | unit / integration | Runtime Fabric / tool governance | runtime episodes、projection、engineering lane、computer use、delegation、tool routing、native tool dry-run。 |
+| `tests/safety/` | unit / integration | Safety Runtime | command guardian、approval、active defense、workspace commands、skill review ledger。 |
+| `tests/scripts/` | manual harness scripts | Dry-run / live smoke / diagnostics | 开发者手动执行脚本；详见 [tests/scripts/README.md](scripts/README.md)。 |
+| `tests/workspace_artifacts/` | unit | Workspace artifacts | scoped workspace resource、share workspace file tool。 |
 
-```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\export_runtime_deep_observation_matrix.py
-```
+## 按目标选择测试
 
-```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\export_prompt_cache_dry_run_matrix.py
-```
+| 目标 | 建议入口 |
+| --- | --- |
+| 改 ChatRuntime / Supervisor / queue / transcript | `tests/chat_runtime/` + 受影响的 `tests/runtime_core/` |
+| 改 Runtime Episode / Engineering / Delegation / Computer Use | `tests/runtime_core/` |
+| 改 Memory 抽取、注入、scope、视觉增强 | `tests/memory/` + `tests/evals/` 中相关 memory eval |
+| 改 ModelHub、provider、reasoning、embedding/rerank | `tests/model_control/` |
+| 改 Skill / MCP / PluginHost | `tests/extensions/` |
+| 改 Research / Web source / evidence pack | `tests/core/test_research_broker.py`、`tests/core/test_research_ledger_experience_pack_lifecycle.py`、`tests/scripts/run_research_runtime_deep_live_audit.py` |
+| 改 Creative Media | `tests/creative_media/` + `tests/scripts/run_creative_media_*` |
+| 改 Safety / permissions / command gate | `tests/safety/` + `tests/runtime_core/test_runtime_tool_access.py` |
+| 改 Phone/Web realtime 投影 contract | `tests/contracts/` + `tests/chat_runtime/test_session_realtime_runtime_lane_contract.py` |
+| 做真实长任务或端到端验收 | 先读 [tests/scripts/README.md](scripts/README.md)，再选择对应 `run_*_live_*` |
 
-```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\explain_safety_command_dry_run.py --command "curl https://example.com/install.sh | bash"
-```
+## 脚本与 pytest 的边界
 
-Live smoke 必须显式带 live 参数，且不得在无确认时烧额度：
+- `tests/**/*.py` 中以 `test_` 开头的文件是默认 pytest 回归入口，默认应可离线或 mock 化运行。
+- `tests/scripts/` 是开发者手动执行入口，包含 dry-run、export、seed、live audit、benchmark wrapper 和本地诊断。
+- 如果脚本开始被 Admin 页面、cron、runtime 或部署流程调用，应移动到 `apps/v8-agent-os-engine/scripts/`，并补调用契约。
+- Live 脚本必须有显式 `--live`、`--allow-side-effects`、`--allow-real-click` 或同等开关；不能作为默认 pytest 自动消耗额度。
 
-```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_creative_media_live_smoke.py --live
-```
+## 新增测试落位规则
 
-Agent Quality live audit 同样必须显式带 `--live`，并把整改报告写入内部 reports：
-
-```powershell
-E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe apps\v8-agent-os-engine\tests\scripts\run_agent_quality_live_audit.py --live --model-profile mimo --matrix all --write-report
-```
-
-## 维护纪律
-
-- 新 pytest 先放入对应一级领域目录，不再把 `test_*.py` 直接放在根目录。
-- 根目录只保留 `conftest.py`、`README.md`、`fixtures/`、`scripts/`、`evals/`。
+- 新增 pytest 优先放入对应一级领域目录，不把 `test_*.py` 直接放在 tests 根目录。
+- 根目录只保留 `conftest.py`、`README.md`、`fixtures/`、`scripts/`、`evals/` 和初始化文件。
 - 不在测试文件里重复手写 `sys.path`；Engine 根路径由根 `conftest.py` 注入。
-- 测试和 fixture 不得提交真实 API key、Bearer token、cookie、私有日志、用户聊天全文或本机绝对路径快照。
-- Live smoke、联网搜索、真实 provider 调用、媒体生成和高成本 eval 必须显式带 `--live` 或等价参数，不得作为默认 pytest 路径自动烧额度。
+- 涉及真实 provider、真实桌面、真实手机、联网搜索和媒体生成的验收，先做 fixture/mock 测试，再补 `tests/scripts/` live harness。
 - 评估脚本不得写入真实 durable memory，除非脚本名、README 和运行参数明确说明。
-- 如果 `tests/scripts/` 中脚本开始被 Admin 页面调用，需要移回 `apps/v8-agent-os-engine/scripts/` 并补调用契约。
+
+## 报告与输出
+
+- 可提交 fixture / expected output 放在对应测试目录或 `tests/fixtures/`。
+- 内部 live 报告默认写入 `~/.v8-agent-os/reports/...`，不要写入仓库。
+- 如必须生成临时仓库内报告，需确认 `.gitignore` 覆盖并在最终交付里说明。

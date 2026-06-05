@@ -3,6 +3,7 @@ import logging
 import sys
 import time
 import re
+import math
 from datetime import datetime, timezone
 
 from langchain_openai import ChatOpenAI
@@ -392,6 +393,65 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         
     def embed_query(self, text: str) -> list[float]:
         return self._call_api([text])[0]
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = 0.0
+    left_norm = 0.0
+    right_norm = 0.0
+    for left_value, right_value in zip(left, right):
+        left_float = float(left_value or 0.0)
+        right_float = float(right_value or 0.0)
+        dot += left_float * right_float
+        left_norm += left_float * left_float
+        right_norm += right_float * right_float
+    denominator = math.sqrt(left_norm) * math.sqrt(right_norm)
+    if denominator <= 0:
+        return 0.0
+    return dot / denominator
+
+
+class EmbeddingSimilarityReranker(BaseReranker):
+    """Use an embedding model as a deterministic reranker via cosine similarity."""
+
+    api_flavor = "embedding_similarity"
+
+    def __init__(self, embedding_model: BaseEmbedding, model_name: str, provider_id: str = "", provider_name: str = "", role: str = "reranker", capability_class: str = "embedding"):
+        self.embedding_model = embedding_model
+        self.model_name = model_name
+        self.provider_id = provider_id
+        self.provider_name = provider_name or provider_id
+        self.role = role
+        self.capability_class = capability_class
+
+    def rerank(self, query: str, documents: list[str], top_k: int = 3) -> list[Dict[str, Any]]:
+        if not documents:
+            return []
+        try:
+            effective_top_k = max(0, min(int(top_k), len(documents)))
+        except (TypeError, ValueError):
+            effective_top_k = min(3, len(documents))
+        if effective_top_k <= 0:
+            return []
+
+        vectors = self.embedding_model.embed_documents([str(query or ""), *[str(doc or "") for doc in documents]])
+        if len(vectors) < len(documents) + 1:
+            raise ValueError(
+                f"embedding_reranker_vector_count_mismatch: expected {len(documents) + 1}, got {len(vectors)}"
+            )
+        query_vector = vectors[0]
+        ranked = [
+            {
+                "index": index,
+                "document": documents[index],
+                "relevance_score": _cosine_similarity(query_vector, vectors[index + 1]),
+            }
+            for index in range(len(documents))
+        ]
+        ranked.sort(key=lambda row: (-float(row.get("relevance_score") or 0.0), int(row.get("index") or 0)))
+        return ranked[:effective_top_k]
 
 
 class RestReranker(BaseReranker):
@@ -1136,6 +1196,8 @@ class LLMFactory:
         if not api_key:
             raise ValueError(f"Could not resolve API key for embedding model '{model_id}'")
             
+        role = str(kwargs.pop("role", "") or "embedding")
+        capability_class = str(kwargs.pop("capability_class", "") or meta.get("capability_class") or "embedding")
         wire_model_id = str(meta.get("model_id") or model_id)
         return OpenAICompatibleEmbedding(
             model_name=wire_model_id,
@@ -1144,8 +1206,8 @@ class LLMFactory:
             max_tokens=meta.get("global_context_window"),
             provider_id=str(meta.get("provider_id") or meta.get("provider_name") or ""),
             provider_name=str(meta.get("provider_name") or meta.get("provider_id") or ""),
-            role="embedding",
-            capability_class=str(meta.get("capability_class") or "embedding"),
+            role=role,
+            capability_class=capability_class,
         )
 
     @classmethod
@@ -1165,6 +1227,29 @@ class LLMFactory:
         role = str(kwargs.pop("role", "") or "reranker")
         capability_class = str(kwargs.pop("capability_class", "") or meta.get("capability_class") or "reranker")
         wire_model_id = str(meta.get("model_id") or model_id)
+
+        model_record = dict(meta.get("model_record") or {})
+        model_type = str(model_record.get("type") or meta.get("type") or "").strip().upper()
+        capabilities = dict(meta.get("capabilities") or {})
+        is_embedding_model = (
+            capability_class.lower() == "embedding"
+            or model_type == "EMBEDDING"
+            or bool(capabilities.get("embedding") or capabilities.get("supportsEmbedding"))
+        )
+        if is_embedding_model:
+            embedding_model = cls.create_embedding_model(
+                model_id,
+                role=role,
+                capability_class="embedding",
+            )
+            return EmbeddingSimilarityReranker(
+                embedding_model=embedding_model,
+                model_name=wire_model_id,
+                provider_id=str(meta.get("provider_id") or meta.get("provider_name") or ""),
+                provider_name=str(meta.get("provider_name") or meta.get("provider_id") or ""),
+                role=role,
+                capability_class="embedding",
+            )
             
         return RestReranker(
             model_name=wire_model_id,

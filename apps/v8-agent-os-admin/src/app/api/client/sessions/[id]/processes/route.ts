@@ -89,7 +89,7 @@ export async function GET(
         const processes = Array.isArray(payload?.processes)
             ? payload.processes
                 .map((process: unknown) => normalizeProcessForRealtimeSurface(process))
-                .filter((process): process is NonNullable<ReturnType<typeof normalizeProcessForRealtimeSurface>> => Boolean(process))
+                .filter((process: ReturnType<typeof normalizeProcessForRealtimeSurface>): process is NonNullable<ReturnType<typeof normalizeProcessForRealtimeSurface>> => Boolean(process))
             : [];
         const now = Date.now();
         processSurfaceCache.set(id, {

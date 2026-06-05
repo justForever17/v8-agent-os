@@ -3056,7 +3056,7 @@
   "components.memory.MemoryConfigPanel.kf3bf6006": "Applies to architecture conventions, long-lived rules, and globally stable facts.",
   "components.memory.MemoryConfigPanel.kf6d4fc8c": "Light",
   "components.memory.MemoryConfigPanel.kf6e4c5df": "Higher values reduce the number of stable facts that make it into global durable memory.",
-  "components.memory.MemoryConfigPanel.kfc781832": "Used for second-stage reranking in memory and RAG. Extensions and desktop candidates fall back here when no dedicated reranker is bound.",
+  "components.memory.MemoryConfigPanel.kfc781832": "Used for second-stage reranking in memory and RAG. You can choose a dedicated reranker, or choose an embedding model for lightweight vector-similarity reranking.",
   "components.memory.MemoryConfigPanel.kfff873a0": "Applies to knowledge items in non-global scopes such as project or channel.",
   "components.memory.MemoryConfigPanel.recallPreview.emptyQuery": "Enter a query to diagnose first.",
   "components.memory.MemoryConfigPanel.recallPreview.rejected": "Rejected",

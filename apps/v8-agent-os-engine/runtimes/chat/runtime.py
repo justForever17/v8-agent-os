@@ -8065,7 +8065,13 @@ class ChatRuntime:
         row = db.get_chat_canonical_message(message_id) or {}
         current_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")
         final_text = self._extract_final_assistant_text_from_state(state)
+        handoff_summary = ""
         force_reconcile = False
+        if not str(final_text or "").strip():
+            handoff_summary = self._runtime_handoff_summary_from_state(state)
+            if handoff_summary:
+                final_text = handoff_summary
+                force_reconcile = True
         if not self._should_reconcile_final_text(
             current_text=current_text,
             final_text=final_text,

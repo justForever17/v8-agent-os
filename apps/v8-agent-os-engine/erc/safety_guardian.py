@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import psutil
 
+from core.background_model_output import sanitize_background_model_output
 from core.storage import storage
 from core.database import db
 from core.safety_active_defense import DEFAULT_ACTIVE_DEFENSE_CONFIG, normalize_active_defense_config, safety_active_defense_monitor
@@ -3052,21 +3053,7 @@ class SafetyGuardian:
             }
 
     def _extract_llm_text(self, response: Any) -> str:
-        content = getattr(response, "content", response)
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                    continue
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text.strip())
-            return "\n".join(parts).strip()
-        return str(content or "").strip()
+        return sanitize_background_model_output(response).text.strip()
 
     def _parse_skill_review_json(self, raw_text: str) -> Dict[str, Any]:
         text = str(raw_text or "").strip()

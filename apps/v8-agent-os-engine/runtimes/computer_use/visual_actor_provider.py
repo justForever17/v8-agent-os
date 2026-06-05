@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from core.models.factory import llm_factory
+from core.background_model_output import parse_background_json_object
 from core.model_control_plane import model_control_plane
 from core.multimodal_payload_adapter import build_multimodal_content
 
@@ -212,7 +212,7 @@ class VisualActorProvider:
                 transport_mode="inline_base64_image",
             )
             response = model.invoke([HumanMessage(content=content)])
-            payload = _parse_json_response(getattr(response, "content", response))
+            payload = _parse_json_response(response)
             proposal = _proposal_from_model_payload(
                 payload,
                 request=request,
@@ -267,24 +267,8 @@ def _screenshot_data_url(path: str | None) -> str | None:
 
 
 def _parse_json_response(value: Any) -> dict[str, Any]:
-    text = str(value or "").strip()
-    if not text:
-        return {}
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text, flags=re.I).strip()
-        text = re.sub(r"```$", "", text).strip()
-    try:
-        payload = json.loads(text)
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        match = re.search(r"\{.*\}", text, flags=re.S)
-        if not match:
-            return {}
-        try:
-            payload = json.loads(match.group(0))
-            return payload if isinstance(payload, dict) else {}
-        except Exception:
-            return {}
+    payload, _sanitized, _error = parse_background_json_object(value)
+    return payload if isinstance(payload, dict) else {}
 
 
 def _proposal_from_model_payload(

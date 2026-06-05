@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from core.background_model_output import sanitize_background_model_output
 from core.llm_factory import llm_factory
 
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
@@ -21,21 +22,7 @@ _PREFILTER_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="v8-e
 
 
 def _response_text(value: Any) -> str:
-    content = getattr(value, "content", value)
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-        return "\n".join(part for part in parts if part).strip()
-    return str(content or "").strip()
+    return sanitize_background_model_output(value).text.strip()
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -102,7 +89,7 @@ def _write_prefilter_cache(cache_key: str, *, selected_keys: list[str], state: d
     return list(normalized_keys), dict(normalized_state)
 
 
-def _invoke_prefilter_model(*, role: str, prompt_payload: str) -> tuple[str, dict[str, Any]]:
+def _invoke_prefilter_model(*, role: str, prompt_payload: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
     model = llm_factory.create_for_role(role, streaming=False, temperature=0)
     response = model.invoke(
         [
@@ -122,8 +109,9 @@ def _invoke_prefilter_model(*, role: str, prompt_payload: str) -> tuple[str, dic
         ],
         config={"callbacks": []},
     )
-    raw_response = _response_text(response)
-    return raw_response, _extract_json_object(raw_response)
+    sanitized = sanitize_background_model_output(response)
+    raw_response = sanitized.text
+    return raw_response, _extract_json_object(raw_response), sanitized.diagnostics()
 
 
 def select_family_keys_with_llm(
@@ -222,7 +210,7 @@ def select_family_keys_with_llm(
     started_at = time.perf_counter()
     timeout_budget = max(float(timeout_seconds or _PREFILTER_TIMEOUT_SECONDS), 0.05)
     try:
-        raw_response, payload = _PREFILTER_EXECUTOR.submit(
+        raw_response, payload, sanitizer_diagnostics = _PREFILTER_EXECUTOR.submit(
             _invoke_prefilter_model,
             role=role,
             prompt_payload=prompt_payload,
@@ -287,6 +275,7 @@ def select_family_keys_with_llm(
             "mode": mode,
             "reason": reason,
             "rawResponse": raw_response,
+            "backgroundOutput": sanitizer_diagnostics,
             "emptySelection": bool(selected_field_present and not selected_keys),
             "timedOut": False,
             "cacheHit": False,

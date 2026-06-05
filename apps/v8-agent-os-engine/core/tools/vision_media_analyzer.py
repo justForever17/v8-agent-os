@@ -9,6 +9,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import interrupt
 
 from core.artifact_store import artifact_store
+from core.background_model_output import sanitize_background_model_output
 from core.llm_factory import llm_factory
 from core.local_visual_support import (
     build_inline_image_data_from_bytes,
@@ -312,7 +313,10 @@ def vision_media_analyzer(
             },
         )
 
-        return f"--- Vision Analysis Complete ---\nSource: {display_source}\n{response.content}"
+        sanitized = sanitize_background_model_output(response)
+        if not sanitized.text:
+            return "Vision Media Analysis Failed: background_output_no_visible_text"
+        return f"--- Vision Analysis Complete ---\nSource: {display_source}\n{sanitized.text}"
         
     except ModelGovernanceInterventionRequired:
         raise

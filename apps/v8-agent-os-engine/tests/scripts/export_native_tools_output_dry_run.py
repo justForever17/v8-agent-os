@@ -125,6 +125,19 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "creative_media_list_quality_jobs": {"status": None, "limit": 10},
     "creative_media_cost_ledger": {"limit": 10},
     "creative_media_safety_events": {"limit": 10},
+    "creative_media_compile_work_order": {
+        "request": {
+            "intent": "simple_asset",
+            "modality": "image",
+            "assetRole": "background",
+            "brief": "Dry-run calibration image for native tool output docs.",
+            "aspectRatio": "16:9",
+            "qualityTier": "draft",
+            "costLimit": 0,
+            "requestingRuntime": "calibration",
+        }
+    },
+    "creative_media_list_work_orders": {"status": None, "requesting_runtime": None, "limit": 10},
     "computer_use_list_apps": {"app_query": None, "limit": 10, "include_running": True, "force_refresh": False},
     "computer_use_list_primitives": {"category": None, "detail_level": "summary"},
     "computer_use_desktop_capabilities": {"detail_level": "summary"},

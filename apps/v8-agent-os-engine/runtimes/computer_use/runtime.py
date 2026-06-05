@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from core.artifact_store import artifact_store
+from core.background_model_output import sanitize_background_model_output
 from core.database import db
 from core.models.factory import llm_factory
 from core.local_visual_support import is_local_provider, probe_local_multimodal_capability
@@ -8071,23 +8072,7 @@ class ComputerUseRuntime:
         raise DesktopDriverError("Computer Use planner 返回内容不是有效的 JSON steps。")
 
     def _planner_response_text(self, response: Any) -> str:
-        content = getattr(response, "content", response)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks: List[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    chunks.append(item)
-                    continue
-                if isinstance(item, dict):
-                    for key in ("text", "content", "output_text", "reasoning", "reasoning_content", "thought"):
-                        value = item.get(key)
-                        if isinstance(value, str) and value.strip():
-                            chunks.append(value)
-                            break
-            return "\n".join(part for part in chunks if part).strip()
-        return str(content or "")
+        return sanitize_background_model_output(response).text
 
     def _observation_summary(self, observation: Dict[str, Any], *, max_elements: int = 18) -> str:
         if not isinstance(observation, dict):

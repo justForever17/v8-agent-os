@@ -9,6 +9,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.background_model_output import sanitize_background_model_output
 from runtimes.computer_use.runtime import computer_use_runtime
 
 
@@ -84,21 +85,7 @@ class V8ChatRPAKeywords:
         return payload
 
     def _model_response_text(self, response: Any) -> str:
-        content = getattr(response, "content", response)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("text") or item.get("content")
-                    if text:
-                        parts.append(str(text))
-            if parts:
-                return "\n".join(parts)
-        return str(content or "").strip()
+        return sanitize_background_model_output(response).text
 
     def open_app(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         payload = self._robot_kwargs(args, kwargs)

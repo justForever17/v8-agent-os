@@ -28,6 +28,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.exceptions import OutputParserException
 
 from core.database import db
+from core.background_model_output import sanitize_background_model_output
 from core.memory_canonicalization import canonicalize_memory_extraction_result
 from core.llm_chat_adapter import _extract_json_payload
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
@@ -221,7 +222,8 @@ def _generate_quick_summary(chat_text: str) -> str:
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"Chat Log:\n\n{chat_text[:2000]}...") # truncate for speed/cost
         ])
-        return response.content.strip()
+        summary = sanitize_background_model_output(response).text.strip()
+        return summary or "latest conversation"
     except Exception as e:
         logger.warning(f"[MemoryAgent] Quick summary generation failed: {e}")
         return "latest conversation"
@@ -688,7 +690,7 @@ def _projection_message_to_transcript_entry(message: Dict[str, Any], index: int)
         if part_type in {"text", "markdown"}:
             _append_if_present(lines, "text", part.get("content"), limit=2400)
         elif part_type == "reasoning":
-            _append_if_present(lines, "reasoning", part.get("content"), limit=1600)
+            continue
         elif part_type in {"tool_call", "tool_start"}:
             tool_name = part.get("toolName") or part.get("tool_name") or "tool"
             _append_if_present(lines, f"tool_call {tool_name}", part.get("args") or part.get("input"), limit=1000)
@@ -725,7 +727,6 @@ def _durable_message_to_transcript_entry(message: Dict[str, Any], index: int) ->
     role = str(message.get("role") or "unknown").strip().lower()
     lines: List[str] = []
     _append_if_present(lines, "content", message.get("content"), limit=2400)
-    _append_if_present(lines, "reasoning", message.get("reasoning_content"), limit=1600)
     if message.get("tool_calls") and not _looks_like_todo_update(message.get("tool_calls")):
         _append_if_present(lines, "tool_calls", message.get("tool_calls"), limit=1200)
     if message.get("tool_results") and not _looks_like_todo_update(message.get("tool_results")):
@@ -754,16 +755,8 @@ def _canonical_message_to_transcript_entry(message: Dict[str, Any], index: int) 
         str(node.get("kind") or "").strip().lower() == "narrative" and str(node.get("content") or "").strip()
         for node in nodes
     )
-    has_reasoning_node = any(
-        str(node.get("kind") or "").strip().lower() == "execution"
-        and str(node.get("executionType") or node.get("execution_type") or "").strip().lower() == "reasoning"
-        and str(node.get("content") or "").strip()
-        for node in nodes
-    )
     if not has_narrative_node:
         _append_if_present(lines, "content", message.get("content_text") or message.get("content"), limit=2400)
-    if not has_reasoning_node:
-        _append_if_present(lines, "reasoning", message.get("reasoning_text"), limit=1600)
 
     for node in nodes:
         if not isinstance(node, dict) or _looks_like_todo_update(node):
@@ -774,7 +767,7 @@ def _canonical_message_to_transcript_entry(message: Dict[str, Any], index: int) 
         elif kind == "execution":
             execution_type = str(node.get("executionType") or node.get("execution_type") or "").strip().lower()
             if execution_type == "reasoning":
-                _append_if_present(lines, "reasoning", node.get("content"), limit=1600)
+                continue
             elif execution_type == "tool_call":
                 tool_name = node.get("toolName") or node.get("tool_name") or "tool"
                 _append_if_present(lines, f"tool_call {tool_name}", node.get("args"), limit=1400)
@@ -934,18 +927,8 @@ def _extract_with_llm(
                 )
             )
         ])
-        raw_content = getattr(raw_response, "content", "")
-        if isinstance(raw_content, list):
-            str_content = "\n".join(
-                item.get("text", "") if isinstance(item, dict) else str(item)
-                for item in raw_content
-            )
-        else:
-            str_content = str(raw_content or "")
-        
-        # 兼容 deepseek-reasoner 返回可能包含 <think> 标签的思维链
-        if "<think>" in str_content and "</think>" in str_content:
-            str_content = str_content.split("</think>")[-1].strip()
+        sanitized_output = sanitize_background_model_output(raw_response)
+        str_content = sanitized_output.text
             
         # 很多时候大模型即使被警告，还是会包在 ```json...``` 里
         import re
@@ -962,7 +945,7 @@ def _extract_with_llm(
         if not str_content.strip():
             return _build_extraction_attempt(
                 failure_stage="llm_response_empty",
-                failure_reason="LLM returned empty content.",
+                failure_reason=sanitized_output.no_visible_text_reason or "LLM returned empty content.",
                 extractor_model=extractor_model,
                 raw_output_preview=raw_output_preview,
             )
@@ -1022,16 +1005,7 @@ async def _synthesize_periodic_summary_payload(*, tier: str, content: str) -> Pe
         format_instructions=parser.get_format_instructions(),
     )
     response = await llm.ainvoke(prompt)
-    raw_content = getattr(response, "content", "")
-    if isinstance(raw_content, list):
-        text_content = "\n".join(
-            item.get("text", "") if isinstance(item, dict) else str(item)
-            for item in raw_content
-        )
-    else:
-        text_content = str(raw_content or "")
-    if "<think>" in text_content and "</think>" in text_content:
-        text_content = text_content.split("</think>")[-1].strip()
+    text_content = sanitize_background_model_output(response).text
     try:
         payload = _extract_json_payload(text_content)
         return PeriodicSummaryPayload.model_validate(payload)

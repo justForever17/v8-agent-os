@@ -17,6 +17,7 @@ from typing import Any, Iterable
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.database import db
+from core.background_model_output import parse_background_json_object, sanitize_background_model_output
 from core.llm_factory import llm_factory
 from core.llm_tree_prefilter import select_family_keys_with_llm
 from core.model_control_plane import model_control_plane
@@ -2488,18 +2489,7 @@ class ExtensionsRuntimeService:
                 ],
                 config={"callbacks": []},
             )
-            content = getattr(response, "content", response)
-            text = content if isinstance(content, str) else str(content or "")
-            try:
-                payload = json.loads(text)
-            except Exception:
-                match = re.search(r"\{[\s\S]*\}", text)
-                if not match:
-                    return None
-                try:
-                    payload = json.loads(match.group(0))
-                except Exception:
-                    return None
+            payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 
         try:
@@ -4785,7 +4775,7 @@ class ExtensionsRuntimeService:
             {
                 "hasToolCalls": bool(tool_calls),
                 "toolNames": [str(item.get("name") or "") for item in tool_calls],
-                "messagePreview": _truncate(str(getattr(response, "content", "") or ""), 200),
+                "messagePreview": _truncate(sanitize_background_model_output(response).text, 200),
             },
             node="execution_completed",
         )

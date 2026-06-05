@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from core.background_model_output import sanitize_background_model_output
 from runtimes.computer_use.visual_locator_scope import crop_capture_image_to_bounds
 
 
@@ -277,7 +278,8 @@ def run_visual_judge(
             )
         prompt = build_visual_judge_prompt(suggestion=suggestion)
         analysis = invoke(judge_image_path, prompt)
-        parsed = parse_visual_judge_analysis(analysis)
+        sanitized_analysis = sanitize_background_model_output(analysis).text
+        parsed = parse_visual_judge_analysis(sanitized_analysis)
         if parsed is None:
             return apply_visual_judge_decision(
                 resolution=payload,
@@ -286,11 +288,11 @@ def run_visual_judge(
                     "decision": "review",
                     "reason": "视觉裁判返回内容无法解析。",
                     "confidence": "low",
-                    "analysis": str(analysis or ""),
+                    "analysis": sanitized_analysis,
                 },
             )
         parsed["status"] = "selected" if parsed.get("decision") == "candidate" else str(parsed.get("decision") or "review")
-        parsed["analysis"] = str(analysis or "")
+        parsed["analysis"] = sanitized_analysis
         return apply_visual_judge_decision(
             resolution=payload,
             decision=parsed,

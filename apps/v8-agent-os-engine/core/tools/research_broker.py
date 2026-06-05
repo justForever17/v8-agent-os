@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 
+from core.background_model_output import sanitize_background_model_output
 from core.storage import storage
 from core.tools.research_ledger import (
     archive_experience_pack,
@@ -1034,7 +1035,7 @@ def _invoke_web_research_architect_agent(
         raw_previews: list[str] = []
         for index, prompt in enumerate(prompts):
             response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": []})
-            raw_content = str(getattr(response, "content", "") or "")
+            raw_content = sanitize_background_model_output(response).text
             if raw_content:
                 raw_previews.append(raw_content[:500])
             parsed = _parse_response(raw_content, parse_mode="json" if index == 0 else "retry_json")

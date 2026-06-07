@@ -620,6 +620,35 @@ def _experience_reuse_decision(
         matched, match_reason = _reuse_topic_match(question, pack)
         if not matched:
             continue
+        quality_status = _safe_text(pack.get("qualityStatus")).lower()
+        invalidation_reason = _safe_text(pack.get("invalidationReason"))
+        has_final_result = bool(_safe_text(pack.get("researchResult")) or list(pack.get("claimDigest") or []))
+        has_sources = bool(list(pack.get("sourceUrls") or []) or list(pack.get("sourceMatrixDigest") or []))
+        try:
+            authority_score = float(pack.get("authorityScore") or 0)
+        except (TypeError, ValueError):
+            authority_score = 0.0
+        if quality_status == "low_quality_pack" or invalidation_reason or not has_final_result or not has_sources or authority_score < 35:
+            reasons = []
+            if quality_status == "low_quality_pack":
+                reasons.append("low_quality_pack")
+            if invalidation_reason:
+                reasons.append(invalidation_reason)
+            if not has_final_result:
+                reasons.append("missing_final_research_result")
+            if not has_sources:
+                reasons.append("missing_sources")
+            if authority_score < 35:
+                reasons.append("low_authority")
+            return {
+                "reuseDecision": "refresh",
+                "reason": "refresh_required_due_to_pack_quality",
+                "qualityReasons": reasons,
+                "matchReason": match_reason,
+                "candidatePackId": pack.get("experiencePackId"),
+                "candidateConfidence": pack.get("confidence"),
+                "topicFingerprint": pack.get("topicFingerprint") or _topic_fingerprint(question),
+            }
         confidence = _safe_text(pack.get("confidence")).lower()
         if _confidence_rank(confidence) < min_rank:
             return {
@@ -1879,6 +1908,9 @@ def research_broker(
                         "topicFingerprint": item.get("topicFingerprint"),
                         "sourcePolicy": item.get("sourcePolicy"),
                         "freshnessWindow": item.get("freshnessWindow"),
+                        "qualityStatus": item.get("qualityStatus"),
+                        "invalidationReason": item.get("invalidationReason"),
+                        "missingEvidence": list(item.get("missingEvidence") or [])[:3],
                         "sourceUrls": list(item.get("sourceUrls") or [])[:4],
                         "usageCount": item.get("usageCount"),
                         "lastUsedAt": item.get("lastUsedAt"),

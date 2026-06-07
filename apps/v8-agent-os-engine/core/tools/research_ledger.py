@@ -119,41 +119,72 @@ def _source_digest(bundle: dict[str, Any], *, limit: int = 6) -> list[dict[str, 
     return digest
 
 
-def _research_result_preview(bundle: dict[str, Any], *, limit: int = 900) -> str:
-    generic_answers = {
-        "evidence collected. use sourcematrix and fetchedtopsources to write the final answer.",
-    }
-    for key in ("answer", "result", "findings", "resultPreview", "researchResult"):
-        raw_value = bundle.get(key)
-        if isinstance(raw_value, dict):
-            value = _safe_text(
-                raw_value.get("researchResult")
-                or raw_value.get("answer")
-                or raw_value.get("headline")
-                or "\n".join(_safe_text(item.get("claim")) for item in _as_list(raw_value.get("claimTable")) if isinstance(item, dict))
-            )
-        else:
-            value = _safe_text(raw_value)
-        if value and value.lower() not in generic_answers:
-            return value[:limit]
-    summary = _safe_text(bundle.get("summary"))
-    if summary and not summary.lower().startswith("collected "):
-        return summary[:limit]
-    snippets: list[str] = []
-    for source in _as_list(bundle.get("sourceMatrix"))[:5]:
-        if not isinstance(source, dict):
+_GENERIC_RESEARCH_ANSWERS = {
+    "evidence collected. use sourcematrix and fetchedtopsources to write the final answer.",
+}
+
+
+_LOW_QUALITY_RESEARCH_MARKERS = (
+    "about press copyright contact us creators advertise developers terms privacy policy",
+    "youtube works test new features",
+    "security check required",
+    "we've detected unusual activity",
+    "安全验证",
+    "captcha",
+    "cloudflare",
+    "access denied",
+    "just a moment",
+)
+
+
+def _valid_research_text(value: Any, *, min_chars: int = 24) -> str:
+    text = re.sub(r"\s+", " ", _safe_text(value)).strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in _GENERIC_RESEARCH_ANSWERS:
+        return ""
+    if lowered.startswith("collected "):
+        return ""
+    if any(marker in lowered for marker in _LOW_QUALITY_RESEARCH_MARKERS):
+        return ""
+    if len(text) < min_chars:
+        return ""
+    return text
+
+
+def _claim_digest_from_pack(pack: dict[str, Any]) -> list[dict[str, Any]]:
+    claim_digest: list[dict[str, Any]] = []
+    for item in _as_list(pack.get("claimTable"))[:8]:
+        if not isinstance(item, dict):
             continue
-        title = _safe_text(source.get("title") or source.get("host") or source.get("url"))
-        snippet = _safe_text(source.get("snippet"))
-        if title and snippet:
-            snippets.append(f"{title}: {snippet}")
-        elif snippet:
-            snippets.append(snippet)
-        elif title:
-            snippets.append(title)
-    if snippets:
-        return "；".join(snippets)[:limit]
-    return summary[:limit]
+        claim = _valid_research_text(item.get("claim"), min_chars=8)
+        if not claim:
+            continue
+        claim_digest.append(
+            {
+                "claim": claim[:400],
+                "supportingSources": _as_list(item.get("supportingSources"))[:3],
+                "confidence": item.get("confidence"),
+            }
+        )
+    return claim_digest
+
+
+def _research_result_preview(bundle: dict[str, Any], *, limit: int = 900) -> str:
+    final_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
+    for key in ("researchResult", "answer", "result", "findings"):
+        value = _valid_research_text(final_pack.get(key) or bundle.get(key))
+        if value:
+            return value[:limit]
+    claims = _claim_digest_from_pack(final_pack) or _claim_digest_from_pack(bundle)
+    if claims:
+        return "；".join(_safe_text(item.get("claim")) for item in claims[:4] if item.get("claim"))[:limit]
+    for key in ("resultPreview", "summary"):
+        value = _valid_research_text(bundle.get(key))
+        if value:
+            return value[:limit]
+    return ""
 
 
 def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", title: str = "", tags: list[str] | None = None) -> dict[str, Any]:
@@ -164,12 +195,7 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
     created_at = _utc_now_iso()
     result_preview = _research_result_preview(bundle)
     final_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
-    research_result = _safe_text(
-        final_pack.get("researchResult")
-        or final_pack.get("answer")
-        or bundle.get("answer")
-        or result_preview
-    )
+    research_result = _valid_research_text(final_pack.get("researchResult") or final_pack.get("answer") or bundle.get("answer") or result_preview)
     source_urls = []
     for url in _as_list(bundle.get("sourceUrls")):
         text = _safe_text(url)
@@ -181,17 +207,25 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         url = _safe_text(source.get("url"))
         if url and url not in source_urls:
             source_urls.append(url)
-    claim_digest = []
-    for item in _as_list(bundle.get("claimTable") or final_pack.get("claimTable"))[:8]:
-        if not isinstance(item, dict):
-            continue
-        claim_digest.append(
-            {
-                "claim": _safe_text(item.get("claim"))[:400],
-                "supportingSources": _as_list(item.get("supportingSources"))[:3],
-                "confidence": item.get("confidence"),
-            }
-        )
+    claim_digest = _claim_digest_from_pack({"claimTable": bundle.get("claimTable")}) or _claim_digest_from_pack(final_pack)
+    missing_evidence = []
+    for value in _as_list(final_pack.get("missingEvidence") or bundle.get("missingEvidence")):
+        text = _safe_text(value)
+        if text:
+            missing_evidence.append(text[:260])
+    limitations = []
+    for value in _as_list(final_pack.get("limitations") or bundle.get("limitations") or bundle.get("assumptions")):
+        text = _safe_text(value)
+        if text:
+            limitations.append(text[:260])
+    quality_reasons: list[str] = []
+    if not research_result and not claim_digest:
+        quality_reasons.append("missing_final_research_result")
+    if not source_urls and not source_digest:
+        quality_reasons.append("missing_sources")
+    if not result_preview and not claim_digest:
+        missing_evidence.append("No reliable source-backed research result was synthesized.")
+    quality_status = "low_quality_pack" if quality_reasons else "reusable_candidate"
     topic_fingerprint = _safe_text(bundle.get("topicFingerprint"))
     if not topic_fingerprint:
         normalized_topic = re.sub(r"\s+", " ", _safe_text(bundle.get("question") or topic).lower()).strip()
@@ -206,17 +240,21 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
         "researchResult": research_result,
         "claimDigest": claim_digest,
+        "qualityStatus": quality_status,
         "topicFingerprint": topic_fingerprint,
         "sourcePolicy": bundle.get("sourcePolicy"),
         "freshnessWindow": bundle.get("freshness"),
         "sourceUrls": source_urls[:16],
         "reusableExperiencePack": {
-            "summary": result_preview[:900],
+            "summary": result_preview[:900] if quality_status != "low_quality_pack" else "",
+            "researchResult": research_result,
             "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
             "sourceUrls": source_urls[:16],
             "claimDigest": claim_digest,
         },
-        "invalidationReason": "",
+        "invalidationReason": ", ".join(quality_reasons),
+        "missingEvidence": missing_evidence[:8],
+        "limitations": limitations[:8],
         "confidence": bundle.get("confidence"),
         "authorityScore": bundle.get("authorityScore"),
         "confidenceTimeline": [

@@ -36,6 +36,10 @@ type ExperiencePack = {
     usageCount?: number;
     lastUsedAt?: string | null;
     archivedAt?: string | null;
+    qualityStatus?: string;
+    invalidationReason?: string;
+    missingEvidence?: string[];
+    limitations?: string[];
     sourceUrls?: string[];
     claimDigest?: Array<{ claim?: string }>;
     sourceMatrixDigest?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
@@ -85,13 +89,37 @@ function normalizeErrorCode(value?: string) {
 
 function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeof useT>) {
     const lines: string[] = [];
-    const rawResult = String(item.researchResult || item.resultPreview || item.answer || item.findings || item.summary || "").trim();
-    const summary = rawResult.toLowerCase().startsWith("collected ") ? "" : rawResult;
+    const qualityStatus = String(item.qualityStatus || "").trim();
+    const invalidationReason = String(item.invalidationReason || "").trim();
+    const isArchived = normalizeStatus(item.status) === "archived";
+    const isLowQuality = qualityStatus === "low_quality_pack" || Boolean(invalidationReason);
+    const summary = String(item.researchResult || "").trim();
     const applicability = String(item.applicability || "").trim();
+    const stateLabel = isArchived
+        ? t("app.admin.dashboard.research.runtime.ledger.hover.stateArchived")
+        : isLowQuality
+          ? t("app.admin.dashboard.research.runtime.ledger.hover.stateRefresh")
+          : summary || (Array.isArray(item.claimDigest) && item.claimDigest.length)
+            ? t("app.admin.dashboard.research.runtime.ledger.hover.stateReusable")
+            : t("app.admin.dashboard.research.runtime.ledger.hover.stateLowQuality");
+    lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.state")}: ${stateLabel}`);
     if (summary) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${summary.length > 1200 ? `${summary.slice(0, 1200)}…` : summary}`);
     for (const itemClaim of (Array.isArray(item.claimDigest) ? item.claimDigest : []).slice(0, 3)) {
         const claim = String(itemClaim?.claim || "").trim();
         if (claim) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${claim.length > 420 ? `${claim.slice(0, 420)}…` : claim}`);
+    }
+    const missing = Array.isArray(item.missingEvidence) ? item.missingEvidence : [];
+    const limitations = Array.isArray(item.limitations) ? item.limitations : [];
+    if (!summary && !(Array.isArray(item.claimDigest) && item.claimDigest.length)) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.missingEvidence")}: ${missing[0] || invalidationReason || t("app.admin.dashboard.research.runtime.ledger.hover.refreshRequired")}`);
+    }
+    for (const reason of missing.slice(0, 2)) {
+        const text = String(reason || "").trim();
+        if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.missingEvidence")}: ${text.length > 320 ? `${text.slice(0, 320)}…` : text}`);
+    }
+    for (const reason of limitations.slice(0, 2)) {
+        const text = String(reason || "").trim();
+        if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.limitations")}: ${text.length > 320 ? `${text.slice(0, 320)}…` : text}`);
     }
     if (applicability) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.applicability")}: ${applicability}`);
     const sources = Array.isArray(item.sourceMatrixDigest) ? item.sourceMatrixDigest : [];

@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
 from core.llm_factory import llm_factory
+from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import parse_background_json_object
 from core.model_control_plane import model_control_plane
 from core.storage import storage
@@ -1132,22 +1132,30 @@ class SkillLoader:
 
         def _invoke() -> dict[str, Any] | None:
             model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
-            response = model.invoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "你是 V8 Agent OS 的 skill 主题画像归一器。\n"
-                            "任务：为顾问类、方法论类或其他 skill 输出稳定的主题画像。\n"
-                            "只返回 JSON："
-                            "{\"primaryThemes\":[...],\"secondaryThemeTags\":[...],\"themeConfidence\":0.0}\n"
-                            "要求：primaryThemes 最多 2 个；secondaryThemeTags 最多 5 个；"
-                            "不要输出解释文本。"
-                        )
-                    ),
-                    HumanMessage(content=prompt_payload),
+            prepared = prepare_background_model_messages(
+                system_prompt=(
+                    "你是 V8 Agent OS 的 skill 主题画像归一器。\n"
+                    "任务：为顾问类、方法论类或其他 skill 输出稳定的主题画像。\n"
+                    "只返回 JSON："
+                    "{\"primaryThemes\":[...],\"secondaryThemeTags\":[...],\"themeConfidence\":0.0}\n"
+                    "要求：primaryThemes 最多 2 个；secondaryThemeTags 最多 5 个；"
+                    "不要输出解释文本。"
+                ),
+                instruction="根据已准备的 skill 材料输出唯一 JSON 对象。",
+                materials=[
+                    {
+                        "title": "Skill theme profile payload",
+                        "kind": "skill_theme_profile_payload",
+                        "content": prompt_payload,
+                    }
                 ],
-                config={"callbacks": []},
+                runtime_kind="extensions",
+                target_role="extensions:skill_theme_profile",
+                resolved_model_id="extensions_prefilter",
+                component="extensions",
+                node="skill_theme_profile_context",
             )
+            response = model.invoke(prepared.messages, config={"callbacks": []})
             payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 
@@ -1294,23 +1302,31 @@ class SkillLoader:
 
         def _invoke() -> dict[str, Any] | None:
             model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
-            response = model.invoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "你是 V8 Agent OS 的 skill 能力画像归一器。\n"
-                            "任务：根据 skill 的名称、描述、结构与正文，输出稳定的内部能力画像。\n"
-                            "只返回 JSON："
-                            "{\"skillClass\":\"...\",\"primaryArtifactTypes\":[...],\"primaryOperations\":[...],"
-                            "\"interactionMode\":\"...\",\"capabilityConfidence\":0.0}\n"
-                            "要求：skillClass 只能选一个；primaryArtifactTypes 最多 2 项；"
-                            "primaryOperations 最多 3 项；如果不是文件/媒体产物型 skill，primaryArtifactTypes 可以为空；不要输出解释。"
-                        )
-                    ),
-                    HumanMessage(content=prompt_payload),
+            prepared = prepare_background_model_messages(
+                system_prompt=(
+                    "你是 V8 Agent OS 的 skill 能力画像归一器。\n"
+                    "任务：根据 skill 的名称、描述、结构与正文，输出稳定的内部能力画像。\n"
+                    "只返回 JSON："
+                    "{\"skillClass\":\"...\",\"primaryArtifactTypes\":[...],\"primaryOperations\":[...],"
+                    "\"interactionMode\":\"...\",\"capabilityConfidence\":0.0}\n"
+                    "要求：skillClass 只能选一个；primaryArtifactTypes 最多 2 项；"
+                    "primaryOperations 最多 3 项；如果不是文件/媒体产物型 skill，primaryArtifactTypes 可以为空；不要输出解释。"
+                ),
+                instruction="根据已准备的 skill 材料输出唯一 JSON 对象。",
+                materials=[
+                    {
+                        "title": "Skill capability profile payload",
+                        "kind": "skill_capability_profile_payload",
+                        "content": prompt_payload,
+                    }
                 ],
-                config={"callbacks": []},
+                runtime_kind="extensions",
+                target_role="extensions:skill_capability_profile",
+                resolved_model_id="extensions_prefilter",
+                component="extensions",
+                node="skill_capability_profile_context",
             )
+            response = model.invoke(prepared.messages, config={"callbacks": []})
             payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 

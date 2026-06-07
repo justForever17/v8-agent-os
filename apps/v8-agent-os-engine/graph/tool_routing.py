@@ -394,15 +394,38 @@ def _enqueue_route_intent_episode(
     if not session_id and not run_id:
         return None
     try:
+        from erc.runtime_context import get_runtime_context
         from core.runtime_episodes import build_runtime_episode, enqueue_runtime_episode
 
+        runtime_context = get_runtime_context()
+        root_run_id = str(
+            route_intent.get("rootRunId")
+            or route_intent.get("root_run_id")
+            or runtime_context.get("rootRunId")
+            or runtime_context.get("root_run_id")
+            or run_id
+            or ""
+        ).strip()
+        inputs = dict(route_intent.get("inputs") or {}) if isinstance(route_intent.get("inputs"), dict) else {}
+        workspace_path = str(
+            route_intent.get("workspacePath")
+            or route_intent.get("workspace_path")
+            or inputs.get("workspacePath")
+            or inputs.get("workspace_path")
+            or runtime_context.get("workspacePath")
+            or runtime_context.get("workspace_path")
+            or ""
+        ).strip()
+        if workspace_path:
+            inputs.setdefault("workspacePath", workspace_path)
+            inputs.setdefault("workspace_path", workspace_path)
         raw_key = json.dumps(
             {
                 "runId": run_id,
                 "sessionId": session_id,
                 "kind": kind,
                 "tool": route_intent.get("tool"),
-                "inputs": route_intent.get("inputs"),
+                "inputs": inputs,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -418,6 +441,8 @@ def _enqueue_route_intent_episode(
             "session_id": session_id,
             "runId": run_id,
             "run_id": run_id,
+            "rootRunId": root_run_id or run_id,
+            "inputs": inputs,
             "idempotencyKey": f"direct_gate:{digest}",
         }
         episode = build_runtime_episode(
@@ -431,6 +456,7 @@ def _enqueue_route_intent_episode(
                 "session_id": session_id,
                 "runId": run_id,
                 "run_id": run_id,
+                "rootRunId": root_run_id or run_id,
                 "targetKind": "local_runtime",
                 "targetId": kind,
                 "retryPolicy": {"maxAttempts": 1},

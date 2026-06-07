@@ -25,6 +25,7 @@ from core.runtime_tool_access import (
     filter_visible_tools_for_actor,
     runtime_access_from_route_context,
 )
+from erc.runtime_context import bind_runtime_context
 from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
 from graph.agent_factories import _select_contextual_subagent_native_tools
 
@@ -238,6 +239,67 @@ def test_runtime_broker_route_accepts_json_need_string_and_infers_engineering():
     assert episode["kind"] == "engineering"
     assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
     assert episode["inputs"]["workerBriefs"][0]["context"]["blockedTool"] == "write_native_file"
+
+
+def test_runtime_broker_route_binds_session_run_root_and_workspace_before_enqueue():
+    with bind_runtime_context(
+        session_id="session-route-binding",
+        run_id="run-route-binding",
+        rootRunId="root-route-binding",
+        workspace_path=r"E:\Projects\test7",
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            need={"kind": "engineering", "source": "supervisor", "reason": "blocked write"},
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-route-binding",
+        )
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert episode["sessionId"] == "session-route-binding"
+    assert episode["session_id"] == "session-route-binding"
+    assert episode["runId"] == "run-route-binding"
+    assert episode["run_id"] == "run-route-binding"
+    assert episode["rootRunId"] == "root-route-binding"
+    assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
+    assert episode["inputs"]["workspace_path"] == r"E:\Projects\test7"
+
+
+def test_runtime_broker_list_with_episode_intent_auto_routes_but_catalog_stays_list():
+    catalog = runtime_broker.func(
+        mode="list",
+        runtime_kind="engineering",
+        reason="plan_only episode creation",
+        detail_level="catalog",
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-catalog",
+    )
+    assert _tool_message_payload(catalog)["mode"] == "list"
+
+    with bind_runtime_context(
+        session_id="session-auto-route",
+        run_id="run-auto-route",
+        rootRunId="root-auto-route",
+        workspace_path=r"E:\Projects\test7",
+    ):
+        command = runtime_broker.func(
+            mode="list",
+            runtime_kind="engineering",
+            reason="plan_only episode creation for Engineering runtime",
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-list-route",
+        )
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert payload["mode"] == "route"
+    assert payload["episodeKind"] == "engineering"
+    assert payload["nextAction"] == "wait_episode"
+    assert episode["kind"] == "engineering"
+    assert episode["sessionId"] == "session-auto-route"
+    assert episode["runId"] == "run-auto-route"
+    assert episode["rootRunId"] == "root-auto-route"
+    assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
 
 
 def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():

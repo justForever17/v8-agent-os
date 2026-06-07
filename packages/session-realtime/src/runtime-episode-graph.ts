@@ -127,6 +127,41 @@ function inferStatus(activity: RuntimeEpisodeGraphActivity, data: Record<string,
   return "pending";
 }
 
+function inferDiagnostic(topic: string, data: Record<string, unknown>): string | undefined {
+  const status = readString(data.status) || readString(data.state);
+  const dispatchStatus = readString(data.dispatchStatus) || readString(data.dispatch_status);
+  const normalized = `${topic} ${status} ${dispatchStatus}`.toLowerCase();
+  if (
+    data.missingTasks
+    || data.missing_tasks
+    || data.missingResult
+    || data.missing_result
+    || data.diagnosticKey === "delegation_missing_tasks"
+    || dispatchStatus === "missing_tasks"
+  ) {
+    return "dispatch_missing_tasks";
+  }
+  if (
+    data.degraded
+    || data.degradedReason
+    || data.degraded_reason
+    || dispatchStatus === "delegation_degraded"
+    || status.toLowerCase() === "degraded"
+  ) {
+    return "degraded_handoff";
+  }
+  if (/runtime\.episode\.queued/.test(normalized) || /\bqueued\b|\brouted\b|\bdetected\b/.test(normalized)) {
+    return "episode_queued";
+  }
+  if (/runtime\.episode\.(active|started|leased|heartbeat)/.test(normalized) || /\bactive\b|\bleased\b|\brunner_active\b/.test(normalized)) {
+    return "runner_active";
+  }
+  if (/handoff\.ref\./.test(normalized) || /\bhandoff_ready\b|\bready\b|\bcompleted\b/.test(normalized)) {
+    return "handoff_ready";
+  }
+  return dispatchStatus || undefined;
+}
+
 function labelForKind(kind: string, labels: Record<string, string>) {
   return labels[kind] || kind || labels.runtime || "Runtime";
 }
@@ -212,6 +247,7 @@ export function buildSessionExecutionGraph(
         eventCount: 1,
         timestamp,
         kind: "runtime",
+        diagnostic: inferDiagnostic(topic, handoff),
       });
       upsertNode(nodes, {
         id: `handoff:${handoffId}`,
@@ -224,6 +260,7 @@ export function buildSessionExecutionGraph(
         timestamp,
         runtimeId: "handoff",
         kind: readString(handoff.kind) || "handoff",
+        diagnostic: inferDiagnostic(topic, handoff),
       });
       const edgeId = `${producerId}->handoff:${handoffId}`;
       edges.set(edgeId, {
@@ -309,7 +346,7 @@ export function buildSessionExecutionGraph(
       timestamp,
       runtimeId: kind === "delegation" ? "subagent_swarm" : kind,
       kind,
-      diagnostic: missingTasks ? "dispatch_missing_tasks" : (degraded ? "delegation_degraded" : dispatchStatus || undefined),
+      diagnostic: inferDiagnostic(topic, data),
     });
     const edgeId = `${parentId}->${id}`;
     edges.set(edgeId, {

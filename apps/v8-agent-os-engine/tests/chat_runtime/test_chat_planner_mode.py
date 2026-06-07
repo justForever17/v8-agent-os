@@ -170,6 +170,76 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertNotIn("planner.fallback.used", topics)
         self.assertNotIn("planner.plan.created", topics)
 
+    def test_explicit_runtime_episode_defer_continues_with_fallback_plan(self):
+        class SlowPlannerModel:
+            def with_structured_output(self, _schema):
+                return self
+
+            async def ainvoke(self, _messages):
+                await asyncio.sleep(0.5)
+                return {}
+
+        emitted: list[tuple[str, dict]] = []
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            active_run_id="run-planner-defer-runtime-fallback",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_deferred=False,
+                planner_intent_diagnostics={"reason": "test"},
+                latest_user_content=(
+                    "必须创建 Engineering episode 和 Delegation/Subagent episode，"
+                    "deliverableKind=plan_only，writeRequired=false，并等待 typed handoff。"
+                ),
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="auto",
+                task_shape_hint={"primaryTaskShape": "writing", "secondaryTaskShapes": ["delegation"]},
+                live_audit_context={"runtimeSubagentClosureLiveAudit": True},
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path="E:/Projects/v8chat",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda topic, payload, **_: emitted.append((topic, payload)),
+        )
+
+        with (
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=SlowPlannerModel()),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step", lambda *_, **__: None),
+            patch("runtimes.chat.runtime.engineering_lane_service.enrich_planner_plan_with_engineering_contract", lambda plan, **_: plan),
+            patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
+        ):
+            plan = asyncio.run(
+                runtime.ensure_planner_plan(
+                    chat_run=chat_run,
+                    timeout_seconds=0.1,
+                    defer_on_timeout=True,
+                )
+            )
+
+        topics = [topic for topic, _payload in emitted]
+        self.assertIsInstance(plan, dict)
+        self.assertTrue(chat_run.prepared.planner_deferred)
+        self.assertTrue((chat_run.prepared.planner_plan or {}).get("planId"))
+        self.assertIn("planner.deferred", topics)
+        self.assertIn("planner.fallback.used", topics)
+        self.assertIn("planner.plan.created", topics)
+        kinds = {str(item.get("kind") or "") for item in plan.get("capabilityPlan") or []}
+        self.assertIn("engineering", kinds)
+        self.assertIn("delegation", kinds)
+        engineering_item = next(item for item in plan.get("capabilityPlan") or [] if item.get("kind") == "engineering")
+        self.assertEqual(engineering_item.get("deliverableKind"), "plan_only")
+        self.assertFalse(engineering_item.get("writeRequired"))
+
     def test_planner_structured_failure_repairs_with_plain_json_before_fallback(self):
         class BrokenStructuredPlanner:
             def with_structured_output(self, _schema):
@@ -471,6 +541,37 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(planner_mode, "force")
         self.assertEqual(planner_dispatch_mode, "auto")
 
+    def test_runtime_episode_audit_request_forces_planner_auto_dispatch(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Create Engineering and Delegation runtime episodes.")],
+            data=ChatRequestData(runtime_subagent_closure_live_audit=True),
+        )
+
+        prepared = runtime.prepare_request(request)
+
+        self.assertTrue(prepared.task_planning_mode)
+        self.assertEqual(prepared.planner_mode, "force")
+        self.assertEqual(prepared.planner_dispatch_mode, "auto")
+
+    def test_explicit_runtime_episode_request_forces_planner_auto_dispatch(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="必须经过 runtime_broker(route)，创建 engineering episode 并返回 typed handoff。",
+                )
+            ],
+        )
+
+        prepared = runtime.prepare_request(request)
+
+        self.assertTrue(prepared.task_planning_mode)
+        self.assertEqual(prepared.planner_mode, "force")
+        self.assertEqual(prepared.planner_dispatch_mode, "auto")
+        self.assertEqual(prepared.engineering_mode, "force")
+
     def test_normalize_planner_plan_payload_rebuilds_missing_graph(self):
         fallback_plan = {
             "planId": "plan_fallback",
@@ -695,6 +796,38 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertTrue(any(item.get("skillName") == "huashu-nuwa" and item.get("detailLevel") == "full" for item in reads))
         self.assertFalse(any(item.get("skillName") == "skill-creator" for item in reads))
         self.assertFalse(any(item.get("relativePath") == "references/skill-template.md" for item in reads))
+
+    def test_planner_contract_verifier_repairs_delegation_capability_into_task_shape(self):
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                skill_references=[],
+                task_shape_hint={},
+            )
+        )
+
+        repaired = ChatRuntime._verify_and_repair_planner_contract(
+            {
+                "planId": "model-plan",
+                "executionStrategy": "delegate",
+                "capabilityPlan": [
+                    {
+                        "kind": "delegation",
+                        "reason": "Need an independent subagent to review the proposed runtime plan.",
+                    }
+                ],
+                "taskBriefs": [],
+                "qualityFlags": [],
+                "repairCount": 0,
+            },
+            fallback_plan=None,
+            chat_run=chat_run,
+        )
+
+        self.assertEqual(repaired["taskBriefs"][0]["executionLaneHint"], "subagent")
+        self.assertIn("subagent_execution", repaired["taskBriefs"][0]["requiredCapabilities"])
+        self.assertIn("independent_review", repaired["taskBriefs"][0]["requiredCapabilities"])
+        self.assertIn("planner_contract_delegation_task_created", repaired["qualityFlags"])
+        self.assertNotIn("planner_contract_delegation_without_tasks", repaired["qualityFlags"])
 
     def test_planner_contract_verifier_repairs_explainer_video_to_engineering(self):
         chat_run = SimpleNamespace(

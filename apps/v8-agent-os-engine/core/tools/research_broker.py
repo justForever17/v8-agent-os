@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 
+from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import sanitize_background_model_output
 from core.storage import storage
 from core.tools.research_ledger import (
@@ -978,8 +979,6 @@ def _invoke_web_research_architect_agent(
         return None
 
     def _call() -> dict[str, Any] | None:
-        from langchain_core.messages import HumanMessage
-
         llm, model_id, role = _create_web_research_architect_llm()
 
         def _parse_response(raw_content: str, *, parse_mode: str) -> dict[str, Any] | None:
@@ -1015,26 +1014,44 @@ def _invoke_web_research_architect_agent(
             }
             for source in sources[:4]
         ]
+        system_prompt = (
+            "你是 Web Research Architect。根据已读取的 SOURCES 做冲突归纳和结论压缩。"
+            "只能使用 SOURCES 中的内容和 URL，不要引入外部事实。"
+        )
         prompts = [
             (
-                "你是 Web Research Architect。根据 SOURCES 做冲突归纳和结论压缩。"
                 "必须在最终回答内容里输出一个 JSON 对象，不要 Markdown。\n"
                 "字段：headline, researchResult, claimTable, conflictMatrix, missingEvidence, assumptions。\n"
                 "claimTable 每项至少包含 claim 和 supportingSources；如果更方便，也可写 sourceURL，但 URL 必须来自 SOURCES。\n"
                 "researchResult 必须面向后续 agent 阅读：完整、紧凑、标注限制，不能照搬导航栏或搜索摘要。\n"
-                f"QUESTION: {question}\n"
-                f"SOURCES: {json.dumps(compact_sources[:4], ensure_ascii=False)}"
+                f"QUESTION: {question}"
             ),
             (
-                "只根据 SOURCES 输出 JSON，不要 Markdown。字段 headline, researchResult, claimTable, conflictMatrix, missingEvidence, assumptions。"
+                "只根据已准备的 SOURCES 输出 JSON，不要 Markdown。字段 headline, researchResult, claimTable, conflictMatrix, missingEvidence, assumptions。"
                 "不要引入外部事实；不确定就写 missingEvidence。\n"
-                f"QUESTION: {question}\n"
-                f"SOURCES: {json.dumps(compact_sources[:3], ensure_ascii=False)}"
+                f"QUESTION: {question}"
             ),
         ]
         raw_previews: list[str] = []
         for index, prompt in enumerate(prompts):
-            response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": []})
+            source_limit = 4 if index == 0 else 3
+            prepared_context = prepare_background_model_messages(
+                system_prompt=system_prompt,
+                instruction=prompt,
+                materials=[
+                    {
+                        "title": "Research source matrix",
+                        "kind": "research_sources",
+                        "content": json.dumps(compact_sources[:source_limit], ensure_ascii=False),
+                    }
+                ],
+                runtime_kind="research",
+                target_role="web-research-architect",
+                resolved_model_id=model_id,
+                component="research",
+                node="web_research_architect",
+            )
+            response = llm.invoke(prepared_context.messages, config={"callbacks": []})
             raw_content = sanitize_background_model_output(response).text
             if raw_content:
                 raw_previews.append(raw_content[:500])

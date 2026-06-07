@@ -763,6 +763,41 @@ def build_runtime_episode_wait_node():
             if str(handoff.get("status") or "").strip().lower() in {"failed", "blocked", "error", "recoverable_failed"}
         ]
 
+    def _degraded_handoffs(handoffs: list[dict]) -> list[dict]:
+        degraded: list[dict] = []
+        for handoff in handoffs:
+            status = str(handoff.get("status") or "").strip().lower()
+            kind = str(handoff.get("kind") or "").strip().lower()
+            dispatch_status = str(handoff.get("dispatchStatus") or handoff.get("dispatch_status") or "").strip().lower()
+            if (
+                status == "degraded"
+                or kind.endswith("_degraded")
+                or bool(handoff.get("degraded") or handoff.get("degradedReason") or handoff.get("degraded_reason"))
+                or dispatch_status in {"delegation_degraded", "missing_tasks"}
+            ):
+                degraded.append(handoff)
+        return degraded
+
+    def _failure_summary_key(
+        *,
+        episodes: list[dict],
+        handoffs: list[dict],
+        reason: str,
+    ) -> str:
+        episode_id = ""
+        if episodes:
+            episode_id = _string_value(
+                episodes[0].get("episodeId"),
+                episodes[0].get("id"),
+                episodes[0].get("needId"),
+            )
+        if not episode_id and handoffs:
+            episode_id = _string_value(
+                handoffs[0].get("producerEpisodeId"),
+                handoffs[0].get("episodeId"),
+            )
+        return f"{episode_id or 'runtime'}:{reason or 'failure'}"
+
     def _is_optional_episode(episode: dict) -> bool:
         inputs = dict(episode.get("inputs") or {}) if isinstance(episode.get("inputs"), dict) else {}
         metadata = dict(episode.get("metadata") or {}) if isinstance(episode.get("metadata"), dict) else {}
@@ -838,6 +873,7 @@ def build_runtime_episode_wait_node():
             terminal = _terminal_episodes(episodes)
             if episodes and not active:
                 failed_handoffs = _failed_handoffs(handoffs)
+                degraded_handoffs = _degraded_handoffs(handoffs)
                 failed_episodes = _failed_episodes(terminal or episodes)
                 required_failed_handoffs = _required_failed_handoffs(handoffs, terminal or episodes)
                 required_failed_episodes = _required_failed_episodes(terminal or episodes)
@@ -851,6 +887,18 @@ def build_runtime_episode_wait_node():
                         (required_failed_handoffs[0] if required_failed_handoffs else {}).get("compactSummary"),
                         "runtime_episode_failed",
                     )
+                    failure_key = _failure_summary_key(
+                        episodes=required_failed_episodes or terminal or episodes,
+                        handoffs=required_failed_handoffs,
+                        reason=failure_reason,
+                    )
+                    notified_keys = {
+                        str(item).strip()
+                        for item in list(route_context.get("runtimeFailureSummaryKeys") or [])
+                        if str(item).strip()
+                    }
+                    first_notification = failure_key not in notified_keys
+                    route_context["runtimeFailureSummaryKeys"] = list(dict.fromkeys([*notified_keys, failure_key]))[-50:]
                     return Command(
                         goto="supervisor",
                         update={
@@ -865,20 +913,25 @@ def build_runtime_episode_wait_node():
                                 "failedEpisodeCount": len(required_failed_episodes),
                                 "failedHandoffCount": len(required_failed_handoffs),
                                 "degradedEpisodeCount": len(failed_episodes) - len(required_failed_episodes),
-                                "degradedHandoffCount": len(failed_handoffs) - len(required_failed_handoffs),
+                                "degradedHandoffCount": len(degraded_handoffs),
                                 "reason": failure_reason,
+                                "failureSummaryInjected": first_notification,
                             },
-                            "messages": [
-                                _summary_message(
-                                    episodes=required_failed_episodes or terminal or episodes,
-                                    handoffs=required_failed_handoffs or handoffs,
-                                    status="Recoverable Failure",
-                                    reason=failure_reason,
-                                )
-                            ],
+                            "messages": (
+                                [
+                                    _summary_message(
+                                        episodes=required_failed_episodes or terminal or episodes,
+                                        handoffs=required_failed_handoffs or handoffs,
+                                        status="Recoverable Failure",
+                                        reason=failure_reason,
+                                    )
+                                ]
+                                if first_notification
+                                else []
+                            ),
                         },
                     )
-                degraded_count = len(failed_episodes) + len(failed_handoffs)
+                degraded_count = len(failed_episodes) + len(failed_handoffs) + len(degraded_handoffs)
                 return Command(
                     goto="supervisor",
                     update={
@@ -891,7 +944,7 @@ def build_runtime_episode_wait_node():
                             "episodeCount": len(episodes),
                             "handoffCount": len(handoffs),
                             "degradedEpisodeCount": len(failed_episodes),
-                            "degradedHandoffCount": len(failed_handoffs),
+                            "degradedHandoffCount": len(failed_handoffs) + len(degraded_handoffs),
                         },
                         "messages": [
                             _summary_message(

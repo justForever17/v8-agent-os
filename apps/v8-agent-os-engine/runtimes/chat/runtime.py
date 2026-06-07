@@ -193,6 +193,7 @@ class ChatPreparedRequest:
     context_mentions: list[dict[str, str]] = field(default_factory=list)
     explicit_subagent_families: list[str] = field(default_factory=list)
     planner_plan: dict[str, Any] | None = None
+    live_audit_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1210,6 +1211,33 @@ class ChatRuntime:
 
         return resolved
 
+    @staticmethod
+    def _detect_explicit_runtime_episode_request(text: str) -> bool:
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        markers = (
+            "runtime_broker(route)",
+            "runtime_broker route",
+            "runtime episode",
+            "engineering episode",
+            "research episode",
+            "delegation episode",
+            "subagent episode",
+            "typed handoff",
+            "work_plan_ready",
+            "delegation_degraded",
+            "创建/路由",
+            "创建 engineering",
+            "创建 delegation",
+            "运行时 episode",
+            "工程 episode",
+            "委派 episode",
+            "子代理 episode",
+            "类型化 handoff",
+        )
+        return any(marker in normalized for marker in markers)
+
     def _resolve_request_context(
         self,
         request: ChatRequest,
@@ -1924,6 +1952,249 @@ class ChatRuntime:
             "dispatchEligibilityReason": "",
         }
 
+    def _planner_request_requires_runtime_episode_fallback(self, chat_run: ChatRunContext) -> bool:
+        latest_user_content = str(chat_run.prepared.latest_user_content or "")
+        live_audit_context = (
+            chat_run.prepared.live_audit_context
+            if isinstance(getattr(chat_run.prepared, "live_audit_context", None), dict)
+            else {}
+        )
+        return bool(
+            self._detect_explicit_runtime_episode_request(latest_user_content)
+            or (
+                live_audit_context.get("runtimeSubagentClosureLiveAudit")
+                and any(
+                    marker in latest_user_content.lower()
+                    for marker in (
+                        "engineering",
+                        "delegation",
+                        "subagent",
+                        "runtime_broker",
+                        "runtime episode",
+                        "工程",
+                        "委派",
+                        "子代理",
+                        "运行时",
+                    )
+                )
+            )
+        )
+
+    def _fallback_runtime_episode_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
+        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
+        lower_request = latest_user_content.lower()
+        diagnostics = dict(chat_run.prepared.planner_intent_diagnostics or {})
+        task_shape_hint = dict(chat_run.prepared.task_shape_hint or {})
+        fallback_context = {
+            "source": "planner_runtime_episode_fallback",
+            "reason": reason,
+            "plannerMode": chat_run.prepared.planner_mode,
+            "intentDiagnostics": diagnostics,
+            "taskShapeHint": task_shape_hint,
+        }
+        wants_research = any(marker in lower_request for marker in ("research", "evidence", "source", "调研", "证据", "来源"))
+        wants_delegation = any(marker in lower_request for marker in ("delegation", "subagent", "child agent", "委派", "子代理", "孙 agent"))
+        no_write = any(marker in lower_request for marker in ("不需要真实写文件", "不要真实写", "不写文件", "no file write", "plan_only", "writeRequired=false".lower()))
+        deliverable_kind = "plan_only" if no_write or "plan_only" in lower_request else "proof"
+
+        task_briefs: list[dict[str, Any]] = []
+        capability_plan: list[dict[str, Any]] = []
+        task_graph: list[dict[str, Any]] = []
+        handoff_plan: list[dict[str, Any]] = []
+
+        if wants_research:
+            research_brief = normalize_task_brief(
+                {
+                    "taskBriefId": "task-1",
+                    "goal": "Collect source-backed evidence required by the runtime validation request.",
+                    "context": fallback_context,
+                    "writeSet": [],
+                    "behaviorScope": ["research", "read_only", "evidence_collection"],
+                    "requiredCapabilities": ["web_research", "source_quality", "citations"],
+                    "acceptanceContract": {
+                        "must": [
+                            "Return evidence_bundle or research_degraded typed handoff.",
+                            "Keep source URLs or raw refs attached to every major claim.",
+                        ],
+                        "should": ["Summarize conflicts and freshness limits."],
+                        "nice": ["Provide reusable compact evidence for downstream runtime lanes."],
+                    },
+                    "dependency": [],
+                    "parallelGroup": "research",
+                    "executionLaneHint": "auto",
+                    "familyHint": "research",
+                    "runtimeAccess": ["research.core"],
+                }
+            )
+            task_briefs.append(research_brief)
+            capability_plan.append(
+                {
+                    "kind": "research",
+                    "source": "planner_runtime_episode_fallback",
+                    "reason": "explicit_runtime_closure_requires_research_evidence",
+                    "taskBriefId": research_brief["taskBriefId"],
+                    "requiredRuntimeAccess": ["research.core"],
+                    "state": "detected",
+                }
+            )
+
+        engineering_task_id = f"task-{len(task_briefs) + 1}"
+        engineering_dependencies = [task_briefs[0]["taskBriefId"]] if wants_research and task_briefs else []
+        engineering_brief = normalize_task_brief(
+            {
+                "taskBriefId": engineering_task_id,
+                "goal": latest_user_content or "Create a runtime engineering work plan and typed handoff.",
+                "context": {
+                    **fallback_context,
+                    "deliverableKind": deliverable_kind,
+                    "writeRequired": not no_write,
+                    "runtimeClosureExpectation": "Create or wait for canonical runtime_episodes and return typed handoff, not supervisor-only prose.",
+                },
+                "writeSet": [] if no_write else ["<project-workspace>/"],
+                "behaviorScope": ["engineering", "runtime_plan", "verification", deliverable_kind],
+                "requiredCapabilities": ["runtime_episode_planning", "proof_contract", "typed_handoff"],
+                "acceptanceContract": {
+                    "must": [
+                        "Return work_plan_ready, runtime_plan_ready, patch_bundle, proof, or recoverable_failed typed handoff.",
+                        "For plan_only or writeRequired=false, do not fail merely because no patch worker ran.",
+                    ],
+                    "should": ["Bind session_id, run_id, rootRunId, and workspacePath to the episode inputs."],
+                    "nice": ["Attach proof expectations and downstream delegation constraints."],
+                },
+                "dependency": engineering_dependencies,
+                "parallelGroup": "",
+                "executionLaneHint": "auto",
+                "familyHint": "engineering",
+                "runtimeAccess": [],
+                "engineeringTaskCapsule": {
+                    "deliverableKind": deliverable_kind,
+                    "writeRequired": not no_write,
+                    "writeSet": [] if no_write else ["<project-workspace>/"],
+                    "proofExpectations": [
+                        "Produce a plan/proof handoff that can be reconciled by Supervisor.",
+                        "Do not claim file mutation when writeRequired is false.",
+                    ],
+                    "riskFlags": ["planner_runtime_episode_fallback"],
+                },
+            },
+            index=len(task_briefs),
+        )
+        task_briefs.append(engineering_brief)
+        capability_plan.append(
+            {
+                "kind": "engineering",
+                "source": "planner_runtime_episode_fallback",
+                "reason": "explicit_runtime_closure_requires_engineering_episode",
+                "taskBriefId": engineering_task_id,
+                "requiredRuntimeAccess": [],
+                "state": "detected",
+                "deliverableKind": deliverable_kind,
+                "writeRequired": not no_write,
+            }
+        )
+        if wants_research:
+            handoff_plan.append(
+                {
+                    "fromTaskBriefId": "task-1",
+                    "toTaskBriefId": engineering_task_id,
+                    "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"],
+                    "reason": "Engineering lane should consume source-backed evidence when research is requested.",
+                }
+            )
+
+        if wants_delegation:
+            delegation_task_id = f"task-{len(task_briefs) + 1}"
+            delegation_brief = normalize_task_brief(
+                {
+                    "taskBriefId": delegation_task_id,
+                    "goal": "Run a confirmed subagent risk review of the runtime handoff, or return delegation_degraded.",
+                    "context": {
+                        **fallback_context,
+                        "parentEngineeringTaskBriefId": engineering_task_id,
+                        "degradationPolicy": "If no worker can take the task, return delegation_degraded instead of fake Agent Swarm nodes.",
+                    },
+                    "writeSet": [],
+                    "behaviorScope": ["delegated_execution", "risk_review", "child_delegation"],
+                    "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
+                    "acceptanceContract": {
+                        "must": [
+                            "Create a real subagent task or return delegation_degraded typed handoff.",
+                            "Do not show task_confirmed without tasks or subagent.task.* result.",
+                        ],
+                        "should": ["Include residual risks and recovery hints."],
+                        "nice": ["Allow one level of child delegation when useful."],
+                    },
+                    "dependency": [engineering_task_id],
+                    "parallelGroup": "delegation",
+                    "executionLaneHint": "subagent",
+                    "familyHint": "engineering",
+                    "runtimeAccess": ["delegation.recursive"],
+                    "targetCount": 1,
+                    "tasks": [
+                        {
+                            "taskId": "subtask-runtime-risk-review",
+                            "title": "Runtime handoff risk review",
+                            "brief": "Review whether the Engineering handoff is usable after context compaction and identify residual risks.",
+                            "acceptanceContract": "Return status, acceptance check, recovery hints, and residual risks.",
+                            "requiredCapabilities": ["review", "verification"],
+                        }
+                    ],
+                    "allowChildDelegation": False,
+                    "childDelegationBudget": {},
+                },
+                index=len(task_briefs),
+            )
+            task_briefs.append(delegation_brief)
+            capability_plan.append(
+                {
+                    "kind": "delegation",
+                    "source": "planner_runtime_episode_fallback",
+                    "reason": "explicit_runtime_closure_requires_delegation_episode",
+                    "taskBriefId": delegation_task_id,
+                    "requiredRuntimeAccess": ["delegation.recursive"],
+                    "state": "detected",
+                }
+            )
+            handoff_plan.append(
+                {
+                    "fromTaskBriefId": engineering_task_id,
+                    "toTaskBriefId": delegation_task_id,
+                    "refs": ["workPlanId", "proofRefs", "engineeringHandoff"],
+                    "reason": "Subagent review should consume the engineering handoff.",
+                }
+            )
+
+        for brief in task_briefs:
+            task_graph.append(
+                {
+                    "taskBriefId": brief["taskBriefId"],
+                    "title": brief["goal"],
+                    "dependency": list(brief.get("dependency") or []),
+                    "parallelGroup": str(brief.get("parallelGroup") or "").strip(),
+                }
+            )
+
+        quality_flags = ["planner_fallback_used", "runtime_episode_fallback_used"]
+        if no_write:
+            quality_flags.append("plan_only_engineering")
+        if wants_delegation:
+            quality_flags.append("delegation_task_contract_seeded")
+        return {
+            "planId": f"plan_{uuid.uuid4().hex[:10]}",
+            "executionStrategy": "mixed",
+            "planSummary": latest_user_content or "Route explicit runtime episode request through canonical lanes.",
+            "capabilityPlan": capability_plan,
+            "taskGraph": task_graph,
+            "taskBriefs": task_briefs,
+            "handoffPlan": handoff_plan,
+            "globalAcceptanceContract": "Use canonical runtime episodes and typed handoffs; degraded lanes may continue synthesis but must be explicit.",
+            "riskFlags": ["planner_runtime_episode_fallback", "runtime_first_enforced"],
+            "qualityFlags": quality_flags,
+            "repairCount": 0,
+            "autoDispatchDecision": {},
+            "dispatchEligibilityReason": "",
+        }
+
     def _fallback_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
         latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
         diagnostics = dict(chat_run.prepared.planner_intent_diagnostics or {})
@@ -1953,6 +2224,8 @@ class ChatRuntime:
             for item in list(task_shape_hint.get("suggestedFamilies") or [])
             if str(item or "").strip()
         ]
+        if self._planner_request_requires_runtime_episode_fallback(chat_run):
+            return self._fallback_runtime_episode_planner_plan(chat_run=chat_run, reason=reason)
         wants_delegation = bool(
             "delegation" in set(secondary_shapes)
             or "delegation.recursive" in set(optional_grants)
@@ -3152,6 +3425,10 @@ class ChatRuntime:
         planning_error: str | None = None
         planner_repair_note: str | None = None
         planner_timeout_seconds = float(timeout_seconds or PLANNER_MODEL_TIMEOUT_SECONDS)
+        force_deferred_fallback = bool(
+            defer_on_timeout
+            and self._planner_request_requires_runtime_episode_fallback(chat_run)
+        )
         try:
             base_planner_model = llm_factory.create_for_role(
                 "supervisor",
@@ -3190,20 +3467,22 @@ class ChatRuntime:
             planning_error = f"planner_model_timeout_after_{planner_timeout_seconds:g}s"
             if defer_on_timeout:
                 chat_run.prepared.planner_deferred = True
-                chat_run.prepared.planner_plan = None
                 chat_run.emit_runtime_event(
                     "planner.deferred",
                     {
                         "summary": "Planner lane deferred so Supervisor can start the first real turn.",
                         "reason": planning_error,
                         "timeoutSeconds": planner_timeout_seconds,
+                        "fallbackContinues": force_deferred_fallback,
                         "messageSurfacePriority": "diagnostic",
                         "traceRef": {"runId": chat_run.active_run_id},
                     },
                     agent_id=None,
                     node="planner_lane",
                 )
-                return None
+                if not force_deferred_fallback:
+                    chat_run.prepared.planner_plan = None
+                    return None
             logging.getLogger("v8chat.chat_runtime").warning(
                 "Planner lane fell back to deterministic plan for run '%s': %s",
                 chat_run.active_run_id,
@@ -3215,43 +3494,53 @@ class ChatRuntime:
             planning_error = self._compact_planner_error(exc)
             if defer_on_timeout:
                 chat_run.prepared.planner_deferred = True
-                chat_run.prepared.planner_plan = None
                 chat_run.emit_runtime_event(
                     "planner.deferred",
                     {
                         "summary": "Planner lane deferred after an invalid first-turn planning attempt.",
                         "reason": planning_error,
                         "timeoutSeconds": planner_timeout_seconds,
+                        "fallbackContinues": force_deferred_fallback,
                         "messageSurfacePriority": "diagnostic",
                         "traceRef": {"runId": chat_run.active_run_id},
                     },
                     agent_id=None,
                     node="planner_lane",
                 )
-                return None
-            repaired_plan, repair_error = await self._try_repair_planner_plan_with_plain_json(
-                planner_user_message=planner_user_message,
-                fallback_plan=fallback_plan,
-                structured_error=planning_error,
-            )
-            if repaired_plan is not None:
-                planner_repair_note = "plain_json_repair_used"
-                planning_error = None
-                plan = repaired_plan
-                logging.getLogger("v8chat.chat_runtime").info(
-                    "Planner lane repaired structured output for run '%s' via plain JSON retry.",
-                    chat_run.active_run_id,
-                )
-            else:
-                if repair_error:
-                    planning_error = self._compact_planner_error(f"{planning_error}; {repair_error}")
+                if not force_deferred_fallback:
+                    chat_run.prepared.planner_plan = None
+                    return None
                 logging.getLogger("v8chat.chat_runtime").warning(
-                    "Planner lane fell back to deterministic plan for run '%s': %s",
+                    "Planner lane used deterministic deferred fallback for run '%s': %s",
                     chat_run.active_run_id,
                     planning_error,
                 )
                 fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
                 plan = fallback_plan
+            else:
+                repaired_plan, repair_error = await self._try_repair_planner_plan_with_plain_json(
+                    planner_user_message=planner_user_message,
+                    fallback_plan=fallback_plan,
+                    structured_error=planning_error,
+                )
+                if repaired_plan is not None:
+                    planner_repair_note = "plain_json_repair_used"
+                    planning_error = None
+                    plan = repaired_plan
+                    logging.getLogger("v8chat.chat_runtime").info(
+                        "Planner lane repaired structured output for run '%s' via plain JSON retry.",
+                        chat_run.active_run_id,
+                    )
+                else:
+                    if repair_error:
+                        planning_error = self._compact_planner_error(f"{planning_error}; {repair_error}")
+                    logging.getLogger("v8chat.chat_runtime").warning(
+                        "Planner lane fell back to deterministic plan for run '%s': %s",
+                        chat_run.active_run_id,
+                        planning_error,
+                    )
+                    fallback_plan = self._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
+                    plan = fallback_plan
 
         plan = self._validate_and_repair_planner_plan(plan, fallback_plan=fallback_plan)
         plan = self._verify_and_repair_planner_contract(plan, fallback_plan=fallback_plan, chat_run=chat_run)
@@ -3481,6 +3770,14 @@ class ChatRuntime:
             context_mentions,
             explicit_subagent_families,
         ) = self._resolve_request_context(request)
+        live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
+        explicit_runtime_episode_requested = self._detect_explicit_runtime_episode_request(self._latest_user_content(request))
+        if live_audit_requested or explicit_runtime_episode_requested:
+            task_planning_mode = True
+            planner_mode = "force"
+            planner_dispatch_mode = "auto"
+            if explicit_runtime_episode_requested:
+                engineering_mode = "force"
         self._inject_structured_request_context(
             lc_messages,
             command_preset=command_preset,
@@ -3521,6 +3818,13 @@ class ChatRuntime:
             skill_references=skill_references,
             context_mentions=context_mentions,
             explicit_subagent_families=explicit_subagent_families,
+            live_audit_context={
+                "runtimeSubagentClosureLiveAudit": bool(
+                    getattr(request.data, "runtime_subagent_closure_live_audit", False)
+                ),
+                "requireContextGovernance": bool(getattr(request.data, "require_context_governance", False)),
+                "preferContextCompaction": bool(getattr(request.data, "prefer_context_compaction", False)),
+            },
         )
 
     def begin_run(
@@ -8720,6 +9024,8 @@ class ChatRuntime:
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
         }
+        if chat_run.prepared.live_audit_context:
+            context["live_audit"] = dict(chat_run.prepared.live_audit_context)
         context["workspace_binding"] = build_workspace_binding(context, runtime_kind="chat").as_dict()
         return context
 

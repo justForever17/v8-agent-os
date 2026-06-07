@@ -14,9 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from core.database import db
+from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import parse_background_json_object, sanitize_background_model_output
 from core.llm_factory import llm_factory
 from core.llm_tree_prefilter import select_family_keys_with_llm
@@ -2470,25 +2469,33 @@ class ExtensionsRuntimeService:
 
         def _invoke() -> dict[str, Any] | None:
             model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
-            response = model.invoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "你是 V8 Agent OS 的扩展族级画像归一器。\n"
-                            "任务：为 MCP server 或 PluginHost 工具族输出轻量画像。\n"
-                            "只返回 JSON："
-                            "{\"skillClassLike\":\"...\",\"primaryArtifactTypes\":[...],"
-                            "\"primaryOperations\":[...],\"documentSubIntentHints\":[...],"
-                            "\"primaryThemes\":[...],\"secondaryThemeTags\":[...],"
-                            "\"profileConfidence\":0.0}\n"
-                            "要求：只允许一个主类；主产物最多 2 个；主操作最多 3 个；"
-                            "主主题最多 2 个；不要输出解释文本。"
-                        )
-                    ),
-                    HumanMessage(content=prompt_payload),
+            prepared = prepare_background_model_messages(
+                system_prompt=(
+                    "你是 V8 Agent OS 的扩展族级画像归一器。\n"
+                    "任务：为 MCP server 或 PluginHost 工具族输出轻量画像。\n"
+                    "只返回 JSON："
+                    "{\"skillClassLike\":\"...\",\"primaryArtifactTypes\":[...],"
+                    "\"primaryOperations\":[...],\"documentSubIntentHints\":[...],"
+                    "\"primaryThemes\":[...],\"secondaryThemeTags\":[...],"
+                    "\"profileConfidence\":0.0}\n"
+                    "要求：只允许一个主类；主产物最多 2 个；主操作最多 3 个；"
+                    "主主题最多 2 个；不要输出解释文本。"
+                ),
+                instruction="根据已准备的扩展族材料输出唯一 JSON 对象。",
+                materials=[
+                    {
+                        "title": "Extension family profile payload",
+                        "kind": "extensions_profile_payload",
+                        "content": prompt_payload,
+                    }
                 ],
-                config={"callbacks": []},
+                runtime_kind="extensions",
+                target_role="extensions:family_profile",
+                resolved_model_id="extensions_prefilter",
+                component="extensions",
+                node="family_profile_context",
             )
+            response = model.invoke(prepared.messages, config={"callbacks": []})
             payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 

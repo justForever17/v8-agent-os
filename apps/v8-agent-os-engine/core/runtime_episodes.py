@@ -98,7 +98,9 @@ def _resolve_runtime_binding(
         or ""
     ).strip() or None
     root_run_id = str(
-        runtime_context.get("root_run_id")
+        payload.get("rootRunId")
+        or payload.get("root_run_id")
+        or runtime_context.get("root_run_id")
         or runtime_context.get("rootRunId")
         or resolved_run_id
         or ""
@@ -120,13 +122,25 @@ def build_runtime_episode(
     episode_id = episode_id_from(payload.get("episodeId") or payload.get("needId"))
     normalized_kind = normalize_capability_kind(kind or payload.get("kind"))
     session_id, run_id, root_run_id = _resolve_runtime_binding(payload)
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+    inputs = dict(inputs)
+    workspace_path = str(
+        payload.get("workspacePath")
+        or payload.get("workspace_path")
+        or inputs.get("workspacePath")
+        or inputs.get("workspace_path")
+        or ""
+    ).strip()
+    if workspace_path:
+        inputs.setdefault("workspacePath", workspace_path)
+        inputs.setdefault("workspace_path", workspace_path)
     episode = {
         "needId": episode_id,
         "episodeId": episode_id,
         "kind": normalized_kind,
         "source": str(payload.get("source") or "supervisor"),
         "reason": str(payload.get("reason") or ""),
-        "inputs": payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {},
+        "inputs": inputs,
         "requiredRuntimeAccess": _normalize_runtime_access(required_runtime_access or payload.get("requiredRuntimeAccess") or []),
         "handoffRefs": list(payload.get("handoffRefs") or []),
         "state": str(state or "detected"),

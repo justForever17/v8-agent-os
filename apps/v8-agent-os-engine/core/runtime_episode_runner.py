@@ -762,6 +762,7 @@ class RuntimeEpisodeRunner:
             )
         except Exception as exc:
             context_summary = f"Engineering context initialized with workspace digest; context pack warning: {type(exc).__name__}: {exc}"
+        plan_only = self._is_engineering_plan_only_request(need=need, inputs=inputs)
         worker_briefs = normalize_task_briefs(
             inputs.get("workerBriefs")
             or inputs.get("worker_briefs")
@@ -793,7 +794,7 @@ class RuntimeEpisodeRunner:
                     }
                 ]
             )
-        if worker_briefs:
+        if worker_briefs and not plan_only:
             worker_briefs = self._prepare_engineering_worker_briefs_for_delegation(
                 worker_briefs,
                 need=need,
@@ -858,7 +859,6 @@ class RuntimeEpisodeRunner:
                 },
             )
         reason = str(inputs.get("task") or need.get("reason") or "engineering episode").strip()
-        plan_only = self._is_engineering_plan_only_request(need=need, inputs=inputs)
         return build_handoff_ref(
             producer_episode_id=str(episode.get("episodeId") or ""),
             kind="engineering",
@@ -1460,14 +1460,18 @@ class RuntimeEpisodeRunner:
             if not reason:
                 return build_handoff_ref(
                     producer_episode_id=str(episode.get("episodeId") or ""),
-                    kind="delegation",
+                    kind="delegation_degraded",
                     compact_summary="Delegation episode cannot dispatch because it has no worker brief/task.",
-                    status="failed",
+                    status="degraded",
                     confidence="high",
-                    consumer_hint="Retry with inputs.workerBriefs/tasks or route from a planner plan that contains taskBriefs.",
+                    consumer_hint="Use this degraded handoff as a single missing-tasks diagnostic; repair the planner taskBriefs or ask for a narrower contract before retrying.",
                     extra={
+                        "delegationState": "delegation_degraded",
+                        "degraded": True,
+                        "degradedReason": "delegation_missing_tasks",
                         "errorCode": "delegation_missing_tasks",
                         "dispatchStatus": "missing_tasks",
+                        "missingTasks": True,
                         "exampleTasks": [
                             {
                                 "title": "Implement one isolated work package",
@@ -1543,8 +1547,11 @@ class RuntimeEpisodeRunner:
                 for item in results
                 if str(item.get("status") or "").lower() in {"ok", "ready", "completed", "success"}
             ]
+            budget_boundary_only = bool(failed) and bool(budget_blocked) and len(budget_blocked) == len(failed) and not ready_results and not waiting_child
             if waiting_child:
                 status = "waiting"
+            elif budget_boundary_only:
+                status = "degraded"
             elif results and not ready_results and (hard_failed or budget_blocked):
                 status = "failed"
             elif hard_failed:
@@ -1564,10 +1571,13 @@ class RuntimeEpisodeRunner:
             except Exception:
                 failure_degrade_threshold = 3
             should_degrade = (
-                status == "failed"
-                and bool(results)
-                and len(failed) >= failure_degrade_threshold
-                and not waiting_child
+                budget_boundary_only
+                or (
+                    status == "failed"
+                    and bool(results)
+                    and len(failed) >= failure_degrade_threshold
+                    and not waiting_child
+                )
             )
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
             if local_results:
@@ -1579,9 +1589,9 @@ class RuntimeEpisodeRunner:
             if waiting_child:
                 summary += f" waiting_child={len(waiting_child)}"
             if not results:
-                status = "failed"
+                status = "degraded"
                 summary = "Delegation dispatch did not produce confirmed worker tasks."
-                should_degrade = False
+                should_degrade = True
             if should_degrade:
                 status = "degraded"
                 summary += f" degraded_after_failures={len(failed)} threshold={failure_degrade_threshold}"
@@ -1613,7 +1623,9 @@ class RuntimeEpisodeRunner:
                             "delegationState": "delegation_degraded",
                             "dispatchStatus": "delegation_degraded",
                             "degraded": True,
-                            "degradedReason": "delegation_failure_threshold_reached",
+                            "degradedReason": "child_delegation_budget_boundary"
+                            if budget_boundary_only
+                            else "delegation_failure_threshold_reached",
                             "failureThreshold": failure_degrade_threshold,
                         }
                         if should_degrade

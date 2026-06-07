@@ -5938,6 +5938,75 @@ def _enrich_route_need_for_episode(
     return enriched
 
 
+_RUNTIME_LIST_ROUTE_INTENT_MARKERS = (
+    "episode",
+    "route",
+    "wait_episode",
+    "queued",
+    "queue",
+    "handoff",
+    "plan_only",
+    "work_plan",
+    "dispatch",
+    "degraded",
+    "runtime path",
+    "创建 episode",
+    "创建运行时",
+    "进入运行时",
+    "运行时路径",
+    "路由",
+    "入队",
+    "等待",
+    "回流",
+    "交接",
+    "派发",
+    "委派",
+    "降级",
+)
+
+
+def _runtime_list_request_should_route(
+    *,
+    need: Any,
+    runtime_kind: Optional[str],
+    tool_group: Optional[str],
+    reason: Optional[str],
+    detail_level: str,
+) -> bool:
+    """Correct list calls that are clearly asking for episode routing.
+
+    Some models use runtime_broker(mode="list") while their arguments say they
+    want to create/wait for an episode. Catalog/detail list calls must remain
+    harmless discovery, so this only triggers for summary-level list requests
+    with explicit route/episode intent.
+    """
+
+    normalized_detail = str(detail_level or "summary").strip().lower()
+    if normalized_detail in {"catalog", "detail", "full"}:
+        return False
+    route_kind = _infer_route_kind_from_payload(
+        need if isinstance(need, dict) else {},
+        runtime_kind,
+        tool_group,
+        reason,
+    )
+    if route_kind not in _RUNTIME_ROUTE_DEFAULT_GROUPS:
+        return False
+    if need:
+        return True
+    probe = " ".join(
+        str(item or "")
+        for item in (
+            runtime_kind,
+            tool_group,
+            reason,
+        )
+    ).strip().lower()
+    if not probe:
+        return False
+    return any(marker in probe for marker in _RUNTIME_LIST_ROUTE_INTENT_MARKERS)
+
+
 def _append_runtime_episode(
     route_context: dict[str, Any],
     *,
@@ -5947,14 +6016,6 @@ def _append_runtime_episode(
     allow_direct_fallback: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     route_context = dict(route_context or {})
-    episode = build_runtime_episode(
-        need=need,
-        kind=kind,
-        state="queued",
-        required_runtime_access=[str((item or {}).get("group") or item) for item in groups],
-        continuation_target=str(need.get("continuationTarget") or "runtime_episode_runner"),
-        extra={"allowDirectFallback": bool(allow_direct_fallback)},
-    )
     runtime_context = get_runtime_context()
     session_id = str(
         runtime_context.get("session_id")
@@ -5970,6 +6031,45 @@ def _append_runtime_episode(
         or route_context.get("runId")
         or ""
     ).strip() or None
+    root_run_id = str(
+        runtime_context.get("root_run_id")
+        or runtime_context.get("rootRunId")
+        or route_context.get("root_run_id")
+        or route_context.get("rootRunId")
+        or run_id
+        or ""
+    ).strip() or None
+    workspace_path = str(
+        runtime_context.get("workspace_path")
+        or runtime_context.get("workspacePath")
+        or route_context.get("workspace_path")
+        or route_context.get("workspacePath")
+        or ""
+    ).strip() or None
+    bound_need = dict(need or {})
+    if session_id:
+        bound_need.setdefault("sessionId", session_id)
+        bound_need.setdefault("session_id", session_id)
+    if run_id:
+        bound_need.setdefault("runId", run_id)
+        bound_need.setdefault("run_id", run_id)
+    if root_run_id:
+        bound_need.setdefault("rootRunId", root_run_id)
+    inputs = dict(bound_need.get("inputs") or {}) if isinstance(bound_need.get("inputs"), dict) else {}
+    if workspace_path:
+        bound_need.setdefault("workspacePath", workspace_path)
+        bound_need.setdefault("workspace_path", workspace_path)
+        inputs.setdefault("workspacePath", workspace_path)
+        inputs.setdefault("workspace_path", workspace_path)
+    bound_need["inputs"] = inputs
+    episode = build_runtime_episode(
+        need=bound_need,
+        kind=kind,
+        state="queued",
+        required_runtime_access=[str((item or {}).get("group") or item) for item in groups],
+        continuation_target=str(bound_need.get("continuationTarget") or "runtime_episode_runner"),
+        extra={"allowDirectFallback": bool(allow_direct_fallback)},
+    )
     persisted = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=int(need.get("priority") or 0))
     merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "sessionId", "run_id", "runId", "state", "lastHeartbeatAt"}}}
     if session_id:
@@ -5978,6 +6078,8 @@ def _append_runtime_episode(
     if run_id:
         merged_episode.setdefault("runId", run_id)
         merged_episode.setdefault("run_id", run_id)
+    if root_run_id:
+        merged_episode.setdefault("rootRunId", root_run_id)
     return upsert_runtime_episode(route_context, merged_episode), merged_episode
 
 
@@ -6001,6 +6103,14 @@ def runtime_broker(
     """Supervisor-only broker for listing, granting, routing, checking, and revoking runtime tool groups for the current run."""
     normalized_mode = str(mode or "list").strip().lower()
     route_context = dict((state or {}).get("current_route_context") or {})
+    if normalized_mode == "list" and _runtime_list_request_should_route(
+        need=need,
+        runtime_kind=runtime_kind,
+        tool_group=tool_group,
+        reason=reason,
+        detail_level=detail_level,
+    ):
+        normalized_mode = "route"
 
     if normalized_mode == "list":
         return Command(

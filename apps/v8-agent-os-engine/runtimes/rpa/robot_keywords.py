@@ -265,12 +265,28 @@ class V8ChatRPAKeywords:
         )
         temperature = float(payload.get("temperature") or 0)
         try:
-            from langchain_core.messages import HumanMessage, SystemMessage
+            from core.background_context_guard import prepare_background_model_messages
             from core.llm_factory import llm_factory
 
             model = llm_factory.create_for_role(role, streaming=False, temperature=temperature)
+            prepared = prepare_background_model_messages(
+                system_prompt=system,
+                instruction="Use the prepared RPA workflow input and return concise workflow output.",
+                materials=[
+                    {
+                        "title": "RPA llm_call input",
+                        "kind": "rpa_llm_call_prompt",
+                        "content": prompt,
+                    }
+                ],
+                runtime_kind="rpa",
+                target_role=f"rpa:{role}",
+                resolved_model_id=role,
+                component="rpa",
+                node="robot_llm_call",
+            )
             response = model.invoke(
-                [SystemMessage(content=system), HumanMessage(content=prompt)],
+                prepared.messages,
                 config={"callbacks": []},
             )
             text = self._model_response_text(response)

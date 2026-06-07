@@ -28,6 +28,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.exceptions import OutputParserException
 
 from core.database import db
+from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import sanitize_background_model_output
 from core.memory_canonicalization import canonicalize_memory_extraction_result
 from core.llm_chat_adapter import _extract_json_payload
@@ -915,18 +916,34 @@ def _extract_with_llm(
     system_prompt = _get_extraction_prompt(format_instructions)
     
     try:
-        raw_response = llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(
-                content=(
-                    f"Runtime Scope Context:\n"
-                    f"- resolved_scope: {resolved_scope}\n"
-                    f"- scope_chain: {', '.join(scope_chain or [resolved_scope])}\n\n"
-                    f"Historical Context (Prior Knowledge):\n{context_text}\n\n"
-                    f"Chat Log:\n{chat_text}"
-                )
-            )
-        ])
+        prepared_context = prepare_background_model_messages(
+            system_prompt=system_prompt,
+            instruction=(
+                "Use the prepared background material to extract durable memory. "
+                "Return valid JSON only.\n\n"
+                f"Runtime Scope Context:\n"
+                f"- resolved_scope: {resolved_scope}\n"
+                f"- scope_chain: {', '.join(scope_chain or [resolved_scope])}"
+            ),
+            materials=[
+                {
+                    "title": "Historical Context (Prior Knowledge)",
+                    "kind": "memory_recall",
+                    "content": context_text,
+                },
+                {
+                    "title": "Chat Log",
+                    "kind": "session_transcript",
+                    "content": chat_text,
+                },
+            ],
+            runtime_kind="memory",
+            target_role="memory:session_extraction",
+            resolved_model_id=extractor_model,
+            component="memory",
+            node="session_extraction",
+        )
+        raw_response = llm.invoke(prepared_context.messages)
         sanitized_output = sanitize_background_model_output(raw_response)
         str_content = sanitized_output.text
             
@@ -1001,10 +1018,26 @@ async def _synthesize_periodic_summary_payload(*, tier: str, content: str) -> Pe
     parser = PydanticOutputParser(pydantic_object=PeriodicSummaryPayload)
     prompt = render_periodic_summary_prompt(
         tier=tier,
-        content=content,
+        content="[See prepared background material: scoped periodic memory logs.]",
         format_instructions=parser.get_format_instructions(),
     )
-    response = await llm.ainvoke(prompt)
+    prepared_context = prepare_background_model_messages(
+        system_prompt="You are the long-term memory synthesizer module for V8 Agent OS.",
+        instruction=prompt,
+        materials=[
+            {
+                "title": f"Scoped periodic memory logs ({tier})",
+                "kind": "periodic_memory_logs",
+                "content": content,
+            }
+        ],
+        runtime_kind="memory",
+        target_role=f"memory:periodic_summary:{tier}",
+        resolved_model_id=_extractor_model_name(llm),
+        component="memory",
+        node="periodic_summary",
+    )
+    response = await llm.ainvoke(prepared_context.messages)
     text_content = sanitize_background_model_output(response).text
     try:
         payload = _extract_json_payload(text_content)

@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.types import Command
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.background_context_guard import prepare_background_model_messages
 from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
@@ -906,8 +907,31 @@ def build_reviewer_node(
                     "If there are issues, provide concise, constructive feedback on what needs to be fixed. Do not write the code yourself."
                 )
             )
-            run_messages = [reviewer_sys] + [m for m in messages if not isinstance(m, SystemMessage)]
-            run_messages = [ensure_reasoning_content(m) for m in run_messages]
+            review_material = "\n\n".join(
+                f"[{getattr(message, 'type', 'message')}]\n{str(getattr(message, 'content', '') or '')}"
+                for message in messages
+                if not isinstance(message, SystemMessage)
+            )
+            prepared_context = prepare_background_model_messages(
+                system_prompt=str(reviewer_sys.content),
+                instruction=(
+                    "Review the prepared subagent execution transcript. "
+                    "Return APPROVE or concise feedback only."
+                ),
+                materials=[
+                    {
+                        "title": f"{agent_name} execution transcript",
+                        "kind": "subagent_reviewer_context",
+                        "content": review_material,
+                    }
+                ],
+                runtime_kind=str(get_runtime_context().get("runtime_kind") or "chat"),
+                target_role=f"reviewer:{agent_id}",
+                resolved_model_id=agent_model_id or supervisor_model_id,
+                component="graph",
+                node=f"{agent_id}_reviewer",
+            )
+            run_messages = [ensure_reasoning_content(m) for m in prepared_context.messages]
             run_messages = sanitize_message_chain(run_messages)
 
             from core.automation.hooks import hooks_manager

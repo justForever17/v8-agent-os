@@ -262,6 +262,90 @@ def _ensure_boundary_contract(
     return repair_count
 
 
+def _ensure_delegation_task_contract(
+    repaired: dict[str, Any],
+    *,
+    quality_flags: list[str],
+) -> int:
+    """Make a delegation capability executable without inventing a full plan."""
+
+    capability_plan = [dict(item) for item in _as_list(repaired.get("capabilityPlan")) if isinstance(item, dict)]
+    delegation_caps = [
+        item
+        for item in capability_plan
+        if str(item.get("kind") or item.get("runtimeKind") or "").strip() == "delegation"
+    ]
+    if not delegation_caps:
+        return 0
+
+    tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
+    repair_count = 0
+
+    def _task_has_subagent_shape(task: dict[str, Any]) -> bool:
+        if str(task.get("executionLaneHint") or "").strip() in {"subagent", "delegation"}:
+            return True
+        if task.get("workerBriefs") or task.get("workers") or task.get("tasks"):
+            return True
+        required = {str(item).strip() for item in _as_list(task.get("requiredCapabilities")) if str(item).strip()}
+        return bool(required & {"subagent_execution", "delegation", "peer_review", "independent_review"})
+
+    def _make_subagent_task(capability: dict[str, Any], index: int) -> dict[str, Any]:
+        reason = str(capability.get("reason") or capability.get("brief") or capability.get("summary") or "").strip()
+        title = str(capability.get("title") or "Subagent review").strip()
+        task_id = str(capability.get("taskBriefId") or capability.get("taskId") or f"task-delegation-{index + 1}").strip()
+        goal = reason or "Run one focused subagent review and return structured findings, risks, and recommended next steps."
+        return {
+            "taskBriefId": task_id,
+            "title": title[:96],
+            "goal": goal,
+            "executionLaneHint": "subagent",
+            "familyHint": str(capability.get("familyHint") or capability.get("family") or "").strip() or "auto",
+            "requiredCapabilities": ["subagent_execution", "independent_review"],
+            "acceptanceContract": {
+                "must": [
+                    "Return a structured result bundle with status, findings, residual risks, and recovery hints.",
+                    "Do not claim success when no real worker task was confirmed.",
+                ],
+                "should": ["Reuse parent evidence refs and gate/risk context when present."],
+                "nice": ["Suggest a narrower retry if the task cannot be completed."],
+            },
+        }
+
+    if not tasks:
+        tasks = [_make_subagent_task(delegation_caps[0], 0)]
+        quality_flags.append("planner_contract_delegation_task_created")
+        repair_count += 1
+    elif not any(_task_has_subagent_shape(task) for task in tasks):
+        first_cap = delegation_caps[0]
+        linked_id = str(first_cap.get("taskBriefId") or first_cap.get("taskId") or "").strip()
+        target_index = 0
+        if linked_id:
+            for index, task in enumerate(tasks):
+                if str(task.get("taskBriefId") or task.get("taskId") or "").strip() == linked_id:
+                    target_index = index
+                    break
+        task = dict(tasks[target_index])
+        task["executionLaneHint"] = "subagent"
+        task.setdefault("familyHint", str(first_cap.get("familyHint") or first_cap.get("family") or "").strip() or "auto")
+        capabilities = [str(item).strip() for item in _as_list(task.get("requiredCapabilities")) if str(item).strip()]
+        for capability in ("subagent_execution", "independent_review"):
+            if capability not in capabilities:
+                capabilities.append(capability)
+        task["requiredCapabilities"] = capabilities
+        if not task.get("acceptanceContract"):
+            task["acceptanceContract"] = {
+                "must": ["Return status, findings, residual risks, and recovery hints."],
+                "should": ["Use parent evidence refs when available."],
+                "nice": ["Suggest a narrower retry if blocked."],
+            }
+        tasks[target_index] = task
+        quality_flags.append("planner_contract_delegation_task_shaped")
+        repair_count += 1
+
+    repaired["taskBriefs"] = tasks
+    return repair_count
+
+
 def verify_and_repair_planner_contract(
     plan: dict[str, Any],
     *,
@@ -322,7 +406,10 @@ def verify_and_repair_planner_contract(
                 requires_artifact=_requires_skill_artifact(tasks[0], task_shape_hint=hint, skill_name=skill_name),
                 quality_flags=quality_flags,
             )
+        repaired["taskBriefs"] = tasks
 
+    repair_count += _ensure_delegation_task_contract(repaired, quality_flags=quality_flags)
+    tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
     delegation_caps = [
         item
         for item in _as_list(repaired.get("capabilityPlan"))

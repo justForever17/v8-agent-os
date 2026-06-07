@@ -2971,9 +2971,9 @@ class SafetyGuardian:
             return None
 
         try:
+            from core.background_context_guard import prepare_background_model_messages
             from core.models.control_plane import model_control_plane
             from core.llm_factory import llm_factory
-            from langchain_core.messages import HumanMessage, SystemMessage
         except Exception as exc:
             return {
                 "status": "error",
@@ -3018,13 +3018,23 @@ class SafetyGuardian:
         )
 
         try:
-            response = review_llm.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=json.dumps(prompt_payload, ensure_ascii=False, indent=2)),
+            prepared = prepare_background_model_messages(
+                system_prompt=system_prompt,
+                instruction="根据已准备的安全扫描材料输出唯一 JSON 对象。",
+                materials=[
+                    {
+                        "title": "Safety skill scan payload",
+                        "kind": "safety_skill_scan_payload",
+                        "content": json.dumps(prompt_payload, ensure_ascii=False, indent=2),
+                    }
                 ],
-                config={"callbacks": []},
+                runtime_kind="safety",
+                target_role="safety:skill_review",
+                resolved_model_id=model_id,
+                component="safety",
+                node="skill_review_context",
             )
+            response = review_llm.invoke(prepared.messages, config={"callbacks": []})
             raw_text = self._extract_llm_text(response)
             parsed = self._parse_skill_review_json(raw_text)
             decision = str(parsed.get("decision") or "").strip().lower()

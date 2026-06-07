@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from core.artifact_store import artifact_store
+from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import sanitize_background_model_output
 from core.database import db
 from core.models.factory import llm_factory
@@ -8275,11 +8276,24 @@ class ComputerUseRuntime:
             f"当前观察:\n{self._observation_summary(observation)}\n\n"
             "请直接返回 JSON 数组。"
         )
+        prepared = prepare_background_model_messages(
+            system_prompt=system_prompt,
+            instruction="根据已准备的桌面观察材料输出唯一 JSON 数组。",
+            materials=[
+                {
+                    "title": "Computer Use short-horizon planning context",
+                    "kind": "computer_use_planning_context",
+                    "content": user_prompt,
+                }
+            ],
+            runtime_kind="computer_use",
+            target_role="computer_use:planner",
+            resolved_model_id="computer_use_planner",
+            component="computer_use",
+            node="planner_context",
+        )
         response = planner_model.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ]
+            prepared.messages
         )
         planner_text = self._planner_response_text(response)
         raw_steps = self._extract_plan_payload(planner_text)

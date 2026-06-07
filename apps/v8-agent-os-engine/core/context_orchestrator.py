@@ -126,12 +126,52 @@ class ContextOrchestrator:
     ) -> PreparedContext:
         policy = storage.get_context_config() or {}
         compression = dict(policy.get("compression") or {})
+        runtime_ctx = get_runtime_context()
+        live_audit_context = (
+            dict(runtime_ctx.get("live_audit") or {})
+            if isinstance(runtime_ctx.get("live_audit"), dict)
+            else {}
+        )
+        force_live_audit_compaction = bool(
+            live_audit_context.get("runtimeSubagentClosureLiveAudit")
+            and live_audit_context.get("preferContextCompaction")
+        )
+        context_governance_reason = ""
+        if force_live_audit_compaction:
+            compression = {
+                **compression,
+                "enabled": True,
+                "mode": str(compression.get("mode") or "persistent_baseline").strip() or "persistent_baseline",
+                "trigger_ratio": min(0.70, float(compression.get("trigger_ratio") or 0.94)),
+                "hard_trigger_ratio": min(0.70, float(compression.get("hard_trigger_ratio") or compression.get("trigger_ratio") or 0.94)),
+                "keep_recent_turns": 1,
+                "keep_recent_messages": 2,
+                "use_llm_summary": False,
+            }
+            context_governance_reason = "runtime_subagent_closure_live_audit_forced_compaction"
         window_guard = context_window_guard.resolve(
             target_role=target_role,
             runtime_kind=runtime_kind,
             model_ref=str(resolved_model_id or "").strip(),
             compression=compression,
         )
+        if force_live_audit_compaction:
+            forced_window = int(live_audit_context.get("forcedContextWindowTokens") or 2048)
+            forced_window = max(512, min(forced_window, int(window_guard.get("effectiveContextWindowTokens") or forced_window)))
+            trigger_ratio_forced = float(compression.get("trigger_ratio") or compression.get("hard_trigger_ratio") or 0.70)
+            window_guard = dict(window_guard)
+            warnings = [dict(item) for item in list(window_guard.get("warnings") or []) if isinstance(item, dict)]
+            warnings.append(
+                {
+                    "reason": context_governance_reason,
+                    "role": target_role,
+                    "runtimeKind": runtime_kind,
+                    "contextWindowTokens": forced_window,
+                }
+            )
+            window_guard["effectiveContextWindowTokens"] = forced_window
+            window_guard["triggerLimitTokens"] = max(1, int(forced_window * trigger_ratio_forced))
+            window_guard["warnings"] = warnings
         context_window = int(window_guard.get("effectiveContextWindowTokens") or compression.get("default_context_window_tokens") or 32000)
 
         cleaned_messages, adapter_blocks = self._extract_adapter_blocks(messages)
@@ -151,7 +191,8 @@ class ContextOrchestrator:
         compaction_applied = False
         history_block: ContextBlock | None = None
         method = "none"
-        keep_recent_turns = int(keep_recent_override or compression.get("keep_recent_turns") or 4)
+        keep_recent_source = None if force_live_audit_compaction else keep_recent_override
+        keep_recent_turns = int(keep_recent_source or compression.get("keep_recent_turns") or 4)
         keep_recent_messages = int(compression.get("keep_recent_messages") or max(keep_recent_turns * 2, 6))
         durable_flush: Dict[str, Any] | None = None
         compaction_mode = str(compression.get("mode") or "persistent_baseline").strip() or "persistent_baseline"
@@ -165,7 +206,6 @@ class ContextOrchestrator:
         baseline_message_count = 0
         baseline_snapshot = None
         baseline_has_uncovered_messages = False
-        runtime_ctx = get_runtime_context()
         session_id = str(runtime_ctx.get("session_id") or "").strip()
         old_prefix: List[BaseMessage] = []
         recent_tail: List[BaseMessage] = list(non_system_messages)
@@ -306,6 +346,7 @@ class ContextOrchestrator:
             "runtime_kind": runtime_kind,
             "target_role": target_role,
             "resolved_model_id": str(resolved_model_id or "").strip(),
+            "context_governance_reason": context_governance_reason,
             "context_window_tokens": context_window,
             "effective_context_window_tokens": context_window,
             "context_window_participants": window_guard.get("participants") or [],

@@ -105,6 +105,109 @@ def test_engineering_plan_only_without_workers_returns_ready_handoff():
     assert "errorCode" not in handoff
 
 
+def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):
+    async def _fail_if_delegated(self, _episode):
+        raise AssertionError("plan_only engineering episodes must not delegate executable workers")
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fail_if_delegated)
+    episode = build_runtime_episode(
+        need={
+            "kind": "engineering",
+            "source": "test",
+            "reason": "explicit plan_only runtime validation",
+            "deliverableKind": "plan_only",
+            "writeRequired": False,
+        },
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "deliverableKind": "plan_only",
+                "writeRequired": False,
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "task-1",
+                        "goal": "Create a work plan only.",
+                        "acceptanceContract": "Return work_plan_ready.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "work_plan_ready"
+    assert handoff["deliverableKind"] == "plan_only"
+    assert handoff["writeRequired"] is False
+
+
+def test_delegation_episode_without_tasks_returns_degraded_missing_tasks_handoff():
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": ""},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={"inputs": {}},
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["kind"] == "delegation_degraded"
+    assert handoff["delegationState"] == "delegation_degraded"
+    assert handoff["dispatchStatus"] == "missing_tasks"
+    assert handoff["missingTasks"] is True
+    assert handoff["errorCode"] == "delegation_missing_tasks"
+
+
+def test_delegation_child_budget_boundary_returns_degraded_handoff(monkeypatch):
+    from langgraph.types import Command
+
+    import core.native_tools as native_tools
+
+    def _fake_delegation_broker(**_kwargs):
+        return Command(
+            update={
+                "parallel_results": [
+                    {
+                        "delegationId": "delegation-test",
+                        "targetLabel": "Project Planner",
+                        "status": "blocked",
+                        "error": "child_delegation_not_allowed",
+                        "dispatchStatus": "dispatch_missing_child_budget",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(native_tools, "delegation_broker", SimpleNamespace(func=_fake_delegation_broker))
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "child budget boundary"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "tasks": [{"title": "Review handoff", "goal": "Review handoff"}],
+                "targetCount": 1,
+                "allowChildDelegation": False,
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["kind"] == "delegation_degraded"
+    assert handoff["delegationState"] == "delegation_degraded"
+    assert handoff["degradedReason"] == "child_delegation_budget_boundary"
+    assert handoff["totalFailedDelegationCount"] == 1
+    assert handoff["failedDelegationCount"] == 0
+
+
 def test_runtime_episode_retry_policy_requeues_before_final_failure():
     kind = "test_retry_episode"
     episode = build_runtime_episode(
@@ -600,7 +703,7 @@ def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
     assert payload["results"][0]["compactTranscript"] == "patch proposal ready"
 
 
-def test_delegation_episode_fails_when_all_workers_are_child_budget_blocked(monkeypatch):
+def test_delegation_episode_degrades_when_all_workers_are_child_budget_blocked(monkeypatch):
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},
         kind="delegation",
@@ -644,8 +747,12 @@ def test_delegation_episode_fails_when_all_workers_are_child_budget_blocked(monk
 
     handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
 
-    assert handoff["status"] == "failed"
+    assert handoff["status"] == "degraded"
+    assert handoff["kind"] == "delegation_degraded"
+    assert handoff["delegationState"] == "delegation_degraded"
+    assert handoff["degradedReason"] == "child_delegation_budget_boundary"
     assert handoff["failedDelegationCount"] == 0
+    assert handoff["totalFailedDelegationCount"] == 1
     assert handoff["budgetBlockedChildDelegations"][0]["delegationId"] == "delegation-blocked-1"
     assert "child_budget_blocked=1" in handoff["compactSummary"]
 

@@ -148,6 +148,9 @@ class ChatRequestData(BaseModel):
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
     disable_extensions_prefilter: Optional[bool] = Field(default=None, alias="disableExtensionsPrefilter")
     compat_ingress_diagnostics: Optional[Dict[str, Any]] = Field(default=None, alias="compatIngressDiagnostics")
+    runtime_subagent_closure_live_audit: Optional[bool] = Field(default=None, alias="runtimeSubagentClosureLiveAudit")
+    require_context_governance: Optional[bool] = Field(default=None, alias="requireContextGovernance")
+    prefer_context_compaction: Optional[bool] = Field(default=None, alias="preferContextCompaction")
 
 
 class ChatRequest(BaseModel):

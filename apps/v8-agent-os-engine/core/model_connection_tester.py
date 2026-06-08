@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from typing import Any, Dict
+from urllib.parse import quote
 
 import requests
 from langchain_core.messages import HumanMessage
@@ -94,6 +95,218 @@ class ModelConnectionTester:
         if root.endswith("/v1"):
             return root[:-3]
         return root
+
+    def _looks_like_gemini_model(self, model_id: str) -> bool:
+        normalized = str(model_id or "").strip().lower()
+        return "gemini" in normalized
+
+    def _looks_like_anthropic_model(self, model_id: str) -> bool:
+        normalized = str(model_id or "").strip().lower()
+        return "claude" in normalized or "anthropic" in normalized
+
+    def _derive_gemini_native_base_url(self, base_url: str) -> str:
+        root = str(base_url or "").strip().rstrip("/")
+        if root.endswith("/v1beta"):
+            return root
+        if root.endswith("/v1"):
+            return f"{root[:-3]}/v1beta"
+        return f"{root}/v1beta" if root else ""
+
+    def _build_gemini_generate_content_endpoint(self, *, base_url: str, model_id: str) -> str:
+        native_base = self._derive_gemini_native_base_url(base_url).rstrip("/")
+        normalized_model = str(model_id or "").strip()
+        if not normalized_model.startswith("models/"):
+            normalized_model = f"models/{normalized_model}"
+        return f"{native_base}/{quote(normalized_model, safe='/')}:generateContent"
+
+    def _build_anthropic_messages_endpoint(self, *, base_url: str) -> str:
+        root = str(base_url or "").strip().rstrip("/")
+        if root.endswith("/v1/messages"):
+            return root
+        if root.endswith("/messages"):
+            return root
+        if root.endswith("/v1"):
+            return f"{root}/messages"
+        return f"{root}/v1/messages" if root else ""
+
+    def _should_probe_gemini_native_route(self, *, model_id: str, meta: Dict[str, Any]) -> bool:
+        api_standard = str(meta.get("api_standard") or "openai").strip().lower()
+        base_url = str(meta.get("base_url") or "").strip()
+        return api_standard == "openai" and bool(base_url) and self._looks_like_gemini_model(model_id)
+
+    def _should_probe_anthropic_native_route(self, *, model_id: str, meta: Dict[str, Any]) -> bool:
+        api_standard = str(meta.get("api_standard") or "openai").strip().lower()
+        base_url = str(meta.get("base_url") or "").strip()
+        return api_standard == "openai" and bool(base_url) and self._looks_like_anthropic_model(model_id)
+
+    def _probe_gemini_native_generate_content(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        base_url = str(meta.get("base_url") or "").strip()
+        endpoint = self._build_gemini_generate_content_endpoint(base_url=base_url, model_id=model_id)
+        if not endpoint:
+            return {
+                "status": "skipped",
+                "reason": "missing_base_url",
+                "requestKind": "gemini_generate_content",
+            }
+        headers = {
+            "Authorization": f"Bearer {meta.get('api_key') or ''}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "contents": [{"parts": [{"text": "Hello. Reply with exact string: OK"}]}],
+            "generationConfig": {"maxOutputTokens": 8, "temperature": 0},
+        }
+        started = time.perf_counter()
+        try:
+            response = requests.post(endpoint, json=payload, headers=headers, timeout=20)
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            if response.status_code != 200:
+                return {
+                    "status": "failed",
+                    "requestKind": "gemini_generate_content",
+                    "resolvedEndpoint": endpoint,
+                    "latencyMs": latency_ms,
+                    "statusCode": response.status_code,
+                    "errorPreview": response.text[:500],
+                }
+            data = response.json()
+            parts = (
+                (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+                if isinstance(data, dict)
+                else []
+            )
+            preview = " ".join(str((part or {}).get("text") or "").strip() for part in parts if (part or {}).get("text")).strip()
+            return {
+                "status": "passed",
+                "requestKind": "gemini_generate_content",
+                "resolvedEndpoint": endpoint,
+                "latencyMs": latency_ms,
+                "message": preview[:120] or "Gemini native route ok",
+                "modelVersion": data.get("modelVersion") if isinstance(data, dict) else None,
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "requestKind": "gemini_generate_content",
+                "resolvedEndpoint": endpoint,
+                "errorPreview": str(exc)[:500],
+            }
+
+    def _probe_anthropic_native_messages(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        endpoint = self._build_anthropic_messages_endpoint(base_url=str(meta.get("base_url") or ""))
+        if not endpoint:
+            return {
+                "status": "skipped",
+                "reason": "missing_base_url",
+                "requestKind": "anthropic_messages",
+            }
+        api_key = str(meta.get("api_key") or "")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": str(model_id or ""),
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "Reply with exact string: OK"}],
+        }
+        started = time.perf_counter()
+        try:
+            response = requests.post(endpoint, json=payload, headers=headers, timeout=20)
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            if response.status_code != 200:
+                return {
+                    "status": "failed",
+                    "requestKind": "anthropic_messages",
+                    "resolvedEndpoint": endpoint,
+                    "latencyMs": latency_ms,
+                    "statusCode": response.status_code,
+                    "errorPreview": response.text[:500],
+                }
+            data = response.json()
+            content = data.get("content") if isinstance(data, dict) else []
+            preview = ""
+            if isinstance(content, list):
+                preview = " ".join(
+                    str((part or {}).get("text") or "").strip()
+                    for part in content
+                    if isinstance(part, dict) and (part or {}).get("text")
+                ).strip()
+            return {
+                "status": "passed",
+                "requestKind": "anthropic_messages",
+                "resolvedEndpoint": endpoint,
+                "latencyMs": latency_ms,
+                "message": preview[:120] or "Anthropic native route ok",
+                "responseModel": data.get("model") if isinstance(data, dict) else None,
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "requestKind": "anthropic_messages",
+                "resolvedEndpoint": endpoint,
+                "errorPreview": str(exc)[:500],
+            }
+
+    def _probe_protocol_native_route(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any] | None:
+        if self._should_probe_gemini_native_route(model_id=model_id, meta=meta):
+            return self._probe_gemini_native_generate_content(model_id=model_id, meta=meta)
+        if self._should_probe_anthropic_native_route(model_id=model_id, meta=meta):
+            return self._probe_anthropic_native_messages(model_id=model_id, meta=meta)
+        return None
+
+    def _attach_protocol_warning(
+        self,
+        *,
+        result: Dict[str, Any],
+        model_id: str,
+        meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        native_probe = self._probe_protocol_native_route(model_id=model_id, meta=meta)
+        if not native_probe:
+            return result
+        if native_probe.get("requestKind") == "gemini_generate_content":
+            recommended_api_standard = "gemini"
+            recommended_base_url = self._derive_gemini_native_base_url(str(meta.get("base_url") or ""))
+            if native_probe.get("status") == "passed":
+                warning_code = "gemini_native_route_detected"
+                warning_message = (
+                    "当前连接测试按 OpenAI 兼容协议通过；同时检测到该 Gemini 模型的原生 /v1beta generateContent 路径可用。"
+                    "如果实际调用需要 Gemini 原生协议，请拆分为 Gemini Provider，并使用 /v1beta baseURL。"
+                )
+            else:
+                warning_code = "gemini_model_under_openai_provider"
+                warning_message = (
+                    "当前连接测试只验证了 OpenAI 兼容路径；模型名属于 Gemini，但原生 /v1beta 路径未通过或未验证。"
+                    "如果代理只支持 Gemini 原生 generateContent，请把 baseURL 改为 /v1beta 并使用 Gemini 协议。"
+                )
+        else:
+            recommended_api_standard = "anthropic"
+            recommended_base_url = str(meta.get("base_url") or "").strip().rstrip("/")
+            if native_probe.get("status") == "passed":
+                warning_code = "anthropic_native_route_detected"
+                warning_message = (
+                    "当前连接测试按 OpenAI 兼容协议通过；同时检测到该 Claude/Anthropic 模型的原生 Messages 路径可用。"
+                    "如果实际调用需要 Anthropic 原生协议，请拆分为 Anthropic Provider，并使用 Messages 兼容 baseURL。"
+                )
+            else:
+                warning_code = "anthropic_model_under_openai_provider"
+                warning_message = (
+                    "当前连接测试只验证了 OpenAI 兼容路径；模型名属于 Claude/Anthropic，但原生 Messages 路径未通过或未验证。"
+                    "如果代理只支持 Anthropic Messages，请改用 Anthropic 协议 Provider。"
+                )
+        return {
+            **result,
+            "protocolWarning": warning_code,
+            "protocolWarningMessage": warning_message,
+            "recommendedApiStandard": recommended_api_standard,
+            "recommendedBaseUrl": recommended_base_url,
+            "nativeProtocolProbe": native_probe,
+            "nativeGeminiProbe": native_probe if native_probe.get("requestKind") == "gemini_generate_content" else None,
+            "nativeAnthropicProbe": native_probe if native_probe.get("requestKind") == "anthropic_messages" else None,
+        }
 
     def _probe_local_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any] | None:
         provider_record = dict(meta.get("provider_record") or {})
@@ -557,6 +770,7 @@ class ModelConnectionTester:
                 capability_checks = self._skipped_runtime_capability_checks("media_generation_provider_probe_only")
             else:
                 result = self._test_chat_model(model_id=runtime_model_id, meta=meta)
+                result = self._attach_protocol_warning(result=result, model_id=wire_model_id, meta=meta)
                 if runtime_ready and self._is_basic_connection_probe_only(meta):
                     capability_checks = self._basic_probe_only_capability_checks("basic_connection_probe_only_for_oauth_quota_safety")
                 elif runtime_ready:
@@ -597,6 +811,12 @@ class ModelConnectionTester:
                     "runtimeReady": runtime_ready,
                     "runtimeUnsupportedReason": runtime_unsupported_reason,
                     "modelRef": model_ref,
+                    "protocolWarning": result.get("protocolWarning"),
+                    "nativeProtocolProbe": result.get("nativeProtocolProbe"),
+                    "nativeGeminiProbe": result.get("nativeGeminiProbe"),
+                    "nativeAnthropicProbe": result.get("nativeAnthropicProbe"),
+                    "recommendedApiStandard": result.get("recommendedApiStandard"),
+                    "recommendedBaseUrl": result.get("recommendedBaseUrl"),
                 },
             )
             return {
@@ -622,6 +842,28 @@ class ModelConnectionTester:
             }
         except Exception as exc:
             normalized = normalize_provider_error(exc, provider=provider_name, model=wire_model_id)
+            native_protocol_probe = self._probe_protocol_native_route(model_id=wire_model_id, meta=meta)
+            if native_protocol_probe and native_protocol_probe.get("status") == "passed":
+                if native_protocol_probe.get("requestKind") == "gemini_generate_content":
+                    protocol_name = "Gemini 原生 /v1beta generateContent"
+                    recommended_api_standard = "gemini"
+                    recommended_base_url = self._derive_gemini_native_base_url(str(meta.get("base_url") or ""))
+                else:
+                    protocol_name = "Anthropic 原生 Messages"
+                    recommended_api_standard = "anthropic"
+                    recommended_base_url = str(meta.get("base_url") or "").strip().rstrip("/")
+                normalized = {
+                    **normalized,
+                    "code": "protocol_mismatch",
+                    "message": (
+                        f"OpenAI 兼容连接测试失败，但 {protocol_name} 路径测试通过。"
+                        "当前 Provider 协议配置与模型实际可用协议不一致，请拆分对应协议 Provider 后重试。"
+                    ),
+                    "openaiCompatibleError": normalized,
+                }
+            else:
+                recommended_api_standard = None
+                recommended_base_url = None
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
             self._record_health(
                 provider_id=provider_id,
@@ -647,6 +889,9 @@ class ModelConnectionTester:
                     "runtimeReady": runtime_ready,
                     "runtimeUnsupportedReason": runtime_unsupported_reason,
                     "modelRef": model_ref,
+                    "nativeProtocolProbe": native_protocol_probe,
+                    "recommendedApiStandard": recommended_api_standard,
+                    "recommendedBaseUrl": recommended_base_url,
                 },
             )
             return {
@@ -670,6 +915,11 @@ class ModelConnectionTester:
                 "runtimeReady": runtime_ready,
                 "runtimeUnsupportedReason": runtime_unsupported_reason,
                 "error": normalized,
+                "nativeProtocolProbe": native_protocol_probe,
+                "nativeGeminiProbe": native_protocol_probe if native_protocol_probe and native_protocol_probe.get("requestKind") == "gemini_generate_content" else None,
+                "nativeAnthropicProbe": native_protocol_probe if native_protocol_probe and native_protocol_probe.get("requestKind") == "anthropic_messages" else None,
+                "recommendedApiStandard": recommended_api_standard,
+                "recommendedBaseUrl": recommended_base_url,
             }
 
 

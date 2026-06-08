@@ -2404,6 +2404,65 @@ class WorkflowMemoryService:
         updated = 0
         quarantined = 0
         activated = 0
+        merge_suggestions = 0
+        budget_stopped = False
+
+        def _candidate_merge_key(item: Dict[str, Any]) -> str:
+            scope = _norm_text(item.get("scope") or "global").lower()
+            family = _norm_text(item.get("task_family") or item.get("taskFamily") or "").lower()
+            steps = [_norm_text(step).lower() for step in list(item.get("goldenPathSteps") or [])[:3]]
+            triggers = [_norm_text(trigger).lower() for trigger in list(item.get("canonicalTriggerPatterns") or [])[:3]]
+            base = " | ".join([scope, family, " > ".join(steps), " ; ".join(triggers)])
+            tokens = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", base)
+            if len(tokens) < 4:
+                return ""
+            return " ".join(tokens[:48])
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in candidates:
+            key = _candidate_merge_key(item)
+            if key:
+                grouped.setdefault(key, []).append(item)
+
+        def _candidate_score(item: Dict[str, Any]) -> tuple[float, int, str]:
+            try:
+                maturity = float(item.get("maturity_score") or 0.0)
+            except (TypeError, ValueError):
+                maturity = 0.0
+            try:
+                successes = int(item.get("success_count") or 0)
+            except (TypeError, ValueError):
+                successes = 0
+            return (maturity, successes, str(item.get("updated_at") or ""))
+
+        for group in grouped.values():
+            if len(group) < 2:
+                continue
+            keeper = sorted(group, key=_candidate_score, reverse=True)[0]
+            keeper_id = str(keeper.get("id") or "").strip()
+            if not keeper_id:
+                continue
+            for duplicate in group:
+                duplicate_id = str(duplicate.get("id") or "").strip()
+                if not duplicate_id or duplicate_id == keeper_id:
+                    continue
+                existing = duplicate.get("mergeSuggestion") if isinstance(duplicate.get("mergeSuggestion"), dict) else {}
+                if str(existing.get("targetId") or "") == keeper_id:
+                    continue
+                suggestion = {
+                    "targetId": keeper_id,
+                    "reason": "maintenance_high_similarity_workflow",
+                    "confidence": 1.0,
+                    "updatedAt": utc_now_iso(),
+                }
+                self.update_candidate(duplicate_id, {"mergeSuggestion": suggestion})
+                merge_suggestions += 1
+                if merge_suggestions >= 40:
+                    budget_stopped = True
+                    break
+            if budget_stopped:
+                break
+
         for item in candidates:
             metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             next_status = self._candidate_status_for_counts(
@@ -2426,6 +2485,8 @@ class WorkflowMemoryService:
             "updatedCount": updated,
             "activatedCount": activated,
             "quarantinedCount": quarantined,
+            "mergeSuggestionCount": merge_suggestions,
+            "budgetStopped": budget_stopped,
         }
 
     def export_candidate(self, candidate: Dict[str, Any]) -> None:

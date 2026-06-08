@@ -42,7 +42,7 @@ interface AIProvider {
   models: AIModel[];
 }
 type ModelConnectionStatus = {
-  status: "idle" | "testing" | "success" | "error";
+  status: "idle" | "testing" | "success" | "warning" | "error";
   message?: string;
 };
 type ModelReasoningRepairStatus = {
@@ -299,7 +299,9 @@ export default function ProviderConfigPage({ params
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const error = extractErrorText(data?.detail, "") ||
+        const detail = data?.detail && typeof data.detail === "object" ? data.detail : {};
+        const error = extractErrorText(detail?.error, "") ||
+        extractErrorText(data?.detail, "") ||
         extractErrorText(data?.error, "") ||
         t("app.admin.dashboard.models.providers.id.page.k7520c6bd");
         setConnectionStatusMap((current) => ({
@@ -308,8 +310,14 @@ export default function ProviderConfigPage({ params
         }));
         return;
       }
+      const protocolWarning = typeof data?.protocolWarningMessage === "string" ? data.protocolWarningMessage : "";
+      const recommendedRoute = [
+      data?.recommendedApiStandard ? `protocol: ${data.recommendedApiStandard}` : "",
+      data?.recommendedBaseUrl ? `baseURL: ${data.recommendedBaseUrl}` : ""].
+      filter(Boolean).join(" / ");
       const successMessage = [
-      `${data.providerName || "Provider"} · ${Math.round(Number(data.latencyMs || 0))}ms`, t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities"),
+      protocolWarning,
+      `${data.providerName || "Provider"} · ${Math.round(Number(data.latencyMs || 0))}ms`, recommendedRoute, t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities"),
 
 
 
@@ -318,7 +326,7 @@ export default function ProviderConfigPage({ params
       filter(Boolean).join(" · ");
       setConnectionStatusMap((current) => ({
         ...current,
-        [modelRef]: { status: "success", message: successMessage }
+        [modelRef]: { status: protocolWarning ? "warning" : "success", message: successMessage }
       }));
     }
     catch (error) {

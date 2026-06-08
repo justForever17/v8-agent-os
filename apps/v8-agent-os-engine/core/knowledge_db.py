@@ -21,6 +21,7 @@ import sqlite3
 import json
 import hashlib
 import logging
+from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -95,6 +96,14 @@ def _effective_confidence(confidence: object, maintainer_source: str | None = No
     if str(maintainer_source or "").strip().lower() == "human_admin":
         return min(1.0, base * 1.5)
     return base
+
+
+def _normalize_fact_for_compaction(value: object) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[`*_#>\[\]\(\){}\"'“”‘’，,。；;：:！？!?\\\/]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 class KnowledgeDB:
@@ -497,6 +506,270 @@ class KnowledgeDB:
 
     def quarantine_knowledge(self, fact_id: str) -> bool:
         return self.set_knowledge_status(fact_id, "quarantined")
+
+    def mark_knowledge_superseded(
+        self,
+        fact_id: str,
+        superseded_by: str,
+        *,
+        reason: str = "maintenance_duplicate",
+    ) -> bool:
+        """Soft-supersede a duplicate knowledge item without deleting evidence."""
+        fact_id = str(fact_id or "").strip()
+        superseded_by = str(superseded_by or "").strip()
+        if not fact_id or not superseded_by or fact_id == superseded_by:
+            return False
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            row = conn.execute("SELECT metadata_json FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+            if not row:
+                return False
+            metadata: Dict[str, object] = {}
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except Exception:
+                metadata = {}
+            maintenance = dict(metadata.get("maintenance") or {})
+            maintenance.update(
+                {
+                    "lastAction": "superseded",
+                    "reason": reason,
+                    "supersededBy": superseded_by,
+                    "updatedAt": now,
+                }
+            )
+            metadata["maintenance"] = maintenance
+            cursor = conn.execute(
+                """
+                UPDATE knowledge
+                SET lifecycle_state = 'superseded',
+                    superseded_by = ?,
+                    metadata_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded')
+                """,
+                (superseded_by, json.dumps(metadata, ensure_ascii=False), now, fact_id),
+            )
+            if cursor.rowcount:
+                conn.execute(
+                    "UPDATE relations SET source_fact_id = ?, updated_at = ? WHERE source_fact_id = ?",
+                    (superseded_by, now, fact_id),
+                )
+            return cursor.rowcount > 0
+
+    def mark_knowledge_merge_suggestion(
+        self,
+        fact_id: str,
+        target_id: str,
+        *,
+        similarity: float,
+        reason: str = "maintenance_similar_below_auto_threshold",
+    ) -> bool:
+        fact_id = str(fact_id or "").strip()
+        target_id = str(target_id or "").strip()
+        if not fact_id or not target_id or fact_id == target_id:
+            return False
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            row = conn.execute("SELECT metadata_json FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+            if not row:
+                return False
+            metadata: Dict[str, object] = {}
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except Exception:
+                metadata = {}
+            maintenance = dict(metadata.get("maintenance") or {})
+            maintenance["mergeSuggestion"] = {
+                "targetId": target_id,
+                "similarity": round(float(similarity or 0.0), 4),
+                "reason": reason,
+                "updatedAt": now,
+            }
+            metadata["maintenance"] = maintenance
+            cursor = conn.execute(
+                """
+                UPDATE knowledge
+                SET metadata_json = ?, updated_at = ?
+                WHERE id = ?
+                  AND status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded')
+                """,
+                (json.dumps(metadata, ensure_ascii=False), now, fact_id),
+            )
+            return cursor.rowcount > 0
+
+    def maintenance_compact_knowledge(
+        self,
+        *,
+        limit: int = 500,
+        auto_supersede_threshold: float = 0.985,
+        max_clusters: int = 80,
+    ) -> Dict[str, object]:
+        """Conservatively dedupe highly similar same-scope facts.
+
+        This is deterministic and intentionally narrow: it only acts inside the
+        same scope and category, and prefers lifecycle superseding over deletion.
+        """
+        effective_limit = max(1, min(int(limit or 500), 2000))
+        threshold = max(0.95, min(float(auto_supersede_threshold or 0.985), 1.0))
+        cluster_budget = max(1, min(int(max_clusters or 80), 500))
+        items = [
+            item
+            for item in self.get_all_knowledge(scope=None, limit=effective_limit, status="active")
+            if str(item.get("lifecycle_state") or "active").strip().lower() not in {"stale", "tombstoned", "superseded"}
+        ]
+        buckets: Dict[tuple[str, str], List[Dict]] = {}
+        for item in items:
+            fact = _normalize_fact_for_compaction(item.get("fact"))
+            if len(fact) < 16:
+                continue
+            key = (str(item.get("scope") or "global").strip(), str(item.get("category") or "general").strip())
+            normalized_item = dict(item)
+            normalized_item["_normalized_fact"] = fact
+            buckets.setdefault(key, []).append(normalized_item)
+
+        duplicate_candidates = 0
+        superseded_count = 0
+        merge_suggestion_count = 0
+        superseded_pairs: List[Dict[str, str]] = []
+        merge_suggestions: List[Dict[str, object]] = []
+        processed_clusters = 0
+
+        def _keeper_key(item: Dict) -> tuple[float, str, str]:
+            try:
+                confidence = float(item.get("effective_confidence") or item.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            return (confidence, str(item.get("updated_at") or ""), str(item.get("id") or ""))
+
+        for (_scope, _category), bucket in buckets.items():
+            by_exact: Dict[str, List[Dict]] = {}
+            for item in bucket:
+                by_exact.setdefault(str(item.get("_normalized_fact") or ""), []).append(item)
+            for exact_group in by_exact.values():
+                if len(exact_group) < 2:
+                    continue
+                if processed_clusters >= cluster_budget:
+                    break
+                processed_clusters += 1
+                keeper = sorted(exact_group, key=_keeper_key, reverse=True)[0]
+                for duplicate in exact_group:
+                    if duplicate.get("id") == keeper.get("id"):
+                        continue
+                    duplicate_candidates += 1
+                    if self.mark_knowledge_superseded(str(duplicate.get("id")), str(keeper.get("id")), reason="maintenance_exact_duplicate"):
+                        superseded_count += 1
+                        superseded_pairs.append({"sourceId": str(duplicate.get("id")), "targetId": str(keeper.get("id")), "reason": "exact_duplicate"})
+            if processed_clusters >= cluster_budget:
+                break
+
+            candidates = sorted(
+                [item for group in by_exact.values() if len(group) == 1 for item in group],
+                key=lambda item: str(item.get("_normalized_fact") or ""),
+            )
+            for index, left in enumerate(candidates):
+                if processed_clusters >= cluster_budget:
+                    break
+                for right in candidates[index + 1 : min(index + 9, len(candidates))]:
+                    if processed_clusters >= cluster_budget:
+                        break
+                    left_fact = str(left.get("_normalized_fact") or "")
+                    right_fact = str(right.get("_normalized_fact") or "")
+                    if not left_fact or not right_fact:
+                        continue
+                    ratio = SequenceMatcher(None, left_fact, right_fact).ratio()
+                    if ratio < 0.94:
+                        continue
+                    processed_clusters += 1
+                    duplicate_candidates += 1
+                    keeper, duplicate = sorted([left, right], key=_keeper_key, reverse=True)[:2]
+                    if ratio >= threshold:
+                        if self.mark_knowledge_superseded(str(duplicate.get("id")), str(keeper.get("id")), reason="maintenance_high_similarity"):
+                            superseded_count += 1
+                            superseded_pairs.append(
+                                {
+                                    "sourceId": str(duplicate.get("id")),
+                                    "targetId": str(keeper.get("id")),
+                                    "reason": "high_similarity",
+                                }
+                            )
+                    else:
+                        if self.mark_knowledge_merge_suggestion(
+                            str(duplicate.get("id")),
+                            str(keeper.get("id")),
+                            similarity=ratio,
+                        ):
+                            merge_suggestion_count += 1
+                            merge_suggestions.append(
+                                {
+                                    "sourceId": str(duplicate.get("id")),
+                                    "targetId": str(keeper.get("id")),
+                                    "similarity": round(ratio, 4),
+                                    "reason": "similar_but_below_auto_threshold",
+                                }
+                            )
+                        if len(merge_suggestions) >= 20:
+                            break
+
+        graph_result = self.maintenance_compact_graph()
+        return {
+            "candidateCount": duplicate_candidates,
+            "supersededCount": superseded_count,
+            "mergeSuggestionCount": merge_suggestion_count,
+            "supersededPairs": superseded_pairs[:20],
+            "mergeSuggestions": merge_suggestions[:20],
+            "processedClusterCount": processed_clusters,
+            "budgetStopped": processed_clusters >= cluster_budget,
+            "graph": graph_result,
+        }
+
+    def maintenance_compact_graph(self, *, limit: int = 500) -> Dict[str, object]:
+        """Return conservative graph health/compaction stats without destructive cleanup."""
+        effective_limit = max(1, min(int(limit or 500), 2000))
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.source_fact_id, k.superseded_by, k.lifecycle_state
+                FROM relations r
+                LEFT JOIN knowledge k ON k.id = r.source_fact_id
+                WHERE r.source_fact_id IS NOT NULL
+                LIMIT ?
+                """,
+                (effective_limit,),
+            ).fetchall()
+            rewired = 0
+            orphaned = 0
+            now = _utc_now_iso()
+            for row in rows:
+                source_fact_id = str(row["source_fact_id"] or "").strip()
+                superseded_by = str(row["superseded_by"] or "").strip() if "superseded_by" in row.keys() else ""
+                lifecycle = str(row["lifecycle_state"] or "").strip().lower() if "lifecycle_state" in row.keys() else ""
+                if source_fact_id and not lifecycle:
+                    orphaned += 1
+                    continue
+                if lifecycle == "superseded" and superseded_by:
+                    cursor = conn.execute(
+                        "UPDATE relations SET source_fact_id = ?, updated_at = ? WHERE id = ?",
+                        (superseded_by, now, row["id"]),
+                    )
+                    rewired += cursor.rowcount
+            isolated_entities = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM entities e
+                WHERE e.name NOT IN (SELECT subject FROM relations)
+                  AND e.name NOT IN (SELECT object FROM relations)
+                """
+            ).fetchone()[0]
+        return {
+            "relationCandidateCount": len(rows),
+            "rewiredRelationCount": rewired,
+            "orphanedRelationCount": orphaned,
+            "isolatedEntityCount": int(isolated_entities or 0),
+        }
 
     def mark_stale_for_signature_mismatch(
         self,

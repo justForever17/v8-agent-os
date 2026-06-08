@@ -191,6 +191,30 @@ class MemoryBrokeredMapTests(unittest.TestCase):
                 self.assertIn("- 2026-04-19: 未产生记录", hierarchical)
                 self.assertNotIn("...(5 more)", hierarchical)
 
+    def test_monthly_summary_input_reads_week_summaries_not_daily_fulltext(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "MEMORY_ROOT", memory_root):
+                store = MemoryStore()
+                week_dir = memory_root / "daily" / "2026" / "04_april" / "week_16"
+                day_path = week_dir / "2026-04-14.md"
+                _write_day_log(day_path, summaries=["日记摘要"])
+                day_path.write_text(day_path.read_text(encoding="utf-8") + "\nRAW_DAILY_BODY_SHOULD_NOT_BE_READ\n", encoding="utf-8")
+                store.save_periodic_summary(
+                    tier="week",
+                    payload={
+                        "summary": "周记摘要：只给月记读取这一层。",
+                        "body": "RAW_WEEK_BODY_SHOULD_NOT_BE_NEEDED",
+                    },
+                    dt=datetime(2026, 4, 19),
+                )
+
+                monthly_input = store.get_logs_for_period(tier="month", dt=datetime(2026, 4, 30), scope_chain=["global"])
+
+        self.assertIn("周记摘要：只给月记读取这一层。", monthly_input)
+        self.assertIn("Ref: memory://week/2026-W16", monthly_input)
+        self.assertNotIn("RAW_DAILY_BODY_SHOULD_NOT_BE_READ", monthly_input)
+
     def test_backfill_periodic_summaries_rewrites_legacy_summary_files_idempotently(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             memory_root = Path(temp_dir) / "memory"

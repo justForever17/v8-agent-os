@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -107,6 +108,59 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertAlmostEqual(listed[0]["effective_confidence"], 1.0)
         self.assertEqual(listed[1]["id"], "plain-doc")
         self.assertAlmostEqual(listed[1]["effective_confidence"], 0.6)
+
+    def test_maintenance_compaction_supersedes_only_same_scope_duplicates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            fact = "V8OS Memory Maintenance v2 uses hierarchical weekly monthly yearly summaries"
+            db.add_knowledge("same-scope-old", fact, scope="project:test7", category="memory", confidence=0.5)
+            db.add_knowledge("same-scope-new", fact, scope="project:test7", category="memory", confidence=0.9)
+            db.add_knowledge("other-scope", fact, scope="project:test1", category="memory", confidence=0.95)
+            db.add_entity("Memory Maintenance v2")
+            db.add_relation("Memory Maintenance v2", "USES", "hierarchical summaries", source_fact_id="same-scope-old")
+
+            result = db.maintenance_compact_knowledge(limit=20, auto_supersede_threshold=0.99, max_clusters=10)
+            project_test7 = {item["id"]: item for item in db.get_all_knowledge(scope="project:test7", limit=10)}
+            project_test1 = {item["id"]: item for item in db.get_all_knowledge(scope="project:test1", limit=10)}
+            with db._conn() as conn:
+                relation = conn.execute("SELECT source_fact_id FROM relations WHERE subject = ?", ("memory maintenance v2",)).fetchone()
+
+        self.assertEqual(result["supersededCount"], 1)
+        self.assertEqual(project_test7["same-scope-old"]["lifecycle_state"], "superseded")
+        self.assertEqual(project_test7["same-scope-old"]["superseded_by"], "same-scope-new")
+        self.assertEqual(project_test1["other-scope"]["lifecycle_state"], "active")
+        self.assertIsNotNone(relation)
+        self.assertEqual(relation["source_fact_id"], "same-scope-new")
+
+    def test_maintenance_compaction_records_uncertain_merge_suggestion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            db.add_knowledge(
+                "candidate-old",
+                "V8OS memory runtime keeps project scoped engineering repair evidence packs",
+                scope="project:test7",
+                category="memory",
+                confidence=0.5,
+            )
+            db.add_knowledge(
+                "candidate-new",
+                "V8OS memory runtime keeps project scoped engineering repair evidence pack",
+                scope="project:test7",
+                category="memory",
+                confidence=0.9,
+            )
+
+            result = db.maintenance_compact_knowledge(limit=20, auto_supersede_threshold=0.999, max_clusters=10)
+            with db._conn() as conn:
+                old_row = conn.execute("SELECT lifecycle_state, metadata_json FROM knowledge WHERE id = ?", ("candidate-old",)).fetchone()
+                new_row = conn.execute("SELECT lifecycle_state, metadata_json FROM knowledge WHERE id = ?", ("candidate-new",)).fetchone()
+            old_meta = json.loads(old_row["metadata_json"] or "{}")
+
+        self.assertEqual(result["supersededCount"], 0)
+        self.assertEqual(result["mergeSuggestionCount"], 1)
+        self.assertEqual(old_row["lifecycle_state"], "active")
+        self.assertEqual(new_row["lifecycle_state"], "active")
+        self.assertEqual(old_meta["maintenance"]["mergeSuggestion"]["targetId"], "candidate-new")
 
     def test_passive_memory_recall_block_uses_short_preview_for_large_document_parent(self):
         long_fact = "A" * 1000

@@ -347,9 +347,17 @@ class MemoryRuntime:
             "skipped": 0,
             "summaryMissing": 0,
             "summaryBackfilled": 0,
+            "summarySkipped": 0,
+            "knowledgeCandidates": 0,
+            "knowledgeSuperseded": 0,
+            "knowledgeMergeSuggestions": 0,
+            "graphCandidates": 0,
+            "graphRewiredRelations": 0,
             "workflowCandidates": 0,
             "workflowActivated": 0,
             "workflowQuarantined": 0,
+            "workflowMergeSuggestions": 0,
+            "budgetStopped": 0,
         }
 
         for run in recent_memory_runs:
@@ -366,9 +374,17 @@ class MemoryRuntime:
                 summary["skipped"] += 1
             summary["summaryBackfilled"] += int(maintenance_meta.get("summaryBackfilledCount") or 0)
             summary["summaryMissing"] += int(maintenance_meta.get("summaryMissingCountBefore") or 0)
+            summary["summarySkipped"] += int(maintenance_meta.get("skippedTargetCount") or 0)
+            summary["knowledgeCandidates"] += int(maintenance_meta.get("knowledgeCandidateCount") or 0)
+            summary["knowledgeSuperseded"] += int(maintenance_meta.get("knowledgeSupersededCount") or 0)
+            summary["knowledgeMergeSuggestions"] += int(maintenance_meta.get("knowledgeMergeSuggestionCount") or 0)
+            summary["graphCandidates"] += int(maintenance_meta.get("graphCandidateCount") or 0)
+            summary["graphRewiredRelations"] += int(maintenance_meta.get("graphRewiredRelationCount") or 0)
             summary["workflowCandidates"] += int(maintenance_meta.get("workflowCandidateCount") or 0)
             summary["workflowActivated"] += int(maintenance_meta.get("workflowActiveHintCount") or 0)
             summary["workflowQuarantined"] += int(maintenance_meta.get("workflowQuarantinedCount") or 0)
+            summary["workflowMergeSuggestions"] += int(maintenance_meta.get("workflowMergeSuggestionCount") or 0)
+            summary["budgetStopped"] += 1 if maintenance_meta.get("budgetStopped") else 0
             recent_runs.append(
                 {
                     "runId": run.get("id"),
@@ -379,12 +395,22 @@ class MemoryRuntime:
                     "summaryMissingCountBefore": int(maintenance_meta.get("summaryMissingCountBefore") or 0),
                     "summaryMissingCountAfter": int(maintenance_meta.get("summaryMissingCountAfter") or 0),
                     "summaryBackfilledCount": int(maintenance_meta.get("summaryBackfilledCount") or 0),
+                    "skippedTargetCount": int(maintenance_meta.get("skippedTargetCount") or 0),
                     "summaryStaleCountBefore": int(maintenance_meta.get("summaryStaleCountBefore") or 0),
                     "summaryStaleCountAfter": int(maintenance_meta.get("summaryStaleCountAfter") or 0),
+                    "knowledgeCandidateCount": int(maintenance_meta.get("knowledgeCandidateCount") or 0),
+                    "knowledgeSupersededCount": int(maintenance_meta.get("knowledgeSupersededCount") or 0),
+                    "knowledgeMergeSuggestionCount": int(maintenance_meta.get("knowledgeMergeSuggestionCount") or 0),
+                    "graphCandidateCount": int(maintenance_meta.get("graphCandidateCount") or 0),
+                    "graphRewiredRelationCount": int(maintenance_meta.get("graphRewiredRelationCount") or 0),
+                    "graphOrphanedRelationCount": int(maintenance_meta.get("graphOrphanedRelationCount") or 0),
                     "workflowCandidateCount": int(maintenance_meta.get("workflowCandidateCount") or 0),
                     "workflowCandidateUpdatedCount": int(maintenance_meta.get("workflowCandidateUpdatedCount") or 0),
                     "workflowActiveHintCount": int(maintenance_meta.get("workflowActiveHintCount") or 0),
                     "workflowQuarantinedCount": int(maintenance_meta.get("workflowQuarantinedCount") or 0),
+                    "workflowMergeSuggestionCount": int(maintenance_meta.get("workflowMergeSuggestionCount") or 0),
+                    "budgetStopped": bool(maintenance_meta.get("budgetStopped")),
+                    "noOpReason": maintenance_meta.get("noOpReason"),
                     "touchedRefs": maintenance_meta.get("touchedRefs") or [],
                     "resultReason": maintenance_meta.get("resultReason"),
                 }

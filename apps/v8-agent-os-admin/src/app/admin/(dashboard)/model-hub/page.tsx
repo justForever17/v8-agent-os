@@ -82,7 +82,7 @@ type ModelHubPayload = {
     };
 };
 type ModelConnectionStatus = {
-    status: "idle" | "testing" | "success" | "error";
+    status: "idle" | "testing" | "success" | "warning" | "error";
     message?: string;
 };
 type ModelReasoningRepairStatus = {
@@ -715,17 +715,24 @@ export default function ModelHubPage() {
                 ? String(data.providerPreset).toUpperCase()
                 : "";
             const resolvedEndpoint = typeof data?.resolvedEndpoint === "string" ? data.resolvedEndpoint.replace(/^https?:\/\//, "") : "";
+            const protocolWarning = typeof data?.protocolWarningMessage === "string" ? data.protocolWarningMessage : "";
+            const recommendedRoute = [
+                data?.recommendedApiStandard ? `protocol: ${data.recommendedApiStandard}` : "",
+                data?.recommendedBaseUrl ? `baseURL: ${data.recommendedBaseUrl}` : "",
+            ].filter(Boolean).join(" / ");
             const capabilityChecks = data?.capabilityChecks && typeof data.capabilityChecks === "object" ? Object.values(data.capabilityChecks) : [];
             const skippedCapabilities = capabilityChecks.filter((item) => (item as { status?: string })?.status === "skipped").length;
             const successMessage = [
+                protocolWarning,
                 `${data.providerName || "Provider"}${providerPreset ? `/${providerPreset}` : ""} · ${Math.round(Number(data.latencyMs || 0))}ms`,
                 resolvedEndpoint,
+                recommendedRoute,
                 skippedCapabilities ? t("app.admin.dashboard.model.hub.catalog.messages.skippedCapabilities") : "",
                 data.message || "",
             ].filter(Boolean).join(" · ");
             setConnectionStatusMap((current) => ({
                 ...current,
-                [modelRef]: { status: "success", message: successMessage },
+                [modelRef]: { status: protocolWarning ? "warning" : "success", message: successMessage },
             }));
         }
         catch (error) {

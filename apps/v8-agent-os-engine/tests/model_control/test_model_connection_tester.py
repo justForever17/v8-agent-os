@@ -128,3 +128,189 @@ def test_media_generation_connection_uses_provider_probe(monkeypatch):
     assert result["requestKind"] == "media_generation_probe"
     assert result["capabilityChecks"]["streaming"]["status"] == "skipped"
     assert result["capabilityChecks"]["streaming"]["reason"] == "media_generation_provider_probe_only"
+
+
+def test_openai_provider_gemini_model_reports_native_route_warning(monkeypatch):
+    tester = ModelConnectionTester()
+    meta = {
+        "model_id": "gemini-3.5-flash-low",
+        "model_ref": "cliproxy::gemini-3.5-flash-low",
+        "provider_id": "cliproxy",
+        "provider_name": "CLI Proxy",
+        "base_url": "http://127.0.0.1:8731/v1",
+        "api_key": "sk-test",
+        "api_standard": "openai",
+        "runtime_ready": True,
+        "effective_capability_matrix": {},
+        "provider_record": {"id": "cliproxy", "type": "API", "apiStandard": "openai"},
+        "model_record": {"type": "TEXT"},
+    }
+
+    monkeypatch.setattr(tester, "_resolve_metadata", lambda *_args, **_kwargs: meta)
+    monkeypatch.setattr(tester, "_probe_local_capability", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_test_chat_model",
+        lambda **_kwargs: {
+            "latencyMs": 10.0,
+            "message": "OK",
+            "requestKind": "chat_completion",
+            "resolvedEndpoint": "http://127.0.0.1:8731/v1",
+        },
+    )
+    monkeypatch.setattr(tester, "_run_capability_checks", lambda **_kwargs: {})
+    monkeypatch.setattr(tester, "_record_health", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_probe_gemini_native_generate_content",
+        lambda **_kwargs: {
+            "status": "passed",
+            "requestKind": "gemini_generate_content",
+            "resolvedEndpoint": "http://127.0.0.1:8731/v1beta/models/gemini-3.5-flash-low:generateContent",
+            "message": "OK",
+        },
+    )
+
+    result = tester.test_model_connection(model_id="gemini-3.5-flash-low", provider_id="cliproxy")
+
+    assert result["ok"] is True
+    assert result["protocolWarning"] == "gemini_native_route_detected"
+    assert result["recommendedApiStandard"] == "gemini"
+    assert result["recommendedBaseUrl"] == "http://127.0.0.1:8731/v1beta"
+    assert result["nativeGeminiProbe"]["status"] == "passed"
+
+
+def test_openai_failure_with_gemini_native_success_reports_protocol_mismatch(monkeypatch):
+    tester = ModelConnectionTester()
+    meta = {
+        "model_id": "gemini-3.5-flash-low",
+        "model_ref": "cliproxy::gemini-3.5-flash-low",
+        "provider_id": "cliproxy",
+        "provider_name": "CLI Proxy",
+        "base_url": "http://127.0.0.1:8731/v1",
+        "api_key": "sk-test",
+        "api_standard": "openai",
+        "runtime_ready": True,
+        "effective_capability_matrix": {},
+        "provider_record": {"id": "cliproxy", "type": "API", "apiStandard": "openai"},
+        "model_record": {"type": "TEXT"},
+    }
+
+    monkeypatch.setattr(tester, "_resolve_metadata", lambda *_args, **_kwargs: meta)
+    monkeypatch.setattr(tester, "_probe_local_capability", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_test_chat_model",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("404 not found: /v1/chat/completions")),
+    )
+    monkeypatch.setattr(tester, "_record_health", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_probe_gemini_native_generate_content",
+        lambda **_kwargs: {
+            "status": "passed",
+            "requestKind": "gemini_generate_content",
+            "resolvedEndpoint": "http://127.0.0.1:8731/v1beta/models/gemini-3.5-flash-low:generateContent",
+            "message": "OK",
+        },
+    )
+
+    result = tester.test_model_connection(model_id="gemini-3.5-flash-low", provider_id="cliproxy")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "protocol_mismatch"
+    assert result["nativeGeminiProbe"]["status"] == "passed"
+    assert result["recommendedBaseUrl"] == "http://127.0.0.1:8731/v1beta"
+
+
+def test_openai_provider_claude_model_reports_anthropic_route_warning(monkeypatch):
+    tester = ModelConnectionTester()
+    meta = {
+        "model_id": "claude-sonnet-4-5",
+        "model_ref": "cliproxy::claude-sonnet-4-5",
+        "provider_id": "cliproxy",
+        "provider_name": "CLI Proxy",
+        "base_url": "http://127.0.0.1:8731/v1",
+        "api_key": "sk-test",
+        "api_standard": "openai",
+        "runtime_ready": True,
+        "effective_capability_matrix": {},
+        "provider_record": {"id": "cliproxy", "type": "API", "apiStandard": "openai"},
+        "model_record": {"type": "TEXT"},
+    }
+
+    monkeypatch.setattr(tester, "_resolve_metadata", lambda *_args, **_kwargs: meta)
+    monkeypatch.setattr(tester, "_probe_local_capability", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_test_chat_model",
+        lambda **_kwargs: {
+            "latencyMs": 10.0,
+            "message": "OK",
+            "requestKind": "chat_completion",
+            "resolvedEndpoint": "http://127.0.0.1:8731/v1",
+        },
+    )
+    monkeypatch.setattr(tester, "_run_capability_checks", lambda **_kwargs: {})
+    monkeypatch.setattr(tester, "_record_health", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_probe_anthropic_native_messages",
+        lambda **_kwargs: {
+            "status": "passed",
+            "requestKind": "anthropic_messages",
+            "resolvedEndpoint": "http://127.0.0.1:8731/v1/messages",
+            "message": "OK",
+        },
+    )
+
+    result = tester.test_model_connection(model_id="claude-sonnet-4-5", provider_id="cliproxy")
+
+    assert result["ok"] is True
+    assert result["protocolWarning"] == "anthropic_native_route_detected"
+    assert result["recommendedApiStandard"] == "anthropic"
+    assert result["recommendedBaseUrl"] == "http://127.0.0.1:8731/v1"
+    assert result["nativeAnthropicProbe"]["status"] == "passed"
+
+
+def test_openai_failure_with_anthropic_native_success_reports_protocol_mismatch(monkeypatch):
+    tester = ModelConnectionTester()
+    meta = {
+        "model_id": "claude-sonnet-4-5",
+        "model_ref": "cliproxy::claude-sonnet-4-5",
+        "provider_id": "cliproxy",
+        "provider_name": "CLI Proxy",
+        "base_url": "http://127.0.0.1:8731/v1",
+        "api_key": "sk-test",
+        "api_standard": "openai",
+        "runtime_ready": True,
+        "effective_capability_matrix": {},
+        "provider_record": {"id": "cliproxy", "type": "API", "apiStandard": "openai"},
+        "model_record": {"type": "TEXT"},
+    }
+
+    monkeypatch.setattr(tester, "_resolve_metadata", lambda *_args, **_kwargs: meta)
+    monkeypatch.setattr(tester, "_probe_local_capability", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_test_chat_model",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("404 not found: /v1/chat/completions")),
+    )
+    monkeypatch.setattr(tester, "_record_health", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_probe_anthropic_native_messages",
+        lambda **_kwargs: {
+            "status": "passed",
+            "requestKind": "anthropic_messages",
+            "resolvedEndpoint": "http://127.0.0.1:8731/v1/messages",
+            "message": "OK",
+        },
+    )
+
+    result = tester.test_model_connection(model_id="claude-sonnet-4-5", provider_id="cliproxy")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "protocol_mismatch"
+    assert result["nativeAnthropicProbe"]["status"] == "passed"
+    assert result["recommendedApiStandard"] == "anthropic"

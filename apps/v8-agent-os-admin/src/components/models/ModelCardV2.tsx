@@ -45,7 +45,7 @@ interface ModelCardV2Props {
   onTestConnection?: (modelRef: string) => Promise<void> | void;
   onRepairReasoning?: (modelRef: string) => Promise<void> | void;
   connectionStatus?: {
-    status: "idle" | "testing" | "success" | "error";
+    status: "idle" | "testing" | "success" | "warning" | "error";
     message?: string;
   } | null;
   reasoningRepairStatus?: {
@@ -189,7 +189,7 @@ export function ModelCardV2({
 
                                     {displayStatus === "success" ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : displayStatus === "error" || displayStatus === "warning" ? <AlertCircle className="h-3 w-3 shrink-0" /> : <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" />}
                                     <span className="truncate">
-                                        {repairActive ? repairStatus === "success" ? t("components.models.ModelCardV2.reasoningRepairSuccess") : repairStatus === "warning" ? t("components.models.ModelCardV2.reasoningRepairNoField") : repairStatus === "error" ? t("components.models.ModelCardV2.reasoningRepairFailed") : t("components.models.ModelCardV2.reasoningRepairing") : displayStatus === "success" ? t("components.models.ModelCardV2.k40bd808e") : displayStatus === "error" ? t("components.models.ModelCardV2.k7f8e6bd9") : t("components.models.ModelCardV2.kc9e37984")}
+                                        {repairActive ? repairStatus === "success" ? t("components.models.ModelCardV2.reasoningRepairSuccess") : repairStatus === "warning" ? t("components.models.ModelCardV2.reasoningRepairNoField") : repairStatus === "error" ? t("components.models.ModelCardV2.reasoningRepairFailed") : t("components.models.ModelCardV2.reasoningRepairing") : displayStatus === "success" ? t("components.models.ModelCardV2.k40bd808e") : displayStatus === "warning" ? t("components.models.ModelCardV2.connectionWarning") : displayStatus === "error" ? t("components.models.ModelCardV2.k7f8e6bd9") : t("components.models.ModelCardV2.kc9e37984")}
                                     </span>
                                 </div> : null}
                         </div>

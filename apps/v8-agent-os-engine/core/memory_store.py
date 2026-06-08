@@ -69,6 +69,9 @@ SCOPE_PATTERN = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 KV_PATTERN = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$', re.MULTILINE)
 _SPECIFIC_SCOPE_PREFIXES = ("project:", "channel:", "workspace:", "external_api_thread:")
 _DAY_FILENAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+_DAILY_ENTRY_MAX_CHARS_DEFAULT = 6000
+_DAILY_ENTRY_SUMMARY_EXCERPT_CHARS_DEFAULT = 900
+_SUMMARY_CHILD_EXCERPT_CHARS_DEFAULT = 1200
 
 GLOBAL_PROFILE_DEFAULTS: Dict[str, str] = {
     "preferred_language": "",
@@ -1917,11 +1920,12 @@ class MemoryStore:
             week_status: Dict[str, bool] = {}
             while current <= end_date:
                 week_label = f"{current.year}-W{int(current.strftime('%V')):02d}"
-                has_record = self._get_daily_log_path(datetime.combine(current, datetime.min.time())).exists()
+                _memory_ref, summary_path, _label = self._resolve_summary_target("week", datetime.combine(current, datetime.min.time()))
+                has_record = summary_path.exists()
                 week_status[week_label] = bool(week_status.get(week_label)) or has_record
                 current += timedelta(days=1)
             for week_label, has_record in week_status.items():
-                coverage.append(f"{week_label}: {'有记录' if has_record else '未产生记录'}")
+                coverage.append(f"{week_label}: {'有周记摘要' if has_record else '缺周记摘要'}")
                 if has_record:
                     tags.append(week_label)
                     children.append(self._memory_ref("week", week_label))
@@ -1929,13 +1933,11 @@ class MemoryStore:
                 else:
                     missing_children_count += 1
         elif tier == "year":
-            year_dir = MEMORY_ROOT / "daily" / str(target.year)
-            month_dirs = {item.name.split("_", 1)[0]: item for item in self._iter_month_dirs(year_dir)} if year_dir.exists() else {}
             for month in range(1, 13):
                 month_label = f"{target.year}-{month:02d}"
-                month_dir = month_dirs.get(f"{month:02d}")
-                has_record = self._has_memory_content(month_dir) if month_dir else False
-                coverage.append(f"{month_label}: {'有记录' if has_record else '未产生记录'}")
+                _memory_ref, summary_path, _label = self._resolve_summary_target("month", date(target.year, month, 1))
+                has_record = summary_path.exists()
+                coverage.append(f"{month_label}: {'有月记摘要' if has_record else '缺月记摘要'}")
                 if has_record:
                     tags.append(month_label)
                     children.append(self._month_memory_ref(target.year, month))
@@ -2006,6 +2008,37 @@ class MemoryStore:
             rendered += normalized_body.rstrip() + "\n"
         return rendered
 
+    def _memory_maintenance_summary_options(self) -> Dict[str, int]:
+        try:
+            from core.storage import storage
+
+            cfg = storage.get_memory_config() or {}
+        except Exception:
+            cfg = {}
+        maintenance = cfg.get("maintenance") if isinstance(cfg.get("maintenance"), dict) else {}
+        summary = maintenance.get("summary") if isinstance(maintenance.get("summary"), dict) else {}
+
+        def _int_option(key: str, fallback: int, minimum: int, maximum: int) -> int:
+            try:
+                return max(minimum, min(int(summary.get(key) or fallback), maximum))
+            except (TypeError, ValueError):
+                return fallback
+
+        return {
+            "maxEntryChars": _int_option("maxEntryChars", _DAILY_ENTRY_MAX_CHARS_DEFAULT, 500, 30000),
+            "maxEntriesPerDay": _int_option("maxEntriesPerDay", 8, 1, 24),
+            "summaryExcerptChars": _int_option("summaryExcerptChars", _DAILY_ENTRY_SUMMARY_EXCERPT_CHARS_DEFAULT, 160, 2400),
+            "childSummaryExcerptChars": _int_option("childSummaryExcerptChars", _SUMMARY_CHILD_EXCERPT_CHARS_DEFAULT, 240, 4000),
+        }
+
+    def _truncate_for_daily_entry(self, content: str, *, max_chars: int) -> tuple[str, bool, int]:
+        normalized = str(content or "").strip()
+        original_len = len(normalized)
+        if original_len <= max_chars:
+            return normalized, False, original_len
+        trimmed = normalized[: max(0, max_chars - 1)].rstrip() + "…"
+        return trimmed, True, original_len
+
     def append_daily_log_with_yaml(
         self,
         content: str,
@@ -2029,30 +2062,58 @@ class MemoryStore:
                 [*list(existing_meta.get("summaries") or []), *([session_summary.strip()] if str(session_summary or "").strip() else [])]
             )
         )
+        try:
+            existing_entry_count = int(existing_meta.get("entryCount") or 0)
+        except (TypeError, ValueError):
+            existing_entry_count = 0
+        try:
+            existing_truncated_count = int(existing_meta.get("truncatedEntryCount") or 0)
+        except (TypeError, ValueError):
+            existing_truncated_count = 0
+        summary_options = self._memory_maintenance_summary_options()
+        max_entry_chars = summary_options["maxEntryChars"]
+        trimmed_content, content_truncated, original_content_chars = self._truncate_for_daily_entry(
+            content,
+            max_chars=max_entry_chars,
+        )
         meta = {
             "type": "daily_log",
             "date": now.strftime("%Y-%m-%d"),
+            "entryCount": existing_entry_count + 1,
+            "truncatedEntryCount": existing_truncated_count + (1 if content_truncated else 0),
+            "maxEntryChars": max_entry_chars,
             "tags": merged_tags,
             "summaries": merged_summaries,
         }
 
         entry_metadata = dict(entry_metadata or {})
+        session_id = entry_metadata.get("session_id") or "unknown"
         structured_lines = [
-            f"session_id: {entry_metadata.get('session_id') or 'unknown'}",
+            f"session_id: {session_id}",
             f"effective_memory_scope: {entry_metadata.get('effective_memory_scope') or 'global'}",
             f"source_runtime: {entry_metadata.get('source_runtime') or 'chat'}",
             f"provenance_class: {entry_metadata.get('provenance_class') or 'human_dialogue'}",
             f"memory_policy: {entry_metadata.get('memory_policy') or 'durable'}",
             f"extracted_long_term_items_count: {int(entry_metadata.get('extracted_long_term_items_count') or 0)}",
             f"summary: {session_summary.strip() if str(session_summary or '').strip() else 'n/a'}",
+            f"content_truncated: {'true' if content_truncated else 'false'}",
+            f"original_content_chars: {original_content_chars}",
+            f"detail_ref: session://{session_id}" if content_truncated and session_id != "unknown" else "",
             "",
-            content.strip(),
+            trimmed_content,
         ]
         entry = f"\n### {time_str}\n" + "\n".join(line for line in structured_lines if line is not None).strip() + "\n"
         log_path.write_text(self._render_frontmatter(meta) + (existing_body.rstrip() + "\n" if existing_body.strip() else "") + entry, encoding="utf-8")
         logger.info(f"[MemoryStore] Appended daily log with YAML updates to {log_path}")
     
-    def _read_scoped_daily_entries(self, *, log_path: Path, allowed_scopes: List[str], max_entries_per_day: int = 8) -> List[str]:
+    def _read_scoped_daily_entries(
+        self,
+        *,
+        log_path: Path,
+        allowed_scopes: List[str],
+        max_entries_per_day: int = 8,
+        max_entry_chars: Optional[int] = None,
+    ) -> List[str]:
         content = log_path.read_text(encoding="utf-8")
         body = content
         header_match = re.match(r'^---\n.*?\n---\s*', content, flags=re.DOTALL)
@@ -2068,6 +2129,8 @@ class MemoryStore:
             if allowed_scopes:
                 if not any(f"effective_memory_scope: {scope}" in snippet for scope in allowed_scopes):
                     continue
+            if max_entry_chars and len(snippet) > max_entry_chars:
+                snippet = snippet[: max(0, max_entry_chars - 1)].rstrip() + "…"
             matched.append(snippet)
         return matched[-max_entries_per_day:]
 
@@ -2138,6 +2201,21 @@ class MemoryStore:
             if primary_summary:
                 return self._read_summary_excerpt_from_text(primary_summary)
             return self._read_summary_excerpt_from_text(body)
+        except Exception:
+            return None
+
+    def _read_periodic_summary_compact(self, *, summary_path: Path, memory_ref: str, label: str, max_chars: int) -> str | None:
+        if not summary_path.exists():
+            return None
+        try:
+            metadata, body = self._read_frontmatter(summary_path)
+            summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
+            if not summary_text:
+                return None
+            excerpt = self._read_summary_excerpt_from_text(summary_text, limit=max_chars)
+            if not excerpt:
+                return None
+            return f"[{label} Summary] Ref: {memory_ref}\nSummary: {excerpt}"
         except Exception:
             return None
 
@@ -2647,6 +2725,7 @@ class MemoryStore:
     ) -> str:
         now = datetime.now()
         allowed_scopes = [scope for scope in self._normalize_scope_chain(scope_chain=scope_chain) if self._is_valid_scope(scope)]
+        options = self._memory_maintenance_summary_options()
         items: List[str] = []
 
         for i in range(max(1, days)):
@@ -2659,6 +2738,7 @@ class MemoryStore:
                 log_path=log_path,
                 allowed_scopes=allowed_scopes,
                 max_entries_per_day=1,
+                max_entry_chars=options["summaryExcerptChars"],
             )
             if not matched_entries:
                 continue
@@ -2761,18 +2841,66 @@ class MemoryStore:
         target_dt = dt or datetime.now()
         start_date, end_date = self._period_date_bounds(tier, target_dt)
         allowed_scopes = [scope for scope in self._normalize_scope_chain(scope_chain=scope_chain) if self._is_valid_scope(scope)]
+        options = self._memory_maintenance_summary_options()
         summaries: List[str] = []
 
-        cursor = start_date
-        while cursor <= end_date:
-            log_path = self._get_daily_log_path(datetime.combine(cursor, datetime.min.time()))
-            if log_path.exists():
-                matched_entries = self._read_scoped_daily_entries(log_path=log_path, allowed_scopes=allowed_scopes)
-                if matched_entries:
-                    summaries.append(
-                        f"[{cursor.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(cursor)}\n" + "\n\n".join(matched_entries)
+        if tier == "week":
+            cursor = start_date
+            while cursor <= end_date:
+                log_path = self._get_daily_log_path(datetime.combine(cursor, datetime.min.time()))
+                if log_path.exists():
+                    frontmatter_summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
+                    matched_entries = self._read_scoped_daily_entries(
+                        log_path=log_path,
+                        allowed_scopes=allowed_scopes,
+                        max_entries_per_day=min(options["maxEntriesPerDay"], 2),
+                        max_entry_chars=options["summaryExcerptChars"],
                     )
-            cursor += timedelta(days=1)
+                    day_lines = [f"[{cursor.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(cursor)}"]
+                    if frontmatter_summaries:
+                        day_lines.append("Summaries:")
+                        day_lines.extend(f"- {self._read_summary_excerpt_from_text(item, limit=options['summaryExcerptChars'])}" for item in frontmatter_summaries[:4])
+                    if matched_entries:
+                        day_lines.append("Capped entries:")
+                        day_lines.extend(matched_entries)
+                    if len(day_lines) > 1:
+                        summaries.append("\n".join(line for line in day_lines if str(line or "").strip()))
+                cursor += timedelta(days=1)
+            return "\n\n".join(summaries).strip()
+
+        if tier == "month":
+            seen_weeks: set[str] = set()
+            cursor = start_date
+            while cursor <= end_date:
+                week_key = f"{cursor.year}-W{int(cursor.strftime('%V')):02d}"
+                if week_key not in seen_weeks:
+                    seen_weeks.add(week_key)
+                    memory_ref, summary_path, label = self._resolve_summary_target("week", datetime.combine(cursor, datetime.min.time()))
+                    compact = self._read_periodic_summary_compact(
+                        summary_path=summary_path,
+                        memory_ref=memory_ref,
+                        label=label,
+                        max_chars=options["childSummaryExcerptChars"],
+                    )
+                    if compact:
+                        summaries.append(compact)
+                cursor += timedelta(days=1)
+            return "\n\n".join(summaries).strip()
+
+        if tier == "year":
+            for month in range(1, 13):
+                month_dt = target_dt.replace(month=month, day=1)
+                memory_ref, summary_path, label = self._resolve_summary_target("month", month_dt)
+                compact = self._read_periodic_summary_compact(
+                    summary_path=summary_path,
+                    memory_ref=memory_ref,
+                    label=label,
+                    max_chars=options["childSummaryExcerptChars"],
+                )
+                if compact:
+                    summaries.append(compact)
+            return "\n\n".join(summaries).strip()
+
         return "\n\n".join(summaries).strip()
 
     def get_recent_logs(self, days: int = 1, scope_chain: Optional[List[str]] = None) -> str:
@@ -2788,7 +2916,13 @@ class MemoryStore:
             if not log_path.exists():
                 continue
 
-            matched_entries = self._read_scoped_daily_entries(log_path=log_path, allowed_scopes=allowed_scopes)
+            options = self._memory_maintenance_summary_options()
+            matched_entries = self._read_scoped_daily_entries(
+                log_path=log_path,
+                allowed_scopes=allowed_scopes,
+                max_entries_per_day=options["maxEntriesPerDay"],
+                max_entry_chars=options["summaryExcerptChars"],
+            )
             if not matched_entries:
                 continue
 

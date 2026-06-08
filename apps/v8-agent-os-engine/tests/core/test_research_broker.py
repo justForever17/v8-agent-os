@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
 
 import core.tools.research_broker as research_module
 from core.agents import default_subagent_configs
@@ -11,9 +12,10 @@ from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_f
 
 
 @pytest.fixture(autouse=True)
-def _isolated_research_ledger(monkeypatch, tmp_path):
+def _isolated_research_ledger(monkeypatch, tmp_path, request):
     monkeypatch.setenv("V8_RESEARCH_LEDGER_PATH", str(tmp_path / "research_ledger.json"))
-    monkeypatch.setattr(research_module, "_invoke_web_research_architect_agent", lambda **kwargs: None)
+    if request.node.name != "test_web_research_architect_agent_falls_back_across_model_candidates":
+        monkeypatch.setattr(research_module, "_invoke_web_research_architect_agent", lambda **kwargs: None)
 
 
 class _ToolRef:
@@ -129,6 +131,9 @@ def test_research_broker_run_returns_evidence_bundle(monkeypatch):
     assert payload["finalExperiencePack"]["architectAgentId"] == "web-research-architect"
     assert "Web Research Architect final result" in payload["answer"]
     assert payload["finalExperiencePack"]["sourceUrls"][0]["url"] == "https://docs.example.com/research"
+    assert payload["researchAnswerPack"]["answer"] == payload["answer"]
+    assert payload["researchAnswerPack"]["sources"][0]["url"] == "https://docs.example.com/research"
+    assert payload["researchAnswerPack"]["score"]["confidence"] in {"medium", "high"}
     assert payload["claimTable"]
     assert payload["researchLoopState"]["phase"] == "research_loop"
     assert payload["researchLoopState"]["readSources"]
@@ -287,7 +292,100 @@ def test_research_broker_uses_web_research_architect_agent_when_available(monkey
     assert payload["finalExperiencePack"]["synthesisMode"] == "model_agent"
     assert payload["finalExperiencePack"]["modelSynthesis"]["agentId"] == "web-research-architect"
     assert payload["answer"].startswith("最终结论")
+    assert payload["researchAnswerPack"]["answer"].startswith("最终结论")
+    assert payload["researchAnswerPack"]["sources"][0]["url"] == "https://docs.example.com/architect"
     assert payload["claimTable"][0]["supportingSources"][0]["url"] == "https://docs.example.com/architect"
+
+
+def test_research_answer_pack_rejects_footer_and_security_noise():
+    pack = research_module._research_answer_pack(
+        {
+            "evidenceBundleId": "research-noisy",
+            "confidence": "high",
+            "authorityScore": 82,
+            "finalExperiencePack": {
+                "researchResult": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
+                "sourceUrls": [{"title": "Noisy video page", "url": "https://www.youtube.com/watch?v=noise"}],
+            },
+        }
+    )
+
+    assert pack["answer"] == ""
+    assert pack["score"]["qualityStatus"] == "refresh_required"
+    assert "low_quality_answer_surface" in pack["missingOrStaleReasons"]
+    assert pack["recommendedNextAction"] == "refresh_research"
+
+
+def test_web_research_architect_agent_falls_back_across_model_candidates(monkeypatch):
+    class BrokenLLM:
+        def invoke(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("subscription expired")
+
+    class GoodLLM:
+        def invoke(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return AIMessage(
+                content=json.dumps(
+                    {
+                        "headline": "fallback ok",
+                        "researchResult": "最终答案：使用第二候选模型完成提纯。",
+                        "claimTable": [{"claim": "第二候选模型可用", "sourceURL": "https://docs.example.com/fallback"}],
+                        "conflictMatrix": [],
+                        "missingEvidence": [],
+                        "assumptions": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(
+        research_module,
+        "_create_web_research_architect_llm_candidates",
+        lambda: [(BrokenLLM(), "bad-model", "research"), (GoodLLM(), "good-model", "web-research-architect")],
+    )
+
+    result = research_module._invoke_web_research_architect_agent(
+        question="fallback test",
+        source_matrix=[{"title": "Fallback docs", "url": "https://docs.example.com/fallback", "snippet": "第二候选模型可用。"}],
+        shards=[],
+        confidence="medium",
+        average_authority=50,
+        timeout_seconds=10,
+    )
+
+    assert result is not None
+    assert result["researchResult"].startswith("最终答案")
+    assert result["_modelId"] == "good-model"
+    assert result["_modelFallbackAttempts"]
+    assert "bad-model" in result["_modelFallbackAttempts"][0]
+
+
+def test_web_research_architect_merge_keeps_string_fields_whole():
+    merged = research_module._merge_web_research_architect_agent_pack(
+        {
+            "sourceUrls": [{"title": "Docs", "url": "https://docs.example.com/a"}],
+            "confidence": "medium",
+            "conflictMatrix": [],
+            "missingEvidence": [],
+            "assumptions": [],
+        },
+        {
+            "headline": "answer",
+            "researchResult": "最终答案。",
+            "claimTable": [{"claim": "结论来自文档。", "sourceURL": "https://docs.example.com/a"}],
+            "conflictMatrix": "No conflicts found.",
+            "missingEvidence": "No specific CLI-only guidance was found.",
+            "assumptions": "General pathlib guidance applies to CLI tools.",
+            "_modelRole": "web-research-architect",
+            "_modelId": "deepseek::deepseek-v4-flash",
+            "_modelParseMode": "json",
+        },
+        question="pathlib CLI",
+    )
+
+    assert merged["synthesisMode"] == "model_agent"
+    assert merged["conflictMatrix"] == ["No conflicts found."]
+    assert merged["missingEvidence"] == ["No specific CLI-only guidance was found."]
+    assert merged["assumptions"] == ["General pathlib guidance applies to CLI tools."]
 
 
 def test_research_broker_reuses_existing_experience_pack(monkeypatch):

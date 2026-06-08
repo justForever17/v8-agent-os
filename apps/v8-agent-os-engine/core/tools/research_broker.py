@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 import concurrent.futures
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -62,6 +63,11 @@ _LOW_QUALITY_HOST_HINTS = (
     "stackoverflow.com/questions",
 )
 _RESEARCH_SOURCE_CATALOG_PATH = Path(__file__).resolve().parents[2] / "runtimes" / "research" / "assets" / "source_quality_catalog.json"
+_DEFAULT_ARCHITECT_MODEL_FALLBACKS = (
+    "volcengine-ark::doubao-seed-2-0-pro-260215",
+    "xiaomi-mimo-tokenplan::mimo-v2.5-pro",
+    "deepseek::deepseek-v4-flash",
+)
 _VIDEO_RESEARCH_TERMS = (
     "video",
     "youtube",
@@ -122,6 +128,152 @@ def _as_int(value: Any, default: int) -> int:
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _research_score_label(confidence: Any, authority_score: Any, *, reuse_decision: Any = "") -> str:
+    confidence_text = _safe_text(confidence) or "unknown"
+    try:
+        authority = round(float(authority_score), 1)
+    except (TypeError, ValueError):
+        authority = None
+    parts = [f"confidence={confidence_text}"]
+    if authority is not None:
+        parts.append(f"authority={authority}")
+    if reuse_decision:
+        parts.append(f"reuse={_safe_text(reuse_decision)}")
+    return " / ".join(parts)
+
+
+def _research_source_pack(source: dict[str, Any]) -> dict[str, Any]:
+    url = _safe_text(source.get("url"))
+    if not url:
+        return {}
+    payload = {
+        "title": _safe_text(source.get("title") or source.get("sourceTitle") or source.get("host") or url)[:220],
+        "url": url,
+        "host": _safe_text(source.get("host")) or _host(url),
+        "authorityScore": source.get("authorityScore"),
+        "freshness": source.get("freshness") or source.get("freshnessWindow"),
+        "relevance": source.get("relevanceScore") or source.get("score"),
+        "tier": source.get("tier") or source.get("authorityTier"),
+        "provider": source.get("provider"),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def _research_answer_from_pack(pack: dict[str, Any], payload: dict[str, Any]) -> str:
+    for key in ("researchResult", "answer"):
+        value = _safe_text(pack.get(key))
+        if value:
+            return value
+    for item in list(pack.get("claimTable") or payload.get("claimTable") or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        claim = _safe_text(item.get("claim"))
+        if claim:
+            return claim
+    return ""
+
+
+def _is_low_quality_research_answer(text: str) -> bool:
+    normalized = _safe_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return False
+    hard_noise_markers = (
+        "about press copyright contact us creators",
+        "privacy policy & safety how youtube works",
+        "security check required",
+        "we've detected unusual activity",
+        "unusual activity from your network",
+        "captcha",
+        "access denied",
+        "verify you are human",
+        "cloudflare",
+    )
+    if any(marker in lowered for marker in hard_noise_markers):
+        return True
+    if re.search(r"collected\s+\d+\s+ranked\s+source", lowered):
+        return True
+    process_markers = ("本次调研", "当前调研", "调研过程", "数据源均未产出", "未获取到有效内容", "无法获取目标文献")
+    if any(marker in normalized for marker in process_markers) and any(
+        marker in normalized for marker in ("未提供", "无法", "未产出", "安全验证", "浏览器检测", "建议重新调研")
+    ):
+        return True
+    return False
+
+
+def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
+    pack = payload.get("finalExperiencePack") if isinstance(payload.get("finalExperiencePack"), dict) else {}
+    if not pack and isinstance(payload.get("researchResult"), dict):
+        pack = payload.get("researchResult") or {}
+    answer = _research_answer_from_pack(pack, payload)
+    answer_was_low_quality = _is_low_quality_research_answer(answer)
+    low_quality_answer_note = _compact_research_text(answer, limit=360) if answer_was_low_quality else ""
+    if answer_was_low_quality:
+        answer = ""
+    source_candidates: list[dict[str, Any]] = []
+    for source in list(pack.get("sourceUrls") or []):
+        if isinstance(source, dict):
+            source_candidates.append(source)
+    for source in list(payload.get("sourceMatrix") or []):
+        if isinstance(source, dict):
+            source_candidates.append(source)
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in source_candidates:
+        compact = _research_source_pack(source)
+        url = _safe_text(compact.get("url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        sources.append(compact)
+        if len(sources) >= 6:
+            break
+    limitations = []
+    for value in list(pack.get("limitations") or []) + list(pack.get("missingEvidence") or payload.get("missingEvidence") or []) + list(pack.get("assumptions") or payload.get("assumptions") or []):
+        text = _compact_research_text(value, limit=280)
+        if text and text not in limitations:
+            limitations.append(text)
+        if len(limitations) >= 6:
+            break
+    if low_quality_answer_note and low_quality_answer_note not in limitations:
+        limitations.insert(0, low_quality_answer_note)
+    reuse = payload.get("experienceReuse") if isinstance(payload.get("experienceReuse"), dict) else {}
+    reuse_decision = _safe_text(reuse.get("reuseDecision"))
+    confidence = pack.get("confidence") or payload.get("confidence")
+    authority_score = pack.get("authorityScore") or payload.get("authorityScore")
+    quality_status = "usable_answer" if answer and sources else "refresh_required"
+    missing_reasons: list[str] = []
+    if answer_was_low_quality:
+        missing_reasons.append("low_quality_answer_surface")
+    if not answer:
+        missing_reasons.append("missing_final_answer")
+    if not sources:
+        missing_reasons.append("missing_sources")
+    if limitations and quality_status == "usable_answer":
+        quality_status = "usable_with_limitations"
+    evidence_id = _safe_text(payload.get("evidenceBundleId"))
+    return {
+        "kind": "research_answer_pack",
+        "answer": answer,
+        "sources": sources,
+        "score": {
+            "label": _research_score_label(confidence, authority_score, reuse_decision=reuse_decision),
+            "confidence": confidence,
+            "authorityScore": authority_score,
+            "reuseDecision": reuse_decision or None,
+            "qualityStatus": quality_status,
+        },
+        "limitations": limitations,
+        "missingOrStaleReasons": missing_reasons,
+        "reuseDecision": reuse or None,
+        "detailRef": {
+            "evidenceBundleId": evidence_id,
+            "tool": f"research_broker(mode='get_evidence', evidenceBundleId='{evidence_id}')" if evidence_id else "research_broker(mode='get_evidence', evidenceBundleId=...)",
+        },
+        "recommendedNextAction": payload.get("recommendedNextAction") or ("use_research_answer_pack" if quality_status.startswith("usable") else "refresh_research"),
+    }
 
 
 def _as_list(values: Any) -> list[str]:
@@ -294,12 +446,15 @@ def _store_evidence(bundle: dict[str, Any], *, state: dict[str, Any] | None) -> 
         "retention": "run_scoped_memory",
         "_expiresAt": time.time() + config["evidenceTtlSeconds"],
     }
+    stored["researchAnswerPack"] = _research_answer_pack(stored)
     _EVIDENCE_LEDGER[bundle_id] = stored
     return store_evidence_bundle(stored, ttl_seconds=config["evidenceTtlSeconds"], scope=scope)
 
 
 def _visible_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in bundle.items() if not str(key).startswith("_")}
+    visible = {key: value for key, value in bundle.items() if not str(key).startswith("_")}
+    visible["researchAnswerPack"] = _research_answer_pack(visible)
+    return visible
 
 
 def _build_shards(
@@ -389,7 +544,8 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
         "ok": bool(payload.get("ok")),
         "kind": payload.get("kind") or payload.get("mode") or "research_payload",
         "summary": _safe_text(payload.get("summary"))[:600],
-        "answer": _safe_text(payload.get("answer") or payload.get("resultPreview"))[:1600],
+        "answer": _safe_text((payload.get("researchAnswerPack") or {}).get("answer") if isinstance(payload.get("researchAnswerPack"), dict) else payload.get("answer") or payload.get("resultPreview"))[:1600],
+        "researchAnswerPack": payload.get("researchAnswerPack") or _research_answer_pack(payload),
         "finalExperiencePack": {
             key: value
             for key, value in dict(payload.get("finalExperiencePack") or payload.get("researchResult") or {}).items()
@@ -431,8 +587,30 @@ def _compact_research_text(value: Any, *, limit: int = 700) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _is_noisy_research_sentence(value: Any) -> bool:
+    text = _safe_text(value)
+    lowered = text.lower()
+    if not text:
+        return True
+    noise_markers = (
+        "navigation - index - modules",
+        "theme auto light dark",
+        "privacy policy & safety",
+        "about press copyright",
+        "security check required",
+        "verify you are human",
+        "we've detected unusual activity",
+        "access denied",
+    )
+    if any(marker in lowered for marker in noise_markers):
+        return True
+    if text.count("|") >= 5 or text.count("»") >= 4:
+        return True
+    return False
+
+
 def _research_sentences(value: Any, *, limit: int = 3) -> list[str]:
-    text = _compact_research_text(value, limit=900)
+    text = _compact_research_text(value, limit=1800)
     if not text:
         return []
     parts = [
@@ -446,10 +624,51 @@ def _research_sentences(value: Any, *, limit: int = 3) -> list[str]:
     for part in parts:
         if len(part) < 12 and len(parts) > 1:
             continue
+        if _is_noisy_research_sentence(part):
+            continue
         result.append(_compact_research_text(part, limit=260))
         if len(result) >= limit:
             break
-    return result or [_compact_research_text(text, limit=260)]
+    if result:
+        return result
+    return [] if _is_noisy_research_sentence(text) else [_compact_research_text(text, limit=260)]
+
+
+def _research_text_list(value: Any, *, limit: int = 12) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = _compact_research_text(value, limit=320)
+        return [text] if text else []
+    if isinstance(value, dict):
+        text = _compact_research_text(value.get("summary") or value.get("reason") or value, limit=320)
+        return [text] if text else []
+    result: list[str] = []
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            if isinstance(item, dict):
+                text = _compact_research_text(item.get("summary") or item.get("reason") or item.get("claim") or item, limit=320)
+            else:
+                text = _compact_research_text(item, limit=320)
+            if text and text not in result:
+                result.append(text)
+            if len(result) >= limit:
+                break
+    return result
+
+
+def _research_dict_list(value: Any, *, limit: int = 12) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            result.append(item)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def _fetched_source_map(shards: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -719,7 +938,7 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
         "authorityScore": pack.get("authorityScore"),
         "createdAt": _utc_now_iso(),
     }
-    return {
+    bundle = {
         "ok": True,
         "kind": "research_evidence_bundle",
         "summary": architect_pack["headline"],
@@ -754,6 +973,8 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
         "authorityScore": pack.get("authorityScore"),
         "recommendedNextAction": "use_reused_experience_pack",
     }
+    bundle["researchAnswerPack"] = _research_answer_pack(bundle)
+    return bundle
 
 
 def _deterministic_web_research_architect_pack(
@@ -973,22 +1194,61 @@ def _extract_jsonish_string_field(text: str, field: str) -> str:
     return value.replace('\\"', '"').replace("\\n", "\n").strip()
 
 
-def _create_web_research_architect_llm() -> tuple[Any, str, str]:
+def _research_architect_fallback_model_refs() -> list[str]:
+    raw = os.environ.get("V8_RESEARCH_ARCHITECT_MODEL_FALLBACKS", "")
+    refs = [item.strip() for item in re.split(r"[,;\n]+", raw) if item.strip()] if raw else list(_DEFAULT_ARCHITECT_MODEL_FALLBACKS)
+    deduped: list[str] = []
+    for ref in refs:
+        if ref and ref not in deduped:
+            deduped.append(ref)
+    return deduped
+
+
+def _create_web_research_architect_llm_candidates() -> list[tuple[Any, str, str]]:
     from core.llm_factory import llm_factory
 
     agent_id = "web-research-architect"
+    candidates: list[tuple[Any, str, str]] = []
+    seen: set[str] = set()
+
+    def add_candidate(factory, *, model_id: str, role: str) -> None:
+        key = f"{role}|{model_id}"
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append((factory(), model_id, role))
+
     try:
         model_id = _safe_text(storage.get_agent_model_binding(agent_id))
     except Exception:
         model_id = ""
     if model_id:
-        return llm_factory.create_chat_model(model_id, temperature=0.1, max_tokens=1800, _role=agent_id), model_id, agent_id
+        add_candidate(
+            lambda model_id=model_id: llm_factory.create_chat_model(model_id, temperature=0.1, max_tokens=1800, _role=agent_id),
+            model_id=model_id,
+            role=agent_id,
+        )
     last_error: Exception | None = None
+    for model_ref in _research_architect_fallback_model_refs():
+        try:
+            add_candidate(
+                lambda model_ref=model_ref: llm_factory.create_chat_model(model_ref, temperature=0.1, max_tokens=1800, _role=agent_id),
+                model_id=model_ref,
+                role=agent_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - try the next configured model.
+            last_error = exc
     for role in ("research", "summary", "supervisor"):
         try:
-            return llm_factory.create_for_role(role, temperature=0.1, max_tokens=1800), "", role
+            add_candidate(
+                lambda role=role: llm_factory.create_for_role(role, temperature=0.1, max_tokens=1800),
+                model_id=f"role:{role}",
+                role=role,
+            )
         except Exception as exc:  # noqa: BLE001 - role fallback is intentional.
             last_error = exc
+    if candidates:
+        return candidates
     if last_error:
         raise last_error
     raise ValueError("No model configured for Web Research Architect synthesis.")
@@ -1008,7 +1268,19 @@ def _invoke_web_research_architect_agent(
         return None
 
     def _call() -> dict[str, Any] | None:
-        llm, model_id, role = _create_web_research_architect_llm()
+        started_at = time.perf_counter()
+        total_budget = max(5, int(timeout_seconds or 0))
+
+        def _remaining_seconds() -> float:
+            return max(0.0, total_budget - (time.perf_counter() - started_at))
+
+        def _invoke_with_timeout(llm: Any, messages: list[Any], *, seconds: float) -> Any:
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(lambda: llm.invoke(messages, config={"callbacks": []}))
+            try:
+                return future.result(timeout=max(2.0, seconds))
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         def _parse_response(raw_content: str, *, parse_mode: str) -> dict[str, Any] | None:
             parsed = _extract_json_object(raw_content)
@@ -1033,6 +1305,7 @@ def _invoke_web_research_architect_agent(
                 }
             return None
 
+        candidates = _create_web_research_architect_llm_candidates()
         compact_sources = [
             {
                 "title": _safe_text(source.get("title")),
@@ -1062,48 +1335,62 @@ def _invoke_web_research_architect_agent(
             ),
         ]
         raw_previews: list[str] = []
-        for index, prompt in enumerate(prompts):
-            source_limit = 4 if index == 0 else 3
-            prepared_context = prepare_background_model_messages(
-                system_prompt=system_prompt,
-                instruction=prompt,
-                materials=[
-                    {
-                        "title": "Research source matrix",
-                        "kind": "research_sources",
-                        "content": json.dumps(compact_sources[:source_limit], ensure_ascii=False),
-                    }
-                ],
-                runtime_kind="research",
-                target_role="web-research-architect",
-                resolved_model_id=model_id,
-                component="research",
-                node="web_research_architect",
-            )
-            response = llm.invoke(prepared_context.messages, config={"callbacks": []})
-            raw_content = sanitize_background_model_output(response).text
-            if raw_content:
-                raw_previews.append(raw_content[:500])
-            parsed = _parse_response(raw_content, parse_mode="json" if index == 0 else "retry_json")
-            if parsed:
-                return parsed
+        candidate_errors: list[str] = []
+        for candidate_index, (llm, model_id, role) in enumerate(candidates):
+            remaining = _remaining_seconds()
+            if remaining <= 1:
+                candidate_errors.append("architect_total_timeout")
+                break
+            model_label = model_id or f"role:{role}"
+            for index, prompt in enumerate(prompts):
+                remaining = _remaining_seconds()
+                if remaining <= 1:
+                    candidate_errors.append("architect_total_timeout")
+                    break
+                source_limit = 4 if index == 0 else 3
+                prepared_context = prepare_background_model_messages(
+                    system_prompt=system_prompt,
+                    instruction=prompt,
+                    materials=[
+                        {
+                            "title": "Research source matrix",
+                            "kind": "research_sources",
+                            "content": json.dumps(compact_sources[:source_limit], ensure_ascii=False),
+                        }
+                    ],
+                    runtime_kind="research",
+                    target_role="web-research-architect",
+                    resolved_model_id=model_label,
+                    component="research",
+                    node="web_research_architect",
+                )
+                try:
+                    remaining_candidates = max(1, len(candidates) - candidate_index)
+                    per_call_budget = min(24.0, max(10.0, remaining / max(1, min(2, remaining_candidates))))
+                    response = _invoke_with_timeout(llm, prepared_context.messages, seconds=per_call_budget)
+                except concurrent.futures.TimeoutError:
+                    candidate_errors.append(f"{model_label}: architect_candidate_timeout")
+                    break
+                except Exception as exc:  # noqa: BLE001 - try the next configured architect model.
+                    candidate_errors.append(f"{model_label}: {type(exc).__name__}: {_safe_text(exc)[:260]}")
+                    break
+                raw_content = sanitize_background_model_output(response).text
+                if raw_content:
+                    raw_previews.append(f"{model_label}: {raw_content[:500]}")
+                parsed = _parse_response(raw_content, parse_mode="json" if index == 0 else "retry_json")
+                if parsed:
+                    parsed["_modelFallbackAttempts"] = candidate_errors
+                    return parsed
         return {
             "_agentError": "architect_agent_no_json",
             "_rawPreview": "\n--- retry ---\n".join(raw_previews)[:800],
-            "_modelRole": role,
-            "_modelId": model_id,
+            "_modelFallbackAttempts": candidate_errors[:6],
         }
 
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_call)
     try:
-        return future.result(timeout=max(5, timeout_seconds))
-    except concurrent.futures.TimeoutError:
-        return {"_agentError": "architect_agent_timeout"}
+        return _call()
     except Exception as exc:  # noqa: BLE001 - fallback must keep research runtime alive.
         return {"_agentError": f"{type(exc).__name__}: {exc}"}
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _merge_web_research_architect_agent_pack(
@@ -1126,6 +1413,7 @@ def _merge_web_research_architect_agent_pack(
                 "agentId": "web-research-architect",
                 "fallbackReason": fallback_reason,
                 **({"rawPreview": raw_preview} if raw_preview else {}),
+                **({"fallbackAttempts": list(agent_pack.get("_modelFallbackAttempts") or [])[:6]} if isinstance(agent_pack, dict) and agent_pack.get("_modelFallbackAttempts") else {}),
             },
         }
     research_result = _safe_text(agent_pack.get("researchResult") or agent_pack.get("answer") or agent_pack.get("summary"))
@@ -1140,7 +1428,7 @@ def _merge_web_research_architect_agent_pack(
         }
     known_urls = {item.get("url") for item in list(base_pack.get("sourceUrls") or []) if isinstance(item, dict) and item.get("url")}
     claim_table: list[dict[str, Any]] = []
-    for raw_item in list(agent_pack.get("claimTable") or [])[:12]:
+    for raw_item in _research_dict_list(agent_pack.get("claimTable"), limit=12):
         if not isinstance(raw_item, dict):
             continue
         supporting: list[dict[str, Any]] = []
@@ -1185,9 +1473,9 @@ def _merge_web_research_architect_agent_pack(
         "answer": research_result,
         "researchResult": research_result,
         "claimTable": claim_table,
-        "conflictMatrix": list(agent_pack.get("conflictMatrix") or base_pack.get("conflictMatrix") or [])[:12],
-        "missingEvidence": list(agent_pack.get("missingEvidence") or base_pack.get("missingEvidence") or [])[:12],
-        "assumptions": list(agent_pack.get("assumptions") or base_pack.get("assumptions") or [])[:12],
+        "conflictMatrix": _research_text_list(agent_pack.get("conflictMatrix") or base_pack.get("conflictMatrix"), limit=12),
+        "missingEvidence": _research_text_list(agent_pack.get("missingEvidence") or base_pack.get("missingEvidence"), limit=12),
+        "assumptions": _research_text_list(agent_pack.get("assumptions") or base_pack.get("assumptions"), limit=12),
         "synthesisMode": "model_agent",
         "modelSynthesis": {
             "used": True,
@@ -1196,6 +1484,7 @@ def _merge_web_research_architect_agent_pack(
             "modelRole": agent_pack.get("_modelRole"),
             "modelId": agent_pack.get("_modelId"),
             "parseMode": agent_pack.get("_modelParseMode") or "json",
+            **({"fallbackAttempts": list(agent_pack.get("_modelFallbackAttempts") or [])[:6]} if agent_pack.get("_modelFallbackAttempts") else {}),
         },
     }
 
@@ -1681,7 +1970,7 @@ def _synthesize_bundle(
     if conflicts:
         conflict_matrix.extend(conflicts)
     source_urls = [item.get("url") for item in list(architect_pack.get("sourceUrls") or []) if isinstance(item, dict) and item.get("url")]
-    return {
+    bundle = {
         "ok": bool(source_matrix),
         "kind": "research_evidence_bundle",
         "summary": architect_pack.get("headline") or f"Collected {len(source_matrix)} ranked source(s) across {len(shards)} research shard(s).",
@@ -1756,6 +2045,8 @@ def _synthesize_bundle(
         },
         "recommendedNextAction": "use_evidence_bundle" if source_matrix else "revise_queries",
     }
+    bundle["researchAnswerPack"] = _research_answer_pack(bundle)
+    return bundle
 
 
 @tool
@@ -1911,6 +2202,7 @@ def research_broker(
                         "qualityStatus": item.get("qualityStatus"),
                         "invalidationReason": item.get("invalidationReason"),
                         "missingEvidence": list(item.get("missingEvidence") or [])[:3],
+                        "researchAnswerPack": item.get("researchAnswerPack"),
                         "sourceUrls": list(item.get("sourceUrls") or [])[:4],
                         "usageCount": item.get("usageCount"),
                         "lastUsedAt": item.get("lastUsedAt"),

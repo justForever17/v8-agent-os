@@ -577,6 +577,7 @@ class MemoryAgentRunner:
         touched_refs: list[str] = []
         summary_backfilled_count = 0
         failed_targets: list[dict[str, str]] = []
+        summary_llm_candidate_count = 0
         legacy_summary_touched_refs: list[str] = []
         legacy_summary_backfilled_count = 0
         workflow_maintenance_result: Dict[str, Any] = {}
@@ -595,6 +596,12 @@ class MemoryAgentRunner:
                     trigger_source=trigger_source,
                     run_handle=run_handle,
                 )
+                try:
+                    input_content_length = int(result.get("input_content_length") or 0)
+                except (TypeError, ValueError):
+                    input_content_length = 0
+                if input_content_length > 0:
+                    summary_llm_candidate_count += 1
                 if str(result.get("status") or "").strip().lower() == "completed":
                     summary_backfilled_count += 1
                     touched_refs.append(memory_ref)
@@ -611,6 +618,7 @@ class MemoryAgentRunner:
                         {
                             "memoryRef": memory_ref,
                             "tier": tier,
+                            "latestDay": latest_day,
                             "reason": str(result.get("reason") or result.get("status") or "unknown"),
                         }
                     )
@@ -655,6 +663,7 @@ class MemoryAgentRunner:
             "summaryStaleCountBefore": int(((before_health.get("counts") or {}).get("stale")) or 0),
             "summaryStaleCountAfter": int(((after_health.get("counts") or {}).get("stale")) or 0),
             "summaryBackfilledCount": summary_backfilled_count,
+            "summaryLlmCandidateCount": summary_llm_candidate_count,
             "touchedRefs": touched_refs,
             "legacySummaryBackfilledCount": legacy_summary_backfilled_count,
             "legacySummaryTouchedRefs": legacy_summary_touched_refs,
@@ -679,6 +688,7 @@ class MemoryAgentRunner:
             "summary_stale_count_before": maintenance_meta["summaryStaleCountBefore"],
             "summary_stale_count_after": maintenance_meta["summaryStaleCountAfter"],
             "summary_backfilled_count": summary_backfilled_count,
+            "summary_llm_candidate_count": summary_llm_candidate_count,
             "legacy_summary_backfilled_count": legacy_summary_backfilled_count,
             "global_quarantined_preference_count": maintenance_meta["globalQuarantinedPreferenceCount"],
             "global_quarantined_knowledge_count": maintenance_meta["globalQuarantinedKnowledgeCount"],
@@ -696,12 +706,15 @@ class MemoryAgentRunner:
             trigger=trigger_source,
             runId=run_handle.run_id,
             sessionId=effective_session_id,
-            callsLlm=bool(summary_backfilled_count),
+            callsLlm=bool(summary_llm_candidate_count),
             targetCount=len(targets),
+            summaryLlmCandidateCount=summary_llm_candidate_count,
             summaryBackfilledCount=summary_backfilled_count,
             legacySummaryBackfilledCount=legacy_summary_backfilled_count,
             touchedRefs=touched_refs[:20],
             failedTargetCount=len(failed_targets),
+            failedTargets=failed_targets[:8],
+            failedReasons=sorted({str(item.get("reason") or "unknown") for item in failed_targets})[:8],
             workflowCandidateCount=maintenance_meta["workflowCandidateCount"],
             workflowCandidateUpdatedCount=maintenance_meta["workflowCandidateUpdatedCount"],
             workflowActiveHintCount=maintenance_meta["workflowActiveHintCount"],

@@ -67,12 +67,19 @@ def _run_technical_case() -> AuditCaseResult:
     try:
         payload = _research_run("What are the current best practices for using Python pathlib in CLI tools? cite official sources.", freshness="latest")
         final_pack = payload.get("finalExperiencePack") if isinstance(payload.get("finalExperiencePack"), dict) else {}
+        answer_pack = payload.get("researchAnswerPack") if isinstance(payload.get("researchAnswerPack"), dict) else {}
         synthesis_mode = str(final_pack.get("synthesisMode") or "")
-        result.status = "ok" if payload.get("ok") and payload.get("claimTable") else "warning"
+        result.status = "ok" if payload.get("ok") and payload.get("claimTable") and answer_pack.get("answer") and answer_pack.get("sources") else "warning"
         result.summary = f"{str(payload.get('summary') or '')[:520]} synthesis={synthesis_mode or 'unknown'}"
         result.providers = sorted({str(item.get("provider") or "") for item in payload.get("sourceMatrix") or [] if isinstance(item, dict) and item.get("provider")})
         if not payload.get("claimTable"):
             result.failures.append("missing_claim_table")
+        if not answer_pack.get("answer"):
+            result.failures.append("missing_research_answer_pack_answer")
+        if not answer_pack.get("sources"):
+            result.failures.append("missing_research_answer_pack_sources")
+        if not answer_pack.get("score"):
+            result.failures.append("missing_research_answer_pack_score")
         if not payload.get("researchLoopState"):
             result.failures.append("missing_research_loop_state")
         if synthesis_mode != "model_agent":
@@ -161,6 +168,64 @@ def _run_reuse_case() -> AuditCaseResult:
     return result
 
 
+def _run_memory_route_research_experience_case() -> AuditCaseResult:
+    result = AuditCaseResult("memory_route_research_experience", "Memory route：Research Experience 答案卷宗")
+    started = time.perf_counter()
+    try:
+        from core.native_tools import memory_broker
+
+        question = "Research Runtime answer pack memory route validation"
+        _research_run(question, max_shards=1, max_rounds=2)
+        payload = json.loads(memory_broker.func(mode="route", query=f"之前调研过 {question} 吗", scope="global", limit=3))
+        packs = payload.get("evidencePacks") if isinstance(payload.get("evidencePacks"), list) else []
+        research_pack = next((pack for pack in packs if isinstance(pack, dict) and pack.get("sourceDomain") == "research_experience"), {})
+        selected = research_pack.get("selectedEvidence") if isinstance(research_pack.get("selectedEvidence"), list) else []
+        result.status = "ok" if selected and selected[0].get("answer") and selected[0].get("sources") else "warning"
+        result.summary = f"selectedDomains={payload.get('selectedDomains')} selectedResearch={len(selected)}"
+        if not selected:
+            result.failures.append("missing_research_experience_selected_evidence")
+        elif not selected[0].get("answer"):
+            result.failures.append("selected_research_evidence_missing_answer")
+        result.evidence.append(_redact(payload))
+    except Exception as exc:  # noqa: BLE001
+        result.status = "failed"
+        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result
+
+
+def _run_runtime_broker_list_compact_case() -> AuditCaseResult:
+    result = AuditCaseResult("runtime_broker_list_compact", "runtime_broker(list)：默认路由菜单降噪")
+    started = time.perf_counter()
+    try:
+        from core.native_tools import runtime_broker
+
+        payload = json.loads(
+            runtime_broker.func(
+                mode="list",
+                state={"current_route_context": {}},
+                tool_call_id="live-runtime-broker-list-compact",
+            ).update["messages"][0].content
+        )
+        groups = payload.get("availableGroups") if isinstance(payload.get("availableGroups"), list) else []
+        serialized = json.dumps(payload, ensure_ascii=False)
+        group_has_tool_names = any(isinstance(group, dict) and "toolNames" in group for group in groups)
+        result.status = "ok" if len(serialized) < 1800 and len(groups) <= 6 and not group_has_tool_names else "warning"
+        result.summary = f"bytes={len(serialized)} groups={len(groups)} detailMode={payload.get('detailMode')}"
+        if len(serialized) >= 1800:
+            result.failures.append("runtime_broker_list_too_large")
+        if len(groups) > 6:
+            result.failures.append("runtime_broker_list_too_many_groups")
+        if group_has_tool_names:
+            result.failures.append("runtime_broker_list_contains_tool_names")
+        result.evidence.append(_redact(payload))
+    except Exception as exc:  # noqa: BLE001
+        result.status = "failed"
+        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result
+
+
 def _run_conflict_case() -> AuditCaseResult:
     result = AuditCaseResult("conflict", "冲突来源：conflictMatrix 与不确定性表达")
     started = time.perf_counter()
@@ -183,6 +248,8 @@ CASES = {
     "cn": _run_cn_case,
     "continuation": _run_continuation_case,
     "reuse": _run_reuse_case,
+    "memory_route_research_experience": _run_memory_route_research_experience_case,
+    "runtime_broker_list_compact": _run_runtime_broker_list_compact_case,
     "conflict": _run_conflict_case,
 }
 

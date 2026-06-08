@@ -20,6 +20,14 @@ type EvidenceBundle = {
     sourceMatrix?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
 };
 
+type ResearchAnswerPack = {
+    answer?: string;
+    sources?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number; relevance?: number | string; freshness?: string }>;
+    score?: { label?: string; confidence?: string; authorityScore?: number; qualityStatus?: string; reuseDecision?: string };
+    limitations?: string[];
+    missingOrStaleReasons?: string[];
+};
+
 type ExperiencePack = {
     experiencePackId?: string;
     title?: string;
@@ -38,6 +46,7 @@ type ExperiencePack = {
     archivedAt?: string | null;
     qualityStatus?: string;
     invalidationReason?: string;
+    researchAnswerPack?: ResearchAnswerPack;
     missingEvidence?: string[];
     limitations?: string[];
     sourceUrls?: string[];
@@ -92,25 +101,32 @@ function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeo
     const qualityStatus = String(item.qualityStatus || "").trim();
     const invalidationReason = String(item.invalidationReason || "").trim();
     const isArchived = normalizeStatus(item.status) === "archived";
+    const answerPack = item.researchAnswerPack || {};
+    const answer = String(answerPack.answer || item.researchResult || "").trim();
+    const score = answerPack.score || {};
     const isLowQuality = qualityStatus === "low_quality_pack" || Boolean(invalidationReason);
-    const summary = String(item.researchResult || "").trim();
     const applicability = String(item.applicability || "").trim();
     const stateLabel = isArchived
         ? t("app.admin.dashboard.research.runtime.ledger.hover.stateArchived")
         : isLowQuality
           ? t("app.admin.dashboard.research.runtime.ledger.hover.stateRefresh")
-          : summary || (Array.isArray(item.claimDigest) && item.claimDigest.length)
+          : answer || (Array.isArray(item.claimDigest) && item.claimDigest.length)
             ? t("app.admin.dashboard.research.runtime.ledger.hover.stateReusable")
             : t("app.admin.dashboard.research.runtime.ledger.hover.stateLowQuality");
     lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.state")}: ${stateLabel}`);
-    if (summary) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${summary.length > 1200 ? `${summary.slice(0, 1200)}…` : summary}`);
-    for (const itemClaim of (Array.isArray(item.claimDigest) ? item.claimDigest : []).slice(0, 3)) {
+    if (answer) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.answer")}: ${answer.length > 1200 ? `${answer.slice(0, 1200)}…` : answer}`);
+    for (const itemClaim of (!answer && Array.isArray(item.claimDigest) ? item.claimDigest : []).slice(0, 3)) {
         const claim = String(itemClaim?.claim || "").trim();
-        if (claim) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.researchResult")}: ${claim.length > 420 ? `${claim.slice(0, 420)}…` : claim}`);
+        if (claim) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.answer")}: ${claim.length > 420 ? `${claim.slice(0, 420)}…` : claim}`);
     }
     const missing = Array.isArray(item.missingEvidence) ? item.missingEvidence : [];
     const limitations = Array.isArray(item.limitations) ? item.limitations : [];
-    if (!summary && !(Array.isArray(item.claimDigest) && item.claimDigest.length)) {
+    if (score.label || score.confidence || score.authorityScore !== undefined || score.qualityStatus) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.score")}: ${score.label || `${score.confidence || "unknown"} / authority=${score.authorityScore ?? "n/a"} / ${score.qualityStatus || stateLabel}`}`);
+    } else if (item.confidence || item.authorityScore !== undefined) {
+        lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.score")}: ${item.confidence || "unknown"} / authority=${item.authorityScore ?? "n/a"}`);
+    }
+    if (!answer && !(Array.isArray(item.claimDigest) && item.claimDigest.length)) {
         lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.missingEvidence")}: ${missing[0] || invalidationReason || t("app.admin.dashboard.research.runtime.ledger.hover.refreshRequired")}`);
     }
     for (const reason of missing.slice(0, 2)) {
@@ -122,7 +138,7 @@ function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeo
         if (text) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.limitations")}: ${text.length > 320 ? `${text.slice(0, 320)}…` : text}`);
     }
     if (applicability) lines.push(`${t("app.admin.dashboard.research.runtime.ledger.hover.applicability")}: ${applicability}`);
-    const sources = Array.isArray(item.sourceMatrixDigest) ? item.sourceMatrixDigest : [];
+    const sources = Array.isArray(answerPack.sources) && answerPack.sources.length ? answerPack.sources : (Array.isArray(item.sourceMatrixDigest) ? item.sourceMatrixDigest : []);
     for (const source of sources.slice(0, 4)) {
         const title = String(source.title || source.host || source.url || "").trim();
         if (!title) continue;

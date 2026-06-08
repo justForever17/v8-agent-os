@@ -14,14 +14,23 @@ export async function POST(req: Request) {
       body: JSON.stringify(body),
     });
 
+    const data = await res.json().catch(() => ({}));
+
     if (!res.ok) {
       return NextResponse.json(
-        { error: "Failed to run cron job" },
+        {
+          error: "Failed to run cron job",
+          detail:
+            typeof data?.detail === "string"
+              ? data.detail
+              : typeof data?.error === "string"
+                ? data.error
+                : undefined,
+        },
         { status: res.status }
       );
     }
 
-    const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
     console.error("Error running cron job:", error);

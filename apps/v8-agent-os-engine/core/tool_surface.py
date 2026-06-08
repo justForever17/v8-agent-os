@@ -59,6 +59,7 @@ JSON_PRIORITY_KEYS = (
     "toolCallId",
     "rawRef",
     "summaryRef",
+    "researchAnswerPack",
     "recommendedNextAction",
     "selectedPlaybook",
     "selectedPlaybookExecutor",
@@ -526,7 +527,7 @@ def _source_line(item: dict[str, Any], *, title_limit: int = 120, url_limit: int
 
 def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     mode = _short_text(payload.get("mode") or "status", 40)
-    lines = [f"Runtime broker ({mode})"]
+    lines = [f"Runtime route menu ({mode})"]
     active = payload.get("activeGrants") or payload.get("grants") or payload.get("runtimeToolGrants") or []
     if isinstance(active, list) and active:
         names = []
@@ -540,7 +541,7 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
         lines.append("Active grants: none")
     groups = payload.get("availableGroups") or payload.get("groups") or []
     if isinstance(groups, list) and groups:
-        lines.append("Grantable groups:")
+        lines.append("Candidate routes:")
         for group in groups[:10]:
             if isinstance(group, dict):
                 name = group.get("group") or group.get("name")
@@ -553,6 +554,9 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
                 lines.append(f"- {_short_text(group, 100)}")
         if len(groups) > 10:
             lines.append(f"- … {len(groups) - 10} more; use catalog detail")
+    omitted = payload.get("omitted")
+    if isinstance(omitted, dict) and omitted.get("availableGroups"):
+        lines.append(f"Catalog compacted: {omitted.get('availableGroups')} group(s) hidden; use catalog/detail only when needed.")
     changed = payload.get("changed") or payload.get("grant") or payload.get("revoked")
     if changed:
         lines.append(f"Change: {_short_text(changed, 160)}")
@@ -612,6 +616,7 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> st
     mode = str(payload.get("mode") or "").strip()
     kind = str(payload.get("kind") or "").strip()
     if kind == "research_evidence_bundle":
+        answer_pack = payload.get("researchAnswerPack") if isinstance(payload.get("researchAnswerPack"), dict) else {}
         pack = payload.get("finalExperiencePack") or payload.get("researchResult") or {}
         if not isinstance(pack, dict):
             pack = {}
@@ -620,10 +625,15 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> st
         question = pack.get("question") or payload.get("question")
         if question:
             lines.append(f"Question: {_short_text(question, 220)}")
-        answer = pack.get("answer") or payload.get("resultPreview") or payload.get("answer") or payload.get("summary")
+        answer = answer_pack.get("answer") or pack.get("researchResult") or pack.get("answer")
         if answer:
             lines.append("Result:")
             lines.append(_short_text(answer, 1200))
+        else:
+            lines.append("Result: refresh required; no reliable source-backed answer was synthesized.")
+        score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
+        if score:
+            lines.append(f"Score: {_short_text(score.get('label') or score, 220)}")
         findings = pack.get("keyFindings")
         if isinstance(findings, list) and findings:
             lines.append("Key findings:")
@@ -635,7 +645,7 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> st
                     lines.append(f"- {_short_text(claim, 260)}{suffix}")
                 else:
                     lines.append(f"- {_short_text(item, 260)}")
-        sources = pack.get("sourceUrls") or payload.get("sourceMatrix")
+        sources = answer_pack.get("sources") or pack.get("sourceUrls") or payload.get("sourceMatrix")
         if isinstance(sources, list) and sources:
             lines.append("Sources:")
             for item in sources[:8]:

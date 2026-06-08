@@ -63,6 +63,11 @@ def test_memory_broker_route_returns_compact_evidence_pack(monkeypatch, tmp_path
     assert "research_experience" in payload["selectedDomains"]
     assert "memory_core" in payload["selectedDomains"]
     assert "evidencePacks" in payload
+    research_pack = next(pack for pack in payload["evidencePacks"] if pack["sourceDomain"] == "research_experience")
+    selected = research_pack["selectedEvidence"][0]
+    assert selected["answer"].startswith("三月七是《崩坏：星穹铁道》")
+    assert selected["sources"][0]["url"] == "https://sr.mihoyo.com/role/march7th"
+    assert selected["score"]["confidence"] == "high"
     assert "三月七" in serialized
     assert "sourceMatrix" not in serialized
     assert "rawLedgers" in serialized

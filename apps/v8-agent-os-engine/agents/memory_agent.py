@@ -2777,6 +2777,8 @@ async def generate_periodic_summary(
             "tier": tier,
             "target_date": dt.isoformat(),
             "reason": str(e),
+            "daily_log_count": daily_log_count,
+            "input_content_length": len(content),
         }
 
 # === Agent Hook 包装 ===

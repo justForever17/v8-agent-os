@@ -137,8 +137,11 @@ def test_runtime_broker_default_list_is_compact_and_catalog_is_explicit():
     assert len(rendered) < 1500
     assert payload["detailMode"] == "summary"
     assert payload["availableGroups"]
+    assert len(payload["availableGroups"]) <= 6
     assert all("toolNames" not in item for item in payload["availableGroups"])
     assert payload["omitted"]["toolNames"] > 0
+    assert payload["omitted"]["availableGroups"] >= 0
+    assert "mode='route'" in payload["recommendedNextAction"]
 
     catalog = runtime_broker.func(
         mode="list",

@@ -4967,14 +4967,17 @@ def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str
     pack = payload.get("finalExperiencePack") or payload.get("researchResult") or payload
     if not isinstance(pack, dict):
         pack = payload
+    answer_pack = payload.get("researchAnswerPack") if isinstance(payload.get("researchAnswerPack"), dict) else {}
     answer = (
-        str(pack.get("answer") or "").strip()
-        or str(payload.get("resultPreview") or "").strip()
+        str(answer_pack.get("answer") or "").strip()
+        or str(pack.get("researchResult") or "").strip()
+        or str(pack.get("answer") or "").strip()
         or str(payload.get("answer") or "").strip()
-        or str(pack.get("headline") or payload.get("summary") or "").strip()
     )
     findings = pack.get("keyFindings") if isinstance(pack.get("keyFindings"), list) else []
-    sources = pack.get("sourceUrls") if isinstance(pack.get("sourceUrls"), list) else []
+    sources = answer_pack.get("sources") if isinstance(answer_pack.get("sources"), list) else []
+    if not sources:
+        sources = pack.get("sourceUrls") if isinstance(pack.get("sourceUrls"), list) else []
     if not sources and isinstance(payload.get("sourceMatrix"), list):
         sources = payload.get("sourceMatrix") or []
 
@@ -4988,12 +4991,15 @@ def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str
     confidence = pack.get("confidence") or payload.get("confidence")
     if confidence:
         lines.append(f"confidence: {confidence}")
+    score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
+    if score:
+        lines.append(f"score: {_tool_observation_short_text(score.get('label') or score, 260)}")
     lines.append("")
     lines.append("Final result:")
     if answer:
         lines.append(_tool_observation_short_text(answer, max(900, min(max_chars // 2, 3200))))
     else:
-        lines.append("No final source-backed research result was available in this observation.")
+        lines.append("No final source-backed research result was available. Refresh research or provide readable authoritative sources.")
 
     if findings:
         lines.append("")
@@ -5380,9 +5386,10 @@ def _memory_research_pack_quality_reasons(pack: dict[str, Any]) -> list[str]:
     status = str(pack.get("status") or "").strip().lower()
     quality = str(pack.get("qualityStatus") or "").strip().lower()
     invalidation = str(pack.get("invalidationReason") or "").strip()
-    research_result = _memory_broker_preview(pack.get("researchResult"), 1200)
+    answer_pack = pack.get("researchAnswerPack") if isinstance(pack.get("researchAnswerPack"), dict) else {}
+    research_result = _memory_broker_preview(answer_pack.get("answer") or pack.get("researchResult"), 1200)
     claim_digest = [item for item in list(pack.get("claimDigest") or []) if isinstance(item, dict) and str(item.get("claim") or "").strip()]
-    sources = list(pack.get("sourceUrls") or []) or list(pack.get("sourceMatrixDigest") or [])
+    sources = list(answer_pack.get("sources") or []) or list(pack.get("sourceUrls") or []) or list(pack.get("sourceMatrixDigest") or [])
     if status == "archived":
         reasons.append("archived")
     if quality in {"low_quality_pack", "missing_evidence", "source_unreadable"}:
@@ -5404,6 +5411,7 @@ def _memory_research_pack_quality_reasons(pack: dict[str, Any]) -> list[str]:
 
 
 def _memory_compact_research_pack(pack: dict[str, Any], *, rejected_reason: str = "") -> dict[str, Any]:
+    answer_pack = pack.get("researchAnswerPack") if isinstance(pack.get("researchAnswerPack"), dict) else {}
     claims = []
     for item in list(pack.get("claimDigest") or [])[:3]:
         if not isinstance(item, dict):
@@ -5411,12 +5419,37 @@ def _memory_compact_research_pack(pack: dict[str, Any], *, rejected_reason: str 
         claim = _memory_broker_preview(item.get("claim"), 240)
         if claim:
             claims.append(claim)
+    source_entries = []
+    for source in list(answer_pack.get("sources") or []):
+        if isinstance(source, dict):
+            source_entries.append(
+                {
+                    key: value
+                    for key, value in {
+                        "title": _memory_broker_preview(source.get("title"), 140),
+                        "url": source.get("url"),
+                        "host": source.get("host"),
+                        "authorityScore": source.get("authorityScore"),
+                    }.items()
+                    if value not in (None, "", [], {})
+                }
+            )
     source_urls = [str(url).strip() for url in list(pack.get("sourceUrls") or []) if str(url).strip()][:4]
+    if not source_entries:
+        source_entries = [{"url": url} for url in source_urls]
+    answer = _memory_broker_preview(answer_pack.get("answer") or pack.get("researchResult"), 760)
     payload = {
         "id": pack.get("experiencePackId"),
         "title": _memory_broker_preview(pack.get("title"), 180),
-        "researchResult": _memory_broker_preview(pack.get("researchResult"), 520),
+        "answer": answer,
+        "researchResult": answer,
         "claimDigest": claims,
+        "sources": source_entries[:4],
+        "score": answer_pack.get("score") or {
+            "confidence": pack.get("confidence"),
+            "authorityScore": pack.get("authorityScore"),
+            "qualityStatus": pack.get("qualityStatus"),
+        },
         "confidence": pack.get("confidence"),
         "authorityScore": pack.get("authorityScore"),
         "status": pack.get("status"),
@@ -6092,6 +6125,7 @@ def _runtime_broker_payload(
     normalized_detail = str(detail_level or "summary").strip().lower()
     group_items = list(groups or [])
     if normalized_detail not in {"catalog", "detail", "full"}:
+        original_group_count = len(group_items)
         group_items = [
             {
                 "group": str(item.get("group") or ""),
@@ -6100,7 +6134,9 @@ def _runtime_broker_payload(
             }
             for item in group_items
             if isinstance(item, dict)
-        ]
+        ][:6]
+    else:
+        original_group_count = len(group_items)
     payload = {
         "mode": mode,
         "ok": ok,
@@ -6109,7 +6145,7 @@ def _runtime_broker_payload(
         "availableGroups": group_items,
         "rejected": list(rejected or []),
         "detailMode": normalized_detail if normalized_detail in {"catalog", "detail", "full"} else "summary",
-        "detailTool": "runtime_broker(mode='list', detail_level='catalog') for toolNames",
+        "detailTool": "runtime_broker(mode='list', detail_level='catalog') for compact catalog; detail_level='full' for diagnostics",
     }
     if changed is not None:
         payload["changed"] = list(changed or [])
@@ -6134,6 +6170,8 @@ def _runtime_broker_payload(
         omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
         payload["omitted"] = {
             "toolNames": omitted_tools,
+            "availableGroups": max(0, original_group_count - len(group_items)),
+            "reason": "default list is a compact route menu; capability_registry already describes runtime details",
         }
     if error:
         payload["error"] = error
@@ -6574,7 +6612,7 @@ def runtime_broker(
                                 for group in runtime_access_from_route_context(route_context)
                             ],
                             detail_level=detail_level,
-                            next_action="Grant one needed group, e.g. runtime_broker(mode='grant', tool_group='research.core').",
+                            next_action="Prefer runtime_broker(mode='route', need={'kind':'research'|'engineering'|...}); use grant only for explicit tool group access.",
                         ),
                         tool_call_id=tool_call_id,
                     )

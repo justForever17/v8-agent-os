@@ -58,6 +58,12 @@ type ScheduleDraft = {
     intervalMinute: string;
 };
 
+type RunNotice = {
+    jobId: string;
+    status: "success" | "error";
+    message: string;
+};
+
 const SYSTEM_MEMORY_MAINTENANCE_JOB_ID = "system-memory-maintenance";
 
 const EMPTY_JOB: CronJob = {
@@ -340,6 +346,8 @@ export default function ScheduledTasksPage() {
     const [targetBindingText, setTargetBindingText] = useState("{}");
     const [recoveryAnchorText, setRecoveryAnchorText] = useState("{}");
     const [sourceMetadataText, setSourceMetadataText] = useState("{}");
+    const [runningJobId, setRunningJobId] = useState<string | null>(null);
+    const [runNotice, setRunNotice] = useState<RunNotice | null>(null);
 
     const loadDocumentation = async () => {
         try {
@@ -353,13 +361,17 @@ export default function ScheduledTasksPage() {
         }
     };
 
-    const loadData = async () => {
-        setLoading(true);
+    const loadData = async (options?: { silent?: boolean }) => {
+        if (!options?.silent) {
+            setLoading(true);
+        }
         try {
             const next = await fetchConfigDomain<CronData>("cron");
             setEnvelope(next);
         } finally {
-            setLoading(false);
+            if (!options?.silent) {
+                setLoading(false);
+            }
         }
     };
 
@@ -476,11 +488,49 @@ export default function ScheduledTasksPage() {
     };
 
     const handleRunNow = async (jobId: string) => {
-        await fetch("/api/cron/run", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ job_id: jobId }),
-        });
+        setRunningJobId(jobId);
+        setRunNotice(null);
+        try {
+            const response = await fetch("/api/cron/run", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ job_id: jobId }),
+            });
+            const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string; detail?: string };
+            if (!response.ok) {
+                throw new Error(payload.detail || payload.error || response.statusText || t("app.admin.dashboard.automation.cron.page.runNow.error"));
+            }
+            setRunNotice({
+                jobId,
+                status: "success",
+                message: payload.message || t("app.admin.dashboard.automation.cron.page.runNow.success"),
+            });
+            void loadData({ silent: true });
+        } catch (error) {
+            setRunNotice({
+                jobId,
+                status: "error",
+                message: `${t("app.admin.dashboard.automation.cron.page.runNow.error")}: ${error instanceof Error ? error.message : String(error)}`,
+            });
+        } finally {
+            setRunningJobId(null);
+        }
+    };
+
+    const renderRunNotice = (jobId: string) => {
+        if (!runNotice || runNotice.jobId !== jobId) return null;
+        return (
+            <div
+                className={cn(
+                    "mt-3 rounded-xl border px-3 py-2 text-xs",
+                    runNotice.status === "success"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-rose-200 bg-rose-50 text-rose-700",
+                )}
+            >
+                {runNotice.message}
+            </div>
+        );
     };
 
     if (loading || !envelope) {
@@ -559,15 +609,20 @@ export default function ScheduledTasksPage() {
                                      className="border border-slate-200 bg-white px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-slate-50/50"
                                      titleClassName="text-xs text-slate-500 font-normal cursor-pointer"
                                  />
-                                <Button variant="outline" size="sm" onClick={() => void handleRunNow(systemMemoryJob.id)}>
-                                    <Play className="mr-2 h-4 w-4" />
-                                    {t("app.admin.dashboard.automation.cron.page.k95433853")}
+                                <Button variant="outline" size="sm" onClick={() => void handleRunNow(systemMemoryJob.id)} disabled={runningJobId === systemMemoryJob.id}>
+                                    {runningJobId === systemMemoryJob.id ? (
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Play className="mr-2 h-4 w-4" />
+                                    )}
+                                    {runningJobId === systemMemoryJob.id ? t("app.admin.dashboard.automation.cron.page.runNow.running") : t("app.admin.dashboard.automation.cron.page.k95433853")}
                                 </Button>
                                 <Button variant="outline" size="sm" onClick={() => openEditDialog(systemMemoryJob)}>
                                     {t("app.admin.dashboard.automation.cron.page.kac76654b")}
                                 </Button>
                             </div>
                         </div>
+                        {renderRunNotice(systemMemoryJob.id)}
                     </div>
                 </ConfigCard>
             ) : null}
@@ -607,9 +662,13 @@ export default function ScheduledTasksPage() {
                                             className="border border-slate-200 bg-white px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-slate-50/50"
                                             titleClassName="text-xs text-slate-500 font-normal cursor-pointer"
                                         />
-                                        <Button variant="outline" size="sm" onClick={() => void handleRunNow(job.id)}>
-                                            <Play className="mr-2 h-4 w-4" />
-                                            {t("app.admin.dashboard.automation.cron.page.k95433853")}
+                                        <Button variant="outline" size="sm" onClick={() => void handleRunNow(job.id)} disabled={runningJobId === job.id}>
+                                            {runningJobId === job.id ? (
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            ) : (
+                                                <Play className="mr-2 h-4 w-4" />
+                                            )}
+                                            {runningJobId === job.id ? t("app.admin.dashboard.automation.cron.page.runNow.running") : t("app.admin.dashboard.automation.cron.page.k95433853")}
                                         </Button>
                                         <Button variant="outline" size="sm" onClick={() => openEditDialog(job)}>
                                             {t("app.admin.dashboard.automation.cron.page.k75997619")}
@@ -619,6 +678,7 @@ export default function ScheduledTasksPage() {
                                         </Button>
                                     </div>
                                 </div>
+                                {renderRunNotice(job.id)}
                             </div>
                         ))
                     )}

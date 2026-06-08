@@ -195,18 +195,26 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
     created_at = _utc_now_iso()
     result_preview = _research_result_preview(bundle)
     final_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
-    research_result = _valid_research_text(final_pack.get("researchResult") or final_pack.get("answer") or bundle.get("answer") or result_preview)
+    answer_pack = bundle.get("researchAnswerPack") if isinstance(bundle.get("researchAnswerPack"), dict) else {}
+    research_result = _valid_research_text(answer_pack.get("answer") or final_pack.get("researchResult") or final_pack.get("answer") or bundle.get("answer") or result_preview)
     source_urls = []
-    for url in _as_list(bundle.get("sourceUrls")):
-        text = _safe_text(url)
+    def add_source_url(value: Any) -> None:
+        if isinstance(value, dict):
+            text = _safe_text(value.get("url"))
+        else:
+            text = _safe_text(value)
         if text and text not in source_urls:
             source_urls.append(text)
-    for source in _as_list(bundle.get("sourceMatrix")):
-        if not isinstance(source, dict):
-            continue
-        url = _safe_text(source.get("url"))
-        if url and url not in source_urls:
-            source_urls.append(url)
+
+    for source in list(answer_pack.get("sources") or []):
+        add_source_url(source)
+    for source in list(final_pack.get("sourceUrls") or []):
+        add_source_url(source)
+    for url in list(bundle.get("sourceUrls") or []):
+        add_source_url(url)
+    for source in list(bundle.get("sourceMatrix") or []):
+        if isinstance(source, dict):
+            add_source_url(source)
     claim_digest = _claim_digest_from_pack({"claimTable": bundle.get("claimTable")}) or _claim_digest_from_pack(final_pack)
     missing_evidence = []
     for value in _as_list(final_pack.get("missingEvidence") or bundle.get("missingEvidence")):
@@ -239,6 +247,7 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "resultPreview": result_preview,
         "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
         "researchResult": research_result,
+        "researchAnswerPack": answer_pack,
         "claimDigest": claim_digest,
         "qualityStatus": quality_status,
         "topicFingerprint": topic_fingerprint,

@@ -80,7 +80,7 @@ function hasRenderableMessage(message: ChatMessage) {
         return true;
     }
     if (
-        metadata.taskPlanningMode === true
+        (metadata.specMode === true || metadata.taskPlanningMode === true)
         && (
             metadata.taskPlanningSource === "composer"
             || metadata.taskPlanningModeSource === "composer"

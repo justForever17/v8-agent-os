@@ -1012,6 +1012,30 @@ class MCPManager:
             "result": to_jsonable(result),
         }
 
+    async def call_tool(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_server = str(server_name or "").strip()
+        normalized_tool = str(tool_name or "").strip()
+        if not normalized_server or normalized_server not in self.sessions:
+            raise ValueError("MCP server is not connected")
+        server_tool_names = {
+            str(getattr(tool, "name", "") or "").strip()
+            for tool in list(self._server_tools.get(normalized_server) or [])
+        }
+        if normalized_tool not in server_tool_names:
+            raise ValueError(f"MCP tool not registered by server: {normalized_tool}")
+        result = await self.sessions[normalized_server].call_tool(normalized_tool, dict(arguments or {}))
+        return {
+            "serverName": normalized_server,
+            "toolName": normalized_tool,
+            "result": to_jsonable(result),
+        }
+
     def close_app_instance(self, app_instance_id: str) -> dict[str, Any]:
         normalized_id = str(app_instance_id or "").strip()
         instance = self._app_instances.get(normalized_id)

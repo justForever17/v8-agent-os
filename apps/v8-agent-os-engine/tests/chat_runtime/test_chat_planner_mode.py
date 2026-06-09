@@ -10,6 +10,8 @@ from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from graph.workflow_assembly import build_planner_auto_dispatch_node, build_runtime_episode_wait_node
 from graph.parallel_support import build_parallel_delegate_join_node
 from graph.supervisor_builder import _is_request_model_override
+from graph.supervisor_turn import _filter_spec_tools_for_mode
+from runtimes.chat.planner_contract_verifier import verify_and_repair_planner_contract
 from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
 
@@ -45,6 +47,102 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(request.config.model_name, "mimo-v2.5-pro")
         self.assertEqual(request.config.api_key, "test-key")
         self.assertEqual(request.config.base_url, "https://example.test/v1")
+
+    def test_planner_chat_model_uses_planner_role_when_bound(self):
+        sentinel = object()
+        with (
+            patch("core.models.control_plane.model_control_plane.get_config", return_value={"roles": {"planner": "deepseek::deepseek-v4-flash"}}),
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=sentinel) as create_for_role,
+        ):
+            created = ChatRuntime._create_planner_chat_model(temperature=0, _request_kind="planner")
+
+        self.assertIs(created, sentinel)
+        create_for_role.assert_called_once()
+        self.assertEqual(create_for_role.call_args.args[0], "planner")
+        self.assertEqual(create_for_role.call_args.kwargs["_request_kind"], "planner")
+
+    def test_planner_chat_model_falls_back_to_supervisor_when_unbound(self):
+        sentinel = object()
+        with (
+            patch("core.models.control_plane.model_control_plane.get_config", return_value={"roles": {"supervisor": "openai::gpt-5.5", "planner": ""}}),
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=sentinel) as create_for_role,
+        ):
+            created = ChatRuntime._create_planner_chat_model(temperature=0, _request_kind="planner")
+
+        self.assertIs(created, sentinel)
+        create_for_role.assert_called_once()
+        self.assertEqual(create_for_role.call_args.args[0], "supervisor")
+        self.assertEqual(create_for_role.call_args.kwargs["_request_kind"], "planner")
+
+    def test_spec_mode_unapproved_spec_blocks_planner_auto_dispatch(self):
+        plan = {
+            "planId": "plan-spec-blocked",
+            "executionStrategy": "delegate",
+            "capabilityPlan": [{"kind": "engineering", "taskBriefId": "task-1", "reason": "implement"}],
+            "taskBriefs": [{"taskBriefId": "task-1", "goal": "Implement approved spec."}],
+        }
+
+        repaired = verify_and_repair_planner_contract(
+            plan,
+            fallback_plan=plan,
+            task_shape_hint={
+                "specMode": True,
+                "specId": "spec_blocked",
+                "specBrief": {
+                    "specId": "spec_blocked",
+                    "pipelineControl": {
+                        "runtimeExecutionAllowed": False,
+                        "blockedReason": "approval_required",
+                    },
+                },
+            },
+        )
+        decision = ChatRuntime._decide_planner_auto_dispatch(
+            repaired,
+            registry={"subagents": [], "externalWorkers": []},
+            planner_mode="force",
+            planner_dispatch_mode="auto",
+        )
+
+        self.assertIn("spec_runtime_not_approved", repaired["qualityFlags"])
+        self.assertFalse(decision["willDispatch"])
+        self.assertEqual(decision["reason"], "planner_quality_flags_block_dispatch")
+
+    def test_spec_mode_approved_spec_attaches_compact_spec_brief_to_tasks(self):
+        plan = {
+            "planId": "plan-spec-approved",
+            "executionStrategy": "delegate",
+            "capabilityPlan": [{"kind": "engineering", "taskBriefId": "task-1", "reason": "implement"}],
+            "taskBriefs": [{"taskBriefId": "task-1", "goal": "Implement approved spec."}],
+        }
+
+        repaired = verify_and_repair_planner_contract(
+            plan,
+            fallback_plan=plan,
+            task_shape_hint={
+                "specMode": True,
+                "specId": "spec_ready",
+                "specBrief": {
+                    "specId": "spec_ready",
+                    "featureName": "Spec Ready",
+                    "approvedStages": ["requirements", "design", "tasks"],
+                    "pipelineControl": {"runtimeExecutionAllowed": True},
+                    "documents": {
+                        "requirements": {"detailRef": "spec://spec_ready/requirements", "ids": ["REQ-001"], "version": 1, "status": "approved"},
+                        "design": {"detailRef": "spec://spec_ready/design", "ids": ["DES-001"], "version": 1, "status": "approved"},
+                        "tasks": {"detailRef": "spec://spec_ready/tasks", "ids": ["TASK-001"], "version": 1, "status": "approved"},
+                    },
+                    "linkedSections": [
+                        {"stage": "tasks", "detailRef": "spec://spec_ready/tasks", "ids": ["TASK-001"]},
+                    ],
+                },
+            },
+        )
+
+        task_context = repaired["taskBriefs"][0]["context"]
+        self.assertIn("spec_brief_context_attached", repaired["qualityFlags"])
+        self.assertEqual(task_context["specBrief"]["specId"], "spec_ready")
+        self.assertIn("tasks", task_context["specBrief"]["documents"])
 
     def test_supervisor_request_model_override_is_explicit_and_non_default(self):
         self.assertTrue(
@@ -527,6 +625,40 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(planner_mode, "off")
         self.assertEqual(planner_dispatch_mode, "suggest")
         self.assertFalse(task_planning_mode)
+
+    def test_spec_mode_does_not_force_planner_before_approved_spec(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="用 Spec 模式规划这个功能。")],
+            data=ChatRequestData(specMode=True, plannerMode="off"),
+        )
+
+        _, task_planning_mode, planner_mode, planner_dispatch_mode, diagnostics, *rest = runtime._resolve_request_context(request)
+
+        self.assertFalse(task_planning_mode)
+        self.assertEqual(planner_mode, "off")
+        self.assertEqual(planner_dispatch_mode, "suggest")
+        self.assertIn("spec_mode", diagnostics.get("signals") or [])
+        self.assertTrue(rest[-1])
+
+    def test_spec_broker_hidden_until_spec_mode(self):
+        tools = [
+            SimpleNamespace(name="spec_broker"),
+            SimpleNamespace(name="runtime_broker"),
+            SimpleNamespace(name="research_broker"),
+            SimpleNamespace(name="workspace_broker"),
+            SimpleNamespace(name="run_system_command"),
+            SimpleNamespace(name="write_native_file"),
+        ]
+
+        hidden = _filter_spec_tools_for_mode(tools, {"current_route_context": {"specMode": False}})
+        visible = _filter_spec_tools_for_mode(tools, {"current_route_context": {"specMode": True}})
+
+        self.assertEqual(
+            [item.name for item in hidden],
+            ["runtime_broker", "research_broker", "workspace_broker", "run_system_command", "write_native_file"],
+        )
+        self.assertEqual([item.name for item in visible], ["spec_broker", "runtime_broker", "research_broker"])
 
     def test_planner_dispatch_mode_accepts_auto_and_off(self):
         runtime = ChatRuntime()

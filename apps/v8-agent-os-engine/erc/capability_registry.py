@@ -99,6 +99,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "visibility": "secondary",
         "promptHints": [
             "多源、新鲜、高风险、冲突判断或需要引用来源的问题优先交给 Research Runtime；窄查询或单页读取才使用 web_broker/web_read。",
+            "技术设计或 Spec discovery 阶段默认 official_docs_first：优先 Context7/官方文档，再读 GitHub/源码和普通网页；Context7 不可用时必须记录 source gap。",
             "Research Runtime 先 search_experience 复用经验包；缺失、过期、低置信或冲突时再运行新的多源调研。",
         ],
     },

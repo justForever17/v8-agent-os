@@ -25,14 +25,21 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 _NEGATION_TERMS = (
     "不要",
+    "不含",
+    "不包含",
+    "不包括",
     "不调用",
     "不走",
     "不用",
     "禁止",
+    "排除",
     "不要用",
     "不要走",
     "不需要",
     "without",
+    "exclude",
+    "excluding",
+    "except",
     " no ",
     " not ",
     "never",
@@ -50,6 +57,32 @@ def _contains_positive_any(text: str, terms: tuple[str, ...]) -> bool:
                 break
             prefix = text[max(0, index - 18):index]
             if not any(negation in prefix for negation in _NEGATION_TERMS):
+                return True
+            start = index + len(term)
+    return False
+
+
+def _explicitly_excludes_runtime(text: str, runtime_terms: tuple[str, ...]) -> bool:
+    """Return true when the user explicitly excludes a runtime family.
+
+    This is intentionally stricter than generic negation: route choices are
+    safety/ownership decisions, so "不含 Computer Use/RPA" must override
+    broader workflow/planner signals in the same request.
+    """
+
+    for term in runtime_terms:
+        if not term:
+            continue
+        start = 0
+        while True:
+            index = text.find(term, start)
+            if index < 0:
+                break
+            prefix = text[max(0, index - 28):index]
+            suffix = text[index + len(term): index + len(term) + 12]
+            if any(negation in prefix for negation in _NEGATION_TERMS):
+                return True
+            if suffix.strip().startswith(("除外", "除去", "排除")):
                 return True
             start = index + len(term)
     return False
@@ -173,6 +206,21 @@ _RPA_TERMS = (
     "自动化流程",
     "可复用流程",
 )
+_COMPUTER_USE_RUNTIME_TERMS = (
+    "computer use",
+    "computer_use",
+    "computer-use",
+    "电脑操作",
+    "桌面操作",
+    "桌面控制",
+    "真实桌面",
+)
+_RPA_RUNTIME_TERMS = (
+    "rpa",
+    "robot",
+    "机器人流程",
+    "流程自动化",
+)
 _DESKTOP_GUI_TERMS = (
     "桌面应用",
     "窗口",
@@ -221,6 +269,14 @@ def resolve_task_boundary(
     forbidden_routes: list[str] = []
     route_corrections: list[dict[str, str]] = []
     signals: list[str] = []
+    excluded_computer_use = _explicitly_excludes_runtime(text, _COMPUTER_USE_RUNTIME_TERMS)
+    excluded_rpa = _explicitly_excludes_runtime(text, _RPA_RUNTIME_TERMS)
+    if excluded_computer_use:
+        forbidden_routes.append("computer_use_explicitly_excluded")
+        signals.append("exclude:computer_use")
+    if excluded_rpa:
+        forbidden_routes.append("rpa_explicitly_excluded")
+        signals.append("exclude:rpa")
 
     if primary_shape == "project_coding":
         primary_runtime = "engineering"
@@ -297,7 +353,7 @@ def resolve_task_boundary(
         signals.append("video:ambiguous_output_only")
 
     if _contains_any(text, _TERMINAL_TERMS) and _contains_any(text, _TERMINAL_ACTION_TERMS):
-        if _contains_any(text, _GUI_TERMINAL_TERMS):
+        if _contains_any(text, _GUI_TERMINAL_TERMS) and not excluded_computer_use:
             primary_runtime = "computer_use"
             execution_mode = "gui_terminal_session"
             reason = "explicit_visible_desktop_terminal_required"
@@ -317,18 +373,18 @@ def resolve_task_boundary(
             )
             signals.append("terminal:native_command_preferred")
 
-    if _contains_positive_any(text, _RPA_TERMS):
+    if _contains_positive_any(text, _RPA_TERMS) and not excluded_rpa:
         primary_runtime = "rpa"
         execution_mode = "rpa_workflow_or_template"
         reason = "repeatable_workflow_or_object_library_request"
         forbidden_routes.append("computer_use_as_primary_for_reusable_workflow")
         signals.append("desktop:rpa_reusable")
     elif _contains_any(text, _BROWSER_DOM_TERMS):
-        primary_runtime = "computer_use" if "登录态" in text else primary_runtime
+        primary_runtime = "computer_use" if "登录态" in text and not excluded_computer_use else primary_runtime
         supporting.append("web_extract")
         execution_mode = "browser_dom_or_agent_browser" if primary_runtime == "computer_use" else execution_mode
         signals.append("browser:dom_or_login_context")
-    elif _contains_any(text, _DESKTOP_GUI_TERMS) and primary_runtime == "supervisor":
+    elif _contains_any(text, _DESKTOP_GUI_TERMS) and primary_runtime == "supervisor" and not excluded_computer_use:
         primary_runtime = "computer_use"
         execution_mode = "desktop_gui_observation"
         reason = "real_desktop_gui_interaction_request"

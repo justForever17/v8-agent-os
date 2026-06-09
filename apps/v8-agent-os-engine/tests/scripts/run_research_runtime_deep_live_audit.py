@@ -68,6 +68,7 @@ def _run_technical_case() -> AuditCaseResult:
         payload = _research_run("What are the current best practices for using Python pathlib in CLI tools? cite official sources.", freshness="latest")
         final_pack = payload.get("finalExperiencePack") if isinstance(payload.get("finalExperiencePack"), dict) else {}
         answer_pack = payload.get("researchAnswerPack") if isinstance(payload.get("researchAnswerPack"), dict) else {}
+        evidence_bank = payload.get("researchEvidenceBank") if isinstance(payload.get("researchEvidenceBank"), dict) else {}
         synthesis_mode = str(final_pack.get("synthesisMode") or "")
         result.status = "ok" if payload.get("ok") and payload.get("claimTable") and answer_pack.get("answer") and answer_pack.get("sources") else "warning"
         result.summary = f"{str(payload.get('summary') or '')[:520]} synthesis={synthesis_mode or 'unknown'}"
@@ -82,6 +83,10 @@ def _run_technical_case() -> AuditCaseResult:
             result.failures.append("missing_research_answer_pack_score")
         if not payload.get("researchLoopState"):
             result.failures.append("missing_research_loop_state")
+        if not evidence_bank.get("stats"):
+            result.failures.append("missing_research_evidence_bank_stats")
+        if not any(isinstance(item, dict) and item.get("sourceQualityGate") for item in payload.get("sourceMatrix") or []):
+            result.failures.append("missing_source_quality_gate")
         if synthesis_mode != "model_agent":
             result.status = "warning" if result.status == "ok" else result.status
             result.failures.append(f"architect_agent_not_used:{synthesis_mode or 'unknown'}")
@@ -226,6 +231,80 @@ def _run_runtime_broker_list_compact_case() -> AuditCaseResult:
     return result
 
 
+def _run_low_quality_source_gate_case() -> AuditCaseResult:
+    result = AuditCaseResult("low_quality_source_gate", "低质量来源：captcha/footer/snippet 被拒绝")
+    started = time.perf_counter()
+    try:
+        from core.tools.research_broker import _research_answer_pack, _source_quality_gate
+
+        source = {
+            "title": "Security check required",
+            "url": "https://www.youtube.com/watch?v=noisy",
+            "snippet": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
+        }
+        read_payload = {
+            "ok": True,
+            "title": "YouTube footer",
+            "text": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
+        }
+        gate = _source_quality_gate(question="low quality gate validation", result=source, read_payload=read_payload, source_policy="authoritative")
+        pack = _research_answer_pack(
+            {
+                "researchEvidenceBank": {
+                    "selectedSources": [],
+                    "rejectedSources": [
+                        {
+                            "title": source["title"],
+                            "url": source["url"],
+                            "reason": gate.get("rejectedReason"),
+                            "qualityDimensions": gate.get("qualityDimensions"),
+                        }
+                    ],
+                    "claims": [],
+                    "stats": {"selectedSourceCount": 0, "rejectedSourceCount": 1, "claimCount": 0},
+                },
+                "sourceMatrix": [],
+                "finalExperiencePack": {"researchResult": "No reliable source-backed findings were collected."},
+            }
+        )
+        result.status = "ok" if not gate.get("selectedForEvidence") and pack.get("score", {}).get("qualityStatus") == "refresh_required" else "failed"
+        result.summary = f"selected={gate.get('selectedForEvidence')} reason={gate.get('rejectedReason')} quality={pack.get('score', {}).get('qualityStatus')}"
+        if gate.get("selectedForEvidence"):
+            result.failures.append("noisy_source_passed_quality_gate")
+        if pack.get("score", {}).get("qualityStatus") != "refresh_required":
+            result.failures.append("low_quality_pack_not_marked_refresh_required")
+        result.evidence.append(_redact({"gate": gate, "answerPack": pack}))
+    except Exception as exc:  # noqa: BLE001
+        result.status = "failed"
+        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result
+
+
+def _run_admin_hover_agent_surface_case() -> AuditCaseResult:
+    result = AuditCaseResult("admin_hover_agent_surface", "Admin hover：使用 agent-visible answer/sources/score")
+    started = time.perf_counter()
+    try:
+        payload = _research_run("ResearchAnswerPack admin hover field consistency validation", max_shards=1, max_rounds=2)
+        answer_pack = payload.get("researchAnswerPack") if isinstance(payload.get("researchAnswerPack"), dict) else {}
+        required = {
+            "answer": bool(answer_pack.get("answer")),
+            "sources": bool(answer_pack.get("sources")),
+            "score": bool(answer_pack.get("score")),
+        }
+        result.status = "ok" if all(required.values()) else "warning"
+        result.summary = f"hoverFields={required} quality={((answer_pack.get('score') or {}).get('qualityStatus') or 'unknown')}"
+        for key, ok in required.items():
+            if not ok:
+                result.failures.append(f"missing_hover_field:{key}")
+        result.evidence.append(_redact({"researchAnswerPack": answer_pack, "evidenceBundleId": payload.get("evidenceBundleId")}))
+    except Exception as exc:  # noqa: BLE001
+        result.status = "failed"
+        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result
+
+
 def _run_conflict_case() -> AuditCaseResult:
     result = AuditCaseResult("conflict", "冲突来源：conflictMatrix 与不确定性表达")
     started = time.perf_counter()
@@ -250,6 +329,8 @@ CASES = {
     "reuse": _run_reuse_case,
     "memory_route_research_experience": _run_memory_route_research_experience_case,
     "runtime_broker_list_compact": _run_runtime_broker_list_compact_case,
+    "low_quality_source_gate": _run_low_quality_source_gate_case,
+    "admin_hover_agent_surface": _run_admin_hover_agent_surface_case,
     "conflict": _run_conflict_case,
 }
 

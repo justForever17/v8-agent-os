@@ -254,6 +254,36 @@ def _ensure_boundary_contract(
             for item in capability_plan
             if str(item.get("kind") or item.get("runtimeKind") or "").strip() != "computer_use"
         ]
+    if "computer_use_explicitly_excluded" in forbidden:
+        for task in tasks:
+            if str(task.get("familyHint") or "").strip() == "computer_use":
+                task["familyHint"] = "auto"
+                task["executionLaneHint"] = "auto"
+                repair_count += 1
+        next_plan = [
+            item
+            for item in capability_plan
+            if str(item.get("kind") or item.get("runtimeKind") or "").strip() != "computer_use"
+        ]
+        if len(next_plan) != len(capability_plan):
+            quality_flags.append("planner_boundary_computer_use_exclusion_repaired")
+            repair_count += 1
+        capability_plan = next_plan
+    if "rpa_explicitly_excluded" in forbidden:
+        for task in tasks:
+            if str(task.get("familyHint") or "").strip() == "rpa":
+                task["familyHint"] = "auto"
+                task["executionLaneHint"] = "auto"
+                repair_count += 1
+        next_plan = [
+            item
+            for item in capability_plan
+            if str(item.get("kind") or item.get("runtimeKind") or "").strip() != "rpa"
+        ]
+        if len(next_plan) != len(capability_plan):
+            quality_flags.append("planner_boundary_rpa_exclusion_repaired")
+            repair_count += 1
+        capability_plan = next_plan
 
     repaired["taskBriefs"] = tasks
     repaired["capabilityPlan"] = capability_plan
@@ -346,6 +376,56 @@ def _ensure_delegation_task_contract(
     return repair_count
 
 
+def _ensure_spec_contract(
+    repaired: dict[str, Any],
+    *,
+    task_shape_hint: dict[str, Any],
+    quality_flags: list[str],
+) -> int:
+    if not bool(task_shape_hint.get("specMode")):
+        return 0
+    repair_count = 0
+    spec_id = str(task_shape_hint.get("specId") or "").strip()
+    spec_brief = task_shape_hint.get("specBrief") if isinstance(task_shape_hint.get("specBrief"), dict) else {}
+    pipeline = spec_brief.get("pipelineControl") if isinstance(spec_brief.get("pipelineControl"), dict) else {}
+    if not spec_id or not spec_brief or spec_brief.get("status") in {"missing", "error"}:
+        quality_flags.append("spec_brief_missing")
+        return 1
+    if not bool(pipeline.get("runtimeExecutionAllowed")):
+        quality_flags.append("spec_runtime_not_approved")
+        return 1
+
+    spec_context = {
+        "specId": spec_id,
+        "featureName": spec_brief.get("featureName"),
+        "approvedStages": list(spec_brief.get("approvedStages") or []),
+        "linkedSections": list(spec_brief.get("linkedSections") or [])[:8],
+        "documents": {
+            stage: {
+                "detailRef": value.get("detailRef"),
+                "ids": list(value.get("ids") or [])[:12],
+                "version": value.get("version"),
+                "status": value.get("status"),
+            }
+            for stage, value in dict(spec_brief.get("documents") or {}).items()
+            if isinstance(value, dict)
+        },
+    }
+    tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
+    changed = False
+    for task in tasks:
+        context = dict(task.get("context") or {}) if isinstance(task.get("context"), dict) else {}
+        if context.get("specBrief") != spec_context:
+            context["specBrief"] = spec_context
+            task["context"] = context
+            changed = True
+    if changed:
+        repaired["taskBriefs"] = tasks
+        quality_flags.append("spec_brief_context_attached")
+        repair_count += 1
+    return repair_count
+
+
 def verify_and_repair_planner_contract(
     plan: dict[str, Any],
     *,
@@ -370,6 +450,11 @@ def verify_and_repair_planner_contract(
     requires_skill = _requires_skill_execution(skill_references=skill_refs, task_shape_hint=hint)
 
     repair_count += _ensure_boundary_contract(
+        repaired,
+        task_shape_hint=hint,
+        quality_flags=quality_flags,
+    )
+    repair_count += _ensure_spec_contract(
         repaired,
         task_shape_hint=hint,
         quality_flags=quality_flags,
@@ -433,5 +518,6 @@ def verify_and_repair_planner_contract(
         "repairCount": repair_count,
         "qualityFlags": repaired["qualityFlags"],
         "skillContractChecked": bool(requires_skill),
+        "specContractChecked": bool(hint.get("specMode")),
     }
     return repaired

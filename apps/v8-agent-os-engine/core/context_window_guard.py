@@ -7,6 +7,7 @@ from core.storage import storage
 
 
 MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262_144
+MIN_PLANNER_CONTEXT_WINDOW_TOKENS = 32_768
 DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS = 32_000
 
 _NON_TEXT_MODEL_TYPES = {
@@ -83,6 +84,7 @@ def _participant(
     runtime_kind: str,
     model_ref: str,
     fallback_context_window_tokens: int,
+    minimum_required_tokens: int = MIN_TEXT_CONTEXT_WINDOW_TOKENS,
 ) -> Dict[str, Any] | None:
     model_ref = str(model_ref or "").strip()
     if not model_ref:
@@ -99,7 +101,7 @@ def _participant(
         valid = False
         reason = "missing_context_window"
         effective_for_min = int(fallback_context_window_tokens or DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS)
-    elif context_window < MIN_TEXT_CONTEXT_WINDOW_TOKENS:
+    elif context_window < minimum_required_tokens:
         valid = False
         reason = "below_min_context_window"
         effective_for_min = context_window
@@ -112,6 +114,7 @@ def _participant(
         "source": source,
         "valid": valid,
         "reason": reason,
+        "minimumRequiredContextWindowTokens": minimum_required_tokens,
     }
 
 
@@ -201,13 +204,16 @@ context_window_guard = ContextWindowGuard()
 
 def validate_text_role_model_window(role: str, model_ref: str) -> Dict[str, Any]:
     model_ref = str(model_ref or "").strip()
-    if not model_ref or not is_text_generation_model_ref(model_ref, role=role):
+    role_key = str(role or "").strip() or "default"
+    minimum_required = MIN_PLANNER_CONTEXT_WINDOW_TOKENS if role_key == "planner" else MIN_TEXT_CONTEXT_WINDOW_TOKENS
+    if not model_ref or not is_text_generation_model_ref(model_ref, role=role_key):
         return {"ok": True, "reason": "not_text_generation"}
     participant = _participant(
-        role=str(role or "").strip() or "default",
+        role=role_key,
         runtime_kind="model_binding",
         model_ref=model_ref,
         fallback_context_window_tokens=DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS,
+        minimum_required_tokens=minimum_required,
     )
     if not participant:
         return {"ok": True, "reason": "not_text_generation"}
@@ -218,10 +224,10 @@ def validate_text_role_model_window(role: str, model_ref: str) -> Dict[str, Any]
         "ok": False,
         "reason": reason,
         "participant": participant,
-        "minimumRequiredContextWindowTokens": MIN_TEXT_CONTEXT_WINDOW_TOKENS,
+        "minimumRequiredContextWindowTokens": minimum_required,
         "message": (
             f"模型 {model_ref} 未配置上下文窗口，不能用于长上下文文本生成角色。"
             if reason == "missing_context_window"
-            else f"模型 {model_ref} 上下文窗口低于 {MIN_TEXT_CONTEXT_WINDOW_TOKENS} tokens，不能用于长上下文文本生成角色。"
+            else f"模型 {model_ref} 上下文窗口低于 {minimum_required} tokens，不能用于当前文本生成角色。"
         ),
     }

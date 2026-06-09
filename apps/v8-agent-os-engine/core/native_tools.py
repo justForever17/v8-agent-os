@@ -161,6 +161,7 @@ from core.workspace_state_digest import (
 from core.tools.media_downloader import download_media_for_vision
 from core.tools.research_broker import research_broker
 from core.tools.s3_tools import s3_broker, s3_download_file, s3_list_objects, s3_upload_file
+from core.spec_service import spec_service
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
 from core.tools.vision_media_analyzer import vision_media_analyzer
 from core.tools.web_fetcher import web_broker, web_extract, web_fetch, web_read, web_search
@@ -4030,6 +4031,150 @@ def workspace_broker(
         indent=2,
     )
 
+
+def _spec_broker_workspace(workspace_path: Optional[str]) -> str:
+    explicit = str(workspace_path or "").strip()
+    if explicit:
+        return explicit
+    runtime_context = get_runtime_context() or {}
+    for key in ("workspace_path", "workspacePath", "activeWorkspaceRoot", "workspaceRoot"):
+        value = runtime_context.get(key) if isinstance(runtime_context, dict) else None
+        if str(value or "").strip():
+            return str(value).strip()
+    return ""
+
+
+def _spec_broker_payload(**payload: Any) -> str:
+    return json.dumps(_agent_compact_dict(payload), ensure_ascii=False, indent=2)
+
+
+@tool
+def spec_broker(
+    mode: str = "start",
+    workspace_path: Optional[str] = None,
+    user_request: str = "",
+    feature_name: Optional[str] = None,
+    spec_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    kind: Optional[str] = None,
+    comment: str = "",
+    content: str = "",
+    section_ref: str = "",
+    overwrite: bool = False,
+    max_chars: int = 4000,
+) -> str:
+    """Controlled Spec Mode pipeline tool for workspace-local requirements/bugfix, design, tasks, approvals, and section reads.
+
+    When writing a stage, pass the actual Markdown draft in `content`.
+    If `content` is omitted the tool creates a minimal scaffold only; use
+    `replace_section`, `append_section`, or `rewrite_stage` for later edits.
+    """
+    normalized_mode = str(mode or "start").strip().lower()
+    workspace = _spec_broker_workspace(workspace_path)
+    if not workspace:
+        return _spec_broker_payload(
+            ok=False,
+            kind="spec_workspace_missing",
+            summary="spec_broker needs an active workspace or explicit workspace_path.",
+            recommendedNextAction="Call spec_broker again with workspace_path, or bind the current chat to a workspace.",
+        )
+    try:
+        if normalized_mode in {"start", "create", "create_stage", "write_stage", "stage"}:
+            result = spec_service.create_stage(
+                workspace_path=workspace,
+                user_request=user_request,
+                feature_name=feature_name,
+                spec_id=spec_id,
+                stage=stage,
+                kind=kind,
+                overwrite=bool(overwrite),
+            )
+            if result.get("ok") and str(content or "").strip():
+                result = spec_service.edit_stage(
+                    workspace_path=workspace,
+                    spec_id=str(result.get("specId") or spec_id or ""),
+                    stage=str(result.get("stage") or stage or ""),
+                    action="rewrite_stage",
+                    content=str(content),
+                    reason=comment or "initial_stage_markdown",
+                )
+            result.setdefault("recommendedNextAction", "Show the current stage to the user for approval before moving downstream.")
+            return _spec_broker_payload(**result)
+        if normalized_mode in {"approve", "approve_stage"}:
+            if not spec_id:
+                return _spec_broker_payload(
+                    ok=False,
+                    kind="spec_id_required",
+                    summary="spec_broker approve needs spec_id.",
+                    recommendedNextAction="Use specId returned by spec_broker(mode='start'/'brief').",
+                )
+            result = spec_service.approve_stage(
+                workspace_path=workspace,
+                spec_id=str(spec_id),
+                stage=str(stage or ""),
+                approver="user",
+                comment=comment,
+            )
+            result.setdefault("recommendedNextAction", "Create the next Spec stage, or wait for runtime execution if tasks are approved.")
+            return _spec_broker_payload(**result)
+        if normalized_mode in {"revise", "request_revision", "comment"}:
+            if not spec_id:
+                return _spec_broker_payload(ok=False, kind="spec_id_required", summary="spec_broker revision needs spec_id.")
+            result = spec_service.request_revision(
+                workspace_path=workspace,
+                spec_id=str(spec_id),
+                stage=str(stage or ""),
+                comment=comment,
+                section_ref=section_ref,
+            )
+            return _spec_broker_payload(**result)
+        if normalized_mode in {"replace_section", "append_section", "rewrite_stage"}:
+            if not spec_id:
+                return _spec_broker_payload(ok=False, kind="spec_id_required", summary=f"spec_broker {normalized_mode} needs spec_id.")
+            edit_content = content or user_request or comment
+            result = spec_service.edit_stage(
+                workspace_path=workspace,
+                spec_id=str(spec_id),
+                stage=str(stage or ""),
+                action=normalized_mode,
+                content=edit_content,
+                section_ref=section_ref,
+                reason=comment or normalized_mode,
+            )
+            result.setdefault("recommendedNextAction", "Show the edited stage to the user for approval before moving downstream.")
+            return _spec_broker_payload(**result)
+        if normalized_mode in {"read", "read_section", "section"}:
+            if not spec_id:
+                return _spec_broker_payload(ok=False, kind="spec_id_required", summary="spec_broker read_section needs spec_id.")
+            result = spec_service.read_section(
+                workspace_path=workspace,
+                spec_id=str(spec_id),
+                stage=str(stage or ""),
+                section_ref=section_ref,
+                max_chars=max(500, min(int(max_chars or 4000), 12000)),
+            )
+            return _spec_broker_payload(**result)
+        if normalized_mode in {"brief", "status"}:
+            if not spec_id:
+                return _spec_broker_payload(ok=False, kind="spec_id_required", summary="spec_broker brief needs spec_id.")
+            result = spec_service.build_brief(workspace_path=workspace, spec_id=str(spec_id))
+            return _spec_broker_payload(ok=True, kind="spec_brief", specBrief=result)
+        return _spec_broker_payload(
+            ok=False,
+            kind="unsupported_spec_broker_mode",
+            summary=f"Unsupported spec_broker mode: {normalized_mode}",
+            supportedModes=["start", "approve", "revise", "replace_section", "append_section", "rewrite_stage", "read_section", "brief"],
+        )
+    except Exception as exc:
+        return _spec_broker_payload(
+            ok=False,
+            kind="spec_broker_error",
+            summary=str(exc),
+            mode=normalized_mode,
+            workspacePath=workspace,
+        )
+
+
 def _line_count_for_guard(text: str) -> int:
     if not text:
         return 0
@@ -5392,8 +5537,12 @@ def _memory_research_pack_quality_reasons(pack: dict[str, Any]) -> list[str]:
     sources = list(answer_pack.get("sources") or []) or list(pack.get("sourceUrls") or []) or list(pack.get("sourceMatrixDigest") or [])
     if status == "archived":
         reasons.append("archived")
-    if quality in {"low_quality_pack", "missing_evidence", "source_unreadable"}:
+    if quality in {"low_quality_pack", "missing_evidence", "source_unreadable", "refresh_required"}:
         reasons.append(quality)
+    answer_score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
+    answer_quality = str(answer_score.get("qualityStatus") or "").strip().lower()
+    if answer_quality in {"low_quality_pack", "missing_evidence", "source_unreadable", "refresh_required"}:
+        reasons.append(answer_quality)
     if invalidation:
         reasons.append(invalidation)
     if not research_result and not claim_digest:
@@ -5450,6 +5599,7 @@ def _memory_compact_research_pack(pack: dict[str, Any], *, rejected_reason: str 
             "authorityScore": pack.get("authorityScore"),
             "qualityStatus": pack.get("qualityStatus"),
         },
+        "rejectedEvidence": list(answer_pack.get("rejectedEvidence") or [])[:4],
         "confidence": pack.get("confidence"),
         "authorityScore": pack.get("authorityScore"),
         "status": pack.get("status"),
@@ -14582,6 +14732,7 @@ NATIVE_TOOLS = [
     command_session_broker,
     runtime_broker,
     delegation_broker,
+    spec_broker,
     read_background_output,
     send_background_input,
     terminate_background_command,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from core import context_window_guard as guard_module
-from core.context_window_guard import MIN_TEXT_CONTEXT_WINDOW_TOKENS, ContextWindowGuard, validate_text_role_model_window
+from core.context_window_guard import MIN_PLANNER_CONTEXT_WINDOW_TOKENS, MIN_TEXT_CONTEXT_WINDOW_TOKENS, ContextWindowGuard, validate_text_role_model_window
 from core.provider_compatibility import normalize_provider_error
 
 
@@ -109,6 +109,23 @@ def test_missing_and_below_min_windows_are_reported(monkeypatch):
     validation = validate_text_role_model_window("supervisor", "small-chat")
     assert validation["ok"] is False
     assert validation["minimumRequiredContextWindowTokens"] == MIN_TEXT_CONTEXT_WINDOW_TOKENS
+
+
+def test_planner_role_uses_smaller_context_window_binding_floor(monkeypatch):
+    _install_fake_metadata(
+        monkeypatch,
+        {
+            "planner-64k": (65_536, "TEXT"),
+            "planner-16k": (16_384, "TEXT"),
+        },
+    )
+
+    accepted = validate_text_role_model_window("planner", "planner-64k")
+    rejected = validate_text_role_model_window("planner", "planner-16k")
+
+    assert accepted["ok"] is True
+    assert rejected["ok"] is False
+    assert rejected["minimumRequiredContextWindowTokens"] == MIN_PLANNER_CONTEXT_WINDOW_TOKENS
 
 
 def test_provider_context_overflow_is_normalized():

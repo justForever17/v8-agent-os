@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, ListTodo, AtSign } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, FileText, AtSign } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -726,6 +726,7 @@ export function InputArea({
                 }
                 if (taskPlanningMode) {
                     nextData.plannerMode = "force";
+                    nextData.specMode = true;
                     nextData.taskPlanningMode = true;
                 }
 
@@ -741,7 +742,8 @@ export function InputArea({
                 shellClassName ?? "max-w-4xl",
                 isFocused 
                     ? "bg-stone-50/95 dark:bg-stone-900/90 shadow-[0_8px_32px_rgba(0,0,0,0.06)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border-orange-500/30 dark:border-amber-500/30" 
-                    : "bg-stone-50/60 dark:bg-stone-900/50 backdrop-blur-xl hover:bg-stone-50/80 hover:dark:bg-stone-900/70 border-stone-200/60 dark:border-stone-800/60"
+                    : "bg-stone-50/60 dark:bg-stone-900/50 backdrop-blur-xl hover:bg-stone-50/80 hover:dark:bg-stone-900/70 border-stone-200/60 dark:border-stone-800/60",
+                taskPlanningMode && "border-red-500/55 shadow-[0_0_0_1px_rgba(239,68,68,0.26),0_0_28px_rgba(248,113,113,0.24)] animate-pulse"
             )}
             style={{ backdropFilter: 'blur(16px) saturate(120%)' }}
         >
@@ -1017,13 +1019,13 @@ export function InputArea({
                             className={cn(
                                 "h-[28px] rounded-lg px-2.5 text-[11px] font-medium",
                                 taskPlanningMode
-                                    ? "bg-emerald-500/12 text-emerald-700 hover:bg-emerald-500/18 dark:bg-emerald-500/15 dark:text-emerald-200"
+                                    ? "bg-red-500/12 text-red-700 hover:bg-red-500/18 dark:bg-red-500/15 dark:text-red-200"
                                     : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
                             )}
-                            title={t(lt("开启任务模式后，Supervisor 会优先规划步骤和待办。", "Task mode asks Supervisor to plan steps and todos first."))}
+                            title={t(lt("开启 Spec Mode 后，Supervisor 会先生成可审批的需求、设计和任务合约。", "Spec Mode asks Supervisor to draft approvable requirements, design, and task contracts first."))}
                         >
-                            <ListTodo className="mr-1 h-3.5 w-3.5" />
-                            {t(lt("任务模式", "Task mode"))}
+                            <FileText className="mr-1 h-3.5 w-3.5" />
+                            Spec
                         </Button>
                         <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileSelect} />
                         <Button

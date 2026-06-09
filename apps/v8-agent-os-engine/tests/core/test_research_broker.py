@@ -46,6 +46,41 @@ def test_web_research_architect_is_global_default_subagent():
     assert research_architect.capabilitySnapshot["specialistFamily"] == "research"
 
 
+def test_source_quality_gate_keeps_authoritative_docs_with_soft_nav_noise():
+    gate = research_module._source_quality_gate(
+        question="Python pathlib CLI best practices",
+        result={
+            "title": "pathlib — Object-oriented filesystem paths — Python documentation",
+            "url": "https://docs.python.org/3/library/pathlib.html",
+            "sourceQualityHints": {"authorityScore": 80},
+        },
+        read_payload={
+            "ok": True,
+            "text": "Theme Auto Light Dark\n" + ("Path classes represent filesystem paths and support concrete IO operations. " * 40),
+        },
+        source_policy="official_docs_first",
+    )
+
+    assert gate["selectedForEvidence"] is True
+    assert not gate["rejectedReason"]
+
+
+def test_context7_mcp_error_payload_is_not_usable_text():
+    payload = {
+        "result": {
+            "isError": True,
+            "content": [
+                {
+                    "type": "text",
+                    "text": "MCP error -32602: Input validation error: Invalid arguments for tool query-docs",
+                }
+            ],
+        }
+    }
+
+    assert research_module._mcp_payload_is_error(payload) is True
+
+
 def test_research_broker_plan_clamps_shards_to_config(monkeypatch):
     monkeypatch.setattr(
         research_module.storage,
@@ -314,6 +349,128 @@ def test_research_answer_pack_rejects_footer_and_security_noise():
     assert pack["score"]["qualityStatus"] == "refresh_required"
     assert "low_quality_answer_surface" in pack["missingOrStaleReasons"]
     assert pack["recommendedNextAction"] == "refresh_research"
+
+
+def test_research_evidence_bank_rejects_noisy_sources(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 1, "maxShardCount": 1, "maxRounds": 2}},
+    )
+
+    def fake_search(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": "Security check required",
+                        "url": "https://www.youtube.com/watch?v=noisy",
+                        "snippet": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(
+        research_module,
+        "web_read",
+        SimpleNamespace(
+            func=lambda **kwargs: json.dumps(
+                {
+                    "ok": True,
+                    "title": "YouTube footer",
+                    "status": 200,
+                    "text": "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works.",
+                }
+            )
+        ),
+    )
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="low quality source gate",
+            maxShards=1,
+            maxRounds=2,
+            state={"run_id": "run-noisy"},
+        )
+    )
+
+    assert payload["researchAnswerPack"]["answer"] == ""
+    assert payload["researchAnswerPack"]["score"]["qualityStatus"] == "refresh_required"
+    assert payload["researchEvidenceBank"]["selectedSources"] == []
+    assert payload["researchEvidenceBank"]["rejectedSources"]
+    assert payload["rejectedSources"][0]["reason"]
+
+
+def test_research_jina_reader_fallback_when_builtin_read_is_noisy(monkeypatch):
+    monkeypatch.setenv("JINA_API_KEY", "jina-test")
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 1, "maxShardCount": 1, "maxRounds": 2}},
+    )
+
+    def fake_search(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "fake",
+                "results": [
+                    {
+                        "title": "Official Jina-backed docs",
+                        "url": "https://docs.example.com/jina",
+                        "snippet": "Official docs snippet.",
+                    }
+                ],
+            }
+        )
+
+    class FakeResponse:
+        status_code = 200
+        text = "Jina reader extracted the official documentation body with a stable source-backed implementation detail."
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(
+        research_module,
+        "web_read",
+        SimpleNamespace(
+            func=lambda **kwargs: json.dumps(
+                {
+                    "ok": True,
+                    "title": "Noisy fallback",
+                    "status": 200,
+                    "text": "Security check required. We've detected unusual activity from your network.",
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(research_module.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="Jina reader fallback path",
+            allowedDomains=["docs.example.com"],
+            maxShards=1,
+            maxRounds=2,
+            state={"run_id": "run-jina"},
+        )
+    )
+
+    fetched = next(
+        item
+        for shard in payload["shards"]
+        for item in shard.get("fetchedTopSources", [])
+        if item.get("extractionQuality") == "jina_reader_markdown"
+    )
+    assert fetched["extractionQuality"] == "jina_reader_markdown"
+    assert any(item.get("provider") == "jina" and item.get("status") == "success" for item in fetched["providerAttemptMatrix"])
+    assert payload["researchEvidenceBank"]["selectedSources"]
+    assert "Jina reader extracted" in payload["answer"]
 
 
 def test_web_research_architect_agent_falls_back_across_model_candidates(monkeypatch):

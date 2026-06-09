@@ -231,6 +231,11 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         quality_reasons.append("missing_final_research_result")
     if not source_urls and not source_digest:
         quality_reasons.append("missing_sources")
+    answer_quality = _safe_text((answer_pack.get("score") or {}).get("qualityStatus")).lower() if isinstance(answer_pack.get("score"), dict) else ""
+    if answer_quality in {"refresh_required", "low_quality_pack"}:
+        quality_reasons.append(answer_quality)
+    rejected_evidence = _as_list(answer_pack.get("rejectedEvidence"))
+    source_quality_score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
     if not result_preview and not claim_digest:
         missing_evidence.append("No reliable source-backed research result was synthesized.")
     quality_status = "low_quality_pack" if quality_reasons else "reusable_candidate"
@@ -250,6 +255,8 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "researchAnswerPack": answer_pack,
         "claimDigest": claim_digest,
         "qualityStatus": quality_status,
+        "sourceQualityScore": source_quality_score,
+        "rejectedEvidence": rejected_evidence[:8],
         "topicFingerprint": topic_fingerprint,
         "sourcePolicy": bundle.get("sourcePolicy"),
         "freshnessWindow": bundle.get("freshness"),

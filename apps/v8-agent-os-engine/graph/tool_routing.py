@@ -59,6 +59,7 @@ _ENGINEERING_ROUTE_TOOLS = {
 }
 _RESEARCH_ROUTE_TOOLS = {"web_broker"}
 _PLANNING_WEB_TOOL_LIMIT = 3
+_SPEC_PLANNING_WEB_TOOL_LIMIT = 8
 
 
 def _planning_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
@@ -67,9 +68,23 @@ def _planning_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
     return bool(
         state_mapping.get("task_planning_mode")
         or state_mapping.get("taskPlanningMode")
+        or state_mapping.get("specMode")
+        or state_mapping.get("spec_mode")
         or route_context.get("taskPlanningMode")
         or route_context.get("task_planning_mode")
+        or route_context.get("specMode")
+        or route_context.get("spec_mode")
         or planner_mode in {"plan", "planner", "force", "auto"}
+    )
+
+
+def _spec_mode_active(state_mapping: dict[str, Any]) -> bool:
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    return bool(
+        state_mapping.get("specMode")
+        or state_mapping.get("spec_mode")
+        or route_context.get("specMode")
+        or route_context.get("spec_mode")
     )
 
 
@@ -176,7 +191,8 @@ def _planning_fact_gathering_allowed(
         return False
     if tool_name == "web_broker":
         web_calls = len([name for name in tool_names if name == "web_broker"])
-        return web_calls <= _PLANNING_WEB_TOOL_LIMIT
+        limit = _SPEC_PLANNING_WEB_TOOL_LIMIT if _spec_mode_active(state_mapping) else _PLANNING_WEB_TOOL_LIMIT
+        return web_calls <= limit
     if tool_name == "run_system_command":
         args = _safe_tool_args(tool_call.get("args"))
         return _planning_readonly_command_allowed(str(args.get("command") or args.get("_raw") or ""))

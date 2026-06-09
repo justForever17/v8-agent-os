@@ -29,6 +29,7 @@ CHAT_CAPABILITY_CLASSES = [
 DEFAULT_ROLE_MAP = {
     "default": "",
     "supervisor": "",
+    "planner": "",
     "subagent": "",
     "summary": "",
     "extraction": "",
@@ -136,6 +137,7 @@ DEFAULT_GOVERNANCE = {
 
 DEFAULT_ROUTING_POLICIES = {
     "chat": "supervisor",
+    "planner": "planner",
     "subagent": "subagent",
     "channel": "channel",
     "automation": "automation",
@@ -162,6 +164,12 @@ ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "description": "主会话编排、多智能体决策与工具调度。",
         "group": "system",
         "capabilityClasses": CHAT_CAPABILITY_CLASSES,
+    },
+    "planner": {
+        "label": "Planner 模型",
+        "description": "把用户需求整理成可执行 runtime needs / episode plan；不直接执行任务。",
+        "group": "system",
+        "capabilityClasses": ["chat_general", "chat_tool_calling", "chat_reasoning"],
     },
     "subagent": {
         "label": "默认 Subagent 模型",
@@ -273,6 +281,15 @@ MODULE_DEFINITIONS: List[Dict[str, Any]] = [
         "roles": ["supervisor"],
         "pagePath": "/admin/supervisor",
         "pageLabel": "主理人",
+    },
+    {
+        "key": "planner_lane",
+        "label": "Planner 编排预案",
+        "description": "将用户需求压成 runtime needs、task briefs 和可校验执行计划。",
+        "group": "system",
+        "roles": ["planner"],
+        "pagePath": "/admin/engineering-lane",
+        "pageLabel": "工程运行时",
     },
     {
         "key": "subagent_lane",

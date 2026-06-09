@@ -68,7 +68,7 @@
       "latencyTier": "medium",
       "requiresProxy": "auto",
       "outputFormats": ["markdown", "text"],
-      "implemented": false,
+      "implemented": true,
       "enabledByDefault": true,
       "credentialHelp": {
         "label": "Get Jina AI API key",

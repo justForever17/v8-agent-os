@@ -634,6 +634,21 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> st
         score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
         if score:
             lines.append(f"Score: {_short_text(score.get('label') or score, 220)}")
+        limitations = answer_pack.get("limitations") or pack.get("limitations") or payload.get("missingEvidence")
+        if isinstance(limitations, list) and limitations:
+            lines.append("Limitations / refresh notes:")
+            for item in limitations[:4]:
+                lines.append(f"- {_short_text(item, 220)}")
+        rejected = answer_pack.get("rejectedEvidence") or payload.get("rejectedSources")
+        if isinstance(rejected, list) and rejected:
+            lines.append("Rejected evidence:")
+            for item in rejected[:3]:
+                if isinstance(item, dict):
+                    title = item.get("title") or item.get("url") or item.get("sourceId")
+                    reason = item.get("reason") or item.get("rejectedReason")
+                    lines.append(f"- {_short_text(title, 110)}: {_short_text(reason, 140)}")
+                else:
+                    lines.append(f"- {_short_text(item, 220)}")
         findings = pack.get("keyFindings")
         if isinstance(findings, list) and findings:
             lines.append("Key findings:")

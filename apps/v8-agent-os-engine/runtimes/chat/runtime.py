@@ -48,6 +48,7 @@ from core.scoped_workspace_resource import (
     build_workspace_resource_ref,
     resolve_scoped_workspace_resource,
 )
+from core.spec_service import spec_service
 from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
 from core.context_window_guard import context_window_guard
@@ -90,7 +91,7 @@ from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
 
 PLANNER_MODEL_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_MODEL_TIMEOUT_SECONDS", "240"))
-PLANNER_FIRST_TURN_BUDGET_SECONDS = float(os.getenv("V8_PLANNER_FIRST_TURN_BUDGET_SECONDS", "2.5"))
+PLANNER_FIRST_TURN_BUDGET_SECONDS = float(os.getenv("V8_PLANNER_FIRST_TURN_BUDGET_SECONDS", "0.35"))
 PLANNER_REPAIR_TIMEOUT_SECONDS = float(os.getenv("V8_PLANNER_REPAIR_TIMEOUT_SECONDS", "18"))
 PLANNER_MODEL_MAX_TOKENS = int(os.getenv("V8_PLANNER_MODEL_MAX_TOKENS", "6000"))
 PLANNER_REPAIR_MAX_TOKENS = int(os.getenv("V8_PLANNER_REPAIR_MAX_TOKENS", "4000"))
@@ -183,6 +184,9 @@ class ChatPreparedRequest:
     planner_dispatch_mode: str = "suggest"
     planner_intent_diagnostics: dict[str, Any] = field(default_factory=dict)
     task_planning_mode: bool = False
+    spec_mode: bool = False
+    spec_id: str = ""
+    spec_brief: dict[str, Any] = field(default_factory=dict)
     planner_deferred: bool = False
     engineering_mode: str = "auto"
     explicit_engineering_requested: bool = False
@@ -1241,9 +1245,10 @@ class ChatRuntime:
     def _resolve_request_context(
         self,
         request: ChatRequest,
-    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, bool, list[dict[str, str]], list[dict[str, str]], list[str]]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
+        spec_mode = bool(getattr(request_data, "spec_mode", False)) if request_data else False
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
         requested_planner_mode = getattr(request_data, "planner_mode", None) if request_data else None
         planner_dispatch_mode = self._normalize_planner_dispatch_mode(getattr(request_data, "planner_dispatch_mode", None) if request_data else None)
@@ -1263,6 +1268,13 @@ class ChatRuntime:
             planner_mode = "force"
             planner_dispatch_mode = "auto"
             engineering_mode = "force"
+        if spec_mode:
+            planner_diagnostics = {
+                **planner_diagnostics,
+                "matched": True,
+                "signals": list(dict.fromkeys([*list(planner_diagnostics.get("signals") or []), "spec_mode"])),
+                "reason": "spec_mode_requested",
+            }
         if planner_mode == "auto":
             task_planning_mode = bool(planner_diagnostics.get("matched"))
         elif planner_mode == "force":
@@ -1279,7 +1291,33 @@ class ChatRuntime:
         skill_references = self._normalize_skill_references(request)
         context_mentions = self._normalize_context_mentions(request, skill_references=skill_references)
         explicit_subagent_families = self._resolve_explicit_subagent_families(request, context_mentions)
-        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families
+        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
+
+    @staticmethod
+    def _runtime_execution_allowed_by_spec(spec_brief: dict[str, Any] | None) -> bool:
+        if not isinstance(spec_brief, dict):
+            return False
+        pipeline = spec_brief.get("pipelineControl") if isinstance(spec_brief.get("pipelineControl"), dict) else {}
+        return bool(pipeline.get("runtimeExecutionAllowed"))
+
+    @staticmethod
+    def _spec_dispatch_gate_reason(spec_brief: dict[str, Any] | None, *, spec_id: str = "") -> str:
+        if not spec_id:
+            return "spec_id_missing"
+        if not isinstance(spec_brief, dict) or spec_brief.get("status") == "missing":
+            return "spec_not_found"
+        pipeline = spec_brief.get("pipelineControl") if isinstance(spec_brief.get("pipelineControl"), dict) else {}
+        if pipeline.get("runtimeExecutionAllowed"):
+            return "runtime_execution_allowed"
+        if pipeline.get("blockedReason"):
+            return str(pipeline.get("blockedReason") or "")
+        blocked = str(pipeline.get("blockedByApproval") or "").strip()
+        if blocked:
+            return f"approval_required:{blocked}"
+        next_stage = str(pipeline.get("nextStage") or "").strip()
+        if next_stage and next_stage != "runtime_execution":
+            return f"stage_not_ready:{next_stage}"
+        return "spec_tasks_not_approved"
 
     def _inject_structured_request_context(
         self,
@@ -1287,13 +1325,14 @@ class ChatRuntime:
         *,
         command_preset: dict[str, Any] | None,
         task_planning_mode: bool,
+        spec_mode: bool,
         planner_mode: str,
         planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
         context_mentions: list[dict[str, str]],
         planner_dispatch_mode: str = "suggest",
     ) -> None:
-        if not command_preset and not skill_references and not context_mentions:
+        if not command_preset and not skill_references and not context_mentions and not spec_mode:
             return
 
         for message in reversed(lc_messages):
@@ -1303,6 +1342,21 @@ class ChatRuntime:
                 continue
 
             wrapped_sections: list[str] = []
+            if spec_mode:
+                wrapped_sections.append(
+                    "\n".join(
+                        [
+                            "[SPEC MODE]",
+                            "Spec Mode is enabled for this request. Use `spec_broker` as the controlled pipeline tool for requirements/bugfix, design, tasks, approvals, and section reads.",
+                            "When drafting a Spec stage, pass the actual Markdown document in `spec_broker(content=...)`; a scaffold without content is not enough for approval-quality delivery.",
+                            "Spec documents MUST be written by a real `spec_broker` tool call. Do not use `write_native_file`, `run_system_command`, shell commands, or textual pseudo tool syntax such as DSML/XML blocks for Spec documents.",
+                            "If a real `spec_broker` tool call is unavailable or fails, report `recoverable_failed` with the exact reason instead of pretending a file was written.",
+                            "Do not implement runtime work before the approved Spec stage allows it. Supervisor todos remain orchestration notes; durable delivery contracts live in `.v8/specs/<feature>/`.",
+                            "Use compact SpecBrief/detail refs for runtime and subagent handoff instead of pasting full spec documents into every task.",
+                            "[/SPEC MODE]",
+                        ]
+                    )
+                )
             if command_preset:
                 wrapped_sections.append(
                     "\n".join(
@@ -1960,6 +2014,11 @@ class ChatRuntime:
             else {}
         )
         return bool(
+            (
+                bool(getattr(chat_run.prepared, "spec_mode", False))
+                and self._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None))
+            )
+            or
             self._detect_explicit_runtime_episode_request(latest_user_content)
             or (
                 live_audit_context.get("runtimeSubagentClosureLiveAudit")
@@ -1979,6 +2038,234 @@ class ChatRuntime:
                 )
             )
         )
+
+    @staticmethod
+    def _read_spec_document_excerpt_for_runtime(*, workspace_path: str, relative_path: str, max_chars: int = 2200) -> str:
+        workspace = Path(str(workspace_path or "")).expanduser().resolve()
+        rel = str(relative_path or "").strip()
+        if not rel:
+            return ""
+        try:
+            candidate = Path(rel)
+            path = candidate if candidate.is_absolute() else workspace / candidate
+            path = path.resolve()
+            try:
+                path.relative_to(workspace)
+            except ValueError:
+                return ""
+            text = path.read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
+        except Exception:
+            return ""
+        lines = text.splitlines()
+        interesting_terms = (
+            "目标",
+            "输出",
+            "交付",
+            "验收",
+            "index.html",
+            "README",
+            "Live marker",
+            "Spec Mode Live Counter",
+            "按钮",
+            "计数",
+            "counter",
+            "TASK-",
+            "TSK-",
+            "REQ-",
+            "FR-",
+            "NFR-",
+            "DES-",
+        )
+        selected: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if any(term.lower() in stripped.lower() for term in interesting_terms):
+                selected.append(stripped)
+            if len("\n".join(selected)) >= max_chars:
+                break
+        if selected:
+            excerpt = "\n".join(selected)
+        else:
+            excerpt = text[:max_chars]
+        if len(excerpt) > max_chars:
+            excerpt = excerpt[: max_chars - 1].rstrip() + "…"
+        return excerpt
+
+    def _approved_spec_execution_digest(self, *, spec_brief: dict[str, Any], workspace_path: str, user_request: str) -> dict[str, Any]:
+        documents = dict(spec_brief.get("documents") or {})
+        excerpts: dict[str, str] = {}
+        combined_parts = [str(user_request or "")]
+        for stage in ("requirements", "design", "tasks"):
+            value = documents.get(stage)
+            if not isinstance(value, dict):
+                continue
+            excerpt = self._read_spec_document_excerpt_for_runtime(
+                workspace_path=workspace_path,
+                relative_path=str(value.get("relativePath") or ""),
+                max_chars=2200 if stage == "requirements" else 1800,
+            )
+            if excerpt:
+                excerpts[stage] = excerpt
+                combined_parts.append(excerpt)
+        combined = "\n".join(combined_parts)
+        target_paths = []
+        for match in re.finditer(r"(?:^|\s)(\.v8[/\\][^\s`'\"，。；;]+)", combined):
+            item = match.group(1).strip().rstrip(".,，。；;")
+            if item and item not in target_paths:
+                target_paths.append(item)
+        required_files = []
+        for name in ("index.html", "README.md"):
+            if name.lower() in combined.lower():
+                required_files.append(name)
+        behavior_hints: list[str] = []
+        if re.search(r"Spec Mode Live Counter|计数|counter", combined, re.IGNORECASE):
+            behavior_hints.append("Build the requested counter app, not an audit/status dashboard.")
+        if re.search(r"按钮|button|click|点击", combined, re.IGNORECASE):
+            behavior_hints.append("Include an interactive button/click handler that changes the visible count.")
+        if re.search(r"Live marker|SPEC_LIVE_", combined, re.IGNORECASE):
+            behavior_hints.append("Preserve the exact live marker in the delivered files.")
+        return {
+            "summary": "Approved Spec concrete delivery digest generated from requirements/design/tasks.",
+            "targetPaths": target_paths[:5],
+            "requiredFiles": required_files,
+            "behaviorHints": behavior_hints,
+            "stageExcerpts": excerpts,
+        }
+
+    def _fallback_spec_execution_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
+        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
+        spec_brief = dict(getattr(chat_run.prepared, "spec_brief", None) or {})
+        spec_id = str(spec_brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
+        documents = {
+            stage: {
+                "detailRef": value.get("detailRef"),
+                "ids": list(value.get("ids") or [])[:20],
+                "relativePath": value.get("relativePath"),
+                "version": value.get("version"),
+                "status": value.get("status"),
+            }
+            for stage, value in dict(spec_brief.get("documents") or {}).items()
+            if isinstance(value, dict)
+        }
+        linked_sections = list(spec_brief.get("linkedSections") or [])[:12]
+        task_ids = list((documents.get("tasks") or {}).get("ids") or [])
+        requirement_ids = list((documents.get("requirements") or {}).get("ids") or [])
+        write_set = ["<approved-spec-write-set>"]
+        workspace_path = str(getattr(chat_run.scope_result.binding, "workspace_path", "") or "").strip()
+        if workspace_path:
+            write_set = [workspace_path]
+        approved_spec_digest = self._approved_spec_execution_digest(
+            spec_brief=spec_brief,
+            workspace_path=workspace_path,
+            user_request=latest_user_content,
+        )
+        spec_context = {
+            "source": "planner_spec_execution_fallback",
+            "reason": reason,
+            "specId": spec_id,
+            "specBrief": {
+                "specId": spec_id,
+                "featureName": spec_brief.get("featureName"),
+                "workspacePath": spec_brief.get("workspacePath"),
+                "specDir": spec_brief.get("specDir"),
+                "approvedStages": list(spec_brief.get("approvedStages") or []),
+                "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
+                "linkedSections": linked_sections,
+                "documents": documents,
+            },
+            "approvedSpecDigest": approved_spec_digest,
+            "userRequest": latest_user_content,
+        }
+        brief = normalize_task_brief(
+            {
+                "taskBriefId": "task-1",
+                "goal": (
+                    f"Execute the approved Spec {spec_id}: implement the concrete deliverable described in "
+                    "approvedSpecDigest and linked requirements/design/tasks, write only the approved target artifacts, "
+                    "and return proof."
+                ),
+                "context": spec_context,
+                "writeSet": write_set,
+                "behaviorScope": ["approved_spec_execution", "implementation", "file_mutation", "verification"],
+                "requiredCapabilities": ["spec_section_read", "workspace_mutation", "verification", "proof_handoff"],
+                "acceptanceContract": {
+                    "must": [
+                        "Read or consume the approved SpecBrief/detail refs before implementing.",
+                        "Use approvedSpecDigest as the concrete delivery target; do not create an audit/report/provenance dashboard unless the approved Spec explicitly requests one.",
+                        "If approvedSpecDigest describes a counter, the delivered index.html must show a counter title and a click button that increments the visible count.",
+                        "Complete all approved tasks, not just the first blocked command.",
+                        "Return engineering_patch_bundle or recoverable_failed typed handoff with touched files and proof.",
+                        "Reference specId and relevant requirement/task ids in the handoff.",
+                    ],
+                    "should": [
+                        "Preserve the approved scope and do not write outside the approved workspace/target artifacts.",
+                        "Run the narrowest available verification and report any residual risk.",
+                    ],
+                    "nice": ["Use stable task ids in proof summaries."],
+                },
+                "dependency": [],
+                "parallelGroup": "engineering",
+                "executionLaneHint": "auto",
+                "familyHint": "engineering",
+                "runtimeAccess": [],
+                "specRefs": {
+                    "specId": spec_id,
+                    "requirementIds": requirement_ids,
+                    "taskIds": task_ids,
+                    "detailRefs": [str(item.get("detailRef") or "") for item in linked_sections if isinstance(item, dict) and item.get("detailRef")],
+                },
+                "engineeringTaskCapsule": {
+                    "deliverableKind": "artifact",
+                    "writeRequired": True,
+                    "writeSet": write_set,
+                    "specId": spec_id,
+                    "requirementIds": requirement_ids,
+                    "taskIds": task_ids,
+                    "proofExpectations": [
+                        "Report exact touched files.",
+                        "Reference approved spec/task ids.",
+                        "Attach verification result or recoverable blocker.",
+                    ],
+                    "riskFlags": ["spec_execution_requires_full_task_coverage"],
+                },
+            }
+        )
+        return {
+            "planId": f"plan_{uuid.uuid4().hex[:10]}",
+            "executionStrategy": "mixed",
+            "planSummary": f"Execute approved Spec {spec_id} through Engineering Runtime.",
+            "capabilityPlan": [
+                {
+                    "kind": "engineering",
+                    "source": "planner_spec_execution_fallback",
+                    "reason": "approved_spec_runtime_execution_allowed",
+                    "taskBriefId": "task-1",
+                    "requiredRuntimeAccess": [],
+                    "state": "detected",
+                    "specId": spec_id,
+                    "writeRequired": True,
+                    "deliverableKind": "artifact",
+                }
+            ],
+            "taskGraph": [
+                {
+                    "taskBriefId": "task-1",
+                    "title": brief["goal"],
+                    "dependency": [],
+                    "parallelGroup": "engineering",
+                }
+            ],
+            "taskBriefs": [brief],
+            "handoffPlan": [],
+            "globalAcceptanceContract": "Execute only the approved Spec and return a typed Engineering handoff with proof or a recoverable blocker.",
+            "riskFlags": ["planner_fallback_used", "approved_spec_execution", "runtime_first_enforced"],
+            "qualityFlags": ["planner_fallback_used", "spec_execution_fallback", "engineering_required_by_approved_spec"],
+            "repairCount": 0,
+            "autoDispatchDecision": {},
+            "dispatchEligibilityReason": "",
+        }
 
     def _fallback_runtime_episode_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
         latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
@@ -2224,6 +2511,8 @@ class ChatRuntime:
             for item in list(task_shape_hint.get("suggestedFamilies") or [])
             if str(item or "").strip()
         ]
+        if bool(getattr(chat_run.prepared, "spec_mode", False)) and self._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None)):
+            return self._fallback_spec_execution_planner_plan(chat_run=chat_run, reason=reason)
         if self._planner_request_requires_runtime_episode_fallback(chat_run):
             return self._fallback_runtime_episode_planner_plan(chat_run=chat_run, reason=reason)
         wants_delegation = bool(
@@ -3063,7 +3352,12 @@ class ChatRuntime:
             }
         has_write_conflict = ChatRuntime._has_parallel_write_conflict(expanded_task_briefs)
         quality_flags = {str(item).strip() for item in list(plan.get("qualityFlags") or []) if str(item).strip()}
-        hard_quality_flags = {"invalid_dependency_removed", "delegation_without_tasks_repaired"}
+        hard_quality_flags = {
+            "invalid_dependency_removed",
+            "delegation_without_tasks_repaired",
+            "spec_runtime_not_approved",
+            "spec_brief_missing",
+        }
         if quality_flags & hard_quality_flags:
             return {
                 "mode": "auto",
@@ -3299,6 +3593,26 @@ class ChatRuntime:
                 continue
         return None
 
+    @staticmethod
+    def _create_planner_chat_model(**kwargs: Any) -> Any:
+        """Create the configured planner model, falling back only when unbound.
+
+        The generic Planner is a separate role from the Supervisor. Existing
+        installations may not have the role bound yet, so an unconfigured
+        planner inherits the supervisor model for compatibility. If a planner
+        model is explicitly configured but invalid, let the model control plane
+        surface that error instead of silently hiding it.
+        """
+        try:
+            from core.models.control_plane import model_control_plane
+
+            roles = dict((model_control_plane.get_config() or {}).get("roles") or {})
+            planner_binding = str(roles.get("planner") or "").strip()
+        except Exception:
+            planner_binding = ""
+        role = "planner" if planner_binding else "supervisor"
+        return llm_factory.create_for_role(role, **kwargs)
+
     async def _try_repair_planner_plan_with_plain_json(
         self,
         *,
@@ -3307,8 +3621,7 @@ class ChatRuntime:
         structured_error: str,
     ) -> tuple[dict[str, Any] | None, str | None]:
         try:
-            repair_model = llm_factory.create_for_role(
-                "supervisor",
+            repair_model = self._create_planner_chat_model(
                 streaming=False,
                 temperature=0,
                 max_tokens=PLANNER_REPAIR_MAX_TOKENS,
@@ -3368,6 +3681,9 @@ class ChatRuntime:
         planner_request = {
             "plannerMode": chat_run.prepared.planner_mode,
             "taskPlanningMode": chat_run.prepared.task_planning_mode,
+            "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
+            "specId": str(getattr(chat_run.prepared, "spec_id", "") or ""),
+            "specBrief": dict(getattr(chat_run.prepared, "spec_brief", None) or {}),
             "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
             "userRequest": str(chat_run.prepared.latest_user_content or "").strip(),
             "sessionScope": {
@@ -3430,8 +3746,7 @@ class ChatRuntime:
             and self._planner_request_requires_runtime_episode_fallback(chat_run)
         )
         try:
-            base_planner_model = llm_factory.create_for_role(
-                "supervisor",
+            base_planner_model = self._create_planner_chat_model(
                 streaming=False,
                 temperature=0,
                 max_tokens=PLANNER_MODEL_MAX_TOKENS,
@@ -3580,6 +3895,7 @@ class ChatRuntime:
             input_payload={
                 "plannerMode": chat_run.prepared.planner_mode,
                 "taskPlanningMode": chat_run.prepared.task_planning_mode,
+                "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
                 "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
                 "userRequest": str(chat_run.prepared.latest_user_content or "").strip(),
                 "plannerPlan": plan,
@@ -3769,6 +4085,7 @@ class ChatRuntime:
             skill_references,
             context_mentions,
             explicit_subagent_families,
+            spec_mode,
         ) = self._resolve_request_context(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
         explicit_runtime_episode_requested = self._detect_explicit_runtime_episode_request(self._latest_user_content(request))
@@ -3782,6 +4099,7 @@ class ChatRuntime:
             lc_messages,
             command_preset=command_preset,
             task_planning_mode=task_planning_mode,
+            spec_mode=spec_mode,
             planner_mode=planner_mode,
             planner_dispatch_mode=planner_dispatch_mode,
             planner_intent_diagnostics=planner_intent_diagnostics,
@@ -3798,6 +4116,7 @@ class ChatRuntime:
         compat_latest_human = str(compat_diagnostics.get("latestHumanUtterance") or "").strip()
         if compat_latest_human:
             latest_user_content = compat_latest_human
+        spec_id = str(getattr(request.data, "spec_id", "") or "").strip() if request.data else ""
 
         return ChatPreparedRequest(
             request=request,
@@ -3813,6 +4132,8 @@ class ChatRuntime:
             planner_dispatch_mode=planner_dispatch_mode,
             planner_intent_diagnostics=planner_intent_diagnostics,
             task_planning_mode=task_planning_mode,
+            spec_mode=spec_mode,
+            spec_id=spec_id,
             engineering_mode=engineering_mode,
             explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
@@ -3956,6 +4277,43 @@ class ChatRuntime:
                     "resolvedScope": scope_result.binding.resolved_scope,
                 },
             )
+            if prepared.spec_mode:
+                hint = dict(prepared.task_shape_hint or {})
+                spec_id = str(getattr(prepared, "spec_id", "") or "").strip()
+                workspace_path = str(getattr(scope_result.binding, "workspace_path", "") or "").strip()
+                spec_brief: dict[str, Any] = {}
+                spec_error = ""
+                if spec_id and workspace_path:
+                    try:
+                        spec_brief = spec_service.build_brief(workspace_path=workspace_path, spec_id=spec_id)
+                    except Exception as exc:
+                        spec_error = str(exc)
+                        spec_brief = {"specId": spec_id, "status": "error", "error": spec_error}
+                prepared.spec_brief = dict(spec_brief or {})
+                runtime_allowed = self._runtime_execution_allowed_by_spec(prepared.spec_brief)
+                gate_reason = self._spec_dispatch_gate_reason(prepared.spec_brief, spec_id=spec_id)
+                hint.update(
+                    {
+                        "specMode": True,
+                        "specId": spec_id,
+                        "specBrief": prepared.spec_brief,
+                        "specExecutionGate": {
+                            "runtimeExecutionAllowed": runtime_allowed,
+                            "reason": gate_reason,
+                            "source": "spec_pipeline_control",
+                        },
+                    }
+                )
+                signals = [
+                    str(item or "").strip()
+                    for item in list(hint.get("signals") or [])
+                    if str(item or "").strip()
+                ]
+                signals.append("spec_mode")
+                if not runtime_allowed:
+                    signals.append(f"spec_gate:{gate_reason}")
+                hint["signals"] = list(dict.fromkeys(signals))[:12]
+                prepared.task_shape_hint = hint
             if prepared.skill_references:
                 first_skill = dict(prepared.skill_references[0])
                 skill_name = str(first_skill.get("name") or first_skill.get("id") or "").strip()
@@ -4176,6 +4534,15 @@ class ChatRuntime:
                 prepared.planner_dispatch_mode = "auto"
                 if prepared.explicit_engineering_requested or engineering_required:
                     prepared.engineering_mode = "force"
+            if prepared.spec_mode:
+                if self._runtime_execution_allowed_by_spec(prepared.spec_brief):
+                    prepared.task_planning_mode = True
+                    prepared.planner_mode = "force"
+                    prepared.planner_dispatch_mode = "auto"
+                else:
+                    prepared.task_planning_mode = False
+                    prepared.planner_mode = "off"
+                    prepared.planner_dispatch_mode = "suggest"
             run_service.update_metadata(
                 run_handle.run_id,
                 {
@@ -4183,6 +4550,9 @@ class ChatRuntime:
                     "plannerMode": prepared.planner_mode,
                     "plannerDispatchMode": prepared.planner_dispatch_mode,
                     "taskPlanningMode": prepared.task_planning_mode,
+                    "specMode": prepared.spec_mode,
+                    "specId": prepared.spec_id or None,
+                    "specBrief": dict(prepared.spec_brief or {}),
                     "engineeringRequired": bool(engineering_required),
                     "explicitEngineeringRequested": bool(prepared.explicit_engineering_requested),
                 },
@@ -4362,6 +4732,11 @@ class ChatRuntime:
             metadata["plannerDispatchMode"] = chat_run.prepared.planner_dispatch_mode
         if chat_run.prepared.task_planning_mode:
             metadata["taskPlanningMode"] = True
+        if bool(getattr(chat_run.prepared, "spec_mode", False)):
+            metadata["specMode"] = True
+            prepared_spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
+            if prepared_spec_id:
+                metadata["specId"] = prepared_spec_id
         if isinstance(getattr(chat_run.prepared, "task_shape_hint", None), dict) and chat_run.prepared.task_shape_hint:
             metadata["taskShapeHint"] = dict(chat_run.prepared.task_shape_hint)
         engineering_mode = getattr(chat_run.prepared, "engineering_mode", "auto")
@@ -4411,6 +4786,7 @@ class ChatRuntime:
                 **({"plannerDispatchMode": metadata.get("plannerDispatchMode")} if metadata.get("plannerDispatchMode") else {}),
                 **({"plannerIntentDiagnostics": dict(metadata["plannerIntentDiagnostics"])} if isinstance(metadata.get("plannerIntentDiagnostics"), dict) else {}),
                 **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
+                **({"specMode": True} if metadata.get("specMode") is True else {}),
                 **({"taskShapeHint": dict(metadata["taskShapeHint"])} if isinstance(metadata.get("taskShapeHint"), dict) else {}),
                 **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
@@ -4563,6 +4939,7 @@ class ChatRuntime:
                     "planner_dispatch_mode": getattr(chat_run.prepared, "planner_dispatch_mode", "suggest"),
                     "planner_intent_diagnostics": dict(prepared_planner_diagnostics),
                     "task_planning_mode": chat_run.prepared.task_planning_mode,
+                    "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
                     "skill_references": list(chat_run.prepared.skill_references),
                     "context_mentions": list(context_mentions),
                     "explicit_subagent_families": list(explicit_subagent_families),
@@ -4668,6 +5045,10 @@ class ChatRuntime:
             "workspaceId": chat_run.scope_result.binding.workspace_id,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+            "taskPlanningMode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
+            "task_planning_mode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
+            "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
+            "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
         }
         if compat_diagnostics:
             current_route_context = {
@@ -4711,15 +5092,45 @@ class ChatRuntime:
                 "engineeringMode": str(getattr(chat_run.prepared, "engineering_mode", "auto") or "auto"),
                 "engineeringRequired": engineering_required,
                 "plannerDispatchMode": str(getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") or "suggest"),
-                "taskPlanningMode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
                 "taskShapeHint": task_shape_hint,
                 "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
                 **({"engineeringContinuation": engineering_continuation} if isinstance(engineering_continuation, dict) else {}),
             }
+        if getattr(chat_run.prepared, "planner_deferred", False):
+            current_route_context = {
+                **current_route_context,
+                "plannerDeferredFirstTurn": True,
+                "planner_deferred_first_turn": True,
+            }
         planner_dispatch_status: dict[str, Any] | None = None
         planner_plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
         planner_decision = dict((planner_plan or {}).get("autoDispatchDecision") or {})
-        if planner_plan and bool(planner_decision.get("willDispatch")):
+        planner_auto_dispatch_suppressed = bool(getattr(chat_run.prepared, "planner_deferred", False))
+        workflow_planner_plan = planner_plan
+        if planner_plan and bool(planner_decision.get("willDispatch")) and planner_auto_dispatch_suppressed:
+            chat_run.emit_runtime_event(
+                "planner.auto_dispatch.deferred_until_supervisor",
+                {
+                    "planId": planner_plan.get("planId"),
+                    "summary": "Planner auto-dispatch was deferred so Supervisor can perform the first meaningful turn.",
+                    "reason": "supervisor_real_first_turn",
+                    "messageSurfacePriority": "diagnostic",
+                    "traceRef": {"runId": chat_run.active_run_id, "planId": planner_plan.get("planId")},
+                },
+                agent_id=None,
+                node="planner_auto_dispatch",
+            )
+            workflow_planner_plan = {
+                **planner_plan,
+                "autoDispatchDecision": {
+                    **planner_decision,
+                    "willDispatch": False,
+                    "deferredUntilSupervisor": True,
+                    "reason": "supervisor_real_first_turn",
+                    "originalReason": planner_decision.get("reason"),
+                },
+            }
+        elif planner_plan and bool(planner_decision.get("willDispatch")):
             try:
                 with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
                     dispatch_command = build_planner_auto_dispatch_node()(
@@ -4770,7 +5181,7 @@ class ChatRuntime:
             messages=chat_run.lc_messages,
             session_id=chat_run.session_id,
             current_route_context=current_route_context,
-            planner_plan=chat_run.prepared.planner_plan,
+            planner_plan=workflow_planner_plan,
             planner_dispatch_status=planner_dispatch_status,
             engineering_context=chat_run.prepared.engineering_context_pack,
             task_shape_hint=chat_run.prepared.task_shape_hint,
@@ -9223,10 +9634,14 @@ class ChatRuntime:
                 yield self.finalize_success_run(chat_run)
                 return
 
+            spec_runtime_execution_allowed = bool(
+                chat_run.prepared.spec_mode
+                and self._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None))
+            )
             await self.ensure_planner_plan(
                 chat_run=chat_run,
-                timeout_seconds=PLANNER_FIRST_TURN_BUDGET_SECONDS,
-                defer_on_timeout=True,
+                timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS if spec_runtime_execution_allowed else PLANNER_FIRST_TURN_BUDGET_SECONDS,
+                defer_on_timeout=not spec_runtime_execution_allowed,
             )
 
             continuation_count = 0

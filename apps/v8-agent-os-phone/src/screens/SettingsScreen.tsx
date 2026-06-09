@@ -49,6 +49,7 @@ export default function SettingsScreen() {
         { key: "desktop-live", icon: "monitor-dashboard", onPress: () => router.push("/desktop-live" as Href) },
         { key: "rpa", icon: "robot-outline", onPress: () => router.push("/rpa" as Href) },
         { key: "approvals", icon: "bell-outline", onPress: () => router.push("/approvals" as Href) },
+        { key: "specs", icon: "file-document-edit-outline", onPress: () => router.push("/specs" as Href) },
     ];
 
     useEffect(() => {

@@ -367,6 +367,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "roles": {
             "default": "",
             "supervisor": "",
+            "planner": "",
             "subagent": "",
             "summary": "",
             "extraction": "",
@@ -394,6 +395,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         },
         "routingPolicies": {
             "chat": "supervisor",
+            "planner": "planner",
             "subagent": "subagent",
             "channel": "channel",
             "automation": "automation",

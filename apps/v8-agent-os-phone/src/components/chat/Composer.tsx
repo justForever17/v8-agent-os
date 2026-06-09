@@ -64,19 +64,21 @@ function resolvePreviewUri(adminBaseUrl: string, file: UploadedWorkspaceFile) {
 function ComposerActionButton({
     mode,
     disabled,
+    specMode,
     onPress,
     colors,
     t,
 }: {
     mode: "send" | "queue" | "stop" | "busy";
     disabled: boolean;
+    specMode: boolean;
     onPress: () => void;
     colors: ReturnType<typeof useUiPrefs>["colors"];
     t: ReturnType<typeof useUiPrefs>["t"];
 }) {
     const spin = useSharedValue(0);
     const pulse = useSharedValue(0);
-    const active = mode === "stop";
+    const active = mode === "stop" || specMode;
 
     useEffect(() => {
         if (!active) {
@@ -125,9 +127,13 @@ function ComposerActionButton({
             ? ["#CBD5E1", "#CBD5E1"]
             : mode === "queue"
                 ? ["#A78BFA", "#F59E0B"]
+            : specMode
+                ? ["#EF4444", "#F97316"]
             : [colors.accent, "#F59E0B"];
     const orbitColors = mode === "stop"
         ? ["#FB7185", "#EF4444", "#F97316", "#FB7185"]
+        : specMode
+            ? ["#EF4444", "#FB7185", "#F97316", "#EF4444"]
         : ["#F97316", "#F59E0B", "#7C3AED", "#F97316"];
 
     return (
@@ -439,8 +445,8 @@ export const Composer = memo(function Composer({
                             <Pressable
                                 accessibilityRole="button"
                                 accessibilityLabel={taskPlanningMode
-                                    ? t("src.components.chat.composer.disable_task_planning")
-                                    : t("src.components.chat.composer.enable_task_planning")}
+                                    ? t("src.components.chat.composer.disable_spec_mode")
+                                    : t("src.components.chat.composer.enable_spec_mode")}
                                 style={[
                                     styles.taskModeButton,
                                     {
@@ -451,7 +457,7 @@ export const Composer = memo(function Composer({
                                 onPress={onToggleTaskPlanningMode}
                             >
                                 <MaterialCommunityIcons
-                                    name="format-list-checks"
+                                    name="file-document-edit-outline"
                                     size={15}
                                     color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
                                 />
@@ -542,6 +548,7 @@ export const Composer = memo(function Composer({
                         <ComposerActionButton
                             mode={actionMode}
                             disabled={!canAct}
+                            specMode={taskPlanningMode}
                             onPress={handlePrimaryAction}
                             colors={colors}
                             t={t}

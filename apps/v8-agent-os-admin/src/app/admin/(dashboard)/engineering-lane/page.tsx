@@ -4,10 +4,12 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Code2, Loader2, Play, RefreshCw, Save } from "lucide-react";
 
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
+import { ModelSelect, type AdminModelSelectOption } from "@/components/models/ModelSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,6 +28,17 @@ type DiagnosticsProviders = {
 
 type EngineeringLaneConfig = {
   enabled: boolean;
+  modelBindings?: {
+    plannerModel?: string;
+    supervisorFallbackModel?: string;
+  };
+  plannerReadiness?: {
+    status?: string;
+    reason?: string;
+    bindingState?: string;
+    resolvedModelRef?: string;
+    resolvedProviderName?: string;
+  };
   triggerMode: "auto" | "force" | "off";
   contextPackBudget: number;
   evidenceGraphEnabled: boolean;
@@ -148,6 +161,20 @@ type EngineeringWorkflowCandidate = {
   updatedAt?: string;
 };
 
+type PromptCacheStats = {
+  rates?: Record<string, number | null>;
+  recentEvents?: Array<{
+    role?: string;
+    profile_id?: string;
+    decision?: string;
+    skip_reason?: string;
+    static_prefix_key?: string;
+    provider_id?: string;
+    model_ref?: string;
+    created_at?: string;
+  }>;
+};
+
 const DEFAULT_CONFIG: EngineeringLaneConfig = {
   enabled: true,
   triggerMode: "auto",
@@ -168,6 +195,14 @@ const DEFAULT_CONFIG: EngineeringLaneConfig = {
   suppressMemoryMap: true,
   rankedWorkflowPathCount: 3
 };
+
+function isPlannerModelOption(model: AdminModelSelectOption): boolean {
+  const type = String(model.type || "TEXT").toUpperCase();
+  const capabilityClass = String(model.capabilityClass || "").toLowerCase();
+  if (["EMBEDDING", "RERANK", "RERANKER", "IMAGE", "VIDEO", "VOICE", "MUSIC", "MODEL3D", "WORKFLOW"].includes(type)) return false;
+  if (["embedding", "rerank", "reranker", "media_generation", "workflow", "model3d"].includes(capabilityClass)) return false;
+  return true;
+}
 
 const TRIGGER_MODE_OPTIONS = [
 { value: "auto", labelKey: "app.admin.dashboard.engineeringLane.triggerMode.auto" },
@@ -371,8 +406,30 @@ export default function EngineeringLanePage() {
   const [decisionSourceFilter, setDecisionSourceFilter] = useState("all");
   const [observationStateFilter, setObservationStateFilter] = useState("all");
   const [engineeringWorkflowCandidates, setEngineeringWorkflowCandidates] = useState<EngineeringWorkflowCandidate[]>([]);
+  const [models, setModels] = useState<AdminModelSelectOption[]>([]);
+  const [promptCacheStats, setPromptCacheStats] = useState<PromptCacheStats | null>(null);
 
   const config = useMemo(() => asConfig(envelope?.data), [envelope]);
+  const plannerModels = useMemo(() => models.filter(isPlannerModelOption), [models]);
+  const plannerCacheSummary = useMemo(() => {
+    const events = (promptCacheStats?.recentEvents || []).filter((item) => String(item.role || "") === "planner");
+    const prefixCounts = new Map<string, number>();
+    for (const event of events) {
+      const key = String(event.static_prefix_key || "");
+      if (!key) continue;
+      prefixCounts.set(key, (prefixCounts.get(key) || 0) + 1);
+    }
+    const reusedPrefixes = Array.from(prefixCounts.values()).filter((count) => count > 1).length;
+    const last = events[0];
+    return {
+      events: events.length,
+      reusedPrefixes,
+      lastProfile: last?.profile_id || "",
+      lastDecision: last?.decision || "",
+      lastSkipReason: last?.skip_reason || "",
+      lastProvider: last?.provider_id || "",
+    };
+  }, [promptCacheStats]);
   const visibleProofEntries = useMemo(() => proofEntries.filter((entry) => {
     const risk = resolveWorksetRisk(entry);
     const outsideCount = Array.isArray(entry.outsideWriteSetFiles) ? entry.outsideWriteSetFiles.length : 0;
@@ -450,8 +507,19 @@ export default function EngineeringLanePage() {
     setEngineeringWorkflowCandidates(Array.isArray(data.items) ? data.items : []);
   };
 
+  const loadModelsAndCache = async () => {
+    const [modelResponse, cacheResponse] = await Promise.all([
+      fetch("/api/models", { cache: "no-store" }),
+      fetch("/api/model-cache/stats?days=7&limit=80", { cache: "no-store" }),
+    ]);
+    const modelData = await modelResponse.json().catch(() => []);
+    const cacheData = await cacheResponse.json().catch(() => ({}));
+    setModels(Array.isArray(modelData) ? modelData : []);
+    setPromptCacheStats(cacheData && typeof cacheData === "object" ? cacheData : null);
+  };
+
   useEffect(() => {
-    void Promise.all([load(), loadProof(), loadWorksetObservations(), loadEngineeringWorkflowCandidates()]);
+    void Promise.all([load(), loadProof(), loadWorksetObservations(), loadEngineeringWorkflowCandidates(), loadModelsAndCache()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -605,6 +673,67 @@ export default function EngineeringLanePage() {
                             </div> :
 
             <div className="space-y-4">
+                                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                        <div>
+                                            <AdminHoverInfo
+                                                content={t("app.admin.dashboard.engineeringLane.plannerModelHover")}
+                                                panelClassName="max-w-[28rem] text-sm leading-6"
+                                            >
+                                                <Label className="cursor-help text-sm font-semibold text-slate-900">
+                                                    {t("app.admin.dashboard.engineeringLane.plannerModel")}
+                                                </Label>
+                                            </AdminHoverInfo>
+                                            <p className="mt-1 text-xs text-slate-500">
+                                                {t("app.admin.dashboard.engineeringLane.plannerModelHint")}
+                                            </p>
+                                        </div>
+                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                                            {config.modelBindings?.plannerModel ? t("app.admin.dashboard.engineeringLane.plannerModelBound") : t("app.admin.dashboard.engineeringLane.plannerModelFallback")}
+                                        </span>
+                                        <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                                            {t("app.admin.dashboard.engineeringLane.plannerReadiness", {
+                                                status: config.plannerReadiness?.status || "unbound",
+                                            })}
+                                        </span>
+                                    </div>
+                                    <div className="mt-3">
+                                        <ModelSelect
+                                            models={plannerModels}
+                                            value={config.modelBindings?.plannerModel || ""}
+                                            emptyLabel={t("app.admin.dashboard.engineeringLane.plannerModelUseSupervisor")}
+                                            placeholder={t("app.admin.dashboard.engineeringLane.plannerModelPlaceholder")}
+                                            minimumContextWindow={32768}
+                                            onValueChange={(plannerModel) => patchConfig({
+                                                modelBindings: {
+                                                    ...(config.modelBindings || {}),
+                                                    plannerModel,
+                                                },
+                                            })}
+                                        />
+                                    </div>
+                                    <div className="mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-3">
+                                        <span className="rounded-xl bg-slate-50 px-3 py-2">
+                                            {t("app.admin.dashboard.engineeringLane.plannerCacheEvents", { count: plannerCacheSummary.events })}
+                                        </span>
+                                        <span className="rounded-xl bg-slate-50 px-3 py-2">
+                                            {t("app.admin.dashboard.engineeringLane.plannerCachePrefixes", { count: plannerCacheSummary.reusedPrefixes })}
+                                        </span>
+                                        <span className="rounded-xl bg-slate-50 px-3 py-2">
+                                            {plannerCacheSummary.lastProfile || t("app.admin.dashboard.engineeringLane.plannerCacheNoProfile")}
+                                        </span>
+                                    </div>
+                                    {plannerCacheSummary.lastSkipReason ? (
+                                        <p className="mt-2 text-xs text-amber-700">
+                                            {t("app.admin.dashboard.engineeringLane.plannerCacheSkipReason", { reason: plannerCacheSummary.lastSkipReason })}
+                                        </p>
+                                    ) : null}
+                                    {config.plannerReadiness?.reason ? (
+                                        <p className="mt-2 text-xs text-slate-500">
+                                            {t("app.admin.dashboard.engineeringLane.plannerReadinessReason", { reason: config.plannerReadiness.reason })}
+                                        </p>
+                                    ) : null}
+                                </div>
                                 <SettingToggleCard
                                     title={t("app.admin.dashboard.engineeringLane.enabled")}
                                     description={t("app.admin.dashboard.engineeringLane.enabledHint")}

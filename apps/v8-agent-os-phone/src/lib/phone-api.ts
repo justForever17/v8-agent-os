@@ -30,6 +30,9 @@ import type {
     RPARobotScriptSummary,
     RPATemplateSummary,
     SkillReferenceSummary,
+    SpecDetailResponse,
+    SpecListResponse,
+    SpecSummary,
     SubagentFamilySummary,
     AdminProcessRef,
     MusicTrack,
@@ -628,6 +631,100 @@ export async function approvePendingItem(
     });
 }
 
+export async function listSpecs(authorizedFetch: AuthorizedFetch, workspacePath: string) {
+    const query = new URLSearchParams({
+        workspace_path: workspacePath,
+        include_archived: "false",
+        limit: "120",
+    });
+    const payload = await authorizedJson<SpecListResponse>(
+        authorizedFetch,
+        `/api/client/specs?${query.toString()}`,
+        translateCurrent("src.lib.phone_api.specs"),
+        { cache: "no-store" },
+    );
+    return normalizeArray<SpecSummary>(payload.specs);
+}
+
+export async function getSpecDetail(authorizedFetch: AuthorizedFetch, specId: string, workspacePath: string) {
+    const query = new URLSearchParams({
+        workspace_path: workspacePath,
+        max_chars: "160000",
+    });
+    return authorizedJson<SpecDetailResponse>(
+        authorizedFetch,
+        `/api/client/specs/${encodeURIComponent(specId)}?${query.toString()}`,
+        translateCurrent("src.lib.phone_api.specs_2"),
+        { cache: "no-store" },
+    );
+}
+
+export async function approveSpecStage(
+    authorizedFetch: AuthorizedFetch,
+    specId: string,
+    stage: string,
+    workspacePath: string,
+    comment: string,
+) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        `/api/client/specs/${encodeURIComponent(specId)}/stages/${encodeURIComponent(stage)}/approve`,
+        translateCurrent("src.lib.phone_api.specs_3"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workspacePath, comment }),
+        },
+    );
+}
+
+export async function reviseSpecStage(
+    authorizedFetch: AuthorizedFetch,
+    specId: string,
+    stage: string,
+    workspacePath: string,
+    sectionRef: string,
+    comment: string,
+) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        `/api/client/specs/${encodeURIComponent(specId)}/stages/${encodeURIComponent(stage)}/revise`,
+        translateCurrent("src.lib.phone_api.specs_4"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workspacePath, sectionRef, comment }),
+        },
+    );
+}
+
+export async function editSpecStage(
+    authorizedFetch: AuthorizedFetch,
+    specId: string,
+    stage: string,
+    workspacePath: string,
+    sectionRef: string,
+    content: string,
+    reason: string,
+) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        `/api/client/specs/${encodeURIComponent(specId)}/stages/${encodeURIComponent(stage)}/edit`,
+        translateCurrent("src.lib.phone_api.specs_5"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                workspacePath,
+                sectionRef,
+                content,
+                reason,
+                action: sectionRef ? "replace_section" : "append_section",
+            }),
+        },
+    );
+}
+
 export async function respondAskUser(
     authorizedFetch: AuthorizedFetch,
     interactionId: string,
@@ -706,6 +803,7 @@ export async function submitChatMessage(
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 plannerMode: options.taskPlanningMode ? "force" : undefined,
+                specMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
@@ -954,6 +1052,7 @@ type SendChatOptions = {
     fileUrls?: string[];
     attachments?: Array<Record<string, unknown>>;
     taskPlanningMode?: boolean;
+    specMode?: boolean;
 };
 
 export async function sendChatMessageStream(
@@ -978,6 +1077,7 @@ export async function sendChatMessageStream(
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 plannerMode: options.taskPlanningMode ? "force" : undefined,
+                specMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,

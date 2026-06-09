@@ -359,6 +359,7 @@ function buildUserMessage(
     }
     if (options.taskPlanningMode) {
         metadata.taskPlanningMode = true;
+        metadata.specMode = true;
         metadata.taskPlanningSource = "composer";
         metadata.taskPlanningRequestedByComposer = true;
     }
@@ -1163,7 +1164,7 @@ function hasRenderableMessagePayload(message: ChatMessage) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
-    const composerTaskPlanning = metadata.taskPlanningMode === true
+    const composerTaskPlanning = (metadata.specMode === true || metadata.taskPlanningMode === true)
         && (
             metadata.taskPlanningSource === "composer"
             || metadata.taskPlanningModeSource === "composer"
@@ -1208,7 +1209,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
-    const composerTaskPlanning = metadata.taskPlanningMode === true
+    const composerTaskPlanning = (metadata.specMode === true || metadata.taskPlanningMode === true)
         && (
             metadata.taskPlanningSource === "composer"
             || metadata.taskPlanningModeSource === "composer"
@@ -1274,6 +1275,9 @@ function mergeUserStructuredMetadata(
     }
     if (snapshotMetadata.taskPlanningMode !== true && localMetadata.taskPlanningMode === true) {
         preservedMetadata.taskPlanningMode = true;
+    }
+    if (snapshotMetadata.specMode !== true && localMetadata.specMode === true) {
+        preservedMetadata.specMode = true;
     }
     if (!snapshotMetadata.taskPlanningSource && localMetadata.taskPlanningSource) {
         preservedMetadata.taskPlanningSource = localMetadata.taskPlanningSource;

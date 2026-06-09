@@ -36,6 +36,7 @@ from . import platform_routes as platform_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import runtime_episode_routes as runtime_episode_routes_module
 from . import session_workflow_routes as session_workflow_routes_module
+from . import spec_routes as spec_routes_module
 from . import storage_retention_routes as storage_retention_routes_module
 from . import system_doctor_routes as system_doctor_routes_module
 router = APIRouter()
@@ -134,6 +135,7 @@ router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(runtime_episode_routes_module.router)
 router.include_router(platform_routes_module.router)
+router.include_router(spec_routes_module.router)
 router.include_router(storage_retention_routes_module.router)
 router.include_router(system_doctor_routes_module.router)
 

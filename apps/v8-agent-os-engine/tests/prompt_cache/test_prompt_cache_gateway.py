@@ -12,7 +12,7 @@ from core import prompt_cache_gateway as gateway_module
 from core import model_telemetry as telemetry_module
 from core.native_tools import grep_search
 from core.observability_db import ObservabilityDatabaseManager
-from core.model_telemetry import ModelTelemetryCallback
+from core.model_telemetry import ModelTelemetryCallback, _find_cached_input_tokens
 from core.prompt_cache_gateway import PromptCacheGateway, load_prompt_cache_profiles, prompt_cache_profile_for_provider
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 
@@ -73,12 +73,17 @@ def test_prompt_cache_profiles_include_kimi_automatic_and_legacy_disabled():
     ids = {profile["id"] for profile in profiles["profiles"]}
     assert "moonshot_kimi_auto_context_cache" in ids
     assert "xiaomi_mimo_implicit_prompt_cache" in ids
+    assert "deepseek_implicit_disk_cache" in ids
     kimi = prompt_cache_profile_for_provider("moonshot")
     assert kimi["requestStyle"] == "implicit_observe_only"
     assert kimi["legacyExplicitCaching"]["enabledByDefault"] is False
     mimo = prompt_cache_profile_for_provider("xiaomi-mimo")
     assert mimo["requestStyle"] == "implicit_observe_only"
     assert mimo["supportsResponseUsage"] is False
+    deepseek = prompt_cache_profile_for_provider("deepseek")
+    assert deepseek["requestStyle"] == "observe_only"
+    assert deepseek["supportsResponseUsage"] is True
+    assert deepseek["usageFields"] == ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"]
 
 
 def test_provider_patch_shapes_do_not_mutate_observe_only_profiles():
@@ -172,6 +177,34 @@ def test_dynamic_user_time_and_memory_do_not_change_static_prefix_key():
     second_memory = gateway.dry_run(messages=changed_memory_messages, provider_id="openai", model_id="gpt-5.5", kwargs={"temperature": 0})
     assert first_memory["cacheDiagnostics"]["staticPrefixKey"] == second_memory["cacheDiagnostics"]["staticPrefixKey"]
     assert first_memory["cacheDiagnostics"]["dynamicRequestHash"] != second_memory["cacheDiagnostics"]["dynamicRequestHash"]
+
+
+def test_deepseek_planner_observe_only_keeps_static_prefix_stable():
+    gateway = PromptCacheGateway()
+    first = gateway.dry_run(
+        messages=_messages("把这个模糊需求整理成 runtime needs。"),
+        provider_id="deepseek",
+        model_id="deepseek-v4-flash",
+        role="planner",
+        kwargs={"temperature": 0},
+    )
+    second = gateway.dry_run(
+        messages=_messages("把另一个工程续接需求整理成 runtime needs。"),
+        provider_id="deepseek",
+        model_id="deepseek-v4-flash",
+        role="planner",
+        kwargs={"temperature": 0},
+    )
+
+    assert first["cacheDiagnostics"]["staticPrefixKey"] == second["cacheDiagnostics"]["staticPrefixKey"]
+    assert first["cacheDiagnostics"]["dynamicRequestHash"] != second["cacheDiagnostics"]["dynamicRequestHash"]
+    assert first["cacheDiagnostics"]["providerRequestPatch"]["observeOnly"] is True
+    assert first["cacheDiagnostics"]["usageFields"] == ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"]
+
+
+def test_deepseek_usage_fields_are_parsed_as_cached_tokens():
+    usage = {"usage": {"prompt_cache_hit_tokens": 900, "prompt_cache_miss_tokens": 124}}
+    assert _find_cached_input_tokens(usage) == 900
 
 
 def test_tool_schema_workspace_rules_and_runtime_grants_change_static_prefix_key():

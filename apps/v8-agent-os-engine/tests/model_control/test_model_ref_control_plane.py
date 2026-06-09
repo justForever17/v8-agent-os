@@ -4,7 +4,7 @@ import json
 from api import platform_routes
 from core.llm_factory import llm_factory
 from core.model_capability_registry import model_capability_registry
-from core.model_control_plane import model_control_plane
+from core.model_control_plane import DEFAULT_ROLE_MAP, DEFAULT_ROUTING_POLICIES, MODULE_DEFINITIONS, ROLE_DEFINITIONS, model_control_plane
 from core.model_provider_catalog import ModelProviderCatalog, model_provider_catalog
 from core.model_ref import make_model_ref, parse_model_ref
 
@@ -13,6 +13,17 @@ def test_model_ref_roundtrip():
     ref = make_model_ref("codex-oauth", "gpt-5.5")
     assert ref == "codex-oauth::gpt-5.5"
     assert parse_model_ref(ref) == ("codex-oauth", "gpt-5.5")
+
+
+def test_planner_role_is_first_class_but_unbound_by_default():
+    assert DEFAULT_ROLE_MAP["planner"] == ""
+    assert DEFAULT_ROUTING_POLICIES["planner"] == "planner"
+    assert ROLE_DEFINITIONS["planner"]["label"] == "Planner 模型"
+    assert "chat_tool_calling" in ROLE_DEFINITIONS["planner"]["capabilityClasses"]
+
+    module = next(item for item in MODULE_DEFINITIONS if item["key"] == "planner_lane")
+    assert module["roles"] == ["planner"]
+    assert module["pagePath"] == "/admin/engineering-lane"
 
 
 def test_duplicate_naked_model_id_is_ambiguous_but_model_ref_is_exact():

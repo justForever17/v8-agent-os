@@ -204,7 +204,7 @@ SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "latencyTier": "medium",
         "requiresProxy": "auto",
         "outputFormats": ["markdown", "text"],
-        "implemented": False,
+        "implemented": True,
     },
     "firecrawl": {
         "region": "global",

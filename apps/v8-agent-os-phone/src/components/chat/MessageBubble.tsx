@@ -493,7 +493,7 @@ function isComposerTaskPlanningMode(message: ChatMessage) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
-    if (metadata.taskPlanningMode !== true) {
+    if (metadata.taskPlanningMode !== true && metadata.specMode !== true) {
         return false;
     }
     return metadata.taskPlanningSource === "composer"
@@ -940,7 +940,7 @@ export const MessageBubble = memo(function MessageBubble({
         const metadataLines = [
             commandPresetName ? `/${commandPresetName}` : "",
             ...skillReferences.map((skill) => `@${skill.name || skill.path}`),
-            taskPlanningMode ? t("src.components.chat.messagebubble.task_mode") : "",
+            taskPlanningMode ? "Spec" : "",
             ...userAttachments.map((attachment) => attachment.name),
         ].filter(Boolean);
         if (metadataLines.length > 0) {
@@ -997,8 +997,8 @@ export const MessageBubble = memo(function MessageBubble({
                                         ))}
                                         {taskPlanningMode ? (
                                             <View style={styles.userChip}>
-                                                <MaterialCommunityIcons name="format-list-checks" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>{t("src.components.chat.messagebubble.task_mode")}</Text>
+                                                <MaterialCommunityIcons name="file-document-edit-outline" size={12} color="#FFFFFF" />
+                                                <Text style={styles.userChipText}>Spec</Text>
                                             </View>
                                         ) : null}
                                     </View>

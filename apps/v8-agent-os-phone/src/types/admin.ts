@@ -362,6 +362,7 @@ export type ChatMessage = {
         skillReferences?: SkillReferenceSummary[];
         contextMentions?: ContextMentionSummary[];
         explicitSubagentFamilies?: string[];
+        specMode?: boolean;
         taskPlanningMode?: boolean;
         assistantTaskProgress?: {
             phase?:
@@ -411,6 +412,65 @@ export type PendingApproval = {
         interactionKind?: string;
         [key: string]: unknown;
     };
+};
+
+export type SpecPipelineControl = {
+    currentStage?: string;
+    nextStage?: string;
+    runtimeExecutionAllowed?: boolean;
+    blockedByApproval?: string | null;
+    blockedReason?: string;
+    approvedStages?: string[];
+    staleStages?: string[];
+};
+
+export type SpecDocumentSummary = {
+    relativePath?: string;
+    ids?: string[];
+    detailRef?: string;
+    version?: number;
+    status?: string;
+    updatedAt?: string;
+    approvedAt?: string;
+};
+
+export type SpecSummary = {
+    specId?: string;
+    featureName?: string;
+    slug?: string;
+    specKind?: string;
+    lifecycle?: string;
+    currentStage?: string;
+    workspacePath?: string;
+    specDir?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    pipelineControl?: SpecPipelineControl;
+    linkedSections?: Array<{ stage?: string; detailRef?: string; ids?: string[]; relativePath?: string }>;
+    documents?: Record<string, SpecDocumentSummary>;
+    openComments?: Array<Record<string, unknown>>;
+};
+
+export type SpecStageContent = {
+    stage?: string;
+    documentRef?: string;
+    content?: string;
+    truncated?: boolean;
+    ids?: string[];
+    relativePath?: string;
+};
+
+export type SpecListResponse = {
+    ok?: boolean;
+    workspacePath?: string;
+    specs?: SpecSummary[];
+};
+
+export type SpecDetailResponse = {
+    ok?: boolean;
+    spec?: SpecSummary;
+    stages?: Record<string, SpecStageContent>;
+    specBrief?: Record<string, unknown>;
 };
 
 export type AskUserInteraction = {

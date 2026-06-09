@@ -414,16 +414,34 @@ def _save_extensions_domain(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_engineering_lane_domain() -> dict[str, Any]:
     config = storage.get_engineering_lane_config() or {}
+    planner_card = next(
+        (card for card in model_control_plane.get_role_cards() if str(card.get("key") or "") == "planner"),
+        {},
+    )
     return {
         "domain": "engineering-lane",
         "title": "Engineering Runtime",
         "summary": "工程专用 ContextPack、Proof Ledger 与行为链提示治理。",
-        "data": config,
-        "source": _config_source("engineeringLane"),
-        "savePath": _config_save_path("engineeringLane"),
+        "data": {
+            **config,
+            "modelBindings": {
+                "plannerModel": model_control_plane.get_role_model_id("planner") or "",
+                "supervisorFallbackModel": model_control_plane.get_role_model_id("supervisor") or "",
+            },
+            "plannerReadiness": {
+                "status": planner_card.get("readiness") or "unbound",
+                "reason": planner_card.get("readinessReason") or "",
+                "bindingState": planner_card.get("bindingState") or "unbound",
+                "resolvedModelRef": planner_card.get("resolvedModelRef") or "",
+                "resolvedProviderName": planner_card.get("resolvedProviderName") or "",
+            },
+        },
+        "source": f"{_config_source('engineeringLane')} + {_config_source('models')}",
+        "savePath": [f"{CONFIG_JSON_PATH}#engineeringLane", f"{CONFIG_JSON_PATH}#models"],
         "reloadRequired": False,
         "warnings": [],
         "advancedFields": [
+            "modelBindings",
             "triggerMode",
             "contextPackBudget",
             "evidenceGraphEnabled",
@@ -441,6 +459,9 @@ def _build_engineering_lane_domain() -> dict[str, Any]:
 
 def _save_engineering_lane_domain(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload.get("data") or payload or {})
+    model_bindings = dict(data.pop("modelBindings", {}) or {})
+    data.pop("plannerReadiness", None)
+    _update_role_bindings({"planner": model_bindings.get("plannerModel")})
     storage.save_engineering_lane_config(data)
     return _build_engineering_lane_domain()
 

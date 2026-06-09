@@ -62,7 +62,7 @@ function extractCommandPresetName(message: Message): string | null {
 }
 
 function hasTaskPlanningMode(message: Message): boolean {
-    return Boolean(message.metadata?.taskPlanningMode);
+    return Boolean(message.metadata?.specMode || message.metadata?.taskPlanningMode);
 }
 
 function extractSkillReferences(message: Message): SkillReferenceMetadata[] {
@@ -263,7 +263,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                 ))}
                                 {taskPlanningModeEnabled && (
                                     <span className="inline-flex items-center rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white/95 backdrop-blur-sm">
-                                        {t(lt("任务模式", "Task mode"))}
+                                        Spec
                                     </span>
                                 )}
                             </div>

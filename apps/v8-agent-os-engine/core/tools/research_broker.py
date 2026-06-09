@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import re
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
+import requests
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 
@@ -34,6 +36,7 @@ from core.tools.research_ledger import (
 )
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope, classify_failure
 from core.tools.web_fetcher import source_router_search, web_read, web_search
+from runtimes.extensions.mcp.client import mcp_manager
 
 
 _EVIDENCE_TTL_SECONDS = 6 * 60 * 60
@@ -93,6 +96,23 @@ _POPULARITY_RE = re.compile(
     r"(?P<number>\d+(?:[\.,]\d+)?)\s*(?P<unit>k|m|b|万|亿)?\s*(?P<label>views?|likes?|播放|观看|点赞|赞|收藏|shares?|comments?|评论|弹幕)",
     re.IGNORECASE,
 )
+_SOURCE_NOISE_MARKERS = (
+    "about press copyright contact us creators",
+    "privacy policy & safety how youtube works",
+    "security check required",
+    "we've detected unusual activity",
+    "unusual activity from your network",
+    "verify you are human",
+    "just a moment",
+    "cloudflare",
+    "captcha",
+    "access denied",
+    "enable javascript",
+    "please enable cookies",
+    "navigation - index - modules",
+    "theme auto light dark",
+)
+_JINA_READER_URL_PREFIX = "https://r.jina.ai/"
 
 
 def _utc_now_iso() -> str:
@@ -149,6 +169,7 @@ def _research_source_pack(source: dict[str, Any]) -> dict[str, Any]:
     if not url:
         return {}
     payload = {
+        "sourceId": _safe_text(source.get("sourceId")) or _source_id(url),
         "title": _safe_text(source.get("title") or source.get("sourceTitle") or source.get("host") or url)[:220],
         "url": url,
         "host": _safe_text(source.get("host")) or _host(url),
@@ -157,6 +178,7 @@ def _research_source_pack(source: dict[str, Any]) -> dict[str, Any]:
         "relevance": source.get("relevanceScore") or source.get("score"),
         "tier": source.get("tier") or source.get("authorityTier"),
         "provider": source.get("provider"),
+        "qualityDimensions": (source.get("sourceQualityGate") or {}).get("qualityDimensions") or source.get("qualityDimensions"),
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
@@ -190,6 +212,10 @@ def _is_low_quality_research_answer(text: str) -> bool:
         "access denied",
         "verify you are human",
         "cloudflare",
+        "no reliable source-backed findings were collected",
+        "could not synthesize a reliable result",
+        "reused research experience pack, but no detailed research result",
+        "no source-backed research result was synthesized",
     )
     if any(marker in lowered for marker in hard_noise_markers):
         return True
@@ -213,6 +239,10 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
     if answer_was_low_quality:
         answer = ""
     source_candidates: list[dict[str, Any]] = []
+    evidence_bank = payload.get("researchEvidenceBank") if isinstance(payload.get("researchEvidenceBank"), dict) else {}
+    for source in list(evidence_bank.get("selectedSources") or []):
+        if isinstance(source, dict):
+            source_candidates.append(source)
     for source in list(pack.get("sourceUrls") or []):
         if isinstance(source, dict):
             source_candidates.append(source)
@@ -239,6 +269,37 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
             break
     if low_quality_answer_note and low_quality_answer_note not in limitations:
         limitations.insert(0, low_quality_answer_note)
+    claim_table = []
+    for item in list(pack.get("claimTable") or payload.get("claimTable") or evidence_bank.get("claims") or [])[:8]:
+        if isinstance(item, dict):
+            claim_table.append(
+                {
+                    key: value
+                    for key, value in {
+                        "claimId": item.get("claimId"),
+                        "claim": _compact_research_text(item.get("claim"), limit=320),
+                        "supportingSources": list(item.get("supportingSources") or [])[:3],
+                        "confidence": item.get("confidence"),
+                    }.items()
+                    if value not in (None, "", [], {})
+                }
+            )
+    rejected_evidence = []
+    for item in list(evidence_bank.get("rejectedSources") or payload.get("rejectedSources") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        rejected_evidence.append(
+            {
+                key: value
+                for key, value in {
+                    "sourceId": item.get("sourceId"),
+                    "title": _compact_research_text(item.get("title"), limit=160),
+                    "url": item.get("url"),
+                    "reason": item.get("reason") or item.get("rejectedReason"),
+                }.items()
+                if value not in (None, "", [], {})
+            }
+        )
     reuse = payload.get("experienceReuse") if isinstance(payload.get("experienceReuse"), dict) else {}
     reuse_decision = _safe_text(reuse.get("reuseDecision"))
     confidence = pack.get("confidence") or payload.get("confidence")
@@ -258,6 +319,8 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
         "kind": "research_answer_pack",
         "answer": answer,
         "sources": sources,
+        "claimTable": claim_table,
+        "rejectedEvidence": rejected_evidence,
         "score": {
             "label": _research_score_label(confidence, authority_score, reuse_decision=reuse_decision),
             "confidence": confidence,
@@ -416,6 +479,217 @@ def _source_quality(
     }
 
 
+def _source_id(url: str) -> str:
+    normalized = _safe_text(url).lower()
+    return f"src_{hashlib.sha1(normalized.encode('utf-8')).hexdigest()[:12]}" if normalized else f"src_{uuid.uuid4().hex[:12]}"
+
+
+def _claim_id(source_id: str, text: str, index: int) -> str:
+    seed = f"{source_id}:{index}:{_safe_text(text).lower()}"
+    return f"claim_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _source_relevance_score(question: str, *, title: str = "", snippet: str = "", text: str = "") -> int:
+    haystack = " ".join([title, snippet, text[:1600]]).lower()
+    query = _safe_text(question).lower()
+    if not query or not haystack:
+        return 0
+    latin_terms = [term for term in re.split(r"[^a-z0-9]+", query) if len(term) >= 3]
+    cjk_terms = re.findall(r"[\u4e00-\u9fff]{2,}", query)
+    terms = latin_terms + cjk_terms
+    if not terms:
+        return 0
+    hits = sum(1 for term in terms if term in haystack)
+    return max(0, min(100, int(round((hits / max(1, len(terms))) * 100))))
+
+
+def _source_noise_reasons(text: Any) -> list[str]:
+    normalized = _safe_text(text)
+    lowered = normalized.lower()
+    reasons: list[str] = []
+    if not normalized:
+        return ["empty_content"]
+    for marker in _SOURCE_NOISE_MARKERS:
+        if marker in lowered:
+            reasons.append(f"noise:{marker[:32]}")
+            break
+    if normalized.count("|") >= 8 or normalized.count("»") >= 5:
+        reasons.append("navigation_or_footer_like_text")
+    return reasons
+
+
+def _is_soft_source_noise(reason: str) -> bool:
+    lowered = _safe_text(reason).lower()
+    return lowered in {
+        "noise:theme auto light dark",
+        "noise:navigation - index - modules",
+        "navigation_or_footer_like_text",
+    }
+
+
+def _source_quality_gate(
+    *,
+    question: str,
+    result: dict[str, Any],
+    read_payload: dict[str, Any] | None,
+    source_policy: str,
+) -> dict[str, Any]:
+    url = _safe_text(result.get("url"))
+    quality = dict(result.get("sourceQualityHints") or {})
+    read_payload = read_payload or {}
+    text = _safe_text(read_payload.get("text") or read_payload.get("markdown") or read_payload.get("textPreview"))
+    snippet = _safe_text(result.get("snippet"))
+    title = _safe_text(read_payload.get("title") or result.get("title"))
+    content_for_quality = text or snippet
+    noise_reasons = _source_noise_reasons(content_for_quality)
+    if noise_reasons and len(content_for_quality) >= 1200:
+        authority_hint = int((result.get("sourceQualityHints") or {}).get("authorityScore") or 0)
+        if authority_hint >= 75 and all(_is_soft_source_noise(reason) for reason in noise_reasons):
+            noise_reasons = []
+    has_read_body = bool(text and len(text) >= 80 and not noise_reasons)
+    has_snippet_only = bool(snippet and not text and not noise_reasons)
+    readability = 85 if has_read_body else (45 if has_snippet_only else 10)
+    if read_payload.get("ok") is False:
+        readability = min(readability, 25)
+    if read_payload.get("missingContentReason"):
+        readability = min(readability, 35)
+        noise_reasons.append(f"missing_content:{_safe_text(read_payload.get('missingContentReason'))[:60]}")
+    relevance = _source_relevance_score(question, title=title, snippet=snippet, text=text)
+    authority = int(quality.get("authorityScore") or 0)
+    policy = _safe_text(source_policy).lower()
+    source_selected = not noise_reasons and (
+        has_read_body
+        or (authority >= 80 and bool(content_for_quality))
+        or (authority >= 75 and relevance >= 20)
+        or (policy in {"official", "authoritative", "primary", "official_docs_first"} and authority >= 65)
+    )
+    rejected_reason = ""
+    if not source_selected:
+        if noise_reasons:
+            rejected_reason = ", ".join(noise_reasons[:3])
+        elif readability < 40:
+            rejected_reason = "readability_too_low"
+        elif relevance < 20 and authority < 75:
+            rejected_reason = "relevance_too_low"
+        else:
+            rejected_reason = "source_quality_below_gate"
+    return {
+        "sourceId": _source_id(url),
+        "selectedForEvidence": source_selected,
+        "rejectedReason": rejected_reason,
+        "qualityDimensions": {
+            "authority": authority,
+            "readability": readability,
+            "relevance": relevance,
+            "freshness": 50,
+            "independence": 50,
+            "coverage": min(100, max(relevance, 35 if has_read_body else 10)),
+            "risk": "normal",
+        },
+        "readabilityReasons": noise_reasons,
+    }
+
+
+def _jina_api_key() -> str:
+    return _safe_text(os.getenv("JINA_API_KEY") or os.getenv("JINA_API_KEYS"))
+
+
+def _read_with_jina(url: str, *, timeout_seconds: float = 18.0) -> dict[str, Any]:
+    key = _jina_api_key()
+    if not key:
+        return {"ok": False, "provider": "jina", "failureClass": "credential_missing", "reason": "missing_env:JINA_API_KEY"}
+    try:
+        response = requests.get(
+            f"{_JINA_READER_URL_PREFIX}{url}",
+            headers={"Authorization": f"Bearer {key}", "Accept": "text/plain"},
+            timeout=timeout_seconds,
+        )
+        text = _safe_text(response.text)
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "provider": "jina",
+                "status": response.status_code,
+                "failureClass": "provider_error",
+                "reason": text[:300] or f"jina_http_{response.status_code}",
+            }
+        if not text:
+            return {"ok": False, "provider": "jina", "status": response.status_code, "failureClass": "no_content", "reason": "jina_empty_body"}
+        return {
+            "ok": True,
+            "provider": "jina",
+            "status": response.status_code,
+            "title": "",
+            "text": text,
+            "textPreview": text[:1200],
+            "contentChars": len(text),
+            "omittedChars": max(0, len(text) - 6000),
+            "extractionQuality": "jina_reader_markdown",
+            "sourceCapability": {"id": "jina", "role": "read_extract", "outputFormats": ["markdown", "text"]},
+        }
+    except requests.Timeout:
+        return {"ok": False, "provider": "jina", "failureClass": "network_timeout", "reason": "jina_reader_timeout"}
+    except Exception as exc:  # noqa: BLE001 - Jina is a fallback source, never fatal.
+        return {"ok": False, "provider": "jina", "failureClass": "provider_error", "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _build_evidence_bank(*, question: str, source_matrix: list[dict[str, Any]], shards: list[dict[str, Any]]) -> dict[str, Any]:
+    fetched = _fetched_source_map(shards)
+    selected_sources: list[dict[str, Any]] = []
+    rejected_sources: list[dict[str, Any]] = []
+    claims: list[dict[str, Any]] = []
+    for source in source_matrix:
+        url = _safe_text(source.get("url"))
+        if not url:
+            continue
+        read_payload = fetched.get(url) or {}
+        gate = dict(source.get("sourceQualityGate") or {})
+        source_id = _safe_text(gate.get("sourceId")) or _source_id(url)
+        text = _safe_text(read_payload.get("text") or read_payload.get("markdown") or read_payload.get("textPreview") or source.get("snippet"))
+        source_entry = {
+            "sourceId": source_id,
+            "title": _safe_text(read_payload.get("title") or source.get("title") or url)[:220],
+            "url": url,
+            "host": _safe_text(source.get("host")) or _host(url),
+            "authorityScore": source.get("authorityScore"),
+            "tier": source.get("tier"),
+            "qualityDimensions": gate.get("qualityDimensions") or {},
+            "detailRef": read_payload.get("rawRef") or read_payload.get("detailRawRef"),
+        }
+        if gate.get("selectedForEvidence"):
+            selected_sources.append({key: value for key, value in source_entry.items() if value not in (None, "", [], {})})
+            for index, sentence in enumerate(_research_sentences(text, limit=3), start=1):
+                claim = {
+                    "claimId": _claim_id(source_id, sentence, index),
+                    "sourceId": source_id,
+                    "claim": sentence,
+                    "supportingSources": [source_entry],
+                    "confidence": source.get("tier") or "secondary",
+                }
+                claims.append(claim)
+                if len(claims) >= 12:
+                    break
+        else:
+            rejected_sources.append(
+                {
+                    **{key: value for key, value in source_entry.items() if value not in (None, "", [], {})},
+                    "reason": gate.get("rejectedReason") or "source_quality_below_gate",
+                }
+            )
+    return {
+        "version": 1,
+        "question": question,
+        "selectedSources": selected_sources[:8],
+        "rejectedSources": rejected_sources[:12],
+        "claims": claims[:12],
+        "stats": {
+            "selectedSourceCount": len(selected_sources),
+            "rejectedSourceCount": len(rejected_sources),
+            "claimCount": len(claims),
+        },
+    }
+
+
 def _cleanup_ledger() -> None:
     now = time.time()
     for key, entry in list(_EVIDENCE_LEDGER.items()):
@@ -451,9 +725,163 @@ def _store_evidence(bundle: dict[str, Any], *, state: dict[str, Any] | None) -> 
     return store_evidence_bundle(stored, ttl_seconds=config["evidenceTtlSeconds"], scope=scope)
 
 
+def _compact_visible_quality_gate(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact = {
+        "sourceId": value.get("sourceId"),
+        "selectedForEvidence": value.get("selectedForEvidence"),
+        "rejectedReason": value.get("rejectedReason"),
+        "qualityDimensions": value.get("qualityDimensions"),
+        "readabilityReasons": list(value.get("readabilityReasons") or [])[:3],
+    }
+    return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+
+def _compact_visible_source(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact = {
+        "sourceId": value.get("sourceId"),
+        "title": _compact_research_text(value.get("title"), limit=160),
+        "url": value.get("url"),
+        "host": value.get("host"),
+        "tier": value.get("tier"),
+        "provider": value.get("provider"),
+        "catalogCategory": value.get("catalogCategory"),
+        "popularitySignals": value.get("popularitySignals"),
+        "authorityScore": value.get("authorityScore"),
+        "freshness": value.get("freshness"),
+        "relevanceScore": value.get("relevanceScore"),
+        "selectedForEvidence": value.get("selectedForEvidence"),
+        "rejectedReason": value.get("rejectedReason") or value.get("reason"),
+        "reason": value.get("reason") or value.get("rejectedReason"),
+        "qualityDimensions": value.get("qualityDimensions"),
+        "detailRef": value.get("detailRef"),
+    }
+    gate = _compact_visible_quality_gate(value.get("sourceQualityGate"))
+    if gate:
+        compact["sourceQualityGate"] = gate
+    return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+
+def _compact_visible_claim(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact = {
+        "claimId": value.get("claimId"),
+        "sourceId": value.get("sourceId"),
+        "claim": _compact_research_text(value.get("claim"), limit=220),
+        "confidence": value.get("confidence"),
+    }
+    sources = [_compact_visible_source(item) for item in list(value.get("supportingSources") or [])[:2]]
+    sources = [item for item in sources if item]
+    if sources:
+        compact["supportingSources"] = sources
+    return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+
+def _compact_visible_evidence_bank(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"version": 1, "selectedSources": [], "rejectedSources": [], "claims": [], "stats": {}}
+    selected = [_compact_visible_source(item) for item in list(value.get("selectedSources") or [])[:6]]
+    rejected = [_compact_visible_source(item) for item in list(value.get("rejectedSources") or [])[:6]]
+    claims = [_compact_visible_claim(item) for item in list(value.get("claims") or [])[:8]]
+    return {
+        "version": value.get("version"),
+        "selectedSources": [item for item in selected if item],
+        "rejectedSources": [item for item in rejected if item],
+        "claims": [item for item in claims if item],
+        "stats": value.get("stats") or {},
+    }
+
+
+def _compact_visible_shard(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    fetched: list[dict[str, Any]] = []
+    for item in list(value.get("fetchedTopSources") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        fetched.append(
+            {
+                key: val
+                for key, val in {
+                    "title": _compact_research_text(item.get("title"), limit=140),
+                    "url": item.get("url"),
+                    "status": item.get("status"),
+                    "extractionQuality": item.get("extractionQuality"),
+                    "textPreview": _compact_research_text(item.get("textPreview"), limit=240),
+                    "providerAttemptMatrix": list(item.get("providerAttemptMatrix") or [])[:4],
+                }.items()
+                if val not in (None, "", [], {})
+            }
+        )
+    compact = {
+        "shardId": value.get("shardId"),
+        "kind": value.get("kind"),
+        "query": value.get("query"),
+        "ok": value.get("ok"),
+        "resultCount": value.get("resultCount"),
+        "provider": value.get("provider"),
+        "networkRoute": value.get("networkRoute"),
+        "sourceCapability": value.get("sourceCapability"),
+        "fetchedTopSources": fetched,
+        "errors": list(value.get("errors") or [])[:3],
+    }
+    return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+
+def _compact_visible_loop_state(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact = dict(value)
+    compact["coveredClaims"] = [_compact_research_text(item, limit=180) for item in list(value.get("coveredClaims") or [])[:6]]
+    compact["uncoveredClaims"] = [_compact_research_text(item, limit=180) for item in list(value.get("uncoveredClaims") or [])[:6]]
+    compact["conflictClaims"] = list(value.get("conflictClaims") or [])[:6]
+    compact["rejectedSources"] = list(value.get("rejectedSources") or [])[:6]
+    compact["nextQueries"] = list(value.get("nextQueries") or [])[:4]
+    compact["rounds"] = list(value.get("rounds") or [])[:4]
+    return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+
+def _compact_visible_answer_pack(value: Any) -> dict[str, Any]:
+    pack = dict(value or {}) if isinstance(value, dict) else {}
+    if not pack:
+        return {}
+    compact = {
+        "answer": _compact_research_text(pack.get("answer"), limit=1800),
+        "sources": [_compact_visible_source(item) for item in list(pack.get("sources") or [])[:6]],
+        "score": pack.get("score") or {},
+        "claimTable": [_compact_visible_claim(item) for item in list(pack.get("claimTable") or [])[:6]],
+        "limitations": [_compact_research_text(item, limit=220) for item in list(pack.get("limitations") or [])[:6]],
+        "rejectedEvidence": [_compact_visible_source(item) for item in list(pack.get("rejectedEvidence") or [])[:6]],
+        "reuseDecision": pack.get("reuseDecision") or {},
+        "detailRef": pack.get("detailRef"),
+    }
+    compact["sources"] = [item for item in compact["sources"] if item]
+    compact["claimTable"] = [item for item in compact["claimTable"] if item]
+    compact["rejectedEvidence"] = [item for item in compact["rejectedEvidence"] if item]
+    filtered = {key: item for key, item in compact.items() if item not in (None, [], {})}
+    filtered["answer"] = compact.get("answer") or ""
+    return filtered
+
+
 def _visible_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     visible = {key: value for key, value in bundle.items() if not str(key).startswith("_")}
-    visible["researchAnswerPack"] = _research_answer_pack(visible)
+    visible["sourceMatrix"] = [_compact_visible_source(item) for item in list(visible.get("sourceMatrix") or [])[:8]]
+    visible["sourceMatrix"] = [item for item in visible["sourceMatrix"] if item]
+    visible["researchEvidenceBank"] = _compact_visible_evidence_bank(visible.get("researchEvidenceBank"))
+    visible["rejectedSources"] = [_compact_visible_source(item) for item in list(visible.get("rejectedSources") or [])[:8]]
+    visible["rejectedSources"] = [item for item in visible["rejectedSources"] if item]
+    visible["claimTable"] = [_compact_visible_claim(item) for item in list(visible.get("claimTable") or [])[:8]]
+    visible["claimTable"] = [item for item in visible["claimTable"] if item]
+    visible["researchLoopState"] = _compact_visible_loop_state(visible.get("researchLoopState"))
+    raw_shards = list(visible.get("shards") or [])
+    raw_shards.sort(key=lambda item: 0 if isinstance(item, dict) and item.get("fetchedTopSources") else 1)
+    visible["shards"] = [_compact_visible_shard(item) for item in raw_shards[:8]]
+    visible["shards"] = [item for item in visible["shards"] if item]
+    visible["researchAnswerPack"] = _compact_visible_answer_pack(_research_answer_pack(visible))
     return visible
 
 
@@ -540,36 +968,46 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
     text = json.dumps(compact, ensure_ascii=False, indent=2)
     if len(text) <= max_chars:
         return text
+    raw_final_pack = dict(payload.get("finalExperiencePack") or payload.get("researchResult") or {})
+    fallback_final_pack = {
+        key: value
+        for key, value in raw_final_pack.items()
+        if key
+        in {
+            "kind",
+            "architectAgentId",
+            "architectName",
+            "headline",
+            "confidence",
+            "sourceUrls",
+            "synthesisMode",
+            "modelSynthesis",
+        }
+    }
+    if raw_final_pack.get("researchResult"):
+        fallback_final_pack["researchResult"] = _compact_research_text(raw_final_pack.get("researchResult"), limit=1800)
+    if isinstance(fallback_final_pack.get("sourceUrls"), list):
+        fallback_final_pack["sourceUrls"] = list(fallback_final_pack.get("sourceUrls") or [])[:6]
+
     fallback = {
         "ok": bool(payload.get("ok")),
         "kind": payload.get("kind") or payload.get("mode") or "research_payload",
         "summary": _safe_text(payload.get("summary"))[:600],
         "answer": _safe_text((payload.get("researchAnswerPack") or {}).get("answer") if isinstance(payload.get("researchAnswerPack"), dict) else payload.get("answer") or payload.get("resultPreview"))[:1600],
-        "researchAnswerPack": payload.get("researchAnswerPack") or _research_answer_pack(payload),
-        "finalExperiencePack": {
-            key: value
-            for key, value in dict(payload.get("finalExperiencePack") or payload.get("researchResult") or {}).items()
-            if key
-            in {
-                "kind",
-                "architectAgentId",
-                "architectName",
-                "headline",
-                "researchResult",
-                "confidence",
-                "sourceUrls",
-                "synthesisMode",
-                "modelSynthesis",
-            }
-        },
+        "researchAnswerPack": _compact_visible_answer_pack(payload.get("researchAnswerPack") or _research_answer_pack(payload)),
+        "finalExperiencePack": fallback_final_pack,
         "evidenceBundleId": payload.get("evidenceBundleId"),
         "confidence": payload.get("confidence"),
         "authorityScore": payload.get("authorityScore"),
-        "researchLoopState": payload.get("researchLoopState"),
+        "researchLoopState": _compact_visible_loop_state(payload.get("researchLoopState")),
         "experienceReuse": payload.get("experienceReuse"),
-        "claimTable": list(payload.get("claimTable") or [])[:5],
+        "claimTable": [_compact_visible_claim(item) for item in list(payload.get("claimTable") or [])[:5]],
         "conflictMatrix": list(payload.get("conflictMatrix") or [])[:5],
-        "sourceMatrix": list(payload.get("sourceMatrix") or [])[:3],
+        "sourceMatrix": [_compact_visible_source(item) for item in list(payload.get("sourceMatrix") or [])[:3]],
+        "researchEvidenceBank": _compact_visible_evidence_bank(payload.get("researchEvidenceBank")),
+        "rejectedSources": [_compact_visible_source(item) for item in list(payload.get("rejectedSources") or [])[:5]],
+        "shards": [_compact_visible_shard(item) for item in list(payload.get("shards") or [])[:3]],
+        "providerAttemptMatrix": list(payload.get("providerAttemptMatrix") or [])[:12],
         "omitted": {
             **omitted,
             "fallback": "agent_visible_budget_fallback",
@@ -577,7 +1015,61 @@ def _render_payload(payload: dict[str, Any], *, max_chars: int = 12000) -> str:
         },
         "recommendedNextAction": payload.get("recommendedNextAction") or "get_evidence",
     }
-    return json.dumps(fallback, ensure_ascii=False, indent=2)
+    fallback_text = json.dumps(fallback, ensure_ascii=False, indent=2)
+    if len(fallback_text) <= max_chars:
+        return fallback_text
+    answer_pack = _compact_visible_answer_pack(fallback.get("researchAnswerPack"))
+    answer_pack["answer"] = _compact_research_text(answer_pack.get("answer"), limit=700)
+    answer_pack["sources"] = list(answer_pack.get("sources") or [])[:2]
+    answer_pack["claimTable"] = list(answer_pack.get("claimTable") or [])[:2]
+    answer_pack["rejectedEvidence"] = list(answer_pack.get("rejectedEvidence") or [])[:2]
+    minimal = {
+        "ok": fallback.get("ok"),
+        "kind": fallback.get("kind"),
+        "summary": _compact_research_text(fallback.get("summary"), limit=420),
+        "answer": _compact_research_text(fallback.get("answer"), limit=700),
+        "researchAnswerPack": answer_pack,
+        "finalExperiencePack": {
+            key: value
+            for key, value in dict(fallback.get("finalExperiencePack") or {}).items()
+            if key in {"kind", "architectAgentId", "architectName", "headline", "confidence", "synthesisMode", "modelSynthesis"}
+        },
+        "evidenceBundleId": fallback.get("evidenceBundleId"),
+        "confidence": fallback.get("confidence"),
+        "authorityScore": fallback.get("authorityScore"),
+        "claimTable": list(fallback.get("claimTable") or [])[:3],
+        "sourceMatrix": list(fallback.get("sourceMatrix") or [])[:3],
+        "researchLoopState": _compact_visible_loop_state(fallback.get("researchLoopState")),
+        "experienceReuse": fallback.get("experienceReuse"),
+        "researchEvidenceBank": {
+            "selectedSources": list((fallback.get("researchEvidenceBank") or {}).get("selectedSources") or [])[:2],
+            "rejectedSources": list((fallback.get("researchEvidenceBank") or {}).get("rejectedSources") or [])[:2],
+            "claims": list((fallback.get("researchEvidenceBank") or {}).get("claims") or [])[:2],
+            "stats": (fallback.get("researchEvidenceBank") or {}).get("stats") or {},
+        },
+        "shards": list(fallback.get("shards") or [])[:1],
+        "omitted": {
+            **omitted,
+            "fallback": "agent_visible_budget_minimal",
+            "detailTool": "research_broker(mode='get_evidence', evidenceBundleId=...)",
+        },
+        "recommendedNextAction": fallback.get("recommendedNextAction"),
+    }
+    minimal_text = json.dumps(minimal, ensure_ascii=False, indent=2)
+    if len(minimal_text) <= max_chars:
+        return minimal_text
+    answer_pack.pop("claimTable", None)
+    answer_pack.pop("rejectedEvidence", None)
+    minimal["researchAnswerPack"] = answer_pack
+    minimal["claimTable"] = list(minimal.get("claimTable") or [])[:1]
+    minimal["researchEvidenceBank"] = {
+        "selectedSources": list((minimal.get("researchEvidenceBank") or {}).get("selectedSources") or [])[:1],
+        "rejectedSources": list((minimal.get("researchEvidenceBank") or {}).get("rejectedSources") or [])[:1],
+        "claims": [],
+        "stats": (minimal.get("researchEvidenceBank") or {}).get("stats") or {},
+    }
+    minimal["shards"] = []
+    return json.dumps(minimal, ensure_ascii=False, indent=2)
 
 
 def _compact_research_text(value: Any, *, limit: int = 700) -> str:
@@ -1006,7 +1498,9 @@ def _deterministic_web_research_architect_pack(
         read_payload = fetched.get(url) or {}
         title = _safe_text(read_payload.get("title") or source.get("title") or url)
         host = _safe_text(source.get("host")) or _host(url)
+        source_id = _safe_text(source.get("sourceId")) or _source_id(url)
         source_entry = {
+            "sourceId": source_id,
             "title": title,
             "url": url,
             "host": host,
@@ -1124,18 +1618,20 @@ def _research_architect_sources_for_prompt(source_matrix: list[dict[str, Any]], 
             continue
         sources.append(
             {
+                "sourceId": _safe_text(source.get("sourceId")) or _source_id(url),
                 "title": _safe_text(read_payload.get("title") or source.get("title") or url),
                 "url": url,
                 "host": _safe_text(source.get("host")) or _host(url),
                 "tier": source.get("tier"),
                 "authorityScore": source.get("authorityScore"),
+                "qualityDimensions": (source.get("sourceQualityGate") or {}).get("qualityDimensions") or {},
                 "freshness": source.get("freshness"),
                 "provider": source.get("provider"),
                 "networkRoute": source.get("networkRoute"),
-                "text": _compact_research_text(source_text, limit=600),
+                "text": _compact_research_text(source_text, limit=900),
             }
         )
-        if len(sources) >= 5:
+        if len(sources) >= 6:
             break
     return sources
 
@@ -1308,13 +1804,15 @@ def _invoke_web_research_architect_agent(
         candidates = _create_web_research_architect_llm_candidates()
         compact_sources = [
             {
+                "sourceId": _safe_text(source.get("sourceId")),
                 "title": _safe_text(source.get("title")),
                 "url": _safe_text(source.get("url")),
                 "tier": source.get("tier"),
                 "authorityScore": source.get("authorityScore"),
-                "text": _compact_research_text(_safe_text(source.get("text")), limit=420),
+                "qualityDimensions": source.get("qualityDimensions") or {},
+                "text": _compact_research_text(_safe_text(source.get("text")), limit=900),
             }
-            for source in sources[:4]
+            for source in sources[:6]
         ]
         system_prompt = (
             "你是 Web Research Architect。根据已读取的 SOURCES 做冲突归纳和结论压缩。"
@@ -1324,8 +1822,8 @@ def _invoke_web_research_architect_agent(
             (
                 "必须在最终回答内容里输出一个 JSON 对象，不要 Markdown。\n"
                 "字段：headline, researchResult, claimTable, conflictMatrix, missingEvidence, assumptions。\n"
-                "claimTable 每项至少包含 claim 和 supportingSources；如果更方便，也可写 sourceURL，但 URL 必须来自 SOURCES。\n"
-                "researchResult 必须面向后续 agent 阅读：完整、紧凑、标注限制，不能照搬导航栏或搜索摘要。\n"
+                "claimTable 每项至少包含 claim 和 supportingSources；supportingSources 必须引用 SOURCES 里的 URL 或 sourceId。\n"
+                "researchResult 必须是后续 agent 可直接使用的答案卷宗：回答问题、说明关键限制、不要写调研过程，不要照搬导航栏或搜索摘要。\n"
                 f"QUESTION: {question}"
             ),
             (
@@ -1347,7 +1845,7 @@ def _invoke_web_research_architect_agent(
                 if remaining <= 1:
                     candidate_errors.append("architect_total_timeout")
                     break
-                source_limit = 4 if index == 0 else 3
+                source_limit = 6 if index == 0 else 4
                 prepared_context = prepare_background_model_messages(
                     system_prompt=system_prompt,
                     instruction=prompt,
@@ -1426,7 +1924,9 @@ def _merge_web_research_architect_agent_pack(
                 "fallbackReason": "architect_agent_missing_research_result",
             },
         }
-    known_urls = {item.get("url") for item in list(base_pack.get("sourceUrls") or []) if isinstance(item, dict) and item.get("url")}
+    known_sources = [item for item in list(base_pack.get("sourceUrls") or []) if isinstance(item, dict)]
+    known_urls = {item.get("url") for item in known_sources if item.get("url")}
+    known_by_id = {_safe_text(item.get("sourceId")): item for item in known_sources if _safe_text(item.get("sourceId"))}
     claim_table: list[dict[str, Any]] = []
     for raw_item in _research_dict_list(agent_pack.get("claimTable"), limit=12):
         if not isinstance(raw_item, dict):
@@ -1438,20 +1938,39 @@ def _merge_web_research_architect_agent_pack(
             url = _safe_text(source.get("url"))
             if url and url in known_urls:
                 supporting.append({"title": _safe_text(source.get("title")) or url, "url": url})
+                continue
+            source_id = _safe_text(source.get("sourceId"))
+            if source_id and source_id in known_by_id:
+                known = known_by_id[source_id]
+                known_url = _safe_text(known.get("url"))
+                if known_url:
+                    supporting.append({"title": _safe_text(known.get("title")) or known_url, "url": known_url, "sourceId": source_id})
         if not supporting:
             candidate_urls: list[str] = []
+            candidate_source_ids: list[str] = []
             for field in ("sourceURL", "sourceUrl", "url"):
                 value = _safe_text(raw_item.get(field))
                 if value:
                     candidate_urls.append(value)
+            for field in ("sourceId", "sourceID"):
+                value = _safe_text(raw_item.get(field))
+                if value:
+                    candidate_source_ids.append(value)
             for value in list(raw_item.get("sourceUrls") or [])[:4]:
                 if isinstance(value, str):
                     candidate_urls.append(value)
                 elif isinstance(value, dict):
                     candidate_urls.append(_safe_text(value.get("url")))
+                    candidate_source_ids.append(_safe_text(value.get("sourceId")))
             for url in candidate_urls[:4]:
                 if url and url in known_urls:
                     supporting.append({"title": url, "url": url})
+            for source_id in candidate_source_ids[:4]:
+                if source_id and source_id in known_by_id:
+                    known = known_by_id[source_id]
+                    known_url = _safe_text(known.get("url"))
+                    if known_url:
+                        supporting.append({"title": _safe_text(known.get("title")) or known_url, "url": known_url, "sourceId": source_id})
         if not supporting:
             continue
         claim = _safe_text(raw_item.get("claim"))
@@ -1592,6 +2111,263 @@ def _source_router_search(**kwargs: Any) -> str:
     return source_router_search(**kwargs)
 
 
+def _should_try_context7_source(question: str, source_policy: str) -> bool:
+    policy = _safe_text(source_policy).lower()
+    text = f"{question}\n{source_policy}".lower()
+    if any(marker in policy for marker in ("official_docs_first", "context7", "official", "primary", "technical_docs")):
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "api",
+            "sdk",
+            "framework",
+            "library",
+            "docs",
+            "documentation",
+            "next.js",
+            "react",
+            "expo",
+            "electron",
+            "python",
+            "typescript",
+            "官方文档",
+            "技术文档",
+            "接口",
+            "框架",
+            "库",
+        )
+    )
+
+
+def _run_coro_blocking(coro: Any, *, timeout_seconds: float) -> Any:
+    async def _bounded() -> Any:
+        return await asyncio.wait_for(coro, timeout=max(0.1, timeout_seconds))
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_bounded())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: asyncio.run(_bounded()))
+        return future.result(timeout=max(timeout_seconds + 1.0, 1.0))
+
+
+def _compact_mcp_text(payload: Any, *, limit: int = 6000) -> str:
+    chunks: list[str] = []
+
+    def visit(value: Any, depth: int = 0) -> None:
+        if len("\n".join(chunks)) >= limit or depth > 5:
+            return
+        if isinstance(value, str):
+            text = _safe_text(value)
+            if text:
+                chunks.append(text)
+            return
+        if isinstance(value, list):
+            for item in value[:20]:
+                visit(item, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        for key in ("text", "markdown", "content", "contents", "result", "docs", "document", "output"):
+            if key in value:
+                visit(value.get(key), depth + 1)
+
+    visit(payload)
+    text = "\n\n".join(dict.fromkeys(chunks))
+    return text[:limit]
+
+
+def _mcp_payload_is_error(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        if payload.get("isError") is True:
+            return True
+        return any(_mcp_payload_is_error(value) for value in payload.values())
+    if isinstance(payload, list):
+        return any(_mcp_payload_is_error(item) for item in payload[:20])
+    if isinstance(payload, str):
+        lowered = payload.lower()
+        return "mcp error" in lowered or "input validation error" in lowered
+    return False
+
+
+def _extract_context7_library_id(payload: Any) -> str:
+    text = _compact_mcp_text(payload, limit=3000)
+    for pattern in (
+        r"(?im)^\s*(/[^/\s]+/[^/\s]+)\s*$",
+        r"(?im)Context7-compatible library ID:\s*(`?)(/[^`\s]+)\1",
+        r"(?im)\b(/[^/\s]+/[^/\s]+)\b",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return str(match.group(match.lastindex or 1) or "").strip("` ")
+    return ""
+
+
+def _context7_tool_names() -> tuple[str, str, str]:
+    for server_name, tools in list((getattr(mcp_manager, "_server_tools", {}) or {}).items()):
+        tool_names = [str(getattr(tool, "name", "") or "").strip() for tool in list(tools or [])]
+        lowered = {name.lower(): name for name in tool_names}
+        server_key = str(server_name or "").lower()
+        looks_like_context7 = "context7" in server_key or any("context7" in name.lower() for name in tool_names)
+        if not looks_like_context7 and not any(name in lowered for name in ("resolve-library-id", "get-library-docs", "query-docs")):
+            continue
+        resolve_tool = (
+            lowered.get("resolve-library-id")
+            or lowered.get("resolve_library_id")
+            or next((name for name in tool_names if "resolve" in name.lower() and "library" in name.lower()), "")
+        )
+        docs_tool = (
+            lowered.get("get-library-docs")
+            or lowered.get("get_library_docs")
+            or lowered.get("query-docs")
+            or lowered.get("query_docs")
+            or next((name for name in tool_names if ("docs" in name.lower() or "document" in name.lower())), "")
+        )
+        if docs_tool:
+            return str(server_name), resolve_tool, docs_tool
+    return "", "", ""
+
+
+async def _call_context7_source_async(question: str) -> dict[str, Any]:
+    await mcp_manager.initialize()
+    server_name, resolve_tool, docs_tool = _context7_tool_names()
+    if not server_name or not docs_tool:
+        return {"ok": False, "error": "context7_mcp_not_available", "attempts": []}
+    attempts: list[dict[str, Any]] = []
+    library_id = ""
+    if resolve_tool:
+        for arguments in ({"query": question[:120]}, {"libraryName": question[:120]}):
+            try:
+                resolved = await mcp_manager.call_tool(
+                    server_name=server_name,
+                    tool_name=resolve_tool,
+                    arguments=arguments,
+                )
+                is_error = _mcp_payload_is_error(resolved)
+                attempts.append({"tool": resolve_tool, "ok": not is_error, "argumentsShape": sorted(arguments)})
+                if is_error:
+                    continue
+                library_id = _extract_context7_library_id(resolved)
+                if library_id:
+                    break
+            except Exception as exc:
+                attempts.append({"tool": resolve_tool, "ok": False, "argumentsShape": sorted(arguments), "error": str(exc)[:300]})
+    docs_attempts: list[dict[str, Any]] = []
+    if library_id:
+        docs_attempts.extend(
+            [
+                {"libraryId": library_id, "topic": question[:240], "tokens": 3000},
+                {"context7CompatibleLibraryID": library_id, "topic": question[:240], "tokens": 3000},
+                {"libraryId": library_id, "query": question[:240]},
+            ]
+        )
+    else:
+        return {"ok": False, "error": "context7_library_id_not_resolved", "serverName": server_name, "attempts": attempts}
+    last_error = ""
+    for arguments in docs_attempts:
+        try:
+            docs = await mcp_manager.call_tool(server_name=server_name, tool_name=docs_tool, arguments=arguments)
+            text = _compact_mcp_text(docs, limit=6000)
+            is_error = _mcp_payload_is_error(docs) or "mcp error" in text.lower()
+            attempts.append({"tool": docs_tool, "ok": bool(text) and not is_error, "argumentsShape": sorted(arguments)})
+            if text and not is_error:
+                return {
+                    "ok": True,
+                    "serverName": server_name,
+                    "toolName": docs_tool,
+                    "libraryId": library_id,
+                    "text": text,
+                    "attempts": attempts,
+                }
+            if is_error:
+                last_error = _compact_research_text(text, limit=300) or "context7_docs_error"
+        except Exception as exc:
+            last_error = str(exc)
+            attempts.append({"tool": docs_tool, "ok": False, "argumentsShape": sorted(arguments), "error": last_error[:300]})
+    return {"ok": False, "error": last_error or "context7_docs_empty", "serverName": server_name, "attempts": attempts}
+
+
+def _run_context7_source(question: str, *, tool_call_id: str) -> dict[str, Any]:
+    try:
+        payload = _run_coro_blocking(_call_context7_source_async(question), timeout_seconds=20)
+    except Exception as exc:
+        return {
+            "shardId": "context7_docs",
+            "kind": "technical_docs",
+            "query": question,
+            "ok": False,
+            "provider": "context7",
+            "resultCount": 0,
+            "results": [],
+            "fetchedTopSources": [],
+            "errors": [str(exc)[:500] or "context7_failed"],
+            "sourceRouter": {"selectedProvider": "context7", "fallbackReason": "context7_exception"},
+        }
+    if not payload.get("ok"):
+        return {
+            "shardId": "context7_docs",
+            "kind": "technical_docs",
+            "query": question,
+            "ok": False,
+            "provider": "context7",
+            "resultCount": 0,
+            "results": [],
+            "fetchedTopSources": [],
+            "errors": [_safe_text(payload.get("error")) or "context7_unavailable"],
+            "providerAttemptMatrix": payload.get("attempts") or [],
+            "sourceRouter": {"selectedProvider": "context7", "fallbackReason": "context7_unavailable"},
+        }
+    text = _safe_text(payload.get("text"))
+    library_id = _safe_text(payload.get("libraryId"))
+    url = f"mcp://context7/{library_id.lstrip('/')}" if library_id else "mcp://context7/docs"
+    quality = {
+        "host": "context7",
+        "authorityScore": 92,
+        "tier": "primary",
+        "authorityTier": "official_docs_mcp",
+        "reasons": ["context7_mcp", "official_docs_first"],
+    }
+    return {
+        "shardId": "context7_docs",
+        "kind": "technical_docs",
+        "query": question,
+        "ok": True,
+        "provider": "context7",
+        "networkRoute": "mcp",
+        "sourceCapability": "official_technical_docs",
+        "sourceRouter": {"selectedProvider": "context7", "networkRoute": "mcp", "sourcePolicy": "official_docs_first"},
+        "providerAttemptMatrix": payload.get("attempts") or [],
+        "resultCount": 1,
+        "results": [
+            {
+                "resultRank": 1,
+                "title": f"Context7 technical docs{f' {library_id}' if library_id else ''}",
+                "url": url,
+                "finalUrl": url,
+                "snippet": text[:600],
+                "sourceQualityHints": quality,
+            }
+        ],
+        "fetchedTopSources": [
+            {
+                "url": url,
+                "ok": True,
+                "title": f"Context7 technical docs{f' {library_id}' if library_id else ''}",
+                "status": "mcp",
+                "text": text[:6000],
+                "textPreview": text[:1200],
+                "contentChars": len(text),
+                "omittedChars": max(0, len(text) - 6000),
+                "extractionQuality": "context7_mcp_docs",
+                "sourceCapability": "official_technical_docs",
+            }
+        ],
+        "errors": [],
+    }
+
+
 def _run_search_shard(
     shard: dict[str, Any],
     *,
@@ -1683,6 +2459,44 @@ def _run_search_shard(
                 recommended_next_action="标记该 source unavailable，换可访问来源或降低置信度。",
             )
             text = _safe_text(read_payload.get("text") or read_payload.get("markdown") or read_payload.get("textPreview"))
+            read_attempts: list[dict[str, Any]] = []
+            if read_payload.get("providerAttemptMatrix"):
+                for item in list(read_payload.get("providerAttemptMatrix") or [])[:6]:
+                    if isinstance(item, dict):
+                        read_attempts.append(item)
+            elif read_payload.get("toolExecution"):
+                read_attempts.append({"provider": "builtin_scrapling", "status": "error", "failureClass": (read_payload.get("toolExecution") or {}).get("failureClass")})
+            else:
+                read_attempts.append({"provider": "builtin_scrapling", "status": "success" if read_payload.get("ok") else "error"})
+            needs_jina_fallback = bool(not read_payload.get("ok") or not text or _source_noise_reasons(text))
+            if needs_jina_fallback and _jina_api_key():
+                jina_payload = _read_with_jina(url)
+                read_attempts.append(
+                    {
+                        "provider": "jina",
+                        "status": "success" if jina_payload.get("ok") else "error",
+                        "failureClass": jina_payload.get("failureClass"),
+                        "reason": jina_payload.get("reason"),
+                    }
+                )
+                jina_text = _safe_text(jina_payload.get("text") or jina_payload.get("textPreview"))
+                if jina_payload.get("ok") and jina_text and not _source_noise_reasons(jina_text):
+                    read_payload = {
+                        **read_payload,
+                        **jina_payload,
+                        "title": _safe_text(read_payload.get("title")) or _safe_text(jina_payload.get("title")),
+                        "providerAttemptMatrix": read_attempts,
+                    }
+                    text = jina_text
+            elif needs_jina_fallback:
+                read_attempts.append(
+                    {
+                        "provider": "jina",
+                        "status": "skipped",
+                        "failureClass": "credential_missing",
+                        "reason": "missing_env:JINA_API_KEY",
+                    }
+                )
             extraction_quality = read_payload.get("extractionQuality")
             if not extraction_quality:
                 extraction_quality = "readable" if read_payload.get("ok") and text else "unreadable"
@@ -1698,7 +2512,7 @@ def _run_search_shard(
                     "omittedChars": max(0, len(text) - 6000),
                     "extractionQuality": extraction_quality,
                     "sourceCapability": read_payload.get("sourceCapability"),
-                    "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders"),
+                    "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders") or read_attempts,
                     "rawRef": read_payload.get("rawRef") or read_payload.get("detailRawRef"),
                     "missingContentReason": read_payload.get("missingContentReason"),
                     "warnings": read_payload.get("warnings") if isinstance(read_payload.get("warnings"), list) else [],
@@ -1820,6 +2634,60 @@ def _build_refinement_shards(question: str, shards: list[dict[str, Any]], *, sou
     return refined
 
 
+def _research_loop_report(question: str, shards: list[dict[str, Any]], *, source_policy: str) -> dict[str, Any]:
+    fetched = _fetched_source_map(shards)
+    covered_claims: list[str] = []
+    rejected_sources: list[dict[str, Any]] = []
+    read_sources: list[str] = []
+    for shard in shards:
+        for result in list(shard.get("results") or []):
+            if not isinstance(result, dict):
+                continue
+            url = _safe_text(result.get("url"))
+            if not url:
+                continue
+            read_payload = fetched.get(url) or {}
+            gate = _source_quality_gate(question=question, result=result, read_payload=read_payload, source_policy=source_policy)
+            if gate.get("selectedForEvidence"):
+                if url not in read_sources:
+                    read_sources.append(url)
+                text = _safe_text(read_payload.get("text") or read_payload.get("textPreview") or result.get("snippet"))
+                for sentence in _research_sentences(text, limit=2):
+                    if sentence not in covered_claims:
+                        covered_claims.append(sentence)
+                    if len(covered_claims) >= 8:
+                        break
+            else:
+                rejected_sources.append(
+                    {
+                        "url": url,
+                        "title": _safe_text(result.get("title"))[:180],
+                        "reason": gate.get("rejectedReason") or "source_quality_below_gate",
+                    }
+                )
+    uncovered: list[str] = []
+    if not read_sources:
+        uncovered.append("No source passed quality/readability gates.")
+    elif len(read_sources) < 2:
+        uncovered.append("Need another independent readable source before promoting reusable experience.")
+    return {
+        "outline": [
+            {"sectionId": "question", "title": "Research question", "status": "covered" if question else "missing"},
+            {"sectionId": "evidence", "title": "Source-backed evidence", "status": "covered" if covered_claims else "missing"},
+            {"sectionId": "limitations", "title": "Gaps and limitations", "status": "covered" if uncovered or rejected_sources else "pending"},
+        ],
+        "coveredClaims": covered_claims[:8],
+        "uncoveredClaims": uncovered,
+        "rejectedSources": rejected_sources[:12],
+        "researchLoopReport": {
+            "summary": "quality_gated_evidence_ready" if covered_claims else "quality_gated_evidence_missing",
+            "selectedSourceCount": len(read_sources),
+            "rejectedSourceCount": len(rejected_sources),
+            "claimCount": len(covered_claims),
+        },
+    }
+
+
 def _run_research_loop(
     *,
     question: str,
@@ -1836,12 +2704,29 @@ def _run_research_loop(
         "questions": [question],
         "rounds": [],
         "readSources": [],
+        "outline": [],
+        "coveredClaims": [],
         "uncoveredClaims": [],
         "conflictClaims": [],
+        "sourceGaps": [],
+        "rejectedSources": [],
         "nextQueries": [],
+        "researchLoopReport": {},
         "stopReason": "",
     }
-    all_shards = _run_search_shards(
+    all_shards: list[dict[str, Any]] = []
+    if _should_try_context7_source(question, source_policy):
+        context7_shard = _run_context7_source(question, tool_call_id=tool_call_id)
+        all_shards.append(context7_shard)
+        if not context7_shard.get("ok"):
+            loop_state["sourceGaps"].append(
+                {
+                    "provider": "context7",
+                    "reason": _safe_text((context7_shard.get("errors") or ["context7_unavailable"])[0]),
+                    "policy": "official_docs_first",
+                }
+            )
+    web_shards = _run_search_shards(
         initial_shards,
         allowed_domains=allowed_domains,
         blocked_domains=blocked_domains,
@@ -1850,6 +2735,7 @@ def _run_research_loop(
         use_agent_browser_profile=bool(use_agent_browser_profile),
         tool_call_id=tool_call_id,
     )
+    all_shards.extend(web_shards)
     loop_state["rounds"].append(
         {
             "round": 1,
@@ -1869,12 +2755,14 @@ def _run_research_loop(
     loop_state["readSources"] = read_urls
     if _read_source_count(all_shards) >= 2 or max_rounds <= 1:
         loop_state["stopReason"] = "sufficient_evidence" if _read_source_count(all_shards) else "max_rounds_reached_without_readable_sources"
+        loop_state.update(_research_loop_report(question, all_shards, source_policy=source_policy))
         return all_shards, loop_state
 
     refined_shards = _build_refinement_shards(question, all_shards, source_policy=source_policy)
     if not refined_shards:
         loop_state["stopReason"] = "no_refinement_queries_available"
         loop_state["uncoveredClaims"].append("Insufficient readable full-text sources.")
+        loop_state.update(_research_loop_report(question, all_shards, source_policy=source_policy))
         return all_shards, loop_state
     loop_state["nextQueries"] = [shard.get("query") for shard in refined_shards]
     second_round = _run_search_shards(
@@ -1906,6 +2794,10 @@ def _run_research_loop(
     loop_state["stopReason"] = "sufficient_evidence_after_refinement" if _read_source_count(all_shards) >= 2 else "max_rounds_reached_with_gaps"
     if _read_source_count(all_shards) < 2:
         loop_state["uncoveredClaims"].append("Need at least two readable independent sources for stable reuse.")
+    report = _research_loop_report(question, all_shards, source_policy=source_policy)
+    if loop_state["uncoveredClaims"]:
+        report["uncoveredClaims"] = list(dict.fromkeys([*report.get("uncoveredClaims", []), *loop_state["uncoveredClaims"]]))
+    loop_state.update(report)
     return all_shards, loop_state
 
 
@@ -1924,6 +2816,7 @@ def _synthesize_bundle(
     citations: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
+    fetched_map = _fetched_source_map(shards)
     for shard in shards:
         for result in list(shard.get("results") or []):
             url = _safe_text(result.get("url"))
@@ -1931,8 +2824,16 @@ def _synthesize_bundle(
                 continue
             seen_urls.add(url)
             quality = dict(result.get("sourceQualityHints") or {})
+            read_payload = fetched_map.get(url) or {}
+            gate = _source_quality_gate(
+                question=question,
+                result=result,
+                read_payload=read_payload,
+                source_policy=source_policy,
+            )
             source_matrix.append(
                 {
+                    "sourceId": gate.get("sourceId"),
                     "title": result.get("title"),
                     "url": url,
                     "host": quality.get("host") or _host(url),
@@ -1947,20 +2848,27 @@ def _synthesize_bundle(
                     "provider": shard.get("provider"),
                     "networkRoute": shard.get("networkRoute"),
                     "sourceRouterLocale": ((shard.get("sourceRouter") or {}).get("locale") if isinstance(shard.get("sourceRouter"), dict) else None),
+                    "sourceQualityGate": gate,
+                    "selectedForEvidence": gate.get("selectedForEvidence"),
+                    "rejectedReason": gate.get("rejectedReason") or None,
                 }
             )
             citations.append({"title": result.get("title"), "url": url})
     source_matrix.sort(key=lambda item: int(item.get("authorityScore") or 0), reverse=True)
-    authority_scores = [int(item.get("authorityScore") or 0) for item in source_matrix[:5]]
+    selected_source_matrix = [item for item in source_matrix if (item.get("sourceQualityGate") or {}).get("selectedForEvidence")]
+    evidence_bank = _build_evidence_bank(question=question, source_matrix=source_matrix, shards=shards)
+    authority_scores = [int(item.get("authorityScore") or 0) for item in (selected_source_matrix or source_matrix)[:5]]
     average_authority = round(sum(authority_scores) / len(authority_scores), 1) if authority_scores else 0
-    confidence = "high" if average_authority >= 75 and len(source_matrix) >= 2 else ("medium" if source_matrix else "low")
+    confidence = "high" if average_authority >= 75 and len(selected_source_matrix) >= 2 else ("medium" if selected_source_matrix else "low")
     if not source_matrix:
         conflicts.append({"kind": "no_sources", "summary": "No usable source result was collected."})
+    elif not selected_source_matrix:
+        conflicts.append({"kind": "no_quality_sources", "summary": "Search returned candidates, but none passed source quality/readability gates."})
     visible_shards = shards[:12]
     provider_attempt_matrix = _flatten_provider_attempts(shards)
     architect_pack = _web_research_architect_pack(
         question=question,
-        source_matrix=source_matrix,
+        source_matrix=selected_source_matrix,
         shards=shards,
         confidence=confidence,
         average_authority=average_authority,
@@ -2001,6 +2909,8 @@ def _synthesize_bundle(
             "conflictClaims": [],
             "nextQueries": [],
         },
+        "researchEvidenceBank": evidence_bank,
+        "rejectedSources": evidence_bank.get("rejectedSources") or [],
         "experienceReuse": experience_reuse
         or {
             "reuseDecision": "ignore",

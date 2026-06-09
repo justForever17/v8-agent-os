@@ -56,6 +56,7 @@ function AppNavigation() {
                     <Stack.Screen name="rpa" />
                     <Stack.Screen name="sessions" />
                     <Stack.Screen name="approvals" />
+                    <Stack.Screen name="specs" />
                     <Stack.Screen name="settings" />
                 </Stack>
             </AppSessionProvider>

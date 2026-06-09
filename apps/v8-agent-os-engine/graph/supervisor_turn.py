@@ -98,6 +98,28 @@ def _memory_broker_first_guidance(user_query: str) -> SystemMessage:
     )
 
 
+def _fast_first_turn_guidance() -> SystemMessage:
+    return SystemMessage(
+        content=(
+            "[Fast First Supervisor Turn]\n"
+            "Planner is deferred for this first visible turn. Start real work quickly: either make one concise tool call "
+            "(for example write_todos/runtime_broker/memory_broker when appropriate) or reply in 1-2 short sentences. "
+            "Do not write a long planning narrative in this first turn; continue detailed orchestration in later turns."
+        )
+    )
+
+
+def _fast_first_turn_caller_kwargs(caller_kwargs: dict) -> dict:
+    fast_kwargs = dict(caller_kwargs or {})
+    try:
+        configured_max_tokens = int(fast_kwargs.get("max_tokens") or 0)
+    except Exception:
+        configured_max_tokens = 0
+    if not configured_max_tokens or configured_max_tokens > _FAST_FIRST_TURN_MAX_TOKENS:
+        fast_kwargs["max_tokens"] = _FAST_FIRST_TURN_MAX_TOKENS
+    return fast_kwargs
+
+
 def _is_network_supervisor_compat_transport(state) -> bool:
     route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
     transport = str(
@@ -147,6 +169,19 @@ _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
 
 
 _SUPERVISOR_TODO_TOOL_NAMES = {"write_todos", "update_todo"}
+_SPEC_BROKER_TOOL_NAMES = {"spec_broker"}
+_FAST_FIRST_TURN_MAX_TOKENS = 900
+_SPEC_MODE_ALLOWED_TOOL_NAMES = {
+    "ask_user",
+    "memory_broker",
+    "research_broker",
+    "runtime_broker",
+    "spec_broker",
+    "tool_observation_detail",
+    "update_todo",
+    "web_broker",
+    "write_todos",
+}
 
 
 def _tool_ref_name(tool_ref) -> str:
@@ -167,6 +202,47 @@ def _filter_network_supervisor_compat_tools(tools):
 def _filter_tool_names(tools, excluded_names: set[str]):
     excluded = {str(name or "").strip() for name in excluded_names if str(name or "").strip()}
     return [tool_ref for tool_ref in list(tools or []) if _tool_ref_name(tool_ref) not in excluded]
+
+
+def _spec_mode_active(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    route_context = dict(state.get("current_route_context") or {})
+    return bool(
+        state.get("specMode")
+        or state.get("spec_mode")
+        or route_context.get("specMode")
+        or route_context.get("spec_mode")
+    )
+
+
+def _spec_runtime_execution_allowed(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    route_context = dict(state.get("current_route_context") or {})
+    candidates = (
+        state.get("spec_brief"),
+        state.get("specBrief"),
+        route_context.get("specBrief"),
+        route_context.get("spec_brief"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        pipeline = candidate.get("pipelineControl") if isinstance(candidate.get("pipelineControl"), dict) else {}
+        if bool(pipeline.get("runtimeExecutionAllowed")):
+            return True
+    return False
+
+
+def _filter_spec_tools_for_mode(tools, state):
+    if _spec_mode_active(state):
+        return [
+            tool_ref
+            for tool_ref in list(tools or [])
+            if _tool_ref_name(tool_ref) in _SPEC_MODE_ALLOWED_TOOL_NAMES
+        ]
+    return _filter_tool_names(tools, _SPEC_BROKER_TOOL_NAMES)
 
 
 def _task_shape_from_state(state) -> dict:
@@ -224,6 +300,50 @@ def _build_neutral_extensions_route(visible_supervisor_tools):
             "reason": "network_supervisor_compat_disables_v8_extensions_prefilter",
         },
     )
+
+
+def _explicit_extension_request_in_query(user_query: str) -> bool:
+    query = str(user_query or "").strip().lower()
+    if not query:
+        return False
+    markers = (
+        "@",
+        "skill",
+        "skills",
+        "mcp",
+        "context7",
+        "fetch_skill",
+        "fetch skill",
+        "技能",
+        "调用技能",
+        "使用技能",
+        "预筛",
+        "女娲",
+        "huashu",
+        "nuwa",
+    )
+    return any(marker in query for marker in markers)
+
+
+def _should_use_fast_first_turn_route(state, user_query: str) -> bool:
+    if not isinstance(state, dict):
+        return False
+    route_context = dict(state.get("current_route_context") or {})
+    planner_deferred = bool(
+        state.get("plannerDeferredFirstTurn")
+        or state.get("planner_deferred_first_turn")
+        or route_context.get("plannerDeferredFirstTurn")
+        or route_context.get("planner_deferred_first_turn")
+    )
+    if not planner_deferred:
+        return False
+    if _spec_mode_active(state):
+        return False
+    return not _explicit_extension_request_in_query(user_query)
+
+
+def _should_use_spec_narrow_route(state) -> bool:
+    return _spec_mode_active(state) and not _spec_runtime_execution_allowed(state)
 
 
 def _attach_route_context_to_response(response, *, user_query: str, route_bundle, selected_tools) -> None:
@@ -396,10 +516,17 @@ def execute_supervisor_turn(
             actor="supervisor",
             route_context=dict(state.get("current_route_context") or {}),
         )
+        visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
         if _is_network_supervisor_compat_transport(state) and _compat_external_tools_primary(state):
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()
-        if _is_network_supervisor_compat_transport(state) and _compat_suppress_extensions_prefilter(state):
+        fast_first_turn_route = _should_use_fast_first_turn_route(state, user_query)
+        spec_narrow_route = _should_use_spec_narrow_route(state)
+        if spec_narrow_route:
+            route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
+            route_bundle.candidate_summary["reason"] = "spec_mode_stage_uses_narrow_tool_surface"
+            route_duration_ms = 0.0
+        elif _is_network_supervisor_compat_transport(state) and _compat_suppress_extensions_prefilter(state):
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
             route_duration_ms = 0.0
         else:
@@ -532,6 +659,8 @@ def execute_supervisor_turn(
             selected_tools=filtered_supervisor_tools,
         ):
             prepared_messages.append(_memory_broker_first_guidance(user_query))
+        if fast_first_turn_route:
+            prepared_messages.append(_fast_first_turn_guidance())
         if _runtime_episode_handoff_ready(state):
             filtered_supervisor_tools = []
             prepared_messages.append(_runtime_handoff_final_message())
@@ -549,6 +678,8 @@ def execute_supervisor_turn(
                 "selectedSkillCount": len(route_bundle.selected_skill_names or []),
                 "selectedMcpToolCount": len(route_bundle.exposed_mcp_tool_names or []),
                 "selectedPluginHostToolCount": len(route_bundle.candidate_summary.get("pluginHostTools") or []),
+                "fastFirstTurnRoute": fast_first_turn_route,
+                "routeReason": route_bundle.candidate_summary.get("reason"),
                 "scope": current_scope,
                 "sessionId": session_id,
                 "runtimeReflex": reflex_decision.as_dict(),
@@ -558,8 +689,22 @@ def execute_supervisor_turn(
         )
 
         debug_supervisor_messages(prepared_messages)
+        invoke_llm = supervisor_base_llm
+        invoke_caller_kwargs = caller_kwargs
+        if fast_first_turn_route:
+            invoke_caller_kwargs = _fast_first_turn_caller_kwargs(caller_kwargs)
+            try:
+                invoke_llm = llm_factory.create_chat_model(
+                    sup_model_name,
+                    streaming=False,
+                    _role="supervisor",
+                    **invoke_caller_kwargs,
+                )
+            except Exception:
+                invoke_llm = supervisor_base_llm
+                invoke_caller_kwargs = caller_kwargs
         response = robust_invoke(
-            supervisor_base_llm,
+            invoke_llm,
             prepared_messages,
             filtered_supervisor_tools,
             role="supervisor",
@@ -568,7 +713,7 @@ def execute_supervisor_turn(
                 candidate_model_id,
                 streaming=False,
                 _role="supervisor",
-                **caller_kwargs,
+                **invoke_caller_kwargs,
             ),
         )
         response = sanitize_response_tool_calls(response)

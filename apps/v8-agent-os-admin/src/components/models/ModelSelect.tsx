@@ -1,14 +1,17 @@
 "use client";
 
+import Image from "next/image";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ti } from "@/i18n/admin-legacy";
+import { resolveModelIcon } from "@/lib/models/model-assets";
 export type AdminModelSelectOption = {
   id?: string;
   modelRef?: string;
   providerId?: string;
   modelId?: string;
   name?: string;
+  logoAsset?: string | null;
   type?: string;
   capabilityClass?: string | null;
   contextWindow?: number | null;
@@ -46,6 +49,36 @@ function contextWindowInvalidReason(model: AdminModelSelectOption, minimum: numb
   if (!contextWindow) return "Context window is not configured; this model cannot be used for long-context text roles";
   if (contextWindow < minimum) return `context window ${contextWindow} < ${minimum}`;
   return "";
+}
+function modelOptionIcon(model: AdminModelSelectOption): string | null {
+  return resolveModelIcon({
+    modelId: model.modelId || model.name || model.id,
+    providerId: model.providerId || model.provider?.id,
+    providerName: model.providerName || model.provider?.name,
+    explicitAsset: model.logoAsset || null
+  });
+}
+function modelOptionProviderMark(model: AdminModelSelectOption): string {
+  const label = String(model.provider?.name || model.providerName || model.providerId || model.modelId || model.name || "M").trim();
+  return (label.charAt(0) || "M").toUpperCase();
+}
+function ModelSelectOptionRow({
+  model,
+  label,
+  invalidReason
+}: {
+  model: AdminModelSelectOption;
+  label: string;
+  invalidReason?: string;
+}) {
+  const icon = modelOptionIcon(model);
+  return <span className="flex min-w-0 items-center gap-2">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600">
+            {icon ? <Image src={icon} alt="" width={16} height={16} className="h-4 w-4 rounded object-contain" unoptimized /> : modelOptionProviderMark(model)}
+        </span>
+        <span className="min-w-0 truncate">{label}</span>
+        {invalidReason ? <span className="shrink-0 text-xs text-amber-600">({invalidReason})</span> : null}
+    </span>;
 }
 type ResolvedModelValue = {
   selectValue: string;
@@ -157,8 +190,7 @@ export function ModelSelect({
                             {ti(t, "k5f8877b2d7")}{resolved.selectValue}
                         </SelectItem> : null}
                     {options.map(item => <SelectItem key={item.value} value={item.value} disabled={Boolean(item.invalidReason)}>
-                            {item.label}
-                            {item.invalidReason ? <span className="ml-2 text-xs text-amber-600">({item.invalidReason})</span> : null}
+                            <ModelSelectOptionRow model={item.model} label={item.label} invalidReason={item.invalidReason} />
                         </SelectItem>)}
                 </SelectContent>
             </Select>

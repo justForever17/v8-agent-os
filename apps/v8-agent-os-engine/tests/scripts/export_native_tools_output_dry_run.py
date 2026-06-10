@@ -25,7 +25,7 @@ from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
 from langgraph.types import Command  # noqa: E402
 
 from core.native_tools import NATIVE_TOOLS  # noqa: E402
-from core.native_tool_registry import native_tool_family_for_name  # noqa: E402
+from core.tools.native.registry import native_tool_family_for_name  # noqa: E402
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor  # noqa: E402
 from core.tool_surface import MAX_TOOL_OUTPUT_LENGTH, TOOL_OUTPUT_TARGET_CHARS, runtime_kind_for_tool  # noqa: E402
 from graph.tool_routing import create_routed_tool_node  # noqa: E402
@@ -1186,3 +1186,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

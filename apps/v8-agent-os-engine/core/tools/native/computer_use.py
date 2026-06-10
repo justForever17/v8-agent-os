@@ -15,7 +15,7 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
 from core.computer_use_execution_route import build_compact_execution_route, determine_execution_ready_mode
-from core.native_desktop_governance import (
+from core.tools.native.desktop_governance import (
     _DESKTOP_ROUTE_SOURCE,
     _computer_use_action_guard,
     _desktop_route_compact_metadata,
@@ -27,7 +27,7 @@ from core.native_desktop_governance import (
     _desktop_route_task_mismatch_reason as _governance_desktop_route_task_mismatch_reason,
     _guard_computer_use_steps as _governance_guard_computer_use_steps,
 )
-from core.native_rpa_tools import (
+from core.tools.native.rpa import (
     _get_rpa_runtime,
     _rpa_compact_run_draft_response,
     _rpa_compact_run_existing_flow_response,
@@ -4862,3 +4862,4 @@ def computer_use_drag_pointer(
         )
     except Exception as e:
         return f"Error dragging pointer: {e}"
+

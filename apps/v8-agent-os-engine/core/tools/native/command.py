@@ -32,17 +32,17 @@ else:
 
 from langchain_core.tools import InjectedToolCallId, tool
 
-from core.native_command_governance import (
+from core.tools.native.command_governance import (
     _detect_interactive_command,
     _detect_session_preferred_command,
     _strip_leading_shell_cwd,
     _windows_shell_syntax_violation_payload,
 )
-from core.native_tool_governance import (
+from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
 )
-from core.native_workspace_governance import (
+from core.tools.native.workspace_governance import (
     _workspace_inventory_block_payload,
     _workspace_inventory_gate_required,
     _workspace_inventory_status,
@@ -3712,3 +3712,4 @@ def terminate_background_command(command_id: str) -> str:
         return f"Command {command_id} terminated successfully."
     except Exception as e:
         return f"Error terminating: {e}"
+

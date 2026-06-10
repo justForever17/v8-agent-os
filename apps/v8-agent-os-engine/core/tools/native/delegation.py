@@ -31,7 +31,7 @@ from core.delegation_broker import (
     task_brief_query_text,
     task_brief_summary,
 )
-from core.native_command_tools import command_session_broker
+from core.tools.native.command import command_session_broker
 from core.runtime_episodes import build_runtime_episode, emit_runtime_episode_event, upsert_runtime_episode
 from core.storage import StorageManager
 from core.time_truth import utc_now_iso
@@ -1257,3 +1257,4 @@ def delegation_broker(
 
 
 __all__ = [name for name in globals() if name.startswith("_delegation") or name in {"delegation_broker", "_with_recursive_delegation_access", "_normalize_external_worker_result_paths", "_external_worker_status_from_result", "_coerce_delegation_json_value", "_coerce_delegation_list", "_coerce_delegation_dict", "_delegation_task_has_meaningful_content", "_filter_meaningful_delegation_tasks", "_safe_int_range"}]
+

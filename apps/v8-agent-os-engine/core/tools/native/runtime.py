@@ -1,0 +1,779 @@
+from __future__ import annotations
+
+import json
+from typing import Annotated, Any, Optional
+
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import InjectedToolCallId, tool
+from langgraph.prebuilt import InjectedState
+from langgraph.types import Command
+
+from core.delegation_broker import normalize_task_brief, normalize_task_briefs
+from core.runtime_episodes import (
+    build_runtime_episode,
+    emit_runtime_episode_event,
+    enqueue_runtime_episode,
+    normalize_capability_kind,
+    upsert_runtime_episode,
+)
+from core.runtime_tool_access import (
+    RUNTIME_BROKER_TOOL_NAME,
+    grant_runtime_tool_groups,
+    normalize_runtime_access,
+    revoke_runtime_tool_groups,
+    runtime_access_from_route_context,
+    runtime_tool_groups_catalog,
+)
+from erc.runtime_context import get_runtime_context
+def _runtime_broker_payload(
+    *,
+    mode: str,
+    ok: bool,
+    summary: str,
+    grants: list[dict[str, Any]] | None = None,
+    groups: list[dict[str, Any]] | None = None,
+    rejected: list[str] | None = None,
+    error: str | None = None,
+    detail_level: str = "summary",
+    changed: list[dict[str, Any]] | None = None,
+    episode: dict[str, Any] | None = None,
+    next_action: str | None = None,
+) -> str:
+    normalized_detail = str(detail_level or "summary").strip().lower()
+    group_items = list(groups or [])
+    if normalized_detail not in {"catalog", "detail", "full"}:
+        original_group_count = len(group_items)
+        group_items = [
+            {
+                "group": str(item.get("group") or ""),
+                "kind": str(item.get("runtimeKind") or ""),
+                "label": str(item.get("label") or item.get("group") or ""),
+            }
+            for item in group_items
+            if isinstance(item, dict)
+        ][:6]
+    else:
+        original_group_count = len(group_items)
+    payload = {
+        "mode": mode,
+        "ok": ok,
+        "summary": summary,
+        "activeGrants": [str((item or {}).get("group") or item) for item in list(grants or [])],
+        "availableGroups": group_items,
+        "rejected": list(rejected or []),
+        "detailMode": normalized_detail if normalized_detail in {"catalog", "detail", "full"} else "summary",
+        "detailTool": "runtime_broker(mode='list', detail_level='catalog') for compact catalog; detail_level='full' for diagnostics",
+    }
+    if changed is not None:
+        payload["changed"] = list(changed or [])
+    if episode:
+        episode_id = str(episode.get("episodeId") or episode.get("needId") or "")
+        episode_kind = str(episode.get("kind") or "")
+        episode_state = str(episode.get("state") or "")
+        payload["episode"] = {
+            "episodeId": episode_id,
+            "kind": episode_kind,
+            "state": episode_state,
+            "reason": str(episode.get("reason") or ""),
+            "continuationTarget": str(episode.get("continuationTarget") or ""),
+        }
+        payload["queuedEpisodeId"] = episode_id
+        payload["episodeKind"] = episode_kind
+        payload["state"] = episode_state
+        payload["nextAction"] = "wait_episode"
+    if next_action:
+        payload["recommendedNextAction"] = next_action
+    if normalized_detail not in {"catalog", "detail", "full"} and groups:
+        omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
+        payload["omitted"] = {
+            "toolNames": omitted_tools,
+            "availableGroups": max(0, original_group_count - len(group_items)),
+            "reason": "default list is a compact route menu; capability_registry already describes runtime details",
+        }
+    if error:
+        payload["error"] = error
+    if normalized_detail in {"catalog", "detail", "full"}:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+_RUNTIME_ROUTE_DEFAULT_GROUPS: dict[str, list[str]] = {
+    "engineering": ["delegation.recursive"],
+    "research": ["research.core"],
+    "creative_media": ["creative_media.core"],
+    "computer_use": ["computer_use.control"],
+    "rpa": ["rpa.run"],
+    "delegation": ["delegation.recursive"],
+    "memory": ["memory.read"],
+}
+
+
+def _normalize_capability_kind(value: Any) -> str:
+    return normalize_capability_kind(value)
+
+
+def _capability_route_groups(
+    *,
+    need: dict[str, Any],
+    runtime_kind: Optional[str],
+    tool_group: Optional[str],
+    tool_groups: Optional[list[str]],
+) -> list[str]:
+    kind = _normalize_capability_kind(need.get("kind") or runtime_kind)
+    requested: list[str] = []
+    requested.extend(list(need.get("requiredRuntimeAccess") or []))
+    requested.extend(list(tool_groups or []))
+    if tool_group:
+        requested.append(tool_group)
+    requested.extend(_RUNTIME_ROUTE_DEFAULT_GROUPS.get(kind, []))
+    return normalize_runtime_access(requested, runtime_kind=runtime_kind or kind)
+
+
+def _planner_task_briefs_from_state(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    state = dict(state or {})
+    planner_plan = state.get("planner_plan")
+    briefs: list[Any] = []
+    if isinstance(planner_plan, dict):
+        for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
+            value = planner_plan.get(key)
+            if isinstance(value, list) and value:
+                briefs = value
+                break
+    if not briefs:
+        route_context = dict(state.get("current_route_context") or {})
+        for episode in list(route_context.get("capabilityEpisodes") or []):
+            if not isinstance(episode, dict):
+                continue
+            inputs = episode.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
+                value = inputs.get(key)
+                if isinstance(value, list) and value:
+                    briefs = value
+                    break
+            if briefs:
+                break
+    return normalize_task_briefs(briefs)
+
+
+def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, Any]:
+    inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+    blocked_tool = str(need.get("tool") or inputs.get("blockedTool") or "").strip()
+    args = dict(inputs.get("blockedToolArgs") or {}) if isinstance(inputs.get("blockedToolArgs"), dict) else {}
+    command = str(args.get("command") or args.get("_raw") or "").strip()
+    target_path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "").strip()
+    reason = str(need.get("reason") or inputs.get("brief") or inputs.get("query") or "").strip()
+    goal = (
+        command
+        or target_path
+        or reason
+        or (f"Handle blocked Supervisor tool {blocked_tool} through {kind} runtime." if blocked_tool else f"Run {kind} runtime episode.")
+    )
+    brief = {
+        "taskBriefId": f"route-{kind}-minimal",
+        "title": goal[:96],
+        "goal": goal,
+        "brief": goal,
+        "familyHint": "engineering" if kind == "engineering" else ("research" if kind == "research" else "generalist"),
+        "executionLaneHint": "auto",
+        "requiredCapabilities": ["workspace_mutation", "verification"] if kind == "engineering" else [],
+        "acceptanceContract": "Return a compact handoff with outcome, evidence, and next steps.",
+    }
+    workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
+    if workspace:
+        brief["workspacePath"] = workspace
+        brief["writeSet"] = [target_path or workspace]
+    if blocked_tool:
+        brief["context"] = {"blockedTool": blocked_tool, **({"workspacePath": workspace} if workspace else {})}
+    return brief
+
+
+def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> str:
+    candidates: list[str] = []
+    for key in ("kind", "runtimeKind", "runtime_kind", "runtime", "capability", "routeIntent", "route_intent", "tool"):
+        value = payload.get(key)
+        if value is not None:
+            candidates.append(str(value))
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+    for key in ("kind", "runtimeKind", "capability", "routeIntent", "blockedTool"):
+        value = inputs.get(key)
+        if value is not None:
+            candidates.append(str(value))
+    candidates.extend([str(item) for item in fallbacks if item])
+    joined = " ".join(candidates).strip().lower().replace("-", "_")
+    if not joined:
+        return ""
+    if any(token in joined for token in ("engineer", "project", "coding", "implementation", "write_native_file", "run_system_command", "install", "build", "workspace")):
+        return "engineering"
+    if any(token in joined for token in ("research", "search", "evidence", "web_research")):
+        return "research"
+    if any(token in joined for token in ("delegation", "subagent", "worker", "agent_swarm")):
+        return "delegation"
+    if any(token in joined for token in ("creative", "media", "asset", "image", "video", "audio")):
+        return "creative_media"
+    if any(token in joined for token in ("computer_use", "desktop", "browser", "screen")):
+        return "computer_use"
+    if "rpa" in joined or "trace" in joined:
+        return "rpa"
+    return _normalize_capability_kind(joined)
+
+
+def _coerce_route_need_payload(
+    need: Any,
+    *,
+    runtime_kind: Optional[str],
+    tool_group: Optional[str],
+    reason: Optional[str],
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(need, dict):
+        payload = dict(need)
+    elif isinstance(need, str):
+        raw = need.strip()
+        payload = {}
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    payload = dict(parsed)
+                elif isinstance(parsed, list):
+                    payload = {"taskBriefs": parsed, "reason": reason or "capability_route"}
+                else:
+                    payload = {"routeIntent": raw, "reason": reason or raw}
+            except Exception:
+                payload = {"routeIntent": raw, "reason": reason or raw}
+    elif need:
+        payload = {"reason": str(need)}
+    else:
+        payload = {}
+
+    route_kind = _infer_route_kind_from_payload(payload, runtime_kind, tool_group, reason)
+    if route_kind:
+        payload["kind"] = route_kind
+    if reason and not str(payload.get("reason") or "").strip():
+        payload["reason"] = str(reason).strip()
+
+    inputs = dict(payload.get("inputs") or {}) if isinstance(payload.get("inputs"), dict) else {}
+    for source_key, target_key in (
+        ("cwd", "workspacePath"),
+        ("workspace", "workspacePath"),
+        ("workspacePath", "workspacePath"),
+        ("workspace_path", "workspacePath"),
+        ("task", "task"),
+        ("query", "query"),
+        ("brief", "brief"),
+    ):
+        value = payload.get(source_key)
+        if value is not None and str(value).strip():
+            inputs.setdefault(target_key, value)
+
+    runtime_context = get_runtime_context()
+    state_dict = dict(state or {})
+    for source in (state_dict, dict(state_dict.get("current_route_context") or {}), runtime_context):
+        workspace = str(source.get("workspace_path") or source.get("workspacePath") or "").strip()
+        if workspace:
+            inputs.setdefault("workspacePath", workspace)
+            break
+    if inputs:
+        payload["inputs"] = inputs
+    return payload
+
+
+def _enrich_route_need_for_episode(
+    need: dict[str, Any],
+    *,
+    kind: str,
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    enriched = dict(need or {})
+    enriched["kind"] = kind
+    enriched.setdefault("source", "supervisor")
+    enriched.setdefault("reason", str(enriched.get("reason") or "capability_route").strip() or "capability_route")
+    inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
+    planner_briefs = _planner_task_briefs_from_state(state)
+
+    if kind in {"engineering", "delegation"}:
+        route_tasks = planner_briefs or normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        if not route_tasks:
+            route_tasks = [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
+        if not inputs.get("workerBriefs"):
+            inputs["workerBriefs"] = route_tasks
+        if not inputs.get("tasks"):
+            inputs["tasks"] = route_tasks
+        if not inputs.get("taskBriefs"):
+            inputs["taskBriefs"] = route_tasks
+        if kind == "engineering":
+            inputs.setdefault(
+                "proofExpectations",
+                [
+                    "Execute through Engineering Runtime.",
+                    "Return touched files, commands, verification proof, and remaining risks.",
+                ],
+            )
+    elif kind == "research":
+        route_briefs = planner_briefs or normalize_task_briefs(inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        brief_query = ""
+        for brief in route_briefs:
+            if not isinstance(brief, dict):
+                continue
+            for key in ("routeQuery", "query", "question", "goal", "title"):
+                value = str(brief.get(key) or "").strip()
+                if value:
+                    brief_query = value
+                    break
+            if brief_query:
+                break
+        query = str(inputs.get("query") or enriched.get("query") or brief_query or enriched.get("reason") or "").strip()
+        if query:
+            inputs.setdefault("query", query)
+            inputs.setdefault("question", query)
+        if not inputs.get("taskBriefs"):
+            inputs["taskBriefs"] = route_briefs or [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
+        inputs.setdefault("sourcePolicy", "multi_source_evidence")
+        research_blob = json.dumps(inputs.get("taskBriefs") or [], ensure_ascii=False, default=str).lower()
+        if any(marker in research_blob for marker in ("full_read", "multi_source", "evidence_bundle", "claim_table", "claimtable", "sourcematrix", "source_matrix", "citations")):
+            inputs.setdefault("mode", "run")
+
+    enriched["inputs"] = inputs
+    return enriched
+
+
+_RUNTIME_LIST_ROUTE_INTENT_MARKERS = (
+    "episode",
+    "route",
+    "wait_episode",
+    "queued",
+    "queue",
+    "handoff",
+    "plan_only",
+    "work_plan",
+    "dispatch",
+    "degraded",
+    "runtime path",
+    "创建 episode",
+    "创建运行时",
+    "进入运行时",
+    "运行时路径",
+    "路由",
+    "入队",
+    "等待",
+    "回流",
+    "交接",
+    "派发",
+    "委派",
+    "降级",
+)
+
+
+def _runtime_list_request_should_route(
+    *,
+    need: Any,
+    runtime_kind: Optional[str],
+    tool_group: Optional[str],
+    reason: Optional[str],
+    detail_level: str,
+) -> bool:
+    """Correct list calls that are clearly asking for episode routing.
+
+    Some models use runtime_broker(mode="list") while their arguments say they
+    want to create/wait for an episode. Catalog/detail list calls must remain
+    harmless discovery, so this only triggers for summary-level list requests
+    with explicit route/episode intent.
+    """
+
+    normalized_detail = str(detail_level or "summary").strip().lower()
+    if normalized_detail in {"catalog", "detail", "full"}:
+        return False
+    route_kind = _infer_route_kind_from_payload(
+        need if isinstance(need, dict) else {},
+        runtime_kind,
+        tool_group,
+        reason,
+    )
+    if route_kind not in _RUNTIME_ROUTE_DEFAULT_GROUPS:
+        return False
+    if need:
+        return True
+    probe = " ".join(
+        str(item or "")
+        for item in (
+            runtime_kind,
+            tool_group,
+            reason,
+        )
+    ).strip().lower()
+    if not probe:
+        return False
+    return any(marker in probe for marker in _RUNTIME_LIST_ROUTE_INTENT_MARKERS)
+
+
+def _append_runtime_episode(
+    route_context: dict[str, Any],
+    *,
+    need: dict[str, Any],
+    kind: str,
+    groups: list[dict[str, Any]],
+    allow_direct_fallback: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    route_context = dict(route_context or {})
+    runtime_context = get_runtime_context()
+    session_id = str(
+        runtime_context.get("session_id")
+        or runtime_context.get("sessionId")
+        or route_context.get("session_id")
+        or route_context.get("sessionId")
+        or ""
+    ).strip() or None
+    run_id = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or route_context.get("run_id")
+        or route_context.get("runId")
+        or ""
+    ).strip() or None
+    root_run_id = str(
+        runtime_context.get("root_run_id")
+        or runtime_context.get("rootRunId")
+        or route_context.get("root_run_id")
+        or route_context.get("rootRunId")
+        or run_id
+        or ""
+    ).strip() or None
+    workspace_path = str(
+        runtime_context.get("workspace_path")
+        or runtime_context.get("workspacePath")
+        or route_context.get("workspace_path")
+        or route_context.get("workspacePath")
+        or ""
+    ).strip() or None
+    bound_need = dict(need or {})
+    if session_id:
+        bound_need.setdefault("sessionId", session_id)
+        bound_need.setdefault("session_id", session_id)
+    if run_id:
+        bound_need.setdefault("runId", run_id)
+        bound_need.setdefault("run_id", run_id)
+    if root_run_id:
+        bound_need.setdefault("rootRunId", root_run_id)
+    inputs = dict(bound_need.get("inputs") or {}) if isinstance(bound_need.get("inputs"), dict) else {}
+    if workspace_path:
+        bound_need.setdefault("workspacePath", workspace_path)
+        bound_need.setdefault("workspace_path", workspace_path)
+        inputs.setdefault("workspacePath", workspace_path)
+        inputs.setdefault("workspace_path", workspace_path)
+    bound_need["inputs"] = inputs
+    episode = build_runtime_episode(
+        need=bound_need,
+        kind=kind,
+        state="queued",
+        required_runtime_access=[str((item or {}).get("group") or item) for item in groups],
+        continuation_target=str(bound_need.get("continuationTarget") or "runtime_episode_runner"),
+        extra={"allowDirectFallback": bool(allow_direct_fallback)},
+    )
+    persisted = enqueue_runtime_episode(episode, session_id=session_id, run_id=run_id, priority=int(need.get("priority") or 0))
+    merged_episode = {**episode, **{k: v for k, v in persisted.items() if k in {"session_id", "sessionId", "run_id", "runId", "state", "lastHeartbeatAt"}}}
+    if session_id:
+        merged_episode.setdefault("sessionId", session_id)
+        merged_episode.setdefault("session_id", session_id)
+    if run_id:
+        merged_episode.setdefault("runId", run_id)
+        merged_episode.setdefault("run_id", run_id)
+    if root_run_id:
+        merged_episode.setdefault("rootRunId", root_run_id)
+    return upsert_runtime_episode(route_context, merged_episode), merged_episode
+
+
+def _emit_runtime_episode_event(topic: str, payload: dict[str, Any]) -> None:
+    emit_runtime_episode_event(topic, payload, source={"runtime": "supervisor", "tool": "runtime_broker"})
+
+
+@tool
+def runtime_broker(
+    mode: str = "list",
+    runtime_kind: Optional[str] = None,
+    tool_group: Optional[str] = None,
+    tool_groups: Optional[list[str]] = None,
+    reason: Optional[str] = None,
+    detail_level: str = "summary",
+    need: Any = None,
+    allow_direct_fallback: bool = False,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> Command:
+    """Supervisor-only broker for listing, granting, routing, checking, and revoking runtime tool groups for the current run."""
+    normalized_mode = str(mode or "list").strip().lower()
+    route_context = dict((state or {}).get("current_route_context") or {})
+    if normalized_mode == "list" and _runtime_list_request_should_route(
+        need=need,
+        runtime_kind=runtime_kind,
+        tool_group=tool_group,
+        reason=reason,
+        detail_level=detail_level,
+    ):
+        normalized_mode = "route"
+
+    if normalized_mode == "list":
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Runtime tool groups available for run-scoped grant.",
+                            groups=runtime_tool_groups_catalog(),
+                            grants=[
+                                {"group": group, "runtimeKind": group.split(".", 1)[0]}
+                                for group in runtime_access_from_route_context(route_context)
+                            ],
+                            detail_level=detail_level,
+                            next_action="Prefer runtime_broker(mode='route', need={'kind':'research'|'engineering'|...}); use grant only for explicit tool group access.",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": route_context,
+            },
+        )
+
+    if normalized_mode == "route":
+        need_payload = _coerce_route_need_payload(
+            need,
+            runtime_kind=runtime_kind,
+            tool_group=tool_group,
+            reason=reason,
+            state=state,
+        )
+        route_kind = _normalize_capability_kind(need_payload.get("kind") or runtime_kind or tool_group)
+        if not route_kind:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="runtime_broker(mode=route) requires need.kind or runtime_kind.",
+                                error="missing_capability_kind",
+                                next_action="Call runtime_broker(mode='route', need={'kind':'research'|'engineering'|...}).",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+        need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
+        requested_groups = _capability_route_groups(
+            need=need_payload,
+            runtime_kind=runtime_kind or route_kind,
+            tool_group=tool_group,
+            tool_groups=tool_groups,
+        )
+        updated_context = route_context
+        grants: list[dict[str, Any]] = []
+        rejected: list[str] = []
+        if requested_groups:
+            updated_context, grants, rejected = grant_runtime_tool_groups(
+                route_context,
+                requested_groups,
+                reason=str(reason or need_payload.get("reason") or "capability_route").strip(),
+            )
+        updated_context, episode = _append_runtime_episode(
+            updated_context,
+            need=need_payload,
+            kind=route_kind,
+            groups=grants,
+            allow_direct_fallback=allow_direct_fallback,
+        )
+        _emit_runtime_episode_event("capability.need.detected", {"episode": episode})
+        _emit_runtime_episode_event("runtime.episode.queued", {"episode": episode})
+        if route_kind in {"engineering", "delegation"}:
+            next_action = "wait_episode"
+        elif route_kind == "research":
+            next_action = "wait_episode"
+        elif route_kind == "creative_media":
+            next_action = "wait_episode"
+        elif route_kind in {"computer_use", "rpa"}:
+            next_action = "wait_episode"
+        else:
+            next_action = "wait_episode"
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=not rejected,
+                            summary=f"Routed capability need to {route_kind}.",
+                            grants=grants,
+                            rejected=rejected,
+                            error="unknown_tool_group" if rejected else None,
+                            detail_level=detail_level,
+                            changed=grants,
+                            episode=episode,
+                            next_action=next_action,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
+                "planner_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "dispatched": True,
+                    "blocked": False,
+                    "reason": "runtime_episode_queued",
+                    "episodeId": str(episode.get("episodeId") or ""),
+                    "episodeKind": route_kind,
+                    "episodeCount": 1,
+                    "nextAction": "wait_episode",
+                },
+            },
+        )
+
+    requested_groups = list(tool_groups or [])
+    if tool_group:
+        requested_groups.append(tool_group)
+    requested_groups = normalize_runtime_access(requested_groups, runtime_kind=runtime_kind)
+
+    if normalized_mode == "status":
+        active_groups = runtime_access_from_route_context(route_context)
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Current run-scoped runtime tool grants.",
+                            groups=runtime_tool_groups_catalog(),
+                            grants=[
+                                {"group": group, "runtimeKind": group.split(".", 1)[0]}
+                                for group in active_groups
+                            ],
+                            detail_level=detail_level,
+                            next_action="Use granted tools or grant/revoke a group.",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": route_context,
+            },
+        )
+
+    if normalized_mode == "grant":
+        if not requested_groups:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="runtime_broker(mode=grant) requires tool_group or tool_groups.",
+                                error="missing_tool_group",
+                                next_action="Call list, then grant a group id.",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+        updated_context, grants, rejected = grant_runtime_tool_groups(
+            route_context,
+            requested_groups,
+            reason=str(reason or "").strip(),
+        )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=not rejected,
+                            summary=(
+                                "Runtime tool group granted for this run. It will be visible on the next supervisor step."
+                                if not rejected
+                                else "Some requested runtime tool groups were not granted."
+                            ),
+                            grants=grants,
+                            groups=runtime_tool_groups_catalog() if str(detail_level or "").strip().lower() in {"catalog", "detail", "full"} else [],
+                            rejected=rejected,
+                            error="unknown_tool_group" if rejected else None,
+                            detail_level=detail_level,
+                            changed=grants,
+                            next_action="Next step can use the granted tools.",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
+            },
+        )
+
+    if normalized_mode == "revoke":
+        updated_context, grants = revoke_runtime_tool_groups(
+            route_context,
+            requested_groups if requested_groups else None,
+        )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Runtime tool grants updated for this run.",
+                            grants=grants,
+                            detail_level=detail_level,
+                            changed=grants,
+                            next_action="Continue with the remaining grants.",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
+            },
+        )
+
+    return Command(
+        goto="supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_runtime_broker_payload(
+                        mode=normalized_mode or "unknown",
+                        ok=False,
+                        summary=f"Unsupported runtime_broker mode: {normalized_mode}",
+                        error="unsupported_mode",
+                        next_action="Use one of: list, status, grant, revoke.",
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            "current_route_context": route_context,
+        },
+    )
+__all__ = [
+    "runtime_broker",
+    "_append_runtime_episode",
+    "_capability_route_groups",
+    "_coerce_route_need_payload",
+    "_emit_runtime_episode_event",
+    "_enrich_route_need_for_episode",
+    "_infer_route_kind_from_payload",
+    "_minimal_route_task_from_need",
+    "_normalize_capability_kind",
+    "_planner_task_briefs_from_state",
+    "_runtime_broker_payload",
+    "_runtime_list_request_should_route",
+]

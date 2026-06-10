@@ -13,11 +13,11 @@ from typing import Annotated, Any, Optional
 from langchain_core.tools import InjectedToolCallId, tool
 
 from core.artifact_store import artifact_store
-from core.native_tool_governance import (
+from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
 )
-from core.native_workspace_governance import (
+from core.tools.native.workspace_governance import (
     _apply_scoped_text_patch,
     _current_run_inventory_key,
     _line_count_for_guard,
@@ -620,3 +620,4 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
         return output
     except Exception as e:
         return f"Error performing search: {str(e)}"
+

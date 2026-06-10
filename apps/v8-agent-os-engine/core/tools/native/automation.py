@@ -7,7 +7,7 @@ from typing import Annotated
 import psutil
 from langchain_core.tools import InjectedToolCallId, tool
 
-from core.native_tool_governance import (
+from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
 )
@@ -396,3 +396,4 @@ def read_audit_log(limit: int = 5, source_type: str = None, status: str = None) 
         return "\n".join(results)
     except Exception as e:
         return f"Error reading audit log: {str(e)}"
+

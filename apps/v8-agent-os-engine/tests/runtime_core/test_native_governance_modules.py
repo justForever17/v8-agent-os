@@ -5,7 +5,7 @@ import sys
 
 
 def test_command_governance_detects_interactive_and_session_preferred_commands() -> None:
-    from core.native_command_governance import (
+    from core.tools.native.command_governance import (
         _detect_interactive_command,
         _detect_session_preferred_command,
         _windows_shell_syntax_violation_payload,
@@ -25,7 +25,7 @@ def test_command_governance_detects_interactive_and_session_preferred_commands()
 
 
 def test_workspace_governance_scoped_patch_line_range_and_anchor() -> None:
-    from core.native_workspace_governance import _apply_scoped_text_patch
+    from core.tools.native.workspace_governance import _apply_scoped_text_patch
 
     line_result = _apply_scoped_text_patch(original="a\nb\nc\n", replacement="B", line_start=2, line_end=2)
     assert line_result["ok"] is True
@@ -43,7 +43,7 @@ def test_workspace_governance_scoped_patch_line_range_and_anchor() -> None:
 
 
 def test_desktop_governance_route_gate_required_and_runtime_mismatch() -> None:
-    from core.native_desktop_governance import _desktop_route_gate
+    from core.tools.native.desktop_governance import _desktop_route_gate
 
     allowed, failure, route = _desktop_route_gate(state={"current_route_context": {}}, tool_name="computer_use_click_target")
     assert allowed is False
@@ -66,3 +66,4 @@ def test_desktop_governance_route_gate_required_and_runtime_mismatch() -> None:
     assert route is not None
     assert failure is not None
     assert json.loads(failure)["gateErrorCode"] == "RUNTIME_MISMATCH"
+

@@ -7,7 +7,7 @@ from typing import Annotated, Any, Dict, Optional
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
-from core.native_desktop_governance import _desktop_route_gate, _desktop_route_merge_into_response
+from core.tools.native.desktop_governance import _desktop_route_gate, _desktop_route_merge_into_response
 from erc.runtime_context import get_runtime_context
 
 __all__ = [
@@ -298,3 +298,4 @@ def rpa_run_draft(
         )
     except Exception as e:
         return f"Error running RPA draft: {e}"
+

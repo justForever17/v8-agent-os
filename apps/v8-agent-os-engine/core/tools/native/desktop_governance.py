@@ -7,7 +7,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from core.native_tool_governance import _enforce_safety_decision
+from core.tools.native.tool_governance import _enforce_safety_decision
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 
@@ -346,3 +346,4 @@ def _guard_computer_use_steps(
         if not allowed:
             return False, error_message or f"Safety Guardian 已阻止 computer use 步骤：{action}"
     return True, None
+

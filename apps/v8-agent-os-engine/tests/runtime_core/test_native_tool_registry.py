@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from core import native_tools
-from core.native_tool_registry import (
+from core.tools.native.registry import (
     NATIVE_TOOL_NAMES,
     build_native_tools,
     native_tool_family_for_name,
@@ -98,9 +98,9 @@ def test_phase6_legacy_imports_remain_available() -> None:
 
 
 def test_phase7_spec_and_todo_imports_remain_available() -> None:
-    from core.native_spec_tools import spec_broker as spec_broker_from_module
-    from core.native_todo_tools import update_todo as update_todo_from_module
-    from core.native_todo_tools import write_todos as write_todos_from_module
+    from core.tools.native.spec import spec_broker as spec_broker_from_module
+    from core.tools.native.todo import update_todo as update_todo_from_module
+    from core.tools.native.todo import write_todos as write_todos_from_module
     from core.native_tools import spec_broker, update_todo, write_todos
 
     assert spec_broker.name == "spec_broker"
@@ -115,12 +115,21 @@ def test_phase7_spec_and_todo_imports_remain_available() -> None:
 
 
 def test_phase8_delegation_imports_remain_available() -> None:
-    from core.native_delegation_tools import delegation_broker as delegation_broker_from_module
+    from core.tools.native.delegation import delegation_broker as delegation_broker_from_module
     from core.native_tools import delegation_broker
 
     assert delegation_broker.name == "delegation_broker"
     assert delegation_broker_from_module.name == delegation_broker.name
     assert native_tool_family_for_name("delegation_broker") == "runtime"
+
+
+def test_phase9_runtime_imports_remain_available() -> None:
+    from core.tools.native.runtime import runtime_broker as runtime_broker_from_module
+    from core.native_tools import runtime_broker
+
+    assert runtime_broker.name == "runtime_broker"
+    assert runtime_broker_from_module.name == runtime_broker.name
+    assert native_tool_family_for_name("runtime_broker") == "runtime"
 
 
 def test_phase6_memory_runtime_legacy_patch_path(monkeypatch) -> None:
@@ -150,3 +159,4 @@ def test_phase6_rpa_runtime_legacy_patch_path(monkeypatch) -> None:
 
     assert payload["scripts"][0]["name"] == "demo.robot"
     assert payload["scripts"][0]["path"] == "flows/demo.robot"
+

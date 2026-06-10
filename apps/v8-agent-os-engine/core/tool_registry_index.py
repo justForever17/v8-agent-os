@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any
 
-from core.native_tool_registry import native_tool_family_for_name
+from core.tools.native.registry import native_tool_family_for_name
 from core.runtime_tool_access import runtime_tool_groups_catalog
 from core.tool_surface import runtime_kind_for_tool
 
@@ -228,3 +228,4 @@ def build_tool_registry_index() -> dict[str, Any]:
         "byRuntimeKind": by_runtime,
         "items": items,
     }
+

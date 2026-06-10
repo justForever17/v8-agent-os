@@ -25,6 +25,7 @@ from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
 from langgraph.types import Command  # noqa: E402
 
 from core.native_tools import NATIVE_TOOLS  # noqa: E402
+from core.native_tool_registry import native_tool_family_for_name  # noqa: E402
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor  # noqa: E402
 from core.tool_surface import MAX_TOOL_OUTPUT_LENGTH, TOOL_OUTPUT_TARGET_CHARS, runtime_kind_for_tool  # noqa: E402
 from graph.tool_routing import create_routed_tool_node  # noqa: E402
@@ -359,6 +360,7 @@ def _visibility_for_tool(tool_name: str, tools: list[Any]) -> dict[str, Any]:
     return {
         "registered": True,
         "runtimeKind": runtime_kind_for_tool(tool_name),
+        "toolFamily": native_tool_family_for_name(tool_name),
         "registeredGroups": registered_groups,
         "grantRequired": bool(registered_groups),
         "surfaces": {
@@ -908,6 +910,7 @@ def render_tool_markdown(record: ToolCalibrationRecord, *, generated_at: str) ->
         "maxToolOutputLength": MAX_TOOL_OUTPUT_LENGTH,
         "surfaceVisibility": surface_visibility,
         "runtimeKind": surface_visibility.get("runtimeKind"),
+        "toolFamily": surface_visibility.get("toolFamily"),
         "rawRefPolicy": surface_visibility.get("rawRefPolicy"),
         "agentVisibleBudget": surface_visibility.get("agentVisibleBudget"),
         "diagnostics": record.diagnostics,
@@ -1043,6 +1046,7 @@ def export_records(
                 "maxLineLength": record.diagnostics.get("maxLineLength"),
                 "skipReason": record.skip_reason,
                 "runtimeKind": surface_visibility.get("runtimeKind"),
+                "toolFamily": surface_visibility.get("toolFamily"),
                 "registeredGroups": surface_visibility.get("registeredGroups") or [],
                 "grantRequired": bool(surface_visibility.get("grantRequired")),
                 "surfaceVisibility": surface_visibility.get("surfaces") or {},

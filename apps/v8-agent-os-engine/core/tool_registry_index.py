@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Any
 
+from core.native_tool_registry import native_tool_family_for_name
 from core.runtime_tool_access import runtime_tool_groups_catalog
 from core.tool_surface import runtime_kind_for_tool
 
@@ -130,6 +131,7 @@ def _native_tool_entries() -> list[dict[str, Any]]:
                 "canonicalToolName": name,
                 "origin": "native",
                 "runtimeKind": runtime_kind_for_tool(name),
+                "toolFamily": native_tool_family_for_name(name),
                 "toolGroup": "",
                 "visibility": "registered",
                 "renderKind": _render_kind_for_tool(name),

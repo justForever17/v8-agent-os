@@ -42,6 +42,8 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     assert {"rawChars", "visibleChars", "truncatedByToolNode", "dirtySignals", "scenarioName"} <= set(
         loaded_index["tools"][0]
     )
+    by_name = {item["name"]: item for item in loaded_index["tools"]}
+    assert by_name["runtime_broker"]["toolFamily"] == "runtime"
 
 
 def test_command_embedded_tool_messages_are_truncated() -> None:

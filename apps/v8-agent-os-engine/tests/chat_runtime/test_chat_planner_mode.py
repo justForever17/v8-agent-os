@@ -252,6 +252,7 @@ class ChatPlannerModeTests(unittest.TestCase):
 
         with (
             patch("runtimes.chat.runtime.llm_factory.create_for_role", return_value=SlowPlannerModel()),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step") as activate_runtime_step,
             patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
         ):
             plan = asyncio.run(runtime.ensure_planner_plan(
@@ -267,6 +268,10 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("planner.deferred", topics)
         self.assertNotIn("planner.fallback.used", topics)
         self.assertNotIn("planner.plan.created", topics)
+        activate_runtime_step.assert_not_called()
+        deferred_payload = next(payload for topic, payload in emitted if topic == "planner.deferred")
+        self.assertEqual(deferred_payload.get("messageSurfacePriority"), "diagnostic")
+        self.assertFalse(deferred_payload.get("fallbackContinues"))
 
     def test_explicit_runtime_episode_defer_continues_with_fallback_plan(self):
         class SlowPlannerModel:

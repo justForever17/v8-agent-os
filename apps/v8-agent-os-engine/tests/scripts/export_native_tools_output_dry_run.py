@@ -111,6 +111,7 @@ STATEFUL_UNOBSERVED_REASONS: dict[str, str] = {
 
 BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "runtime_broker": {"mode": "list"},
+    "spec_broker": {"mode": "brief", "workspace_path": ""},
     "workspace_broker": {"mode": "inspect", "path": ".", "depth": 1, "max_entries": 30},
     "rpa_list_robot_scripts": {"limit": 5},
     "creative_media_catalog": {"detail_level": "summary", "limit": 8},

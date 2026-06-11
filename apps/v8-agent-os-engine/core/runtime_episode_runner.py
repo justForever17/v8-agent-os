@@ -762,7 +762,6 @@ class RuntimeEpisodeRunner:
             )
         except Exception as exc:
             context_summary = f"Engineering context initialized with workspace digest; context pack warning: {type(exc).__name__}: {exc}"
-        plan_only = self._is_engineering_plan_only_request(need=need, inputs=inputs)
         worker_briefs = normalize_task_briefs(
             inputs.get("workerBriefs")
             or inputs.get("worker_briefs")
@@ -773,6 +772,7 @@ class RuntimeEpisodeRunner:
             or need.get("taskBriefs")
             or need.get("tasks")
         )
+        plan_only = self._is_engineering_plan_only_request(need=need, inputs=inputs, worker_briefs=worker_briefs)
         blocked_tool_intent = inputs.get("blockedToolIntent") or need.get("blockedToolIntent")
         if not worker_briefs and isinstance(blocked_tool_intent, dict):
             tool_name = str(blocked_tool_intent.get("tool") or blocked_tool_intent.get("name") or "engineering action").strip()
@@ -839,6 +839,31 @@ class RuntimeEpisodeRunner:
             status = "waiting" if delegation_status in {"waiting", "pending", "running"} else delegation_status
             if status not in {"failed", "blocked", "waiting"}:
                 status = "ready"
+            if (
+                status == "ready"
+                and self._engineering_requires_write_evidence(need=need, inputs=inputs, worker_briefs=worker_briefs)
+                and not self._delegation_handoff_has_write_evidence(delegation_handoff)
+            ):
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="engineering",
+                    compact_summary=(
+                        "Engineering recoverable_failed after delegated execution: "
+                        "delegation reported ready without concrete touched files, patch, artifact, or proof."
+                    ),
+                    status="failed",
+                    confidence="low",
+                    consumer_hint=(
+                        "Retry Engineering with a complete implementation brief or narrow the contract; "
+                        "do not treat directory creation or empty verification as completed project delivery."
+                    ),
+                    extra={
+                        "engineeringState": "recoverable_failed",
+                        "errorCode": "engineering_missing_write_evidence",
+                        "delegationHandoff": delegation_handoff,
+                        "writeEvidenceRequired": True,
+                    },
+                )
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
@@ -871,7 +896,7 @@ class RuntimeEpisodeRunner:
                 +
                 f"Reason: {reason}\n{_preview(context_summary or digest_text, limit=700)}"
             ),
-            status="ready",
+            status="ready" if plan_only else "failed",
             confidence="medium",
             consumer_hint=(
                 "Use this plan-only handoff as the engineering planning result; no file write was requested."
@@ -879,7 +904,7 @@ class RuntimeEpisodeRunner:
                 else "Provide workerBriefs/taskBriefs or reroute with blockedToolIntent; Supervisor should not batch-write directly."
             ),
             extra={
-                "engineeringState": "work_plan_ready",
+                "engineeringState": "work_plan_ready" if plan_only else "recoverable_failed",
                 "deliverableKind": "plan_only" if plan_only else inputs.get("deliverableKind") or need.get("deliverableKind"),
                 "writeRequired": False if plan_only else inputs.get("writeRequired") if "writeRequired" in inputs else need.get("writeRequired"),
                 **({} if plan_only else {
@@ -893,13 +918,202 @@ class RuntimeEpisodeRunner:
         )
 
     @staticmethod
-    def _is_engineering_plan_only_request(*, need: dict[str, Any], inputs: dict[str, Any]) -> bool:
-        deliverable_kind = str(inputs.get("deliverableKind") or need.get("deliverableKind") or "").strip().lower()
+    def _engineering_requires_write_evidence(
+        *,
+        need: dict[str, Any],
+        inputs: dict[str, Any],
+        worker_briefs: list[dict[str, Any]],
+    ) -> bool:
+        explicit = RuntimeEpisodeRunner._engineering_contract_value(
+            need=need,
+            inputs=inputs,
+            worker_briefs=worker_briefs,
+            key="writeRequired",
+        )
+        if explicit is False:
+            return False
+        if explicit is True:
+            return True
+        deliverable_kind = str(
+            RuntimeEpisodeRunner._engineering_contract_value(
+                need=need,
+                inputs=inputs,
+                worker_briefs=worker_briefs,
+                key="deliverableKind",
+            )
+            or ""
+        ).strip().lower()
+        if deliverable_kind == "plan_only":
+            return False
+        if deliverable_kind in {"patch", "proof", "artifact", "implementation"}:
+            return True
+        combined = " ".join(
+            [
+                str(inputs.get("userRequest") or ""),
+                str(inputs.get("task") or ""),
+                str(need.get("reason") or ""),
+                str(inputs.get("deliverableKind") or need.get("deliverableKind") or ""),
+                json.dumps(worker_briefs, ensure_ascii=False, default=str),
+            ]
+        ).lower()
+        artifact_markers = (
+            "create",
+            "build",
+            "implement",
+            "write",
+            "generate",
+            "project",
+            "file",
+            "artifact",
+            "patch",
+            "创建",
+            "生成",
+            "实现",
+            "写",
+            "项目",
+            "文件",
+            "产物",
+            "交付",
+            "index.html",
+            ".html",
+            ".js",
+            ".css",
+            ".md",
+            "canvas",
+            "readme",
+            "design",
+        )
+        if any(marker in combined for marker in artifact_markers):
+            return True
+        for brief in worker_briefs:
+            caps = " ".join(str(item or "") for item in list(brief.get("requiredCapabilities") or []))
+            scope = " ".join(str(item or "") for item in list(brief.get("behaviorScope") or []))
+            if "workspace_mutation" in caps and "implementation" in scope:
+                return True
+        return False
+
+    @staticmethod
+    def _delegation_handoff_has_write_evidence(handoff: dict[str, Any]) -> bool:
+        def _walk(value: Any) -> list[Any]:
+            if isinstance(value, dict):
+                out: list[Any] = []
+                for item in value.values():
+                    out.extend(_walk(item))
+                return out
+            if isinstance(value, list):
+                out = []
+                for item in value:
+                    out.extend(_walk(item))
+                return out
+            return [value]
+
+        evidence_keys = {
+            "touchedFiles",
+            "touched_files",
+            "changedFiles",
+            "changed_files",
+            "createdFiles",
+            "created_files",
+            "modifiedFiles",
+            "modified_files",
+            "fileInventory",
+            "file_inventory",
+            "patches",
+            "patchRefs",
+            "proofRefs",
+            "artifactRefs",
+            "artifacts",
+        }
+
+        def _has_non_empty_evidence(value: Any) -> bool:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key in evidence_keys:
+                        if isinstance(item, (list, tuple, set, dict)):
+                            return bool(item)
+                        if isinstance(item, str):
+                            return bool(item.strip())
+                    if _has_non_empty_evidence(item):
+                        return True
+            elif isinstance(value, list):
+                return any(_has_non_empty_evidence(item) for item in value)
+            return False
+
+        if _has_non_empty_evidence(handoff):
+            return True
+        text = "\n".join(str(item or "") for item in _walk(handoff) if isinstance(item, str)).lower()
+        empty_dir_markers = ("0 个文件", "0 files", "empty directory", "目录为空")
+        if any(marker in text for marker in empty_dir_markers):
+            return False
+        write_verbs = ("created", "wrote", "modified", "updated", "patched", "新增", "写入", "修改", "更新", "创建")
+        file_markers = (".html", ".js", ".css", ".md", ".json", ".ts", ".tsx", ".py", "index.html", "readme", "design")
+        return any(verb in text for verb in write_verbs) and any(marker in text for marker in file_markers)
+
+    @staticmethod
+    def _engineering_contract_value(
+        *,
+        need: dict[str, Any],
+        inputs: dict[str, Any],
+        worker_briefs: list[dict[str, Any]] | None,
+        key: str,
+    ) -> Any:
+        sources: list[Any] = [inputs, need]
+        for brief in list(worker_briefs or []):
+            if not isinstance(brief, dict):
+                continue
+            sources.append(brief)
+            capsule = brief.get("engineeringTaskCapsule") or brief.get("engineering_task_capsule")
+            if isinstance(capsule, dict):
+                sources.append(capsule)
+            context = brief.get("context")
+            if isinstance(context, dict):
+                sources.append(context)
+        for source in sources:
+            if isinstance(source, dict) and key in source:
+                return source.get(key)
+        return None
+
+    @staticmethod
+    def _is_engineering_plan_only_request(
+        *,
+        need: dict[str, Any],
+        inputs: dict[str, Any],
+        worker_briefs: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        deliverable_kind = str(
+            RuntimeEpisodeRunner._engineering_contract_value(
+                need=need,
+                inputs=inputs,
+                worker_briefs=worker_briefs,
+                key="deliverableKind",
+            )
+            or ""
+        ).strip().lower()
         if deliverable_kind == "plan_only":
             return True
-        if inputs.get("writeRequired") is False or need.get("writeRequired") is False:
+        explicit_write = RuntimeEpisodeRunner._engineering_contract_value(
+            need=need,
+            inputs=inputs,
+            worker_briefs=worker_briefs,
+            key="writeRequired",
+        )
+        if explicit_write is False:
             return True
-        blob = json.dumps({"need": need, "inputs": inputs}, ensure_ascii=False).lower()
+        if explicit_write is True:
+            return False
+        natural_request_parts = [
+            str(inputs.get("userRequest") or ""),
+            str(inputs.get("task") or ""),
+            str(need.get("reason") or ""),
+        ]
+        for brief in list(worker_briefs or []):
+            if not isinstance(brief, dict):
+                continue
+            natural_request_parts.append(str(brief.get("goal") or ""))
+            context = brief.get("context")
+            if isinstance(context, dict):
+                natural_request_parts.append(str(context.get("userRequest") or ""))
+        blob = "\n".join(part for part in natural_request_parts if part).lower()
         return any(
             marker in blob
             for marker in (

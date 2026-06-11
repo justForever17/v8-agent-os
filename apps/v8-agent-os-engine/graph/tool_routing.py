@@ -288,6 +288,26 @@ def _workspace_from_state(state_mapping: dict[str, Any], args: dict[str, Any]) -
     return ""
 
 
+def _user_request_from_state(state_mapping: dict[str, Any]) -> str:
+    for key in ("latest_user_content", "latestUserContent", "user_request", "userRequest"):
+        value = state_mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    for key in ("latest_user_content", "latestUserContent", "user_request", "userRequest", "latestHumanUtterance"):
+        value = route_context.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _compact_user_request(text: str, *, limit: int = 1800) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)].rstrip() + "…"
+
+
 def _route_intent_for_blocked_tool(
     *,
     tool_name: str,
@@ -305,30 +325,40 @@ def _route_intent_for_blocked_tool(
     elif route_required and boundary_primary in {"engineering", "research", "creative_media", "computer_use", "rpa"}:
         route_kind = boundary_primary
     workspace = _workspace_from_state(state_mapping, args)
+    user_request = _compact_user_request(_user_request_from_state(state_mapping))
     inputs: dict[str, Any] = {
         "blockedTool": tool_name,
         "blockedToolArgs": args,
         "blockedReasons": list(hard_reasons),
     }
+    if user_request:
+        inputs["userRequest"] = user_request
     if workspace:
         inputs["workspacePath"] = workspace
     if route_kind == "engineering":
         command = str(args.get("command") or args.get("_raw") or "").strip()
         target_path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "").strip()
+        engineering_goal = user_request or command or target_path or f"Execute blocked engineering tool {tool_name}."
         inputs.update(
             {
                 "taskBriefs": [
                     {
                         "taskBriefId": "blocked-tool-engineering",
-                        "goal": command or target_path or f"Execute blocked engineering tool {tool_name}.",
+                        "goal": engineering_goal,
                         "context": {
                             "blockedTool": tool_name,
+                            "blockedCommand": command,
+                            "blockedTargetPath": target_path,
+                            "userRequest": user_request,
                             **({"workspacePath": workspace} if workspace else {}),
                         },
                         "writeSet": [target_path or workspace or "<project-workspace>/"],
                         "behaviorScope": ["implementation", "verification"],
                         "requiredCapabilities": ["workspace_mutation", "command_execution", "verification"],
-                        "acceptanceContract": "Complete the blocked engineering operation through Engineering Runtime and report touched files, commands, proof, and residual risks.",
+                        "acceptanceContract": (
+                            "Complete the original user engineering request, treating the blocked tool call as one attempted step. "
+                            "Report touched files, commands, proof, and residual risks."
+                        ),
                         "executionLaneHint": "auto",
                         "familyHint": "engineering",
                     }

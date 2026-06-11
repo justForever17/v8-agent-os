@@ -144,6 +144,162 @@ def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):
     assert handoff["writeRequired"] is False
 
 
+def test_task_brief_normalization_preserves_engineering_write_contract():
+    from core.delegation_broker import normalize_task_brief
+
+    brief = normalize_task_brief(
+        {
+            "taskBriefId": "game-project",
+            "goal": "Create a fullscreen Canvas game.",
+            "deliverableKind": "artifact",
+            "writeRequired": True,
+        }
+    )
+
+    assert brief["deliverableKind"] == "artifact"
+    assert brief["writeRequired"] is True
+
+
+def test_engineering_write_contract_not_confused_by_plan_only_text_in_acceptance(monkeypatch):
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "subagent_result_bundle",
+            "status": "ready",
+            "compactSummary": "Delegation created project files.",
+            "createdFiles": ["index.html", "src/main.js", "README.md"],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "create a canvas web game project"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "userRequest": "创建一个全屏 Canvas 像素风网页游戏项目。",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "game-project",
+                        "goal": "创建一个全屏 Canvas 像素风网页游戏项目。",
+                        "deliverableKind": "artifact",
+                        "writeRequired": True,
+                        "requiredCapabilities": ["workspace_mutation", "verification"],
+                        "behaviorScope": ["implementation", "verification"],
+                        "acceptanceContract": {
+                            "must": [
+                                "Return engineering_patch_bundle with touched files.",
+                                "For plan_only or writeRequired=false, do not fail merely because no patch worker ran.",
+                            ]
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "execution_started"
+    assert handoff["delegationHandoff"]["createdFiles"] == ["index.html", "src/main.js", "README.md"]
+
+
+def test_engineering_write_episode_rejects_ready_handoff_without_write_evidence(monkeypatch):
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "subagent_result_bundle",
+            "status": "ready",
+            "compactSummary": "Delegation executed 1 local subagent worker(s).",
+            "results": [
+                {
+                    "targetLabel": "Implementation Engineer",
+                    "status": "ok",
+                    "toolsUsed": ["run_system_command"],
+                    "compactTranscript": (
+                        "$ mkdir \".v8/live-audit/pixel-run-gun/demo\"\n"
+                        "$ dir \".v8/live-audit/pixel-run-gun/demo\"\n"
+                        "0 个文件 0 字节"
+                    ),
+                }
+            ],
+            "acceptanceCheck": {"must": {"passed": True, "items": ["Return touched files."]}},
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "create a canvas web game project"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "userRequest": "创建一个全屏 Canvas 像素风网页游戏项目，包含 index.html、main.js、README.md。",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "game-project",
+                        "goal": "创建一个全屏 Canvas 像素风网页游戏项目。",
+                        "requiredCapabilities": ["workspace_mutation", "verification"],
+                        "behaviorScope": ["implementation", "verification"],
+                        "acceptanceContract": "Return touched files and proof.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "failed"
+    assert handoff["engineeringState"] == "recoverable_failed"
+    assert handoff["errorCode"] == "engineering_missing_write_evidence"
+
+
+def test_engineering_write_episode_accepts_ready_handoff_with_created_files(monkeypatch):
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "subagent_result_bundle",
+            "status": "ready",
+            "compactSummary": "Delegation created project files.",
+            "createdFiles": ["index.html", "src/main.js", "README.md"],
+            "results": [
+                {
+                    "targetLabel": "Implementation Engineer",
+                    "status": "ok",
+                    "toolsUsed": ["write_native_file", "run_system_command"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "create a canvas web game project"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "userRequest": "创建一个全屏 Canvas 像素风网页游戏项目，包含 index.html、main.js、README.md。",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "game-project",
+                        "goal": "创建一个全屏 Canvas 像素风网页游戏项目。",
+                        "requiredCapabilities": ["workspace_mutation", "verification"],
+                        "behaviorScope": ["implementation", "verification"],
+                        "acceptanceContract": "Return touched files and proof.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "execution_started"
+    assert handoff["delegationHandoff"]["createdFiles"] == ["index.html", "src/main.js", "README.md"]
+
+
 def test_delegation_episode_without_tasks_returns_degraded_missing_tasks_handoff():
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": ""},

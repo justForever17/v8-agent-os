@@ -1761,6 +1761,12 @@ class ChatRuntime:
 
     def _planner_request_requires_runtime_episode_fallback(self, chat_run: ChatRunContext) -> bool:
         latest_user_content = str(chat_run.prepared.latest_user_content or "")
+        task_shape = (
+            chat_run.prepared.task_shape_hint
+            if isinstance(getattr(chat_run.prepared, "task_shape_hint", None), dict)
+            else {}
+        )
+        primary_shape = str(task_shape.get("primaryTaskShape") or "").strip().lower()
         live_audit_context = (
             chat_run.prepared.live_audit_context
             if isinstance(getattr(chat_run.prepared, "live_audit_context", None), dict)
@@ -1773,6 +1779,14 @@ class ChatRuntime:
             )
             or
             self._detect_explicit_runtime_episode_request(latest_user_content)
+            or (
+                primary_shape == "project_coding"
+                and (
+                    bool(getattr(chat_run.prepared, "engineering_required", False))
+                    or bool(getattr(chat_run.prepared, "explicit_engineering_requested", False))
+                    or bool(getattr(chat_run.prepared, "task_planning_mode", False))
+                )
+            )
             or (
                 live_audit_context.get("runtimeSubagentClosureLiveAudit")
                 and any(
@@ -2090,6 +2104,8 @@ class ChatRuntime:
                     "writeRequired": not no_write,
                     "runtimeClosureExpectation": "Create or wait for canonical runtime_episodes and return typed handoff, not supervisor-only prose.",
                 },
+                "deliverableKind": deliverable_kind,
+                "writeRequired": not no_write,
                 "writeSet": [] if no_write else ["<project-workspace>/"],
                 "behaviorScope": ["engineering", "runtime_plan", "verification", deliverable_kind],
                 "requiredCapabilities": ["runtime_episode_planning", "proof_contract", "typed_handoff"],
@@ -4289,6 +4305,10 @@ class ChatRuntime:
             "workspaceId": chat_run.scope_result.binding.workspace_id,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+            "latestUserContent": chat_run.prepared.latest_user_content,
+            "latest_user_content": chat_run.prepared.latest_user_content,
+            "userRequest": chat_run.prepared.latest_user_content,
+            "user_request": chat_run.prepared.latest_user_content,
             "taskPlanningMode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
             "task_planning_mode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
             "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
@@ -4350,6 +4370,13 @@ class ChatRuntime:
         planner_plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
         planner_decision = dict((planner_plan or {}).get("autoDispatchDecision") or {})
         planner_auto_dispatch_suppressed = bool(getattr(chat_run.prepared, "planner_deferred", False))
+        if planner_auto_dispatch_suppressed and planner_plan and bool(planner_decision.get("willDispatch")):
+            # Real-first protects ordinary chats from waiting on planner prequeue work.
+            # Explicit runtime-episode/spec execution requests are already route-required, so
+            # suppressing their dispatch lets Supervisor complete with prose instead of the
+            # canonical runtime episode/handoff path.
+            if self._planner_request_requires_runtime_episode_fallback(chat_run):
+                planner_auto_dispatch_suppressed = False
         workflow_planner_plan = planner_plan
         if planner_plan and bool(planner_decision.get("willDispatch")) and planner_auto_dispatch_suppressed:
             chat_run.emit_runtime_event(
@@ -7857,7 +7884,7 @@ class ChatRuntime:
             return ""
         if str(dispatch_status.get("nextAction") or "").strip() != "resume_supervisor":
             return ""
-        if str(dispatch_status.get("state") or "").strip() not in {"handoff_ready", "episode_terminal"}:
+        if str(dispatch_status.get("state") or "").strip() not in {"handoff_ready", "degraded_handoff_ready", "episode_terminal"}:
             return ""
         route_context = state.get("current_route_context")
         if not isinstance(route_context, dict):

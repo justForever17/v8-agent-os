@@ -1,7 +1,7 @@
 import time
 from types import SimpleNamespace
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .supervisor_context import (
     apply_passive_rag_injection,
@@ -386,9 +386,9 @@ def _runtime_episode_handoff_ready(state) -> bool:
     dispatch_state = str(dispatch_status.get("state") or "").strip()
     if mode != "runtime_episode" or next_action != "resume_supervisor":
         return False
-    if dispatch_state not in {"handoff_ready", "episode_terminal"}:
+    if dispatch_state not in {"handoff_ready", "degraded_handoff_ready", "episode_terminal"}:
         return False
-    if dispatch_state == "handoff_ready":
+    if dispatch_state in {"handoff_ready", "degraded_handoff_ready"}:
         return True
     try:
         return int(dispatch_status.get("handoffCount") or 0) > 0
@@ -418,6 +418,64 @@ def _runtime_handoff_final_message() -> HumanMessage:
             "unless the user sends a new request."
         )
     )
+
+
+def _runtime_handoff_final_text(state) -> str:
+    route_context = dict((state or {}).get("current_route_context") or {})
+    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    handoffs = [
+        dict(item)
+        for item in list(route_context.get("handoffRefs") or [])
+        if isinstance(item, dict)
+    ]
+    state_label = str(dispatch_status.get("state") or "").strip()
+    heading = (
+        "运行时链路已降级回流，当前可见结果如下："
+        if state_label == "degraded_handoff_ready"
+        else "运行时链路已经完成并回流，当前可见结果如下："
+    )
+    lines = [heading]
+    for handoff in handoffs[:8]:
+        kind = str(handoff.get("kind") or handoff.get("type") or "runtime_handoff").strip()
+        status = str(handoff.get("status") or "").strip()
+        summary = str(handoff.get("compactSummary") or handoff.get("summary") or "").strip()
+        if not summary:
+            refs = handoff.get("refs") if isinstance(handoff.get("refs"), list) else []
+            summary = f"已生成 {len(refs)} 个引用。" if refs else "已生成 typed handoff。"
+        label = kind if not status else f"{kind} / {status}"
+        lines.append(f"- {label}: {summary[:900]}")
+    if len(handoffs) > 8:
+        lines.append(f"- 另有 {len(handoffs) - 8} 个 handoff 已进入执行图/诊断面板。")
+    if not handoffs:
+        episode_count = int(dispatch_status.get("episodeCount") or 0)
+        lines.append(f"- runtime_episode: {episode_count} 个 episode 已进入终态，但没有可展示 handoff 引用。")
+    lines.append("我会基于这些 runtime 结果完成本轮收口；不会绕过 runtime 直接执行受管控的文件或命令操作。")
+    return "\n".join(lines)
+
+
+def _runtime_handoff_final_response(state) -> AIMessage:
+    return AIMessage(content=_runtime_handoff_final_text(state))
+
+
+def _runtime_recoverable_failure_final_text(state) -> str:
+    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
+    failed_episode_count = int(dispatch_status.get("failedEpisodeCount") or dispatch_status.get("episodeCount") or 0)
+    failed_handoff_count = int(dispatch_status.get("failedHandoffCount") or 0)
+    lines = [
+        "这次任务还没有真正完成：必需的 runtime episode 已失败。",
+        f"- 失败原因：{reason}",
+    ]
+    if failed_episode_count:
+        lines.append(f"- 失败 episode 数：{failed_episode_count}")
+    if failed_handoff_count:
+        lines.append(f"- 失败 handoff 数：{failed_handoff_count}")
+    lines.append("我不会把失败或未生成的产物当作已交付；需要根据这个失败原因重新缩小任务、修复 worker/验收合同，或由用户确认后重试。")
+    return "\n".join(lines)
+
+
+def _runtime_recoverable_failure_final_response(state) -> AIMessage:
+    return AIMessage(content=_runtime_recoverable_failure_final_text(state))
 
 
 def _runtime_recoverable_failure_message(state) -> HumanMessage:
@@ -517,6 +575,14 @@ def execute_supervisor_turn(
             route_context=dict(state.get("current_route_context") or {}),
         )
         visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
+        if _runtime_episode_handoff_ready(state):
+            response = _runtime_handoff_final_response(state)
+            extensions_runtime_service.emit_execution_completed(response=response)
+            return response
+        if _runtime_episode_recoverable_failure(state):
+            response = _runtime_recoverable_failure_final_response(state)
+            extensions_runtime_service.emit_execution_completed(response=response)
+            return response
         if _is_network_supervisor_compat_transport(state) and _compat_external_tools_primary(state):
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()

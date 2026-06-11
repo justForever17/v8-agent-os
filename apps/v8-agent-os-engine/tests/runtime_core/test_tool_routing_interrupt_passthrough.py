@@ -89,6 +89,37 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "engineering")
         self.assertIn("inputs", result.additional_kwargs["routeIntent"])
 
+    async def test_engineering_route_intent_preserves_original_user_request(self):
+        request = _DummyRequest(
+            "run_system_command",
+            "tool_call_command",
+            state={
+                "current_route_context": {
+                    "engineeringRequired": True,
+                    "latestUserContent": "创建一个全屏 Canvas 像素风网页游戏项目，包含 index.html、main.js 和 README。",
+                    "workspacePath": "E:\\Projects\\test3",
+                }
+            },
+        )
+        request.tool_call["args"] = {
+            "command": 'mkdir -p ".v8/live-audit/pixel-run-gun/demo"',
+            "cwd": "E:\\Projects\\test3",
+        }
+
+        async def execute(_request):
+            raise AssertionError("direct command should have been routed before execution")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        route_intent = result.additional_kwargs["routeIntent"]
+        self.assertEqual(route_intent["kind"], "engineering")
+        inputs = route_intent["inputs"]
+        self.assertEqual(inputs["userRequest"], "创建一个全屏 Canvas 像素风网页游戏项目，包含 index.html、main.js 和 README。")
+        brief = inputs["taskBriefs"][0]
+        self.assertEqual(brief["goal"], inputs["userRequest"])
+        self.assertEqual(brief["context"]["blockedCommand"], 'mkdir -p ".v8/live-audit/pixel-run-gun/demo"')
+
     async def test_complex_direct_write_enqueues_episode_when_runtime_context_exists(self):
         request = _DummyRequest(
             "write_native_file",

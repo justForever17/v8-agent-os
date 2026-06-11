@@ -380,6 +380,28 @@ def _wait_for_session_idle(session_id: str, *, timeout: int) -> tuple[bool, dict
     return False, last_state
 
 
+def _cancel_active_runs(engine_url: str, session_id: str, idle_state: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    api_base = _engine_api_base(engine_url)
+    cancelled: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    active_runs = [item for item in list(idle_state.get("activeRuns") or []) if isinstance(item, dict)]
+    for run in active_runs:
+        run_id = str(run.get("id") or run.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        try:
+            response = _json_request(
+                f"{api_base}/runs/{run_id}/commands/cancel",
+                method="POST",
+                payload={"reason": reason, "payload": {"source": "runtime_subagent_closure_live_audit"}},
+                timeout=8,
+            )
+            cancelled.append({"runId": run_id, "response": response})
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"runId": run_id, "error": f"{type(exc).__name__}: {exc}"})
+    return {"cancelled": cancelled, "errors": errors}
+
+
 def _state_has_model_quota_block(state: dict[str, Any]) -> bool:
     for run in list(state.get("activeRuns") or []):
         if not isinstance(run, dict):
@@ -602,8 +624,30 @@ def _run_case(
             if result.compaction_applied:
                 break
             time.sleep(3)
-    idle, idle_state = _wait_for_session_idle(session_id, timeout=min(120, max(20, max_wait // 2)))
+    acceptance_seen = bool(result.episode_ids and (result.handoff_kinds or result.degraded_count))
+    idle_timeout = min(12, max(5, max_wait // 10)) if acceptance_seen else min(120, max(20, max_wait // 2))
+    idle, idle_state = _wait_for_session_idle(session_id, timeout=idle_timeout)
     result.key_events.append(_redact({"postRunIdle": idle, "idleState": idle_state}))
+    if acceptance_seen and not idle:
+        cleanup = _cancel_active_runs(
+            engine_url,
+            session_id,
+            idle_state,
+            reason="live_audit_acceptance_terminal_cleanup",
+        )
+        result.key_events.append(_redact({"acceptanceTerminalCleanup": cleanup}))
+        idle_after_cleanup, cleanup_state = _wait_for_session_idle(session_id, timeout=12)
+        result.key_events.append(_redact({"postCleanupIdle": idle_after_cleanup, "idleState": cleanup_state}))
+        if not idle_after_cleanup:
+            result.status = "failed"
+            result.failure_reason = _redact(
+                {
+                    "reason": "accepted_but_run_failed_to_converge_after_cleanup",
+                    "idleState": cleanup_state,
+                    "cleanup": cleanup,
+                }
+            )
+            return result
     if idle:
         time.sleep(3)
     _summarize_result(result)

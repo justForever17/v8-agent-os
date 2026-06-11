@@ -709,6 +709,23 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(prepared.planner_dispatch_mode, "auto")
         self.assertEqual(prepared.engineering_mode, "force")
 
+    def test_project_coding_deferred_planner_still_requires_runtime_episode_fallback(self):
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                latest_user_content="创建一个 Canvas Web 游戏项目并保存到当前工作区。",
+                spec_mode=False,
+                spec_brief={},
+                live_audit_context={},
+                task_shape_hint={"primaryTaskShape": "project_coding"},
+                engineering_required=True,
+                explicit_engineering_requested=False,
+                task_planning_mode=True,
+            )
+        )
+
+        self.assertTrue(runtime._planner_request_requires_runtime_episode_fallback(chat_run))
+
     def test_normalize_planner_plan_payload_rebuilds_missing_graph(self):
         fallback_plan = {
             "planId": "plan_fallback",

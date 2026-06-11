@@ -230,6 +230,14 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         normalized["engineeringTaskCapsule"] = dict(payload.get("engineeringTaskCapsule") or {})
     elif isinstance(payload.get("engineering_task_capsule"), dict):
         normalized["engineeringTaskCapsule"] = dict(payload.get("engineering_task_capsule") or {})
+    if "deliverableKind" in payload or "deliverable_kind" in payload:
+        normalized["deliverableKind"] = str(
+            _first_present(payload, ("deliverableKind", "deliverable_kind")) or ""
+        ).strip()
+    if "writeRequired" in payload or "write_required" in payload:
+        normalized["writeRequired"] = _safe_bool(
+            _first_present(payload, ("writeRequired", "write_required"))
+        )
     if "validateSkillArtifact" in payload or "validate_skill_artifact" in payload:
         normalized["validateSkillArtifact"] = _safe_bool(
             _first_present(payload, ("validateSkillArtifact", "validate_skill_artifact"))

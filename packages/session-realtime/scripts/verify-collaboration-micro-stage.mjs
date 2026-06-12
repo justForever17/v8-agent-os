@@ -41,6 +41,7 @@ const stages = buildCollaborationMicroStages([
       kind: "engineering",
       state: "active",
       compactSummary: "生成 work plan",
+      detailRef: "raw://engineering/active",
     },
   },
   {
@@ -72,6 +73,28 @@ assert.ok(runtimeStage);
 assert.equal(runtimeStage.runtimeId, "engineering");
 assert.equal(runtimeStage.status, "completed");
 assert.deepEqual(runtimeStage.steps.map((step) => step.cue), ["engineering", "completed"]);
+assert.equal(runtimeStage.steps[0].detailRef, "raw://engineering/active");
+
+const unrelated = buildCollaborationMicroStages([
+  {
+    id: "evt_planner_noise",
+    topic: "planner.plan.created",
+    summary: "Planner generated a draft.",
+    timestamp: 450,
+    runtimeId: "planner_lane",
+    data: { runId },
+  },
+  {
+    id: "evt_chat_noise",
+    topic: "runtime.episode.active",
+    summary: "Chat runtime is active.",
+    timestamp: 451,
+    runtimeId: "chat",
+    data: { runId, episodeId: "ep_chat", kind: "chat" },
+  },
+], { runId, locale: "zh-CN" });
+
+assert.equal(unrelated.length, 0);
 
 const degraded = buildCollaborationMicroStages([
   {

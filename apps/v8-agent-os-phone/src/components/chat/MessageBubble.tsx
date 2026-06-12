@@ -29,7 +29,10 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ChatMessage, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillReferenceSummary } from "@/src/types/admin";
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
-import { CollaborationMicroStageScene } from "@/src/components/chat/collaboration/CollaborationMicroStageScene";
+import {
+    CollaborationMicroStageScene,
+    type CollaborationMicroStageDetailTarget,
+} from "@/src/components/chat/collaboration/CollaborationMicroStageScene";
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
@@ -38,16 +41,7 @@ import {
 } from "@/src/lib/runtime-stage";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
-const BUBBLE_COLLABORATION_LIMIT = 10;
-const BUBBLE_TASK_RUNTIME_IDS = new Set([
-    "engineering",
-    "research",
-    "creative_media",
-    "computer_use",
-    "rpa",
-    "desktop_live",
-    "network_supervisor",
-]);
+const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
 
 function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode {
     return node.kind === "execution";
@@ -69,111 +63,6 @@ function isSupervisorVisibleActivityNode(node: PhoneUiTimelineNode) {
         || executionType === "tool_result";
 }
 
-function readActivityData(activity: PhoneRuntimeStageActivity): Record<string, unknown> {
-    if (activity.node.kind !== "execution" || !activity.node.data || typeof activity.node.data !== "object") {
-        return {};
-    }
-    return activity.node.data as Record<string, unknown>;
-}
-
-function readActivityString(value: unknown) {
-    return typeof value === "string" ? value.trim() : "";
-}
-
-function getActivityTopic(activity: PhoneRuntimeStageActivity) {
-    return String(activity.topic || ("topic" in activity.node ? activity.node.topic || "" : "")).trim();
-}
-
-function getActivityRunId(activity: PhoneRuntimeStageActivity) {
-    const data = readActivityData(activity);
-    return readActivityString(data.runId)
-        || readActivityString(data.run_id)
-        || readActivityString(data.rootRunId)
-        || readActivityString(data.root_run_id)
-        || activity.messageId;
-}
-
-function isMissingDelegationActivity(activity: PhoneRuntimeStageActivity) {
-    const data = readActivityData(activity);
-    const topic = getActivityTopic(activity).toLowerCase();
-    const dispatchStatus = readActivityString(data.dispatchStatus || data.dispatch_status).toLowerCase();
-    return Boolean(
-        data.missingTasks
-        || data.missing_tasks
-        || data.missingResult
-        || data.missing_result
-        || data.diagnosticKey === "delegation_missing_tasks"
-        || dispatchStatus === "missing_tasks"
-        || topic.includes("missing_tasks")
-    );
-}
-
-function isBubbleSubagentActivity(activity: PhoneRuntimeStageActivity) {
-    const topic = getActivityTopic(activity);
-    if (activity.runtimeId === "subagent_swarm") {
-        return !isMissingDelegationActivity(activity);
-    }
-    return (
-        topic.startsWith("subagent.task.")
-        || topic.startsWith("delegation.child.")
-        || topic.startsWith("delegation.")
-        || topic.startsWith("delegation_broker.")
-    ) && !isMissingDelegationActivity(activity);
-}
-
-function normalizeRuntimeKind(value: string) {
-    const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
-    if (normalized.includes("research") || normalized.includes("evidence")) return "research";
-    if (normalized.includes("engineering") || normalized.includes("patch") || normalized.includes("verification")) return "engineering";
-    if (normalized.includes("creative") || normalized.includes("media") || normalized.includes("asset")) return "creative_media";
-    if (normalized.includes("computer") || normalized.includes("desktop") || normalized.includes("browser")) return "computer_use";
-    if (normalized.includes("rpa") || normalized.includes("trace")) return "rpa";
-    if (normalized.includes("network")) return "network_supervisor";
-    return normalized;
-}
-
-function isTaskRuntimeActivity(activity: PhoneRuntimeStageActivity) {
-    if (activity.synthetic || activity.kind === "governance") {
-        return false;
-    }
-    const topic = getActivityTopic(activity);
-    if (!topic.startsWith("runtime.episode.") && !topic.startsWith("handoff.ref.")) {
-        return false;
-    }
-    const data = readActivityData(activity);
-    const runtimeKind = normalizeRuntimeKind(
-        readActivityString(data.kind)
-        || readActivityString(data.runtimeKind)
-        || readActivityString(data.runtime_kind)
-        || String(activity.runtimeId || ""),
-    );
-    return BUBBLE_TASK_RUNTIME_IDS.has(String(activity.runtimeId))
-        || BUBBLE_TASK_RUNTIME_IDS.has(runtimeKind);
-}
-
-function isBubbleCollaborationActivity(activity: PhoneRuntimeStageActivity) {
-    return isBubbleSubagentActivity(activity) || isTaskRuntimeActivity(activity);
-}
-
-function selectBubbleCollaborationActivities(
-    activities: PhoneRuntimeStageActivity[],
-    runId?: string | null,
-) {
-    const normalizedRunId = String(runId || "").trim();
-    const selected = activities
-        .filter((activity) => {
-            if (!isBubbleCollaborationActivity(activity)) {
-                return false;
-            }
-            if (!normalizedRunId) {
-                return true;
-            }
-            return getActivityRunId(activity) === normalizedRunId;
-        })
-        .sort((left, right) => left.timestamp - right.timestamp);
-    return selected.slice(Math.max(0, selected.length - BUBBLE_COLLABORATION_LIMIT));
-}
-
 function toMicroStageActivityInput(activity: PhoneRuntimeStageActivity): CollaborationMicroStageActivityInput {
     return {
         id: activity.id,
@@ -185,6 +74,32 @@ function toMicroStageActivityInput(activity: PhoneRuntimeStageActivity): Collabo
             ? activity.node.data as Record<string, unknown>
             : {},
     };
+}
+
+function getExecutionTopic(node: PhoneUiExecutionNode) {
+    return String(node.topic || node.data?.topic || "").trim().toLowerCase();
+}
+
+function getExecutionToolName(node: PhoneUiExecutionNode) {
+    return String(node.toolName || node.data?.toolName || node.data?.tool_name || "").trim().toLowerCase();
+}
+
+function isMicroStageSupersededTimelineNode(node: PhoneUiTimelineNode, microStageVisible: boolean) {
+    if (!microStageVisible || !isExecutionNode(node)) {
+        return false;
+    }
+
+    const topic = getExecutionTopic(node);
+    if (node.executionType === "runtime_progress") {
+        return topic.startsWith("runtime.episode.")
+            || topic.startsWith("handoff.ref.")
+            || topic.startsWith("subagent.task.")
+            || topic.startsWith("delegation.")
+            || topic.startsWith("delegation_broker.");
+    }
+
+    return (node.executionType === "tool_call" || node.executionType === "tool_result")
+        && MICRO_STAGE_TOOL_NAMES.has(getExecutionToolName(node));
 }
 
 function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode & { toolCallId: string } {
@@ -671,13 +586,60 @@ export const MessageBubble = memo(function MessageBubble({
         () => buildPhoneToolExecutionView(message.nodes),
         [message.nodes],
     );
-    const renderableNodes = toolExecutionView.renderableNodes;
+    const rawRenderableNodes = toolExecutionView.renderableNodes;
     const resultNodesByToolCallId = toolExecutionView.resultNodesByToolCallId;
+    const rawHasStructuredNodes = rawRenderableNodes.length > 0;
+    const rawFallbackBlocks = useMemo(
+        () => (rawHasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
+        [rawHasStructuredNodes, message.content],
+    );
+    const horizontalBubbleLimit = Math.max(196, width - (isLandscape ? 176 : 76));
+    const sharedTextBubbleWidth = Math.max(
+        176,
+        Math.min(
+            horizontalBubbleLimit,
+            isLandscape ? 412 : 353,
+        ),
+    );
+    const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
+    const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
+    const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
+    const assistantActive = !isUser && isLast && isLoading;
+    const hasSupervisorVisibleActivity = useMemo(() => {
+        if (rawHasStructuredNodes) {
+            return rawRenderableNodes.some(isSupervisorVisibleActivityNode);
+        }
+        return rawFallbackBlocks.some((block) => block.type !== "voice" && block.content.trim().length > 0);
+    }, [rawFallbackBlocks, rawHasStructuredNodes, rawRenderableNodes]);
+    const visibleBubbleMicroStages = useMemo(
+        () => buildCollaborationMicroStages(
+            hasSupervisorVisibleActivity && !isUser && isLast
+                ? runtimeActivities.map(toMicroStageActivityInput)
+                : [],
+            {
+                runId: message.runId,
+                locale,
+                limit: 4,
+                maxStepsPerStage: 4,
+            },
+        ),
+        [hasSupervisorVisibleActivity, isLast, isUser, locale, message.runId, runtimeActivities],
+    );
+    const microStageVisible = visibleBubbleMicroStages.length > 0;
+    const renderableNodes = useMemo(
+        () => rawRenderableNodes.filter((node) => !isMicroStageSupersededTimelineNode(node, microStageVisible)),
+        [microStageVisible, rawRenderableNodes],
+    );
     const hasStructuredNodes = renderableNodes.length > 0;
     const fallbackBlocks = useMemo(
         () => (hasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
         [hasStructuredNodes, message.content],
     );
+    const timelineSegments = useMemo(
+        () => buildMessageTimelineSegments(renderableNodes, { active: assistantActive }),
+        [assistantActive, renderableNodes],
+    );
+    const assistantEmptyActive = assistantActive && !hasStructuredNodes && fallbackBlocks.length === 0;
     const voiceDescriptors = useMemo(() => {
         const descriptors: Array<{ key: string; text: string }> = [];
         if (hasStructuredNodes) {
@@ -720,46 +682,6 @@ export const MessageBubble = memo(function MessageBubble({
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText;
-    const horizontalBubbleLimit = Math.max(196, width - (isLandscape ? 176 : 76));
-    const sharedTextBubbleWidth = Math.max(
-        176,
-        Math.min(
-            horizontalBubbleLimit,
-            isLandscape ? 412 : 353,
-        ),
-    );
-    const assistantBubbleBackground = themeMode === "dark" ? "rgba(24,24,27,0.72)" : palette.surfaceStrong;
-    const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
-    const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
-    const assistantActive = !isUser && isLast && isLoading;
-    const bubbleExecutionActivities = useMemo(
-        () => (!isUser && isLast ? selectBubbleCollaborationActivities(runtimeActivities, message.runId) : []),
-        [isLast, isUser, message.runId, runtimeActivities],
-    );
-    const timelineSegments = useMemo(
-        () => buildMessageTimelineSegments(renderableNodes, { active: assistantActive }),
-        [assistantActive, renderableNodes],
-    );
-    const assistantEmptyActive = assistantActive && !hasStructuredNodes && fallbackBlocks.length === 0;
-    const hasSupervisorVisibleActivity = useMemo(() => {
-        if (hasStructuredNodes) {
-            return renderableNodes.some(isSupervisorVisibleActivityNode);
-        }
-        return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim().length > 0);
-    }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
-    const visibleBubbleExecutionActivities = hasSupervisorVisibleActivity ? bubbleExecutionActivities : [];
-    const visibleBubbleMicroStages = useMemo(
-        () => buildCollaborationMicroStages(
-            visibleBubbleExecutionActivities.map(toMicroStageActivityInput),
-            {
-                runId: message.runId,
-                locale,
-                limit: 4,
-                maxStepsPerStage: 4,
-            },
-        ),
-        [locale, message.runId, visibleBubbleExecutionActivities],
-    );
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
             phase?: string;
@@ -796,6 +718,11 @@ export const MessageBubble = memo(function MessageBubble({
             return;
         }
         await Clipboard.setStringAsync(copyValue);
+        setCopied(true);
+    };
+
+    const handleOpenMicroStageDetailRef = async (target: CollaborationMicroStageDetailTarget) => {
+        await Clipboard.setStringAsync(target.detailRef);
         setCopied(true);
     };
 
@@ -1062,6 +989,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         palette={palette}
                                         dark={themeMode === "dark"}
                                         locale={locale}
+                                        onOpenDetailRef={(target) => void handleOpenMicroStageDetailRef(target)}
                                     />
                                 </View>
                             ) : null}

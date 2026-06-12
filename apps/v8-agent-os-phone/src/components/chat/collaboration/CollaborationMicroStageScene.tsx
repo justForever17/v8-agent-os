@@ -1,5 +1,5 @@
-import { memo, useEffect } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { memo, useEffect, type ComponentType } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
     Easing,
@@ -13,6 +13,7 @@ import Animated, {
 import type {
     CollaborationMicroStage,
     CollaborationMicroStageCue,
+    CollaborationMicroStageStep,
     CollaborationMicroStageStatus,
 } from "@v8/session-realtime";
 
@@ -21,11 +22,22 @@ import { radii, spacing } from "@/src/theme/tokens";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import { createTranslator } from "@/src/lib/locale";
 
-type CollaborationMicroStageSceneProps = {
+export type CollaborationMicroStageDetailTarget = {
+    detailRef: string;
+    stage: CollaborationMicroStage;
+    step: CollaborationMicroStageStep;
+};
+
+export type CollaborationMicroStageRendererProps = {
     stages: CollaborationMicroStage[];
     palette: ThemeColors;
     dark: boolean;
     locale: LocaleCode;
+    onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
+};
+
+type CollaborationMicroStageSceneProps = CollaborationMicroStageRendererProps & {
+    renderer?: ComponentType<CollaborationMicroStageRendererProps>;
 };
 
 type MicroStageTranslator = ReturnType<typeof createTranslator>;
@@ -66,11 +78,13 @@ function ActorSprite({
     tone,
     active,
     variant,
+    onPress,
 }: {
     label: string;
     tone: string;
     active: boolean;
     variant: "supervisor" | "worker" | "runtime";
+    onPress?: () => void;
 }) {
     const pulse = useSharedValue(0);
 
@@ -104,7 +118,13 @@ function ActorSprite({
     }));
 
     return (
-        <View style={styles.actorWrap} accessibilityLabel={label}>
+        <Pressable
+            style={styles.actorWrap}
+            accessibilityLabel={label}
+            accessibilityRole={onPress ? "button" : undefined}
+            disabled={!onPress}
+            onPress={onPress}
+        >
             <Animated.View style={[styles.actorAura, { borderColor: tone }, ringStyle]} />
             <Animated.View style={[styles.actorBody, animatedStyle]}>
                 <View style={[styles.actorHead, { backgroundColor: variant === "runtime" ? "#0F172A" : tone }]} />
@@ -123,7 +143,7 @@ function ActorSprite({
                 <View style={[styles.actorFoot, { backgroundColor: `${tone}88` }]} />
             </Animated.View>
             <Text style={styles.actorLabel} numberOfLines={1}>{label}</Text>
-        </View>
+        </Pressable>
     );
 }
 
@@ -180,17 +200,25 @@ function StageCard({
     palette,
     dark,
     t,
+    onOpenDetailRef,
 }: {
     stage: CollaborationMicroStage;
     palette: ThemeColors;
     dark: boolean;
     t: MicroStageTranslator;
+    onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
 }) {
     const tone = cueTint(stage.cue, palette);
     const stageStatusColor = statusColor(stage.status, palette);
     const active = stage.status === "active" || stage.status === "pending";
     const lastStep = stage.steps[stage.steps.length - 1];
     const workerLabel = lastStep?.actorLabel || (stage.kind === "subagent" ? "Subagent" : stage.title);
+    const openStepDetail = (step?: CollaborationMicroStageStep) => {
+        if (!step?.detailRef || !onOpenDetailRef) {
+            return undefined;
+        }
+        return () => onOpenDetailRef({ detailRef: step.detailRef as string, stage, step });
+    };
 
     return (
         <View style={[
@@ -229,6 +257,7 @@ function StageCard({
                     tone={palette.primary}
                     active={active && stage.kind === "subagent"}
                     variant="supervisor"
+                    onPress={openStepDetail(lastStep)}
                 />
                 <MagicLink tone={tone} active={active} subagent={stage.kind === "subagent"} />
                 <ActorSprite
@@ -236,39 +265,58 @@ function StageCard({
                     tone={tone}
                     active={active}
                     variant={stage.kind === "runtime" ? "runtime" : "worker"}
+                    onPress={openStepDetail(lastStep)}
                 />
             </View>
 
             <View style={styles.stepList}>
-                {stage.steps.map((step, index) => (
-                    <View key={step.id} style={styles.stepRow}>
-                        <View style={[styles.stepDot, { backgroundColor: statusColor(step.status, palette) }]} />
-                        <Text style={[styles.stepLabel, { color: palette.text }]} numberOfLines={1}>
-                            {step.label}
-                        </Text>
-                        {step.summary ? (
-                            <Text style={[styles.stepSummary, { color: palette.textMuted }]} numberOfLines={1}>
-                                {step.summary}
+                {stage.steps.map((step, index) => {
+                    const handleOpenDetail = openStepDetail(step);
+                    const rowContent = (
+                        <>
+                            <View style={[styles.stepDot, { backgroundColor: statusColor(step.status, palette) }]} />
+                            <Text style={[styles.stepLabel, { color: palette.text }]} numberOfLines={1}>
+                                {step.label}
                             </Text>
-                        ) : null}
-                        {index === stage.steps.length - 1 && step.detailRef ? (
-                            <Text style={[styles.stepRef, { color: palette.textSoft }]} numberOfLines={1}>
-                                ref
-                            </Text>
-                        ) : null}
-                    </View>
-                ))}
+                            {step.summary ? (
+                                <Text style={[styles.stepSummary, { color: palette.textMuted }]} numberOfLines={1}>
+                                    {step.summary}
+                                </Text>
+                            ) : null}
+                            {index === stage.steps.length - 1 && step.detailRef ? (
+                                <Text style={[styles.stepRef, { color: palette.textSoft }]} numberOfLines={1}>
+                                    ref
+                                </Text>
+                            ) : null}
+                        </>
+                    );
+                    return handleOpenDetail ? (
+                        <Pressable
+                            key={step.id}
+                            style={({ pressed }) => [styles.stepRow, pressed && styles.stepRowPressed]}
+                            accessibilityRole="button"
+                            onPress={handleOpenDetail}
+                        >
+                            {rowContent}
+                        </Pressable>
+                    ) : (
+                        <View key={step.id} style={styles.stepRow}>
+                            {rowContent}
+                        </View>
+                    );
+                })}
             </View>
         </View>
     );
 }
 
-export const CollaborationMicroStageScene = memo(function CollaborationMicroStageScene({
+export const CollaborationMicroStageLightRenderer = memo(function CollaborationMicroStageLightRenderer({
     stages,
     palette,
     dark,
     locale,
-}: CollaborationMicroStageSceneProps) {
+    onOpenDetailRef,
+}: CollaborationMicroStageRendererProps) {
     const t = createTranslator(locale);
 
     if (stages.length === 0) {
@@ -291,11 +339,19 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
                         palette={palette}
                         dark={dark}
                         t={t}
+                        onOpenDetailRef={onOpenDetailRef}
                     />
                 ))}
             </ScrollView>
         </View>
     );
+});
+
+export const CollaborationMicroStageScene = memo(function CollaborationMicroStageScene({
+    renderer: Renderer = CollaborationMicroStageLightRenderer,
+    ...props
+}: CollaborationMicroStageSceneProps) {
+    return <Renderer {...props} />;
 });
 
 const styles = StyleSheet.create({
@@ -484,6 +540,9 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 7,
         minWidth: 0,
+    },
+    stepRowPressed: {
+        opacity: 0.72,
     },
     stepDot: {
         width: 6,

@@ -4,7 +4,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import React from 'react';
 import { motion } from 'framer-motion';
-import type { AdminProcessRef } from '@v8/session-realtime';
+import { buildClientToolSurface, type AdminProcessRef } from '@v8/session-realtime';
 import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
 import { McpAppFrame } from './McpAppFrame';
@@ -249,7 +249,8 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     toolName,
                     args: node.args || {},
                     state: isFinished ? 'result' : 'call',
-                    result: compactToolResult(toolName, result)
+                    result: compactToolResult(toolName, result),
+                    clientSurface: buildClientToolSurface({ toolName, result, state: isFinished ? 'result' : 'call' })
                 };
                 const matchedProcess = toolInvocation.toolCallId
                     ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)

@@ -4858,6 +4858,12 @@ class ChatRuntime:
         finalize: bool = False,
     ) -> dict[str, Any]:
         message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        payload, node = self._ensure_tool_event_surface_ids(
+            payload,
+            node,
+            run_id=str(chat_run.active_run_id or ""),
+            fallback_seed=f"{topic}:{message_id}",
+        )
         enriched_payload = dict(payload)
         if node is not None:
             node_id, version = self._append_canonical_node(
@@ -5075,6 +5081,59 @@ class ChatRuntime:
             "displayInMessage": bool(owner.get("displayInMessage")),
         }
 
+    @classmethod
+    def _ensure_tool_event_surface_ids(
+        cls,
+        payload: dict[str, Any],
+        node: dict[str, Any] | None,
+        *,
+        run_id: str = "",
+        fallback_seed: str = "",
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        event_type = str((payload or {}).get("type") or "").strip()
+        node_execution_type = str((node or {}).get("executionType") or "").strip()
+        if event_type not in {"tool_start", "tool_result"} and node_execution_type not in {"tool_call", "tool_result"}:
+            return payload, node
+
+        tool_payload = payload.get("tool")
+        if not isinstance(tool_payload, dict):
+            tool_payload = {}
+            payload["tool"] = tool_payload
+
+        tool_name = str(
+            tool_payload.get("toolName")
+            or tool_payload.get("name")
+            or (node or {}).get("toolName")
+            or ""
+        ).strip()
+        existing_id = str(
+            tool_payload.get("toolCallId")
+            or tool_payload.get("toolInvocationId")
+            or payload.get("toolCallId")
+            or payload.get("toolInvocationId")
+            or (node or {}).get("toolCallId")
+            or (node or {}).get("toolInvocationId")
+            or ""
+        ).strip()
+        node_id = str((node or {}).get("id") or payload.get("node_id") or "").strip()
+        surface_id = existing_id or make_tool_invocation_id(
+            node_id or fallback_seed,
+            tool_name=tool_name,
+            run_id=run_id,
+            callback_run_id=node_id or fallback_seed,
+        )
+
+        tool_payload["toolCallId"] = surface_id
+        tool_payload["toolInvocationId"] = surface_id
+        payload["toolCallId"] = surface_id
+        payload["toolInvocationId"] = surface_id
+        if node is not None:
+            node["toolCallId"] = surface_id
+            node["toolInvocationId"] = surface_id
+            if tool_name and not node.get("toolName"):
+                node["toolName"] = tool_name
+        return payload, node
+
     def _emit_owner_scoped_runtime_event(
         self,
         chat_run: ChatRunContext,
@@ -5089,6 +5148,12 @@ class ChatRuntime:
         state: str = "streaming",
         finalize: bool = False,
     ) -> dict[str, Any]:
+        payload, node = self._ensure_tool_event_surface_ids(
+            payload,
+            node,
+            run_id=str(chat_run.active_run_id or ""),
+            fallback_seed=stream_key,
+        )
         trace_group_id: str | None = None
         if bool(owner.get("displayInMessage")) and event_kind in {"reasoning_chunk", "tool_start", "tool_result"}:
             if not stream_state.active_trace_group_id:

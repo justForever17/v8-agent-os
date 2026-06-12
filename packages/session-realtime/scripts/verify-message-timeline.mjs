@@ -134,6 +134,38 @@ const activeSegments = buildMessageTimelineSegments([
 assert.equal(activeSegments[1].kind, "trace_group");
 assert.equal(activeSegments[1].collapsedByDefault, false, "active trailing trace should stay expanded");
 
+const missingIdState = {
+  messages: [],
+  ...createInitialSessionRealtimeMessageState(),
+};
+
+apply(missingIdState, {
+  type: "tool_start",
+  run_id: "run_tool_ids",
+  runtimeId: "chat",
+  targets: ["message"],
+  node_id: "tool-node-without-provider-id",
+  tool: { toolName: "memory_broker", args: { mode: "catalog" } },
+  data: { ownerStreamKey: "trace-tool-id", traceGroupId: "trace-tool-id" },
+});
+
+apply(missingIdState, {
+  type: "tool_result",
+  run_id: "run_tool_ids",
+  runtimeId: "chat",
+  targets: ["message"],
+  tool: { toolName: "memory_broker", result: "结果：已读取记忆目录。" },
+  data: { ownerStreamKey: "trace-tool-id", traceGroupId: "trace-tool-id" },
+});
+
+const missingIdAssistant = missingIdState.messages.find((message) => message.role === "assistant");
+assert.ok(missingIdAssistant, "assistant message for missing-id tool should exist");
+const missingIdToolNodes = missingIdAssistant.nodes.filter((node) => node.kind === "execution" && (node.executionType === "tool_call" || node.executionType === "tool_result"));
+assert.equal(missingIdToolNodes.length, 1, "result without id should attach to existing missing-id call when toolName matches");
+assert.equal(missingIdToolNodes[0].toolCallId, "tool-node-without-provider-id", "tool node should have a stable fallback toolCallId");
+assert.equal(missingIdToolNodes[0].toolInvocationId, "tool-node-without-provider-id", "tool invocation id should mirror fallback toolCallId");
+assert.equal(missingIdToolNodes[0].result, "结果：已读取记忆目录。", "result should be attached to the call node");
+
 console.log(JSON.stringify({
   ok: true,
   nodeKinds,

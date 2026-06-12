@@ -3,7 +3,12 @@ import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "r
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { buildMessageTimelineSegments, type AdminProcessRef } from "@v8/session-realtime";
+import {
+    buildCollaborationMicroStages,
+    buildMessageTimelineSegments,
+    type AdminProcessRef,
+    type CollaborationMicroStageActivityInput,
+} from "@v8/session-realtime";
 import Animated, {
     Easing,
     cancelAnimation,
@@ -24,12 +29,11 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ChatMessage, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillReferenceSummary } from "@/src/types/admin";
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
+import { CollaborationMicroStageScene } from "@/src/components/chat/collaboration/CollaborationMicroStageScene";
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
 import {
-    formatPhoneRelativeRuntimeTime,
-    getPhoneRuntimeDescriptor,
     type PhoneRuntimeStageActivity,
 } from "@/src/lib/runtime-stage";
 
@@ -170,69 +174,17 @@ function selectBubbleCollaborationActivities(
     return selected.slice(Math.max(0, selected.length - BUBBLE_COLLABORATION_LIMIT));
 }
 
-type CollaborationActivityStatus = "active" | "completed" | "failed" | "pending" | "attempted";
-
-function inferCollaborationStatus(activity: PhoneRuntimeStageActivity): CollaborationActivityStatus {
-    const data = readActivityData(activity);
-    const topic = getActivityTopic(activity).toLowerCase();
-    const value = [
-        readActivityString(data.status),
-        readActivityString(data.state),
-        readActivityString(data.phase),
-        topic,
-        activity.summary,
-    ].join(" ").toLowerCase();
-    if (/(fail|error|reject|blocked|cancel|stalled)/.test(value)) return "failed";
-    if (/(complete|finish|done|success|succeeded|merged|ready|handoff)/.test(value)) return "completed";
-    if (/(attempt|revealed|unconfirmed)/.test(value)) return "attempted";
-    if (/(queued|pending|waiting)/.test(value)) return "pending";
-    return "active";
-}
-
-function getCollaborationActorLabel(activity: PhoneRuntimeStageActivity, locale: "zh-CN" | "en") {
-    const data = readActivityData(activity);
-    if (isBubbleSubagentActivity(activity)) {
-        return readActivityString(data.subagentName)
-            || readActivityString(data.subagent_name)
-            || readActivityString(data.targetLabel)
-            || readActivityString(data.target_label)
-            || readActivityString(data.workerType)
-            || readActivityString(data.worker_type)
-            || readActivityString(data.agentName)
-            || readActivityString(data.agent_name)
-            || activity.actorLabel
-            || getPhoneRuntimeDescriptor("subagent_swarm", locale).label;
-    }
-    return getPhoneRuntimeDescriptor(activity.runtimeId, locale).label;
-}
-
-function getCollaborationSummary(activity: PhoneRuntimeStageActivity) {
-    const data = readActivityData(activity);
-    return readActivityString(data.compactSummary)
-        || readActivityString(data.taskGoal)
-        || readActivityString(data.task_goal)
-        || readActivityString(data.summary)
-        || readActivityString(data.reason)
-        || activity.summary;
-}
-
-function statusTone(
-    status: CollaborationActivityStatus,
-    colors: ReturnType<typeof useUiPrefs>["colors"],
-) {
-    switch (status) {
-        case "completed":
-            return { color: colors.success, icon: "check-circle" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_completed" as const };
-        case "failed":
-            return { color: colors.danger, icon: "alert-circle" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_failed" as const };
-        case "attempted":
-            return { color: colors.warning, icon: "alert-circle-outline" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_attempted" as const };
-        case "pending":
-            return { color: colors.textMuted, icon: "clock-outline" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_pending" as const };
-        case "active":
-        default:
-            return { color: colors.accent, icon: "progress-clock" as const, labelKey: "src.components.chat.runtimetimelinepanel.swarm_status_active" as const };
-    }
+function toMicroStageActivityInput(activity: PhoneRuntimeStageActivity): CollaborationMicroStageActivityInput {
+    return {
+        id: activity.id,
+        topic: activity.topic,
+        summary: activity.summary,
+        timestamp: activity.timestamp,
+        runtimeId: activity.runtimeId,
+        data: activity.node.kind === "execution" && activity.node.data && typeof activity.node.data === "object"
+            ? activity.node.data as Record<string, unknown>
+            : {},
+    };
 }
 
 function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode & { toolCallId: string } {
@@ -401,67 +353,6 @@ function AssistantActivityDots({
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotAStyle]} />
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotBStyle]} />
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotCStyle]} />
-        </View>
-    );
-}
-
-function AssistantCollaborationTrail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
-    const { colors, t, themeMode, locale } = useUiPrefs();
-    const dark = themeMode === "dark";
-
-    if (activities.length === 0) {
-        return null;
-    }
-
-    return (
-        <View style={[
-            styles.collaborationTrail,
-            {
-                backgroundColor: dark ? "rgba(15,23,42,0.42)" : "rgba(248,250,252,0.72)",
-                borderColor: dark ? "rgba(148,163,184,0.18)" : "rgba(148,163,184,0.24)",
-            },
-        ]}>
-            {activities.map((activity, index) => {
-                const status = inferCollaborationStatus(activity);
-                const tone = statusTone(status, colors);
-                const isLastNode = index === activities.length - 1;
-                const actorLabel = getCollaborationActorLabel(activity, locale);
-                const summary = getCollaborationSummary(activity);
-                const timeLabel = formatPhoneRelativeRuntimeTime(activity.timestamp, locale);
-                return (
-                    <View key={activity.id || `${activity.runtimeId}:${activity.timestamp}:${index}`} style={styles.collaborationNode}>
-                        <View style={styles.collaborationRail}>
-                            <View style={[styles.collaborationDot, { backgroundColor: tone.color, shadowColor: tone.color }]}>
-                                <MaterialCommunityIcons name={tone.icon} size={10} color="#FFFFFF" />
-                            </View>
-                            {!isLastNode ? (
-                                <View style={[
-                                    styles.collaborationLine,
-                                    { backgroundColor: dark ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.3)" },
-                                ]} />
-                            ) : null}
-                        </View>
-                        <View style={styles.collaborationBody}>
-                            <View style={styles.collaborationMetaRow}>
-                                <Text style={[styles.collaborationActor, { color: colors.text }]} numberOfLines={1}>
-                                    {actorLabel}
-                                </Text>
-                                <Text style={[styles.collaborationStatus, { color: tone.color }]} numberOfLines={1}>
-                                    {t(tone.labelKey)}
-                                </Text>
-                                <Text style={[styles.collaborationTime, { color: colors.textSoft }]} numberOfLines={1}>
-                                    {timeLabel}
-                                </Text>
-                            </View>
-                            {summary ? (
-                                <Text style={[styles.collaborationSummary, { color: colors.textMuted }]} numberOfLines={2}>
-                                    {summary}
-                                </Text>
-                            ) : null}
-                        </View>
-                    </View>
-                );
-            })}
         </View>
     );
 }
@@ -857,6 +748,18 @@ export const MessageBubble = memo(function MessageBubble({
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim().length > 0);
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
     const visibleBubbleExecutionActivities = hasSupervisorVisibleActivity ? bubbleExecutionActivities : [];
+    const visibleBubbleMicroStages = useMemo(
+        () => buildCollaborationMicroStages(
+            visibleBubbleExecutionActivities.map(toMicroStageActivityInput),
+            {
+                runId: message.runId,
+                locale,
+                limit: 4,
+                maxStepsPerStage: 4,
+            },
+        ),
+        [locale, message.runId, visibleBubbleExecutionActivities],
+    );
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
             phase?: string;
@@ -1152,9 +1055,14 @@ export const MessageBubble = memo(function MessageBubble({
                             <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
                         ) : null}
                         <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
-                            {visibleBubbleExecutionActivities.length > 0 ? (
+                            {visibleBubbleMicroStages.length > 0 ? (
                                 <View style={styles.assistantExecutionMap}>
-                                    <AssistantCollaborationTrail activities={visibleBubbleExecutionActivities} />
+                                    <CollaborationMicroStageScene
+                                        stages={visibleBubbleMicroStages}
+                                        palette={palette}
+                                        dark={themeMode === "dark"}
+                                        locale={locale}
+                                    />
                                 </View>
                             ) : null}
                             {hasStructuredNodes ? (
@@ -1498,82 +1406,6 @@ const styles = StyleSheet.create({
     },
     assistantExecutionMap: {
         marginBottom: 2,
-    },
-    collaborationTrail: {
-        width: "100%",
-        borderRadius: 15,
-        borderWidth: 1,
-        paddingHorizontal: 10,
-        paddingVertical: 9,
-        gap: 0,
-    },
-    collaborationNode: {
-        flexDirection: "row",
-        alignItems: "stretch",
-        gap: 9,
-        minWidth: 0,
-    },
-    collaborationRail: {
-        width: 15,
-        alignItems: "center",
-        paddingTop: 2,
-    },
-    collaborationDot: {
-        width: 15,
-        height: 15,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
-        shadowOpacity: 0.28,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
-        elevation: 2,
-    },
-    collaborationLine: {
-        width: 1,
-        flex: 1,
-        minHeight: 22,
-        marginTop: 3,
-        marginBottom: 3,
-    },
-    collaborationBody: {
-        flex: 1,
-        minWidth: 0,
-        paddingBottom: 10,
-        gap: 3,
-    },
-    collaborationMetaRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 7,
-        minWidth: 0,
-    },
-    collaborationActor: {
-        flexShrink: 1,
-        minWidth: 0,
-        fontSize: 12,
-        lineHeight: 16,
-        fontWeight: "800",
-        letterSpacing: 0,
-    },
-    collaborationStatus: {
-        fontSize: 10,
-        lineHeight: 14,
-        fontWeight: "800",
-        letterSpacing: 0,
-    },
-    collaborationTime: {
-        marginLeft: "auto",
-        fontSize: 10,
-        lineHeight: 14,
-        fontWeight: "700",
-        letterSpacing: 0,
-    },
-    collaborationSummary: {
-        fontSize: 11,
-        lineHeight: 16,
-        fontWeight: "600",
-        letterSpacing: 0,
     },
     assistantInner: {
         paddingHorizontal: 16,

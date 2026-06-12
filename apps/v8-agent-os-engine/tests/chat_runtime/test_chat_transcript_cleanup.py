@@ -426,6 +426,80 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             [{"id": tool_call_id, "name": "generate_image", "args": {"params": {"prompt": "雷电将军", "size": "1:1"}}}],
         )
 
+    def test_message_tool_event_emit_backfills_missing_tool_id(self):
+        payload = {
+            "type": "tool_start",
+            "tool": {
+                "toolName": "memory_broker",
+                "args": {"mode": "catalog"},
+            },
+            "timestamp": 0,
+        }
+        node = {
+            "id": "assistant-message:tool_call:memory-catalog",
+            "kind": "execution",
+            "executionType": "tool_call",
+            "toolName": "memory_broker",
+            "args": {"mode": "catalog"},
+        }
+
+        emitted = self.runtime._emit_message_targeted_runtime_event(
+            self.chat_run,
+            self.stream_state,
+            topic="tool.started",
+            payload=payload,
+            node=node,
+        )
+
+        tool_call_id = emitted["payload"]["tool"]["toolCallId"]
+        self.assertTrue(tool_call_id.startswith("call_v8_memory_broker_"))
+        self.assertEqual(emitted["payload"]["tool"]["toolInvocationId"], tool_call_id)
+        self.assertEqual(emitted["payload"]["toolCallId"], tool_call_id)
+        self.assertEqual(payload["tool"]["toolCallId"], tool_call_id)
+        self.assertEqual(node["toolCallId"], tool_call_id)
+
+    def test_runtime_scoped_tool_event_emit_backfills_missing_tool_id(self):
+        payload = {
+            "type": "tool_result",
+            "tool": {
+                "toolName": "research_broker",
+                "result": "答案：已完成。",
+            },
+            "timestamp": 0,
+        }
+        node = {
+            "id": "runtime:run-test:tool_result:research",
+            "kind": "execution",
+            "executionType": "tool_result",
+            "toolName": "research_broker",
+            "result": "答案：已完成。",
+        }
+        owner = {
+            "ownerRuntimeId": "research",
+            "ownerAgentKind": "runtime",
+            "ownerAgentId": "research",
+            "displayInMessage": False,
+            "runtimeContext": {},
+        }
+
+        emitted = self.runtime._emit_owner_scoped_runtime_event(
+            self.chat_run,
+            self.stream_state,
+            topic="research.tool.finished",
+            payload=payload,
+            owner=owner,
+            event_kind="tool_result",
+            stream_key="research:tool:missing-id",
+            node=node,
+        )
+
+        tool_call_id = emitted["payload"]["tool"]["toolCallId"]
+        self.assertTrue(tool_call_id.startswith("call_v8_research_broker_"))
+        self.assertEqual(emitted["payload"]["tool"]["toolInvocationId"], tool_call_id)
+        self.assertEqual(emitted["payload"]["toolCallId"], tool_call_id)
+        self.assertEqual(payload["tool"]["toolCallId"], tool_call_id)
+        self.assertEqual(node["toolCallId"], tool_call_id)
+
     async def test_subagent_runtime_context_owns_tool_events(self):
         with bind_runtime_context(
             runtime_kind="subagent",

@@ -9,6 +9,22 @@ def test_renderer_rejects_invalid_raw_ref() -> None:
     result = render_tool_observation_detail("raw://not-toolobs")
 
     assert "rawRef invalid" in result
+    assert not result.lstrip().startswith("{")
+
+
+def test_renderer_missing_raw_ref_is_readable(monkeypatch, tmp_path) -> None:
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+    from core.tool_observation_detail import render_tool_observation_detail
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+
+    result = render_tool_observation_detail("toolobs://missing-observation")
+
+    assert "rawRef not found" in result
+    assert "toolobs://missing-observation" in result
+    assert not result.lstrip().startswith("{")
 
 
 def test_renderer_redacts_generic_preview(tmp_path, monkeypatch) -> None:
@@ -82,3 +98,51 @@ def test_renderer_prefers_research_answer_pack(tmp_path, monkeypatch) -> None:
     assert "Use the compact answer pack." in result
     assert "https://docs.example.test" in result
     assert '"sourceMatrix"' not in result
+
+
+def test_renderer_web_detail_preserves_useful_content_shape(tmp_path, monkeypatch) -> None:
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+    from core.tool_observation_detail import render_tool_observation_detail
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    payload = {
+        "ok": True,
+        "mode": "read",
+        "title": "Reference page",
+        "finalUrl": "https://example.com/reference",
+        "text": (
+            "Steps:\n"
+            "1. Create an episode.\n"
+            "2. Wait for typed handoff.\n\n"
+            "| Field | Meaning |\n"
+            "| episodeId | durable run unit |"
+        ),
+        "debug": {"transport": "not for agent"},
+    }
+    temp_db.add_tool_observation_record(
+        {
+            "id": "obs-renderer-web-content",
+            "raw_ref": "toolobs://obs-renderer-web-content",
+            "tool_name": "web_broker",
+            "tool_call_id": "call-renderer",
+            "runtime_kind": "web",
+            "surface": "tool_node",
+            "raw_chars": 320,
+            "visible_chars": 120,
+            "raw_sha256": "sha",
+            "raw_body": json.dumps(payload, ensure_ascii=False),
+            "budget": {"agentVisibleBudget": 1000},
+            "metadata": {},
+        }
+    )
+
+    result = render_tool_observation_detail("toolobs://obs-renderer-web-content", max_chars=4000)
+
+    assert "Web observation detail" in result
+    assert "Content:" in result
+    assert "1. Create an episode." in result
+    assert "| Field | Meaning |" in result
+    assert "https://example.com/reference" in result
+    assert '"debug"' not in result

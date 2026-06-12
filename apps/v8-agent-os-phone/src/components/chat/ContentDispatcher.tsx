@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import type { AdminProcessRef } from "@v8/session-realtime";
+import { buildClientToolSurface, type AdminProcessRef } from "@v8/session-realtime";
 
 import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
@@ -176,6 +176,7 @@ function buildToolInvocation(
         ?? executionNode.data?.result_preview
         ?? processFallbackResult;
 
+    const state = executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call";
     return {
         toolCallId: String(
             executionNode.toolCallId
@@ -194,8 +195,9 @@ function buildToolInvocation(
             ?? resultNode?.data?.args
             ?? resultNode?.data?.request
             ?? {},
-        state: executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call",
+        state,
         result: compactToolResult(toolName, result),
+        clientSurface: buildClientToolSurface({ toolName, result, state }),
     };
 }
 

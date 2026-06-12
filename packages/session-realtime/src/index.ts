@@ -13,3 +13,5 @@ export * from "./runtime-projection-matrix.js";
 export * from "./history.js";
 export * from "./timeline-node-identity.js";
 export * from "./message-segments.js";
+export * from "./client-tool-surface.js";
+export * from "./collaboration-micro-stage.js";

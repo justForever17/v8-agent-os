@@ -221,6 +221,35 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function firstNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function resolveSurfaceToolCallId(
+  event: SessionStreamUiEvent,
+  eventData: Record<string, unknown>,
+  nestedToolData: Record<string, unknown>,
+  fallbackId: string,
+): string {
+  return firstNonEmptyString(
+    event.tool?.toolInvocationId,
+    event.tool?.toolCallId,
+    eventData.toolInvocationId,
+    eventData.tool_call_id,
+    eventData.toolCallId,
+    nestedToolData.toolInvocationId,
+    nestedToolData.tool_invocation_id,
+    nestedToolData.toolCallId,
+    nestedToolData.tool_call_id,
+    fallbackId,
+  );
+}
+
 function isCommandToolName(toolName: unknown): boolean {
   if (typeof toolName !== "string") {
     return false;
@@ -1076,20 +1105,15 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         : typeof eventData.message === "string" && eventData.message.trim()
           ? eventData.message.trim()
           : "";
+    const eventToolData = asRecord(eventData.tool);
+    const nodeId = event.node_id || nextId("node", options?.createId);
+    const toolCallId = resolveSurfaceToolCallId(event, eventData, eventToolData, nodeId);
     upsertTimelineNode(current, {
-      id: event.node_id || nextId("node", options?.createId),
+      id: nodeId,
       kind: "execution",
       executionType: "tool_call",
-      toolCallId:
-        event.tool?.toolInvocationId
-        || event.tool?.toolCallId
-        || (typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId : undefined)
-        || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
-      toolInvocationId:
-        event.tool?.toolInvocationId
-        || event.tool?.toolCallId
-        || (typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId : undefined)
-        || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined),
+      toolCallId,
+      toolInvocationId: toolCallId,
       toolName: event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined),
       args: event.tool?.args ?? eventData.args ?? asRecord(eventData.tool).args,
       timestamp: Date.now(),
@@ -1110,14 +1134,24 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const current = ensureCurrent();
     current.uiStreamPhase = current.content ? "streaming" : "agent_started";
     const eventToolData = asRecord(eventData.tool);
-    const toolCallId =
-      event.tool?.toolInvocationId
-      || event.tool?.toolCallId
-      || (typeof eventData.toolInvocationId === "string" ? eventData.toolInvocationId : undefined)
-      || (typeof eventData.toolCallId === "string" ? eventData.toolCallId : undefined)
-      || (typeof eventToolData.toolInvocationId === "string" ? eventToolData.toolInvocationId : undefined)
-      || (typeof eventToolData.toolCallId === "string" ? eventToolData.toolCallId : undefined);
     const toolName = event.tool?.toolName || (typeof eventData.toolName === "string" ? eventData.toolName : undefined);
+    const reusableCall = [...(current.nodes || [])].reverse().find((node) =>
+      node.kind === "execution"
+      && node.executionType === "tool_call"
+      && !("result" in node && node.result !== undefined)
+      && (
+        !toolName
+        || !node.toolName
+        || node.toolName === toolName
+      ),
+    ) as SessionStreamExecutionNode | undefined;
+    const resultNodeId = event.node_id || nextId("node", options?.createId);
+    const toolCallId = resolveSurfaceToolCallId(
+      event,
+      eventData,
+      eventToolData,
+      reusableCall?.toolInvocationId || reusableCall?.toolCallId || resultNodeId,
+    );
     const agentVisibleResult = event.tool?.agentVisibleResult
       ?? eventData.agentVisibleResult
       ?? eventData.agent_visible_result
@@ -1153,7 +1187,7 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
           : "";
     if (event.node_id) {
       upsertTimelineNode(current, {
-        id: event.node_id,
+        id: resultNodeId,
         kind: "execution",
         executionType: "tool_result",
         toolCallId,

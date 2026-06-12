@@ -22,7 +22,7 @@ if str(ENGINE_ROOT) not in sys.path:
 
 from langchain_core.messages import ToolMessage  # noqa: E402
 
-from core.tool_surface import apply_tool_surface_budget  # noqa: E402
+from core.tool_surface import TOOL_OUTPUT_TARGET_CHARS, apply_tool_surface_budget  # noqa: E402
 from core.tools.web_fetcher import web_broker  # noqa: E402
 from runtimes.extensions.skills.loader import fetch_skill_instructions  # noqa: E402
 
@@ -74,6 +74,8 @@ def _invoke_tool(tool: Any, kwargs: dict[str, Any]) -> str:
 
 def _surface(tool_name: str, raw: str, *, budget: int = 2600) -> str:
     message = ToolMessage(content=raw, name=tool_name, tool_call_id=f"live-{tool_name}-{int(time.time() * 1000)}")
+    if tool_name == "fetch_skill_instructions" and budget == 2600:
+        budget = TOOL_OUTPUT_TARGET_CHARS.get("skill_instructions", budget)
     return str(apply_tool_surface_budget(message, {"agentVisibleBudget": budget}, tool_name=tool_name).content)
 
 
@@ -109,6 +111,76 @@ def _fixture_generic(_: bool) -> str:
             "summary": "Collected facts and prepared a compact answer.",
             "results": [{"title": "Primary source", "url": "https://example.com/source", "snippet": "Useful evidence."}],
             "internalControl": {"token": "diag-only"},
+        },
+        ensure_ascii=False,
+    )
+
+
+def _fixture_research_answer_pack(_: bool) -> str:
+    return json.dumps(
+        {
+            "ok": True,
+            "kind": "research_evidence_bundle",
+            "question": "How should the runtime expose tool output?",
+            "researchAnswerPack": {
+                "answer": "Agent-visible tool output should expose the answer, key claims, sources, score, limitations, and a detail ref; process logs stay runtime-only.",
+                "sources": [
+                    {
+                        "title": "Tool Output Surface Contract",
+                        "url": "https://example.com/tool-output-surface",
+                        "host": "example.com",
+                    }
+                ],
+                "score": {"label": "high confidence; contract-backed", "confidence": "high"},
+                "limitations": ["Fixture evidence validates surface shape, not external factual freshness."],
+            },
+            "finalExperiencePack": {
+                "keyFindings": [
+                    {
+                        "claim": "Research packs must show the final answer rather than sourceMatrix or search process.",
+                        "sourceTitle": "Tool Output Surface Contract",
+                    }
+                ]
+            },
+            "sourceMatrix": [{"title": "raw provider result", "snippet": "do not show"}],
+            "architectPrompt": "diagnostic prompt must not leak",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _fixture_memory_route(_: bool) -> str:
+    return json.dumps(
+        {
+            "ok": True,
+            "mode": "route",
+            "query": "previous research about tool output surface",
+            "summary": "Routed to research experience and memory core.",
+            "evidencePacks": [
+                {
+                    "sourceDomain": "research_experience",
+                    "whySelected": "The stored answer pack matches the query and has source-backed claims.",
+                    "confidence": "high",
+                    "selectedEvidence": [
+                        {
+                            "id": "rxp_tool_surface",
+                            "title": "Tool Output Surface research",
+                            "answer": "The reusable finding is that agent-visible output must preserve core content while hiding runtime-only metadata.",
+                            "claimDigest": [
+                                "Web pages, files, skills, research packs, and memory facts are content-bearing surfaces."
+                            ],
+                            "sources": [
+                                {"title": "Contract", "url": "https://example.com/contract"}
+                            ],
+                        }
+                    ],
+                    "rejectedEvidence": [
+                        {"id": "rxp_process_log", "reason": "process summary without final answer"}
+                    ],
+                    "recommendedNextAction": "Reuse selected evidence; read detailRef only if exact wording is required.",
+                }
+            ],
+            "rankingMatrix": [{"candidate": "do not show"}],
         },
         ensure_ascii=False,
     )
@@ -174,6 +246,20 @@ CASES: dict[str, SurfaceCase] = {
         "fetch_skill_instructions",
         _skill_raw,
         ["Skill instructions", "Instructions:", "女娲"],
+    ),
+    "research_pack": SurfaceCase(
+        "research_pack",
+        "research_broker result should expose answer, sources, and score instead of process logs",
+        "research_broker",
+        _fixture_research_answer_pack,
+        ["Research result pack", "Agent-visible tool output", "Sources:", "high confidence"],
+    ),
+    "memory_route": SurfaceCase(
+        "memory_route",
+        "memory_broker route should expose selected evidence and rejection reasons",
+        "memory_broker",
+        _fixture_memory_route,
+        ["Memory broker: route", "Selected evidence:", "core content", "Rejected evidence"],
     ),
     "delegation": SurfaceCase(
         "delegation",

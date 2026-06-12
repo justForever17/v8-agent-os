@@ -4041,7 +4041,7 @@ def _looks_like_text_skill_file(path: Path) -> bool:
     return path.name.upper() in {"README", "LICENSE"}
 
 
-def _read_skill_text_file(path: Path, *, max_chars: int = 220_000) -> str:
+def _read_skill_text_file(path: Path, *, max_chars: int = 220_000, offset: int = 0) -> tuple[str, int, int, bool]:
     raw = path.read_bytes()
     if b"\x00" in raw[:4096]:
         raise ValueError("skill file appears to be binary")
@@ -4053,9 +4053,11 @@ def _read_skill_text_file(path: Path, *, max_chars: int = 220_000) -> str:
             text = ""
     if not text:
         text = raw.decode("utf-8", errors="replace")
-    if len(text) > max_chars:
-        return text[:max_chars].rstrip() + f"\n...[skill file truncated at {max_chars} chars; request a narrower section or inspect the raw file in workspace tools]"
-    return text
+    total_chars = len(text)
+    safe_offset = max(0, min(int(offset or 0), total_chars))
+    chunk = text[safe_offset : safe_offset + max_chars]
+    truncated = safe_offset + len(chunk) < total_chars
+    return chunk.rstrip(), safe_offset, total_chars, truncated
 
 
 def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[str]) -> dict[str, Any]:
@@ -4129,12 +4131,14 @@ def fetch_skill_instructions(
     detail_level: str = "full",
     section: str | None = None,
     relative_path: str | None = None,
+    offset: int = 0,
 ) -> str:
     """Fetch workflow guidance for a listed Skill.
 
     Default detail_level='full' returns the approved SKILL.md instructions so delegated agents can follow the workflow.
     Use detail_level='summary' only for browsing/discovery, or detail_level='section' with section='...' for a specific heading.
     Pass relative_path='references/foo.md' to continue reading a file inside that skill directory after inspecting the continuation manifest.
+    When a relative file is too long, pass offset=<next offset> to continue the same document without switching to raw workspace reads.
     """
 
     runtime_kind = "chat"
@@ -4362,19 +4366,30 @@ def fetch_skill_instructions(
                 raise FileNotFoundError(f"skill file not found: {normalized_relative_path}")
             if not _looks_like_text_skill_file(target):
                 raise ValueError(f"skill file is not a supported text file: {normalized_relative_path}")
-            content = _read_skill_text_file(target)
+            content, read_offset, total_chars, truncated = _read_skill_text_file(target, offset=offset)
             execution_hint = ""
             if normalized_relative_path.startswith("scripts/"):
                 execution_hint = (
                     "\nExecution Boundary: This is a script asset. Reading it does not grant permission to run it; "
                     "execute only through governed command/runtime tools when the task explicitly requires it."
                 )
+            next_offset = read_offset + len(content)
+            continuation_api = (
+                f"fetch_skill_instructions(skill_name={skill_name!r}, relative_path={normalized_relative_path!r}, offset={next_offset})"
+                if truncated
+                else f"fetch_skill_instructions(skill_name={skill_name!r}, relative_path='<path>')"
+            )
             return (
                 "=== SKILL FILE ===\n"
                 f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
                 f"Relative Path: {normalized_relative_path}\n"
-                f"Continuation API: fetch_skill_instructions(skill_name={skill_name!r}, relative_path='<path>')\n"
+                f"Read Offset: {read_offset}\n"
+                f"Returned Chars: {len(content)}\n"
+                f"Total Chars: {total_chars}\n"
+                f"Next Offset: {next_offset if truncated else ''}\n"
+                f"Continuation API: {continuation_api}\n"
                 f"{execution_hint}\n\n"
+                "=== FILE CONTENT ===\n"
                 f"{content}"
             )
         except Exception as exc:

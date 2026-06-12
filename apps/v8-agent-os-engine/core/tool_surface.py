@@ -453,6 +453,16 @@ def _short_text(value: Any, limit: int = 120) -> str:
     return text[: max(1, limit - 1)].rstrip() + "…"
 
 
+def _content_excerpt(value: Any, limit: int = 1600) -> str:
+    """Preserve readable source/content shape while bounding long text."""
+    text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    # Trim excessive blank lines, but keep paragraphs/tables/lists/code-ish shape.
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    if len(text) <= limit:
+        return text
+    return _head_tail_truncate_text(text, limit, f"content excerpt truncated; original length {len(text)} chars")
+
+
 def _short_id(value: Any, *, prefix: int = 12) -> str:
     text = _short_text(value, 80)
     if len(text) <= prefix + 4:
@@ -612,7 +622,7 @@ def _render_workspace_broker_surface(payload: dict[str, Any], raw_ref: str) -> s
     return "\n".join(line for line in lines if line).strip()
 
 
-def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> str | None:
+def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str | None:
     mode = str(payload.get("mode") or "").strip()
     kind = str(payload.get("kind") or "").strip()
     if kind == "research_evidence_bundle":
@@ -628,7 +638,7 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> st
         answer = answer_pack.get("answer") or pack.get("researchResult") or pack.get("answer")
         if answer:
             lines.append("Result:")
-            lines.append(_short_text(answer, 1200))
+            lines.append(_content_excerpt(answer, max(1200, min(4800, budget // 3))))
         else:
             lines.append("Result: refresh required; no reliable source-backed answer was synthesized.")
         score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
@@ -657,9 +667,9 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str) -> st
                     claim = item.get("claim") or item.get("summary")
                     source_title = item.get("sourceTitle") or item.get("title")
                     suffix = f" ({_short_text(source_title, 90)})" if source_title else ""
-                    lines.append(f"- {_short_text(claim, 260)}{suffix}")
+                    lines.append(f"- {_content_excerpt(claim, 360)}{suffix}")
                 else:
-                    lines.append(f"- {_short_text(item, 260)}")
+                    lines.append(f"- {_content_excerpt(item, 360)}")
         sources = answer_pack.get("sources") or pack.get("sourceUrls") or payload.get("sourceMatrix")
         if isinstance(sources, list) and sources:
             lines.append("Sources:")
@@ -883,15 +893,43 @@ def _render_computer_use_surface(tool_name: str, payload: dict[str, Any], raw_re
                 lines.append(f"{key}: {_short_text(payload.get(key), 180)}")
         candidates = payload.get("candidates") or payload.get("elements") or payload.get("windows") or []
         if isinstance(candidates, list) and candidates:
-            lines.append("Top candidates:")
+            candidate_lines: list[str] = []
             for item in candidates[:5]:
                 if isinstance(item, dict):
-                    label = item.get("name") or item.get("title") or item.get("text") or item.get("id")
+                    role_label = item.get("role")
+                    if isinstance(role_label, str) and role_label.strip().lower() in {
+                        "pane",
+                        "group",
+                        "window",
+                        "document",
+                        "section",
+                        "generic",
+                    }:
+                        role_label = None
+                    label = (
+                        item.get("name")
+                        or item.get("title")
+                        or item.get("text")
+                        or item.get("label")
+                        or role_label
+                        or item.get("className")
+                        or item.get("id")
+                        or item.get("elementId")
+                    )
+                    if label in (None, "", [], {}):
+                        continue
                     confidence = item.get("confidence") or item.get("score")
                     suffix = f" confidence={confidence}" if confidence not in (None, "") else ""
-                    lines.append(f"- {_short_text(label, 120)}{suffix}")
+                    candidate_lines.append(f"- {_short_text(label, 120)}{suffix}")
                 else:
-                    lines.append(f"- {_short_text(item, 140)}")
+                    rendered = _short_text(item, 140)
+                    if rendered:
+                        candidate_lines.append(f"- {rendered}")
+            if candidate_lines:
+                lines.append("Top candidates:")
+                lines.extend(candidate_lines)
+            else:
+                lines.append("Top candidates: none with actionable labels; use detail/rawRef if visual context is required.")
         next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
         if next_action:
             lines.append(f"Next: {_short_text(next_action, 180)}")
@@ -1119,6 +1157,78 @@ def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str
         if payload.get("scope"):
             lines.append(f"Scope: {_short_text(payload.get('scope'), 80)}")
 
+        packs = payload.get("evidencePacks")
+        if isinstance(packs, list) and packs:
+            lines.append("Evidence packs:")
+            for pack in packs[:3]:
+                if not isinstance(pack, dict):
+                    continue
+                domain = pack.get("sourceDomain") or pack.get("domain")
+                confidence = pack.get("confidence")
+                header_bits = [_short_text(domain, 80)] if domain else ["unknown"]
+                if confidence not in (None, "", [], {}):
+                    header_bits.append(f"confidence={_short_text(confidence, 60)}")
+                lines.append(f"- {' | '.join(bit for bit in header_bits if bit)}")
+                why = pack.get("whySelected")
+                if why:
+                    lines.append(f"  Why: {_short_text(why, 240)}")
+                selected = pack.get("selectedEvidence")
+                if isinstance(selected, list) and selected:
+                    lines.append("  Selected evidence:")
+                    for item in selected[:3]:
+                        if not isinstance(item, dict):
+                            lines.append(f"  - {_content_excerpt(item, 300)}")
+                            continue
+                        title = item.get("title") or item.get("id") or item.get("memoryRef") or item.get("sourceRef")
+                        answer = (
+                            item.get("answer")
+                            or item.get("researchResult")
+                            or item.get("text")
+                            or item.get("summary")
+                            or item.get("fact")
+                            or item.get("claim")
+                        )
+                        prefix = f"{_short_text(title, 90)}: " if title and title != answer else ""
+                        line = _content_excerpt(answer, 420) if answer else _source_line(item)
+                        lines.append(f"  - {prefix}{line}")
+                        claims = item.get("claimDigest") or item.get("claims")
+                        if isinstance(claims, list) and claims:
+                            for claim in claims[:2]:
+                                claim_text = claim.get("claim") if isinstance(claim, dict) else claim
+                                if claim_text:
+                                    lines.append(f"    claim: {_content_excerpt(claim_text, 240)}")
+                        sources = item.get("sources") or item.get("sourceRefs") or item.get("sourceUrls")
+                        if isinstance(sources, list) and sources:
+                            rendered_sources = []
+                            for source in sources[:3]:
+                                if isinstance(source, dict):
+                                    url = source.get("url") or source.get("sourceUrl")
+                                    title_text = source.get("title") or source.get("host") or url
+                                    if url:
+                                        rendered_sources.append(f"{_short_text(title_text, 80)}: {_short_text(url, 140)}")
+                                elif str(source or "").strip():
+                                    rendered_sources.append(_short_text(source, 140))
+                            if rendered_sources:
+                                lines.append("    sources: " + "; ".join(rendered_sources))
+                rejected = pack.get("rejectedEvidence")
+                if isinstance(rejected, list) and rejected:
+                    lines.append("  Rejected evidence:")
+                    for item in rejected[:2]:
+                        if isinstance(item, dict):
+                            label = item.get("title") or item.get("id") or item.get("memoryRef") or item.get("sourceRef")
+                            reason = item.get("reason") or item.get("rejectedReason") or item.get("whyRejected")
+                            lines.append(f"  - {_short_text(label, 110)}: {_short_text(reason, 160)}")
+                        else:
+                            lines.append(f"  - {_short_text(item, 220)}")
+                stale = pack.get("missingOrStaleReasons")
+                if isinstance(stale, list) and stale:
+                    lines.append("  Missing/stale: " + "; ".join(_short_text(item, 120) for item in stale[:3]))
+                pack_next = pack.get("recommendedNextAction")
+                if pack_next:
+                    lines.append(f"  Next: {_short_text(pack_next, 220)}")
+            if len(packs) > 3:
+                lines.append(f"- … {len(packs) - 3} more packs")
+
         items = payload.get("items")
         if isinstance(items, list) and items:
             lines.append("Items:")
@@ -1206,7 +1316,7 @@ def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str
     return "\n".join(line for line in lines if line).strip()
 
 
-def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str:
     mode = _short_text(payload.get("mode") or payload.get("kind") or payload.get("operation") or "result", 40)
     lines = [f"Web broker ({mode})"]
     summary = _first_text(payload, "summary", "answer", "result", "message", limit=700)
@@ -1227,7 +1337,12 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
         if final_url:
             lines.append(f"URL: {_short_text(final_url, 220)}")
 
-    page_text = _first_text(payload, "text", "textPreview", "content", "contentPreview", "rawHtmlPreview", "extract", limit=1400)
+    page_value = None
+    for key in ("text", "textPreview", "content", "contentPreview", "rawHtmlPreview", "extract"):
+        if payload.get(key) not in (None, "", [], {}):
+            page_value = payload.get(key)
+            break
+    page_text = _content_excerpt(page_value, max(1200, min(9000, budget // 2))) if page_value is not None else ""
     if page_text:
         content_label = "Raw HTML preview:" if payload.get("rawHtmlPreview") else "Content:"
         lines.append(content_label)
@@ -1428,6 +1543,80 @@ def _render_generic_json_surface(tool_name: str, payload: Any, raw_ref: str, *, 
     return rendered
 
 
+def _skill_header_value(text: str, key: str) -> str:
+    pattern = re.compile(rf"(?im)^\s*{re.escape(key)}\s*:\s*(.*)$")
+    match = pattern.search(text)
+    return str(match.group(1) if match else "").strip()
+
+
+def _render_skill_relative_file_surface(text: str, raw_ref: str, *, budget: int) -> str:
+    header, separator, body = text.partition("\n\n")
+    if not separator:
+        header = text
+        body = ""
+    content_marker = "=== FILE CONTENT ==="
+    if body.lstrip().startswith(content_marker):
+        body = body.lstrip()[len(content_marker):].lstrip("\r\n")
+    skill_name = _skill_header_value(header, "Skill Name")
+    relative_path = _skill_header_value(header, "Relative Path")
+    continuation_api = _skill_header_value(header, "Continuation API")
+    read_offset_raw = _skill_header_value(header, "Read Offset")
+    total_chars = _skill_header_value(header, "Total Chars")
+    execution_boundary = ""
+    for line in header.splitlines():
+        if line.strip().startswith("Execution Boundary:"):
+            execution_boundary = line.strip()
+            break
+    try:
+        read_offset = int(read_offset_raw or "0")
+    except ValueError:
+        read_offset = 0
+
+    title = "Skill file" + (f": {relative_path}" if relative_path else "")
+    prefix_lines = [
+        title,
+        f"Skill: {skill_name}" if skill_name else "",
+        "Status: loaded via fetch_skill_instructions relative_path.",
+        "Contract: preserve this file's original order; it is a continuation of the skill method, not a summary.",
+    ]
+    if execution_boundary:
+        prefix_lines.append(execution_boundary)
+    prefix_lines.append("Content:")
+    suffix_lines = [
+        "Continuation:",
+        f"- {continuation_api}" if continuation_api else "- Continue with fetch_skill_instructions(skill_name=..., relative_path=..., offset=<next offset>) when needed.",
+        *_surface_ref_lines(raw_ref, include_raw=True),
+    ]
+    prefix = "\n".join(line for line in prefix_lines if line).strip()
+    suffix = "\n".join(line for line in suffix_lines if line).strip()
+    full_rendered = "\n".join(part for part in (prefix, body.strip(), suffix) if part).strip()
+    if len(full_rendered) <= budget:
+        return full_rendered
+
+    reserved = len(prefix) + len(suffix) + 180
+    body_budget = max(400, budget - reserved)
+    visible_body = body[:body_budget].rstrip()
+    next_offset = read_offset + len(visible_body)
+    continuation = (
+        f"fetch_skill_instructions(skill_name={skill_name!r}, relative_path={relative_path!r}, offset={next_offset})"
+        if skill_name and relative_path
+        else f"fetch_skill_instructions(skill_name=..., relative_path=..., offset={next_offset})"
+    )
+    truncated_lines = [
+        prefix,
+        visible_body,
+        (
+            f"...[skill relative file truncated at offset {next_offset}"
+            + (f" of {total_chars}" if total_chars else "")
+            + "; continue the same document with the command below]"
+        ),
+        "Continuation:",
+        f"- {continuation}",
+        *_surface_ref_lines(raw_ref, include_raw=True),
+    ]
+    return "\n".join(line for line in truncated_lines if line).strip()
+
+
 def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: int) -> str:
     text = str(content or "").strip()
     if not text:
@@ -1435,6 +1624,8 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
     if text.startswith("=== SKILL BLOCKED") or text.startswith("=== SKILL APPROVAL REQUIRED"):
         visible = _head_tail_truncate_text(text, budget, f"skill notice truncated; rawRef={raw_ref}") if len(text) > budget else text
         return visible
+    if text.startswith("=== SKILL FILE ==="):
+        return _render_skill_relative_file_surface(text, raw_ref, budget=budget)
 
     skill_name = ""
     for pattern in (
@@ -1483,17 +1674,135 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
     cleaned = "\n".join(cleaned_lines).strip()
 
     lines = ["Skill instructions" + (f": {skill_name}" if skill_name else "")]
-    lines.append("Use these instructions as the method contract; paths and loader diagnostics are kept in raw detail.")
-    if continuation_manifest:
-        lines.append("Continuation manifest:")
-        lines.append(continuation_manifest)
+    lines.append("Use the main SKILL.md instructions below as the method contract; relative paths remain resolved through fetch_skill_instructions.")
     if cleaned:
         lines.append("Instructions:")
         lines.append(cleaned)
+    lines.append("Relative path continuation:")
+    lines.append("- When the instructions mention a relative Markdown/template/script path, read it with fetch_skill_instructions(skill_name=..., relative_path='...').")
+    lines.append("- Reading scripts/ assets does not grant execution permission; run scripts only through governed command/runtime tools when the task explicitly requires it.")
+    base_lines = [*lines, *_surface_ref_lines(raw_ref, include_raw=True)]
+    base_rendered = "\n".join(line for line in base_lines if line).strip()
+    if len(base_rendered) > budget:
+        block_lines = [
+            "Skill instructions: main document too large for the current agent-visible budget" + (f" ({skill_name})" if skill_name else ""),
+            "Status: blocked until the complete main SKILL.md contract can be read.",
+            f"Main document chars: {len(cleaned or instructions)}",
+            f"Current visible budget chars: {budget}",
+            "Reason: partial SKILL.md output can cause the agent to start with an incomplete workflow.",
+            "Next:",
+            "- Re-run fetch_skill_instructions in a larger context/tool budget or a long-context runtime.",
+            "- Do not execute this skill until the complete main SKILL.md contract is visible.",
+            *_surface_ref_lines(raw_ref, include_raw=True),
+        ]
+        return "\n".join(line for line in block_lines if line).strip()
+
+    if continuation_manifest:
+        manifest_lines = [
+            *lines,
+            "Continuation manifest (auxiliary, not a replacement for the instructions above):",
+            continuation_manifest,
+            *_surface_ref_lines(raw_ref, include_raw=True),
+        ]
+        manifest_rendered = "\n".join(line for line in manifest_lines if line).strip()
+        if len(manifest_rendered) <= budget:
+            return manifest_rendered
+    return base_rendered
+
+
+def _audit_body_summary(body: str) -> str:
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    payload = _tool_json_payload(text)
+    if not isinstance(payload, dict):
+        return _short_text(text, 520)
+
+    parts: list[str] = []
+    for key in (
+        "summary",
+        "message",
+        "reason",
+        "error",
+        "skillName",
+        "verdict",
+        "effectiveVerdict",
+        "posture",
+        "confidence",
+        "runId",
+        "sessionId",
+        "ledgerId",
+        "ledgerStatus",
+        "targetCount",
+        "failedTargetCount",
+        "workflowCandidateCount",
+        "workflowCandidateUpdatedCount",
+        "scannedFiles",
+        "candidateFiles",
+        "skillTrustScore",
+    ):
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            parts.append(f"{key}={_short_text(value, 120)}")
+
+    reasons = payload.get("reasons") or payload.get("failedReasons") or payload.get("warnings")
+    if isinstance(reasons, list) and reasons:
+        parts.append("reasons=" + "; ".join(_short_text(item, 120) for item in reasons[:3]))
+
+    categories = payload.get("findingCategories")
+    if isinstance(categories, list) and categories:
+        parts.append("categories=" + ", ".join(_short_text(item, 50) for item in categories[:5]))
+
+    flagged = payload.get("flaggedFiles") or payload.get("failedTargets") or payload.get("touchedRefs")
+    if isinstance(flagged, list):
+        parts.append(f"items={len(flagged)}")
+        examples = []
+        for item in flagged[:3]:
+            if isinstance(item, dict):
+                examples.append(_short_text(item.get("path") or item.get("memoryRef") or item.get("id") or item, 90))
+            else:
+                examples.append(_short_text(item, 90))
+        if examples:
+            parts.append("examples=" + "; ".join(examples))
+
+    if not parts:
+        for key, value in payload.items():
+            if value in (None, "", [], {}) or isinstance(value, (dict, list)):
+                continue
+            parts.append(f"{_short_text(key, 40)}={_short_text(value, 90)}")
+            if len(parts) >= 6:
+                break
+    return _short_text(" | ".join(parts), 900)
+
+
+def _render_audit_log_surface(content: str, raw_ref: str, *, budget: int) -> str:
+    raw_lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    lines = ["Audit log"]
+    if not raw_lines:
+        lines.append("No audit logs found matching the criteria.")
+        lines.extend(_surface_ref_lines(raw_ref, include_raw=True))
+        return "\n".join(lines)
+
+    for raw_line in raw_lines[:8]:
+        match = re.match(
+            r"^\[(?P<ts>[^\]]+)\]\s+\[(?P<source>[^\]]+)\]\s+(?P<action>.*?)\s+-\s+(?P<status>[^:]+):\s*(?P<body>.*)$",
+            raw_line,
+        )
+        if match:
+            summary = _audit_body_summary(match.group("body"))
+            prefix = (
+                f"- {match.group('ts')} | {match.group('source')} | "
+                f"{_short_text(match.group('action'), 80)} | {match.group('status')}"
+            )
+            lines.append(prefix + (f": {summary}" if summary else ""))
+        else:
+            lines.append(f"- {_short_text(raw_line, 520)}")
+    if len(raw_lines) > 8:
+        lines.append(f"- … {len(raw_lines) - 8} more log line(s)")
     lines.extend(_surface_ref_lines(raw_ref, include_raw=True))
     rendered = "\n".join(line for line in lines if line).strip()
     if len(rendered) > budget:
-        return _head_tail_truncate_text(rendered, budget, f"skill instructions truncated; rawRef={raw_ref}")
+        return _head_tail_truncate_text(rendered, budget, f"audit log surface truncated; rawRef={raw_ref}")
     return rendered
 
 
@@ -1514,9 +1823,9 @@ def _decision_agent_visible_surface(
     elif tool_name == "workspace_broker":
         renderer_result = _render_workspace_broker_surface(payload, raw_ref)
     elif tool_name == "research_broker":
-        renderer_result = _render_research_broker_surface(payload, raw_ref)
+        renderer_result = _render_research_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name == "web_broker" or tool_name.startswith("web_"):
-        renderer_result = _render_web_broker_surface(payload, raw_ref)
+        renderer_result = _render_web_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name == "delegation_broker" or tool_name.startswith("delegation_") or tool_name.startswith("subagent_"):
         renderer_result = _render_delegation_broker_surface(payload, raw_ref)
     elif tool_name.startswith("computer_use_"):
@@ -1953,6 +2262,18 @@ def apply_tool_surface_budget(
             }
         )
         return _copy_tool_message_with_budget(message, skill_surface, budget_meta)
+
+    if tool_name == "read_audit_log":
+        audit_surface = _render_audit_log_surface(content_str, raw_ref, budget=budget)
+        budget_meta.update(
+            {
+                "wasBudgetTruncated": len(audit_surface) < len(content_str),
+                "semanticTruncationStrategy": "audit_log_surface",
+                "originalChars": len(original_content_str),
+                "visibleChars": len(audit_surface),
+            }
+        )
+        return _copy_tool_message_with_budget(message, audit_surface, budget_meta)
 
     decision_surface = _decision_agent_visible_surface(
         tool_name=tool_name,

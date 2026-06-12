@@ -8,6 +8,7 @@ import {
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import type { ClientToolSurface } from "@v8/session-realtime";
 
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -18,6 +19,7 @@ export type ToolInvocation = {
     args: unknown;
     state: "call" | "result";
     result?: unknown;
+    clientSurface?: ClientToolSurface;
 };
 
 type ToolCardProps = {
@@ -157,6 +159,16 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                     </Animated.View>
                 </Pressable>
 
+                {toolInvocation.clientSurface?.summary ? (
+                    <Text
+                        style={[styles.summary, { color: colors.textMuted }]}
+                        numberOfLines={2}
+                        ellipsizeMode="tail"
+                    >
+                        {toolInvocation.clientSurface.summary}
+                    </Text>
+                ) : null}
+
                 {isExpanded ? (
                     <Animated.View
                         style={[
@@ -196,6 +208,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
     && prev.hideResult === next.hideResult
     && JSON.stringify(prev.toolInvocation.args ?? {}) === JSON.stringify(next.toolInvocation.args ?? {})
     && JSON.stringify(prev.toolInvocation.result ?? null) === JSON.stringify(next.toolInvocation.result ?? null)
+    && JSON.stringify(prev.toolInvocation.clientSurface ?? null) === JSON.stringify(next.toolInvocation.clientSurface ?? null)
 ));
 
 const styles = StyleSheet.create({
@@ -263,6 +276,14 @@ const styles = StyleSheet.create({
         lineHeight: 12,
         fontWeight: "800",
         flexShrink: 0,
+    },
+    summary: {
+        paddingHorizontal: 8,
+        paddingBottom: 5,
+        marginTop: -1,
+        fontSize: 10,
+        lineHeight: 15,
+        fontWeight: "600",
     },
     content: {
         paddingHorizontal: 8,

@@ -33,6 +33,16 @@ def _tool_observation_short_text(value: Any, limit: int = 420) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _tool_observation_content_excerpt(value: Any, limit: int = 1600) -> str:
+    text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    if len(text) <= limit:
+        return text
+    head_limit = max(400, int(limit * 0.65))
+    tail_limit = max(120, limit - head_limit - 48)
+    return f"{text[:head_limit].rstrip()}\n\n...[content truncated]...\n\n{text[-tail_limit:].lstrip()}"
+
+
 def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str, max_chars: int) -> str | None:
     kind = str(payload.get("kind") or "").strip()
     if kind not in {"research_evidence_bundle", "research_result_pack", "research_experience_pack"} and not any(
@@ -73,7 +83,7 @@ def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str
     lines.append("")
     lines.append("Final result:")
     if answer:
-        lines.append(_tool_observation_short_text(answer, max(900, min(max_chars // 2, 3200))))
+        lines.append(_tool_observation_content_excerpt(answer, max(900, min(max_chars // 2, 3200))))
     else:
         lines.append("No final source-backed research result was available. Refresh research or provide readable authoritative sources.")
 
@@ -145,7 +155,11 @@ def _render_web_observation_detail(payload: dict[str, Any], *, raw_ref: str, max
     if quality:
         lines.append("quality: " + " | ".join(quality))
 
-    content = _value("text", "textPreview", "content", "contentPreview", "rawHtml", "rawHtmlPreview")
+    content = ""
+    for key in ("text", "textPreview", "content", "contentPreview", "rawHtml", "rawHtmlPreview"):
+        if payload.get(key) not in (None, "", [], {}):
+            content = _tool_observation_content_excerpt(payload.get(key), max(900, min(max_chars // 2, 3600)))
+            break
     if content:
         lines.extend(["", "Content:", content])
 

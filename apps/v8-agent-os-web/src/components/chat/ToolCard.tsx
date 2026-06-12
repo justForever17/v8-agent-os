@@ -3,6 +3,7 @@ import { ChevronDown, CheckCircle2, Loader2, Workflow } from "lucide-react";
 import { useState, memo } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
+import type { ClientToolSurface } from "@v8/session-realtime";
 
 export interface ToolInvocation {
     toolCallId: string;
@@ -10,6 +11,7 @@ export interface ToolInvocation {
     args: any;
     state: 'call' | 'result';
     result?: any;
+    clientSurface?: ClientToolSurface;
 }
 
 interface ToolCardProps {
@@ -99,6 +101,12 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                     </motion.div>
                 </div>
 
+                {toolInvocation.clientSurface?.summary ? (
+                    <div className="px-3.5 pb-1.5 text-[11px] leading-4 text-muted-foreground">
+                        {toolInvocation.clientSurface.summary}
+                    </div>
+                ) : null}
+
                 {/* Expanded Content with Framer Motion AnimatePresence */}
                 <AnimatePresence initial={false}>
                     {isExpanded && (
@@ -147,7 +155,8 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
         prev.toolInvocation.state === next.toolInvocation.state &&
         prev.hideResult === next.hideResult &&
         JSON.stringify('args' in prev.toolInvocation ? prev.toolInvocation.args : {}) === JSON.stringify('args' in next.toolInvocation ? next.toolInvocation.args : {}) &&
-        JSON.stringify('result' in prev.toolInvocation ? prev.toolInvocation.result : null) === JSON.stringify('result' in next.toolInvocation ? next.toolInvocation.result : null)
+        JSON.stringify('result' in prev.toolInvocation ? prev.toolInvocation.result : null) === JSON.stringify('result' in next.toolInvocation ? next.toolInvocation.result : null) &&
+        JSON.stringify(prev.toolInvocation.clientSurface ?? null) === JSON.stringify(next.toolInvocation.clientSurface ?? null)
     );
 });
 

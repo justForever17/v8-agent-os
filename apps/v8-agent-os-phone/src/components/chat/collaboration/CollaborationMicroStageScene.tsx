@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState, type ComponentType } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Rect, Stop } from "react-native-svg";
 import Animated, {
     Easing,
@@ -14,10 +14,13 @@ import Animated, {
 } from "react-native-reanimated";
 import type {
     CollaborationMicroStage,
+    CollaborationMicroStageActor,
     CollaborationMicroStageCue,
+    CollaborationMicroStageLayout,
     CollaborationMicroStageStep,
     CollaborationMicroStageStatus,
 } from "@v8/session-realtime";
+import { selectCollaborationMicroStageLayout } from "@v8/session-realtime";
 
 import { createTranslator } from "@/src/lib/locale";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
@@ -27,6 +30,7 @@ export type CollaborationMicroStageDetailTarget = {
     detailRef: string;
     stage: CollaborationMicroStage;
     step: CollaborationMicroStageStep;
+    actor?: CollaborationMicroStageActor;
 };
 
 export type CollaborationMicroStageRendererProps = {
@@ -34,6 +38,7 @@ export type CollaborationMicroStageRendererProps = {
     palette: ThemeColors;
     dark: boolean;
     locale: LocaleCode;
+    supervisorSpeech?: string;
     onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
 };
 
@@ -61,9 +66,33 @@ const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, number[]> = {
     celebrate: [27, 30, 31, 32, 33, 34],
 };
 
-const STAGE_SPACING = 116;
-const STAGE_START_X = 126;
 const STAGE_HEIGHT = 156;
+const OFFICE_STAGE_HEIGHT = 236;
+const CLUSTER_STAGE_HEIGHT = 204;
+const WORK_CELL_WIDTH = 98;
+const WORK_CELL_HEIGHT = 104;
+const MAX_STAGE_ACTORS = 10;
+const SUPERVISOR_BASE_TOP = 49;
+
+type MicroStageRenderPhase = "opening" | "active" | "handoff" | "settled" | "collapsed" | "exiting";
+
+type RetainedMicroStage = CollaborationMicroStage & {
+    renderPhase: MicroStageRenderPhase;
+    phaseUntil?: number;
+};
+
+type StageActorItem = {
+    id: string;
+    stage: RetainedMicroStage;
+    actor: CollaborationMicroStageActor;
+    sourceIndex: number;
+};
+
+type PositionedStageActorItem = StageActorItem & {
+    x: number;
+    y: number;
+    scale: number;
+};
 
 function statusTone(status: CollaborationMicroStageStatus, palette: ThemeColors) {
     if (status === "completed") return palette.success;
@@ -71,6 +100,105 @@ function statusTone(status: CollaborationMicroStageStatus, palette: ThemeColors)
     if (status === "degraded" || status === "attempted") return palette.warning;
     if (status === "pending") return palette.textSoft;
     return palette.accent;
+}
+
+function isFinalStatus(status: CollaborationMicroStageStatus) {
+    return status === "completed" || status === "failed" || status === "degraded";
+}
+
+function nextPhaseForStage(stage: CollaborationMicroStage, previous?: RetainedMicroStage): MicroStageRenderPhase {
+    if (previous?.renderPhase === "exiting") return "exiting";
+    if (stage.status === "completed" || stage.status === "failed" || stage.status === "degraded") {
+        if (!previous || !isFinalStatus(previous.status)) return "handoff";
+        if (previous.renderPhase === "handoff") return "handoff";
+        if (previous.renderPhase === "collapsed") return "collapsed";
+        return "settled";
+    }
+    if (!previous) return "opening";
+    if (previous.renderPhase === "opening") return "opening";
+    return "active";
+}
+
+function phaseUntil(phase: MicroStageRenderPhase, now: number) {
+    if (phase === "opening") return now + 900;
+    if (phase === "handoff") return now + 1500;
+    if (phase === "settled") return now + 5200;
+    if (phase === "exiting") return now + 1800;
+    return undefined;
+}
+
+function advancePhase(phase: MicroStageRenderPhase): MicroStageRenderPhase | null {
+    if (phase === "opening") return "active";
+    if (phase === "handoff") return "settled";
+    if (phase === "settled") return "collapsed";
+    if (phase === "exiting") return null;
+    return phase;
+}
+
+function useRetainedMicroStages(stages: CollaborationMicroStage[]) {
+    const [retained, setRetained] = useState<RetainedMicroStage[]>([]);
+
+    useEffect(() => {
+        const now = Date.now();
+        setRetained((current) => {
+            const currentById = new Map(current.map((stage) => [stage.id, stage]));
+            const incomingIds = new Set(stages.map((stage) => stage.id));
+            const next: RetainedMicroStage[] = stages.map((stage) => {
+                const previous = currentById.get(stage.id);
+                const renderPhase = nextPhaseForStage(stage, previous);
+                const previousUntil = previous?.renderPhase === renderPhase ? previous.phaseUntil : undefined;
+                return {
+                    ...stage,
+                    renderPhase,
+                    phaseUntil: previousUntil ?? phaseUntil(renderPhase, now),
+                };
+            });
+
+            current.forEach((stage) => {
+                if (incomingIds.has(stage.id) || stage.renderPhase === "exiting") {
+                    return;
+                }
+                next.push({
+                    ...stage,
+                    renderPhase: "exiting",
+                    phaseUntil: phaseUntil("exiting", now),
+                });
+            });
+
+            return next.sort((left, right) => left.timestamp - right.timestamp);
+        });
+    }, [stages]);
+
+    useEffect(() => {
+        const expiring = retained
+            .map((stage) => stage.phaseUntil)
+            .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+        if (expiring.length === 0) {
+            return undefined;
+        }
+        const now = Date.now();
+        const delay = Math.max(80, Math.min(...expiring) - now);
+        const timer = setTimeout(() => {
+            const tick = Date.now();
+            setRetained((current) => current.flatMap((stage) => {
+                if (!stage.phaseUntil || stage.phaseUntil > tick) {
+                    return [stage];
+                }
+                const nextPhase = advancePhase(stage.renderPhase);
+                if (!nextPhase) {
+                    return [];
+                }
+                return [{
+                    ...stage,
+                    renderPhase: nextPhase,
+                    phaseUntil: phaseUntil(nextPhase, tick),
+                }];
+            }));
+        }, delay);
+        return () => clearTimeout(timer);
+    }, [retained]);
+
+    return retained;
 }
 
 function stageColor(stage: CollaborationMicroStage, index: number) {
@@ -92,6 +220,15 @@ function cueToSupervisorAction(stages: CollaborationMicroStage[]): SupervisorAct
     if (stages.some((stage) => stage.status === "active")) return "command";
     if (stages.some((stage) => stage.status === "pending")) return "walk";
     return "idle";
+}
+
+function cueToSupervisorActionFromActors(items: StageActorItem[]): SupervisorAction {
+    if (items.some((item) => item.actor.status === "active" && item.actor.kind === "subagent")) return "summon";
+    if (items.some((item) => item.actor.status === "active")) return "command";
+    if (items.some((item) => item.actor.status === "failed" || item.actor.status === "degraded")) return "read";
+    if (items.some((item) => item.actor.status === "completed" || item.actor.cue === "handoff" || item.actor.cue === "completed")) return "receive";
+    if (items.some((item) => item.actor.status === "pending")) return "walk";
+    return cueToSupervisorAction(items.map((item) => item.stage));
 }
 
 function cueLabel(cue: CollaborationMicroStageCue, t: ReturnType<typeof createTranslator>) {
@@ -118,8 +255,135 @@ function latestStep(stage: CollaborationMicroStage) {
     return stage.steps[stage.steps.length - 1];
 }
 
-function isHandoffStage(stage: CollaborationMicroStage) {
-    return stage.cue === "handoff" || stage.cue === "completed" || stage.status === "completed" || stage.status === "degraded";
+function latestActorStep(stage: CollaborationMicroStage, actor: CollaborationMicroStageActor) {
+    for (let index = stage.steps.length - 1; index >= 0; index -= 1) {
+        const step = stage.steps[index];
+        if (actor.stepIds.includes(step.id) || actor.sourceActivityIds.includes(step.sourceActivityId)) {
+            return step;
+        }
+    }
+    return latestStep(stage);
+}
+
+function buildStageActorItems(stages: RetainedMicroStage[]): StageActorItem[] {
+    const items: StageActorItem[] = [];
+    stages.forEach((stage, stageIndex) => {
+        const actors = stage.actors.length > 0
+            ? stage.actors
+            : [{
+                id: `${stage.id}:actor`,
+                kind: stage.kind,
+                label: latestStep(stage)?.actorLabel || stage.title,
+                status: stage.status,
+                cue: stage.cue,
+                summary: latestStep(stage)?.summary || stage.subtitle,
+                timestamp: stage.timestamp,
+                detailRef: latestStep(stage)?.detailRef,
+                sourceActivityIds: stage.sourceActivityIds,
+                stepIds: stage.steps.map((step) => step.id),
+            } satisfies CollaborationMicroStageActor];
+
+        actors.forEach((actor, actorIndex) => {
+            items.push({
+                id: `${stage.id}:${actor.id || actorIndex}`,
+                stage,
+                actor,
+                sourceIndex: stageIndex + actorIndex,
+            });
+        });
+    });
+    return items.slice(Math.max(0, items.length - MAX_STAGE_ACTORS));
+}
+
+function layoutHeight(layout: CollaborationMicroStageLayout) {
+    if (layout === "singleRow") return STAGE_HEIGHT;
+    if (layout === "officeGrid") return OFFICE_STAGE_HEIGHT;
+    return CLUSTER_STAGE_HEIGHT;
+}
+
+function positionStageActorItems(
+    items: StageActorItem[],
+    layout: CollaborationMicroStageLayout,
+    width: number,
+): PositionedStageActorItem[] {
+    const canvasWidth = Math.max(300, width || 320);
+    if (layout === "singleRow") {
+        const count = Math.max(1, items.length);
+        const reservedSupervisorWidth = 78;
+        const cellWidth = count <= 2 ? 100 : 88;
+        const availableWidth = Math.max(cellWidth * count, canvasWidth - reservedSupervisorWidth - 8);
+        const gap = count > 1 ? Math.max(4, Math.min(18, (availableWidth - cellWidth * count) / (count - 1))) : 0;
+        const start = reservedSupervisorWidth + Math.max(0, (availableWidth - (cellWidth * count + gap * (count - 1))) / 2);
+        return items.map((item, index) => ({
+            ...item,
+            x: start + index * (cellWidth + gap),
+            y: 33,
+            scale: count >= 3 ? 0.88 : 0.96,
+        }));
+    }
+
+    if (layout === "officeGrid") {
+        const columns = Math.min(3, Math.max(2, items.length));
+        const cellWidth = canvasWidth / columns;
+        return items.map((item, index) => {
+            const column = index % columns;
+            const row = Math.floor(index / columns);
+            const scale = 0.78;
+            return {
+                ...item,
+                x: column * cellWidth + Math.max(0, (cellWidth - WORK_CELL_WIDTH * scale) / 2),
+                y: 27 + row * 92,
+                scale,
+            };
+        });
+    }
+
+    const columns = Math.min(5, Math.max(4, items.length));
+    const cellWidth = canvasWidth / columns;
+    const scale = Math.max(0.5, Math.min(0.64, (cellWidth - 2) / WORK_CELL_WIDTH));
+    return items.map((item, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        return {
+            ...item,
+            x: column * cellWidth + Math.max(0, (cellWidth - WORK_CELL_WIDTH * scale) / 2),
+            y: 24 + row * 76,
+            scale,
+        };
+    });
+}
+
+function supervisorPatrolWaypoints(layout: CollaborationMicroStageLayout, width: number) {
+    const canvasWidth = Math.max(300, width || 320);
+    if (layout === "singleRow") {
+        return [
+            { x: 20, y: 0 },
+            { x: Math.max(20, Math.min(canvasWidth - 86, 138)), y: 0 },
+            { x: Math.max(20, Math.min(canvasWidth - 86, canvasWidth - 112)), y: 0 },
+        ];
+    }
+    if (layout === "officeGrid") {
+        const middleX = Math.max(24, canvasWidth / 2 - 34);
+        return [
+            { x: 18, y: 4 },
+            { x: middleX, y: 4 },
+            { x: Math.max(18, canvasWidth - 92), y: 4 },
+            { x: middleX, y: 94 },
+            { x: 18, y: 94 },
+            { x: Math.max(18, canvasWidth - 92), y: 94 },
+        ];
+    }
+    const upper = 0;
+    const lower = 78;
+    return [
+        { x: 12, y: upper },
+        { x: Math.max(12, canvasWidth * 0.32 - 34), y: upper },
+        { x: Math.max(12, canvasWidth * 0.64 - 34), y: upper },
+        { x: Math.max(12, canvasWidth - 84), y: upper },
+        { x: Math.max(12, canvasWidth - 84), y: lower },
+        { x: Math.max(12, canvasWidth * 0.52 - 34), y: lower },
+        { x: 12, y: lower },
+    ];
 }
 
 function SupervisorSprite({
@@ -523,29 +787,41 @@ function StatusBadge({
 
 type WorkCellProps = {
     stage: CollaborationMicroStage;
+    actor: CollaborationMicroStageActor;
     index: number;
+    x: number;
+    y: number;
+    scale: number;
+    phase: MicroStageRenderPhase;
     palette: ThemeColors;
     dark: boolean;
     supervisorX: SharedValue<number>;
+    supervisorY: SharedValue<number>;
     onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
     t: ReturnType<typeof createTranslator>;
 };
 
 const WorkCell = memo(function WorkCell({
     stage,
+    actor,
     index,
+    x,
+    y,
+    scale,
+    phase,
     palette,
     dark,
     supervisorX,
+    supervisorY,
     onOpenDetailRef,
     t,
 }: WorkCellProps) {
     const color = stageColor(stage, index);
-    const x = STAGE_START_X + index * STAGE_SPACING;
-    const step = latestStep(stage);
-    const cue = step?.cue || stage.cue;
-    const active = stage.status === "active";
-    const isHandoff = isHandoffStage(stage);
+    const step = latestActorStep(stage, actor);
+    const cue = actor.cue || step?.cue || stage.cue;
+    const actorStatus = actor.status || stage.status;
+    const active = actorStatus === "active" && phase !== "collapsed" && phase !== "exiting";
+    const isHandoff = isFinalStatus(actorStatus) || cue === "handoff" || cue === "completed";
     const appeared = useSharedValue(0);
     const shake = useSharedValue(0);
     const walkBack = useSharedValue(0);
@@ -555,6 +831,18 @@ const WorkCell = memo(function WorkCell({
     useEffect(() => {
         appeared.value = withSpring(1, { damping: 13, stiffness: 120 });
     }, [appeared]);
+
+    useEffect(() => {
+        if (phase === "exiting") {
+            appeared.value = withTiming(0, { duration: 1120, easing: Easing.in(Easing.cubic) });
+            return;
+        }
+        if (phase === "collapsed") {
+            appeared.value = withTiming(0.72, { duration: 420, easing: Easing.out(Easing.cubic) });
+            return;
+        }
+        appeared.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.cubic) });
+    }, [appeared, phase]);
 
     useEffect(() => {
         if (active) {
@@ -569,7 +857,7 @@ const WorkCell = memo(function WorkCell({
     }, [active, shake]);
 
     useEffect(() => {
-        if (stage.status === "failed" || stage.status === "degraded") {
+        if (actorStatus === "failed" || actorStatus === "degraded") {
             warningPulse.value = withRepeat(
                 withSequence(withTiming(1, { duration: 420 }), withTiming(0, { duration: 420 })),
                 -1,
@@ -578,7 +866,7 @@ const WorkCell = memo(function WorkCell({
             return;
         }
         warningPulse.value = withTiming(0, { duration: 180 });
-    }, [stage.status, warningPulse]);
+    }, [actorStatus, warningPulse]);
 
     useEffect(() => {
         if (isHandoff) {
@@ -592,16 +880,17 @@ const WorkCell = memo(function WorkCell({
 
     const cellStyle = useAnimatedStyle(() => ({
         opacity: appeared.value,
-        transform: [{ scale: 0.92 + appeared.value * 0.08 }],
+        transform: [{ scale: scale * (0.92 + appeared.value * 0.08) }],
     }));
 
     const botStyle = useAnimatedStyle(() => {
         const target = supervisorX.value + 24 - x;
+        const targetY = SUPERVISOR_BASE_TOP + supervisorY.value + 28 - y - 42;
         return {
             opacity: appeared.value * (1 - submit.value * 0.82),
             transform: [
                 { translateX: walkBack.value * target + (walkBack.value < 0.02 ? shake.value * 0.9 : 0) },
-                { translateY: walkBack.value > 0 ? Math.sin(walkBack.value * Math.PI * 10) * 1.4 : 0 },
+                { translateY: walkBack.value * targetY + (walkBack.value > 0 ? Math.sin(walkBack.value * Math.PI * 10) * 1.4 : 0) },
             ],
         };
     });
@@ -610,7 +899,7 @@ const WorkCell = memo(function WorkCell({
         opacity: walkBack.value > 0.72 ? 1 - submit.value : 0,
         transform: [
             { translateX: walkBack.value * (supervisorX.value + 35 - x) },
-            { translateY: -10 - submit.value * 18 },
+            { translateY: walkBack.value * (SUPERVISOR_BASE_TOP + supervisorY.value + 18 - y - 52) - submit.value * 18 },
         ],
     }));
 
@@ -620,19 +909,20 @@ const WorkCell = memo(function WorkCell({
     }));
 
     const handlePress = () => {
-        if (step?.detailRef && onOpenDetailRef) {
-            onOpenDetailRef({ detailRef: step.detailRef, stage, step });
+        const detailRef = actor.detailRef || step?.detailRef;
+        if (detailRef && step && onOpenDetailRef) {
+            onOpenDetailRef({ detailRef, stage, step, actor });
         }
     };
 
     return (
-        <Animated.View style={[styles.workCell, { left: x }, cellStyle]}>
-            {(active || stage.cue === "summon") && <MagicPortal color={color} />}
+        <Animated.View style={[styles.workCell, { left: x, top: y }, cellStyle]}>
+            {(phase === "opening" || active || cue === "summon") && <MagicPortal color={color} />}
             <WorkbenchShadow />
-            <Workstation cue={cue} color={color} status={stage.status} active={active} />
+            <Workstation cue={cue} color={color} status={actorStatus} active={active} />
             <Animated.View style={[styles.robotLayer, botStyle]}>
                 <GroundShadow width={38} opacity={0.18} />
-                <RobotActor color={color} active={active || isHandoff} status={stage.status} />
+                <RobotActor color={color} active={active || isHandoff} status={actorStatus} />
             </Animated.View>
             {isHandoff && (
                 <Animated.View style={[styles.reportLayer, reportStyle]} pointerEvents="none">
@@ -642,9 +932,9 @@ const WorkCell = memo(function WorkCell({
             <Animated.View style={[styles.stageBadgeWrap, badgeStyle]}>
                 <Pressable
                     onPress={handlePress}
-                    disabled={!step?.detailRef}
-                    accessibilityRole={step?.detailRef ? "button" : undefined}
-                    accessibilityLabel={step?.summary || stage.title}
+                    disabled={!(actor.detailRef || step?.detailRef)}
+                    accessibilityRole={actor.detailRef || step?.detailRef ? "button" : undefined}
+                    accessibilityLabel={actor.summary || step?.summary || stage.title}
                     style={[
                         styles.stageBadge,
                         {
@@ -657,12 +947,12 @@ const WorkCell = memo(function WorkCell({
                         {cueLabel(cue, t)}
                     </Text>
                     <Text style={[styles.stageBadgeSummary, { color: palette.textMuted }]} numberOfLines={1}>
-                        {step?.actorLabel || stage.title}
+                        {actor.label || step?.actorLabel || stage.title}
                     </Text>
                 </Pressable>
             </Animated.View>
             <View style={styles.statusBadgeWrap}>
-                <StatusBadge status={stage.status} color={color} palette={palette} t={t} />
+                <StatusBadge status={actorStatus} color={color} palette={palette} t={t} />
             </View>
         </Animated.View>
     );
@@ -687,39 +977,67 @@ function StageFloor({ dark }: { dark: boolean }) {
     );
 }
 
+function SupervisorSpeechBubble({ text, palette }: { text?: string; palette: ThemeColors }) {
+    if (!text) {
+        return null;
+    }
+    return (
+        <View style={[styles.supervisorSpeechBubble, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+            <Text style={[styles.supervisorSpeechText, { color: palette.text }]} numberOfLines={2}>
+                {text}
+            </Text>
+        </View>
+    );
+}
+
 export const CollaborationMicroStageLightRenderer = memo(function CollaborationMicroStageLightRenderer({
     stages,
     palette,
     dark,
     locale,
+    supervisorSpeech,
     onOpenDetailRef,
 }: CollaborationMicroStageRendererProps) {
     const t = createTranslator(locale);
     const supervisorX = useSharedValue(26);
     const supervisorY = useSharedValue(0);
     const supervisorFacing = useSharedValue(1);
-
-    const activeIndex = stages.findIndex((stage) => stage.status === "active");
-    const action = useMemo(() => cueToSupervisorAction(stages), [stages]);
+    const [canvasWidth, setCanvasWidth] = useState(0);
+    const retainedStages = useRetainedMicroStages(stages);
+    const actorItems = useMemo(() => buildStageActorItems(retainedStages), [retainedStages]);
+    const layout = useMemo(() => selectCollaborationMicroStageLayout(retainedStages), [retainedStages]);
+    const stageHeight = layoutHeight(layout);
+    const positionedItems = useMemo(
+        () => positionStageActorItems(actorItems, layout, canvasWidth),
+        [actorItems, canvasWidth, layout],
+    );
+    const patrolWaypoints = useMemo(() => supervisorPatrolWaypoints(layout, canvasWidth), [canvasWidth, layout]);
+    const action = useMemo(() => cueToSupervisorActionFromActors(actorItems), [actorItems]);
 
     useEffect(() => {
-        if (activeIndex >= 0) {
-            const target = STAGE_START_X + activeIndex * STAGE_SPACING - 58;
-            supervisorFacing.value = target >= supervisorX.value ? 1 : -1;
-            supervisorX.value = withTiming(target, { duration: 1360, easing: Easing.inOut(Easing.cubic) });
-            supervisorY.value = withSequence(withTiming(-2, { duration: 180 }), withTiming(0, { duration: 220 }));
+        if (positionedItems.length === 0 || patrolWaypoints.length === 0) {
             return;
         }
+
+        const first = patrolWaypoints[0];
         supervisorFacing.value = 1;
-        supervisorX.value = withRepeat(
-            withSequence(
-                withTiming(36, { duration: 3000, easing: Easing.inOut(Easing.ease) }),
-                withTiming(18, { duration: 3000, easing: Easing.inOut(Easing.ease) }),
-            ),
-            -1,
-            true,
-        );
-    }, [activeIndex, supervisorFacing, supervisorX, supervisorY]);
+        supervisorX.value = withTiming(first.x, { duration: 360, easing: Easing.out(Easing.cubic) });
+        supervisorY.value = withTiming(first.y, { duration: 360, easing: Easing.out(Easing.cubic) });
+
+        let waypointIndex = 0;
+        const timer = setInterval(() => {
+            waypointIndex = (waypointIndex + 1) % patrolWaypoints.length;
+            const previous = patrolWaypoints[(waypointIndex - 1 + patrolWaypoints.length) % patrolWaypoints.length];
+            const next = patrolWaypoints[waypointIndex];
+            supervisorFacing.value = next.x >= previous.x ? 1 : -1;
+            supervisorX.value = withTiming(next.x, { duration: 1450, easing: Easing.inOut(Easing.cubic) });
+            supervisorY.value = withTiming(next.y, { duration: 1450, easing: Easing.inOut(Easing.cubic) });
+        }, layout === "singleRow" ? 3200 : 2600);
+
+        return () => {
+            clearInterval(timer);
+        }
+    }, [layout, patrolWaypoints, positionedItems.length, supervisorFacing, supervisorX, supervisorY]);
 
     const supervisorStyle = useAnimatedStyle(() => ({
         transform: [
@@ -728,39 +1046,42 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
         ],
     }));
 
-    if (stages.length === 0) {
+    if (retainedStages.length === 0 || positionedItems.length === 0) {
         return null;
     }
 
-    const scrollerWidth = Math.max(310, STAGE_START_X + stages.length * STAGE_SPACING + 26);
-
     return (
-        <View style={styles.wrap}>
-            <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                bounces
-                contentContainerStyle={[styles.canvasScroller, { width: scrollerWidth }]}
+        <View style={[styles.wrap, { height: stageHeight }]}>
+            <View
+                style={[styles.canvasScroller, { height: stageHeight }]}
+                onLayout={(event) => setCanvasWidth(event.nativeEvent.layout.width)}
                 accessibilityLabel={t("src.components.chat.collaborationmicrostagescene.accessibility_label")}
             >
                 <StageFloor dark={dark} />
                 <Animated.View style={[styles.supervisorLayer, supervisorStyle]}>
+                    <SupervisorSpeechBubble text={supervisorSpeech} palette={palette} />
                     <GroundShadow width={52} opacity={0.2} />
                     <SupervisorSprite action={action} mirrored={supervisorFacing} />
                 </Animated.View>
-                {stages.map((stage, index) => (
+                {positionedItems.map((item, index) => (
                     <WorkCell
-                        key={stage.id}
-                        stage={stage}
+                        key={item.id}
+                        stage={item.stage}
+                        actor={item.actor}
                         index={index}
+                        x={item.x}
+                        y={item.y}
+                        scale={item.scale}
+                        phase={item.stage.renderPhase}
                         palette={palette}
                         dark={dark}
                         supervisorX={supervisorX}
+                        supervisorY={supervisorY}
                         onOpenDetailRef={onOpenDetailRef}
                         t={t}
                     />
                 ))}
-            </ScrollView>
+            </View>
         </View>
     );
 });
@@ -775,13 +1096,12 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        height: STAGE_HEIGHT,
         marginVertical: 4,
         overflow: "hidden",
     },
     canvasScroller: {
-        height: STAGE_HEIGHT,
         position: "relative",
+        width: "100%",
     },
     floor: {
         position: "absolute",
@@ -793,7 +1113,7 @@ const styles = StyleSheet.create({
     supervisorLayer: {
         position: "absolute",
         left: 0,
-        bottom: 21,
+        top: 49,
         width: 68,
         height: 70,
         alignItems: "center",
@@ -817,9 +1137,8 @@ const styles = StyleSheet.create({
     },
     workCell: {
         position: "absolute",
-        bottom: 19,
         width: 98,
-        height: 104,
+        height: WORK_CELL_HEIGHT,
         alignItems: "center",
         zIndex: 10,
     },
@@ -961,5 +1280,27 @@ const styles = StyleSheet.create({
         fontSize: 7.5,
         fontWeight: "800",
         lineHeight: 10,
+    },
+    supervisorSpeechBubble: {
+        position: "absolute",
+        left: 46,
+        top: -18,
+        width: 128,
+        minHeight: 28,
+        borderRadius: 11,
+        borderWidth: 1,
+        paddingHorizontal: 8,
+        paddingVertical: 5,
+        shadowColor: "#020617",
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 2 },
+        zIndex: 40,
+    },
+    supervisorSpeechText: {
+        fontSize: 9,
+        lineHeight: 12,
+        fontWeight: "800",
+        letterSpacing: 0,
     },
 });

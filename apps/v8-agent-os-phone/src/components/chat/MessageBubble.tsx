@@ -102,6 +102,26 @@ function isMicroStageSupersededTimelineNode(node: PhoneUiTimelineNode, microStag
         && MICRO_STAGE_TOOL_NAMES.has(getExecutionToolName(node));
 }
 
+function extractSupervisorMicroStageSpeech(nodes: PhoneUiTimelineNode[]) {
+    for (const node of nodes) {
+        if (node.kind !== "narrative" || node.role !== "assistant") {
+            continue;
+        }
+        const text = parsePhoneContentBlocks(String(node.content || ""))
+            .filter((block) => block.type !== "voice")
+            .map((block) => block.content.trim())
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+        if (!text) {
+            continue;
+        }
+        return text.length > 42 ? `${text.slice(0, 41)}...` : text;
+    }
+    return "";
+}
+
 function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode & { toolCallId: string } {
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
 }
@@ -619,11 +639,15 @@ export const MessageBubble = memo(function MessageBubble({
             {
                 runId: message.runId,
                 locale,
-                limit: 4,
+                limit: 10,
                 maxStepsPerStage: 4,
             },
         ),
         [hasSupervisorVisibleActivity, isLast, isUser, locale, message.runId, runtimeActivities],
+    );
+    const microStageSupervisorSpeech = useMemo(
+        () => extractSupervisorMicroStageSpeech(rawRenderableNodes),
+        [rawRenderableNodes],
     );
     const microStageVisible = visibleBubbleMicroStages.length > 0;
     const renderableNodes = useMemo(
@@ -989,6 +1013,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         palette={palette}
                                         dark={themeMode === "dark"}
                                         locale={locale}
+                                        supervisorSpeech={microStageSupervisorSpeech}
                                         onOpenDetailRef={(target) => void handleOpenMicroStageDetailRef(target)}
                                     />
                                 </View>

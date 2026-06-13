@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildCollaborationMicroStages } from "../dist/collaboration-micro-stage.js";
+import { buildCollaborationMicroStages, selectCollaborationMicroStageLayout } from "../dist/collaboration-micro-stage.js";
 
 const runId = "run_micro_stage_demo";
 const stages = buildCollaborationMicroStages([
@@ -66,14 +66,18 @@ const subagentStage = stages.find((stage) => stage.kind === "subagent");
 assert.ok(subagentStage);
 assert.equal(subagentStage.title, "子代理微舞台");
 assert.equal(subagentStage.steps.length, 2);
+assert.equal(subagentStage.actors.length, 2);
 assert.deepEqual(subagentStage.steps.map((step) => step.cue), ["summon", "child_agent"]);
+assert.deepEqual(subagentStage.actors.map((actor) => actor.cue), ["summon", "child_agent"]);
 
 const runtimeStage = stages.find((stage) => stage.kind === "runtime");
 assert.ok(runtimeStage);
 assert.equal(runtimeStage.runtimeId, "engineering");
 assert.equal(runtimeStage.status, "completed");
+assert.equal(runtimeStage.actors.length, 1);
 assert.deepEqual(runtimeStage.steps.map((step) => step.cue), ["engineering", "completed"]);
 assert.equal(runtimeStage.steps[0].detailRef, "raw://engineering/active");
+assert.equal(selectCollaborationMicroStageLayout(stages), "singleRow");
 
 const unrelated = buildCollaborationMicroStages([
   {
@@ -115,5 +119,24 @@ const degraded = buildCollaborationMicroStages([
 assert.equal(degraded.length, 1);
 assert.equal(degraded[0].status, "degraded");
 assert.equal(degraded[0].steps[0].cue, "degraded");
+
+const manyActors = buildCollaborationMicroStages(Array.from({ length: 10 }).map((_, index) => ({
+  id: `evt_subagent_${index}`,
+  topic: "subagent.task.started",
+  summary: `子代理 ${index + 1} 接单。`,
+  timestamp: 600 + index,
+  runtimeId: "subagent_swarm",
+  data: {
+    runId,
+    dispatchGroup: "dg_many",
+    taskBriefId: `task_${index}`,
+    subagentName: `Worker ${index + 1}`,
+    state: "active",
+  },
+})), { runId, locale: "zh-CN", limit: 10 });
+
+assert.equal(manyActors.length, 1);
+assert.equal(manyActors[0].actors.length, 10);
+assert.equal(selectCollaborationMicroStageLayout(manyActors), "clusteredGrid");
 
 console.log("collaboration micro-stage verified");

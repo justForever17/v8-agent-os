@@ -5,6 +5,8 @@ export type CollaborationMicroStageKind = "subagent" | "runtime";
 
 export type CollaborationMicroStageStatus = RuntimeEpisodeGraphStatus | "degraded";
 
+export type CollaborationMicroStageLayout = "singleRow" | "officeGrid" | "clusteredGrid";
+
 export type CollaborationMicroStageCue =
   | "summon"
   | "dispatch"
@@ -33,6 +35,19 @@ export type CollaborationMicroStageStep = {
   detailRef?: string;
 };
 
+export type CollaborationMicroStageActor = {
+  id: string;
+  kind: CollaborationMicroStageKind;
+  label: string;
+  status: CollaborationMicroStageStatus;
+  cue: CollaborationMicroStageCue;
+  summary: string;
+  timestamp: number;
+  detailRef?: string;
+  sourceActivityIds: string[];
+  stepIds: string[];
+};
+
 export type CollaborationMicroStage = {
   id: string;
   kind: CollaborationMicroStageKind;
@@ -46,6 +61,7 @@ export type CollaborationMicroStage = {
   dispatchGroup?: string;
   sourceActivityIds: string[];
   steps: CollaborationMicroStageStep[];
+  actors: CollaborationMicroStageActor[];
 };
 
 export type CollaborationMicroStageActivityInput = RuntimeEpisodeGraphActivity & {
@@ -60,6 +76,11 @@ export type BuildCollaborationMicroStageOptions = {
 };
 
 type StageDraft = CollaborationMicroStage & {
+  latestScore: number;
+  actorDrafts: Map<string, ActorDraft>;
+};
+
+type ActorDraft = CollaborationMicroStageActor & {
   latestScore: number;
 };
 
@@ -233,6 +254,40 @@ function getActorLabel(activity: CollaborationMicroStageActivityInput, kind: Col
     : (locale === "en" ? "Runtime" : "运行时");
 }
 
+function normalizeActorKey(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function getSubagentActorKey(activity: CollaborationMicroStageActivityInput, group: string) {
+  const data = getActivityData(activity);
+  const explicit = readString(data.subagentId)
+    || readString(data.subagent_id)
+    || readString(data.agentId)
+    || readString(data.agent_id)
+    || readString(data.workerId)
+    || readString(data.worker_id)
+    || readString(data.childEpisodeId)
+    || readString(data.child_episode_id)
+    || readString(data.taskBriefId)
+    || readString(data.task_brief_id);
+  if (explicit) return `${group}:${explicit}`;
+  const label = readString(data.subagentName)
+    || readString(data.subagent_name)
+    || readString(data.agentName)
+    || readString(data.agent_name)
+    || readString(data.targetLabel)
+    || readString(data.target_label)
+    || readString(data.workerType)
+    || readString(data.worker_type);
+  if (label) return `${group}:${normalizeActorKey(label) || label}`;
+  return `${group}:${readString(activity.id) || readTimestamp(activity.timestamp)}`;
+}
+
+function getActorId(activity: CollaborationMicroStageActivityInput, kind: CollaborationMicroStageKind, group: string) {
+  if (kind === "runtime") return `runtime:${group}`;
+  return `subagent:${getSubagentActorKey(activity, group)}`;
+}
+
 function getSummary(activity: CollaborationMicroStageActivityInput) {
   const data = getActivityData(activity);
   return readString(data.compactSummary)
@@ -241,6 +296,28 @@ function getSummary(activity: CollaborationMicroStageActivityInput) {
     || readString(data.summary)
     || readString(data.reason)
     || readString(activity.summary);
+}
+
+function mergeActorDraft(actor: ActorDraft, step: CollaborationMicroStageStep, status: CollaborationMicroStageStatus, cue: CollaborationMicroStageCue) {
+  actor.status = mergeStatus(actor.status, status);
+  actor.cue = step.timestamp >= actor.timestamp ? cue : actor.cue;
+  actor.summary = step.summary || actor.summary;
+  actor.timestamp = Math.max(actor.timestamp, step.timestamp);
+  actor.latestScore = Math.max(actor.latestScore, step.timestamp);
+  if (step.detailRef) actor.detailRef = step.detailRef;
+  if (!actor.sourceActivityIds.includes(step.sourceActivityId)) {
+    actor.sourceActivityIds.push(step.sourceActivityId);
+  }
+  if (!actor.stepIds.includes(step.id)) {
+    actor.stepIds.push(step.id);
+  }
+}
+
+export function selectCollaborationMicroStageLayout(stages: CollaborationMicroStage[]): CollaborationMicroStageLayout {
+  const actorCount = stages.reduce((total, stage) => total + Math.max(1, stage.actors?.length || 0), 0);
+  if (actorCount <= 3 && stages.length <= 3) return "singleRow";
+  if (actorCount <= 6) return "officeGrid";
+  return "clusteredGrid";
 }
 
 function getDetailRef(activity: CollaborationMicroStageActivityInput) {
@@ -342,7 +419,7 @@ export function buildCollaborationMicroStages(
   const locale = options.locale || "zh-CN";
   const expectedRunId = readString(options.runId);
   const maxStepsPerStage = Math.max(1, options.maxStepsPerStage || 4);
-  const limit = Math.max(1, options.limit || 4);
+  const limit = Math.max(1, options.limit || 10);
   const drafts = new Map<string, StageDraft>();
 
   const orderedActivities = [...activities].sort((left, right) => {
@@ -383,7 +460,21 @@ export function buildCollaborationMicroStages(
     };
 
     const existing = drafts.get(stageId);
+    const actorId = getActorId(activity, kind, group);
     if (!existing) {
+      const actorDraft: ActorDraft = {
+        id: actorId,
+        kind,
+        label: step.actorLabel || getActorLabel(activity, kind, locale),
+        status,
+        cue,
+        summary,
+        timestamp,
+        detailRef: step.detailRef,
+        sourceActivityIds: [step.sourceActivityId],
+        stepIds: [step.id],
+        latestScore: timestamp,
+      };
       drafts.set(stageId, {
         id: stageId,
         kind,
@@ -397,7 +488,9 @@ export function buildCollaborationMicroStages(
         dispatchGroup: kind === "subagent" ? group : undefined,
         sourceActivityIds: [step.sourceActivityId],
         steps: [step],
+        actors: [actorDraft],
         latestScore: timestamp,
+        actorDrafts: new Map([[actorId, actorDraft]]),
       });
       continue;
     }
@@ -410,6 +503,25 @@ export function buildCollaborationMicroStages(
     existing.timestamp = Math.max(existing.timestamp, timestamp);
     existing.latestScore = Math.max(existing.latestScore, timestamp);
     existing.sourceActivityIds = Array.from(sourceIds);
+    const existingActor = existing.actorDrafts.get(actorId);
+    if (existingActor) {
+      mergeActorDraft(existingActor, step, status, cue);
+    } else {
+      const actorDraft: ActorDraft = {
+        id: actorId,
+        kind,
+        label: step.actorLabel || getActorLabel(activity, kind, locale),
+        status,
+        cue,
+        summary,
+        timestamp,
+        detailRef: step.detailRef,
+        sourceActivityIds: [step.sourceActivityId],
+        stepIds: [step.id],
+        latestScore: timestamp,
+      };
+      existing.actorDrafts.set(actorId, actorDraft);
+    }
     const stepExists = existing.steps.some((item) => item.sourceActivityId === step.sourceActivityId);
     if (!stepExists) {
       existing.steps.push(step);
@@ -423,5 +535,10 @@ export function buildCollaborationMicroStages(
   return Array.from(drafts.values())
     .sort((left, right) => left.latestScore - right.latestScore)
     .slice(Math.max(0, drafts.size - limit))
-    .map(({ latestScore: _latestScore, ...stage }) => stage);
+    .map(({ latestScore: _latestScore, actorDrafts, ...stage }) => ({
+      ...stage,
+      actors: Array.from(actorDrafts.values())
+        .sort((left, right) => left.latestScore - right.latestScore)
+        .map(({ latestScore: _actorLatestScore, ...actor }) => actor),
+    }));
 }

@@ -5,7 +5,14 @@ import { User, Copy, Trash2, Check, Sparkles, TerminalSquare } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo } from "react";
 import { motion } from "framer-motion";
-import { coerceAdminResourceRef, isRuntimeEpisodeGraphActivity, resolveAdminResourceUrl, type AdminProcessRef } from "@v8/session-realtime";
+import {
+    buildCollaborationMicroStages,
+    coerceAdminResourceRef,
+    isRuntimeEpisodeGraphActivity,
+    resolveAdminResourceUrl,
+    type AdminProcessRef,
+    type CollaborationMicroStageActivityInput,
+} from "@v8/session-realtime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { Message, UiExecutionNode, UiTimelineNode } from "@/store/chat-types";
 import { ContentDispatcher } from "./ContentDispatcher";
@@ -16,7 +23,8 @@ import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifact
 import { useChatStore } from "@/store/chat-store";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
-import { RuntimeEpisodeBoard } from "./RuntimeTimelinePanel";
+import { parseContentToBlocks } from "@/lib/chat/content-detector";
+import { CollaborationMicroStageScene, type CollaborationMicroStageDetailTarget } from "./collaboration/CollaborationMicroStageScene";
 import type { RuntimeStageActivity } from "@/lib/runtime-stage";
 
 interface ChatMessageProps {
@@ -48,8 +56,69 @@ function isExecutionNode(node: UiTimelineNode): node is UiExecutionNode {
     return node.kind === "execution";
 }
 
+const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
+
 function hasToolCallId(node: UiTimelineNode): node is UiExecutionNode & { toolCallId: string } {
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
+}
+
+function toMicroStageActivityInput(activity: RuntimeStageActivity): CollaborationMicroStageActivityInput {
+    return {
+        id: activity.id,
+        topic: activity.topic,
+        summary: activity.summary,
+        timestamp: activity.timestamp,
+        runtimeId: activity.runtimeId,
+        data: activity.node.kind === "execution" && activity.node.data && typeof activity.node.data === "object"
+            ? activity.node.data as Record<string, unknown>
+            : {},
+    };
+}
+
+function getExecutionTopic(node: UiExecutionNode) {
+    return String(node.topic || node.data?.topic || "").trim().toLowerCase();
+}
+
+function getExecutionToolName(node: UiExecutionNode) {
+    return String(node.toolName || node.data?.toolName || node.data?.tool_name || "").trim().toLowerCase();
+}
+
+function isMicroStageSupersededTimelineNode(node: UiTimelineNode, microStageVisible: boolean) {
+    if (!microStageVisible || !isExecutionNode(node)) {
+        return false;
+    }
+
+    const topic = getExecutionTopic(node);
+    if (node.executionType === "runtime_progress") {
+        return topic.startsWith("runtime.episode.")
+            || topic.startsWith("handoff.ref.")
+            || topic.startsWith("subagent.task.")
+            || topic.startsWith("delegation.")
+            || topic.startsWith("delegation_broker.");
+    }
+
+    return (node.executionType === "tool_call" || node.executionType === "tool_result")
+        && MICRO_STAGE_TOOL_NAMES.has(getExecutionToolName(node));
+}
+
+function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[]) {
+    for (const node of nodes) {
+        if (node.kind !== "narrative" || node.role !== "assistant") {
+            continue;
+        }
+        const text = parseContentToBlocks(String(node.content || ""), false, 0)
+            .filter((block) => block.type !== "voice")
+            .map((block) => block.content.trim())
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+        if (!text) {
+            continue;
+        }
+        return text.length > 42 ? `${text.slice(0, 41)}...` : text;
+    }
+    return "";
 }
 
 function extractCommandPresetName(message: Message): string | null {
@@ -198,20 +267,46 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         }
         return mapping;
     }, [message.nodes]);
-    const visibleNodes = useMemo(() => {
-        return (message.nodes || []).filter((node) => {
-            if (!hasToolCallId(node) || node.executionType !== 'tool_result') {
-                return true;
-            }
-            return !toolCallIds.has(node.toolCallId.trim());
-        });
-    }, [message.nodes, toolCallIds]);
     const bubbleExecutionActivities = useMemo(
         () => (message.role !== "user" && message.role !== "tool" && isLast
             ? runtimeActivities.filter((activity) => isRuntimeEpisodeGraphActivity({ topic: activity.topic }))
             : []),
         [isLast, message.role, runtimeActivities],
     );
+    const visibleBubbleMicroStages = useMemo(
+        () => buildCollaborationMicroStages(
+            bubbleExecutionActivities.map(toMicroStageActivityInput),
+            {
+                runId: message.runId,
+                locale: "zh-CN",
+                limit: 10,
+                maxStepsPerStage: 4,
+            },
+        ),
+        [bubbleExecutionActivities, message.runId],
+    );
+    const microStageSupervisorSpeech = useMemo(
+        () => extractSupervisorMicroStageSpeech(message.nodes || []),
+        [message.nodes],
+    );
+    const microStageVisible = visibleBubbleMicroStages.length > 0;
+    const visibleNodes = useMemo(() => {
+        return (message.nodes || []).filter((node) => {
+            if (isMicroStageSupersededTimelineNode(node, microStageVisible)) {
+                return false;
+            }
+            if (!hasToolCallId(node) || node.executionType !== 'tool_result') {
+                return true;
+            }
+            return !toolCallIds.has(node.toolCallId.trim());
+        });
+    }, [message.nodes, microStageVisible, toolCallIds]);
+    const handleOpenMicroStageDetailRef = (target: CollaborationMicroStageDetailTarget) => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        window.dispatchEvent(new CustomEvent("v8:micro-stage-detail", { detail: target }));
+    };
 
     // USER MESSAGE
     if (message.role === 'user' || message.role === 'tool') {
@@ -398,8 +493,12 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-violet-500/40 via-purple-400/20 to-transparent opacity-80" />
 
                 <div className="space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]">
-                    {bubbleExecutionActivities.length > 0 && (
-                        <RuntimeEpisodeBoard activities={bubbleExecutionActivities} />
+                    {visibleBubbleMicroStages.length > 0 && (
+                        <CollaborationMicroStageScene
+                            stages={visibleBubbleMicroStages}
+                            supervisorSpeech={microStageSupervisorSpeech}
+                            onOpenDetailRef={handleOpenMicroStageDetailRef}
+                        />
                     )}
 
                     {visibleNodes.map((node, i) => (

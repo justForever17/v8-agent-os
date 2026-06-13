@@ -141,6 +141,8 @@ class ChatRequestData(BaseModel):
     spec_mode: Optional[bool] = Field(default=None, alias="specMode")
     spec_id: Optional[str] = Field(default=None, alias="specId")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")
+    task_planning_source: Optional[str] = Field(default=None, alias="taskPlanningSource")
+    task_planning_requested_by_composer: Optional[bool] = Field(default=None, alias="taskPlanningRequestedByComposer")
     planner_mode: Optional[str] = Field(default=None, alias="plannerMode")
     planner_dispatch_mode: Optional[str] = Field(default=None, alias="plannerDispatchMode")
     engineering_mode: Optional[str] = Field(default=None, alias="engineeringMode")

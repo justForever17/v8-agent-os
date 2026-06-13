@@ -4137,6 +4137,7 @@ def fetch_skill_instructions(
 
     Default detail_level='full' returns the approved SKILL.md instructions so delegated agents can follow the workflow.
     Use detail_level='summary' only for browsing/discovery, or detail_level='section' with section='...' for a specific heading.
+    If the conversation, route context, or delegated brief already names an exact installed Skill, call this tool directly with that skill_name even when the current prefilter did not select it.
     Pass relative_path='references/foo.md' to continue reading a file inside that skill directory after inspecting the continuation manifest.
     When a relative file is too long, pass offset=<next offset> to continue the same document without switching to raw workspace reads.
     """

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from langchain_core.messages import ToolMessage
 
-from graph.tool_routing import async_tool_call_wrapper
+from graph.tool_routing import _route_intent_for_blocked_tool, async_tool_call_wrapper
 from erc.runtime_context import bind_runtime_context
 
 
@@ -119,6 +119,25 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         brief = inputs["taskBriefs"][0]
         self.assertEqual(brief["goal"], inputs["userRequest"])
         self.assertEqual(brief["context"]["blockedCommand"], 'mkdir -p ".v8/live-audit/pixel-run-gun/demo"')
+
+    async def test_research_route_intent_requires_live_run_not_plan_only(self):
+        route_intent = _route_intent_for_blocked_tool(
+            tool_name="web_read",
+            tool_call={"args": {"query": "核查最新技术文档并返回来源"}},
+            state_mapping={
+                "current_route_context": {
+                    "taskShapeHint": {
+                        "boundaryDecision": {"primaryRuntime": "research"},
+                    }
+                }
+            },
+            hard_reasons=["task_boundary_route_correction"],
+            route_required=True,
+        )
+
+        self.assertEqual(route_intent["kind"], "research")
+        self.assertEqual(route_intent["inputs"]["mode"], "run")
+        self.assertEqual(route_intent["inputs"]["query"], "核查最新技术文档并返回来源")
 
     async def test_complex_direct_write_enqueues_episode_when_runtime_context_exists(self):
         request = _DummyRequest(

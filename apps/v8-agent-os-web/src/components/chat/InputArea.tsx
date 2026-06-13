@@ -725,9 +725,8 @@ export function InputArea({
                     nextData.contextMentions = contextMentions;
                 }
                 if (taskPlanningMode) {
-                    nextData.plannerMode = "force";
+                    nextData.plannerMode = "off";
                     nextData.specMode = true;
-                    nextData.taskPlanningMode = true;
                 }
 
                 await handleSubmit(e, { data: nextData });

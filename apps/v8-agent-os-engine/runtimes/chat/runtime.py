@@ -102,6 +102,7 @@ from runtimes.chat.planner_orchestration import (
     planner_system_prompt,
 )
 from runtimes.chat.planner_contract_verifier import verify_and_repair_planner_contract
+from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
 from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
@@ -508,6 +509,84 @@ class ChatRuntime:
         if tool_call_id:
             request_payload["toolCallId"] = tool_call_id
         return request_payload
+
+    def _begin_ask_user_wait(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        request_payload: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        assistant_message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        tool_call_id = str(request_payload.get("toolCallId") or "").strip()
+        if not tool_call_id:
+            tool_call_id = f"{V8_CANONICAL_TOOL_CALL_PREFIX}ask_{uuid.uuid4().hex[:20]}"
+            request_payload["toolCallId"] = tool_call_id
+        interaction = chat_run.run_handle.request_ask_user_interaction(
+            request=request_payload,
+            assistant_message_id=assistant_message_id,
+        )
+        tool_call_id = str(interaction.get("tool_call_id") or request_payload.get("toolCallId") or tool_call_id).strip()
+        stream_state.pending_ask_user_interaction_id = str(interaction.get("id") or "")
+        stream_state.pending_ask_user_tool_call_id = tool_call_id
+        display_args = self._compact_tool_display_args("ask_user", request_payload)
+        profile = self._get_agent_profile(stream_state.current_agent)
+        tool_start_event = {
+            "type": "tool_start",
+            "tool": {
+                "toolCallId": tool_call_id,
+                "toolInvocationId": tool_call_id,
+                "toolName": "ask_user",
+                "args": display_args,
+            },
+            "timestamp": 0,
+        }
+        tool_call_node = {
+            "id": f"{assistant_message_id}:tool_call:{tool_call_id}",
+            "kind": "execution",
+            "executionType": "tool_call",
+            "toolCallId": tool_call_id,
+            "toolInvocationId": tool_call_id,
+            "toolName": "ask_user",
+            "args": display_args,
+            "state": "waiting_input",
+            "timestamp": self._now_timestamp_ms(),
+            "agentName": profile["name"],
+            "agentAvatar": profile["avatar"],
+            "agentRoleLabel": profile["roleLabel"],
+        }
+        runtime_event = self._emit_message_targeted_runtime_event(
+            chat_run,
+            stream_state,
+            topic="tool.started",
+            payload=tool_start_event,
+            node=tool_call_node,
+            agent_id=stream_state.current_agent,
+            runtime_node=stream_state.current_agent,
+        )
+        payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+        if isinstance(payload, dict):
+            tool_start_event["message_id"] = payload.get("message_id")
+            tool_start_event["node_id"] = payload.get("node_id")
+            tool_start_event["transcript_version"] = payload.get("transcript_version")
+        stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": "ask_user", "args": display_args})
+        stream_state.interrupted_signal = {
+            "command": "ask_user_requested",
+            "reason": "ask_user",
+            "payload": {
+                "interaction_id": interaction.get("id"),
+                "tool_call_id": tool_call_id,
+            },
+        }
+        chat_run.run_handle.refresh_chat_snapshot()
+        return [
+            tool_start_event,
+            self._build_ask_user_event(
+                chat_run,
+                request_payload=request_payload,
+                interaction=interaction,
+            ),
+        ]
 
     def _resolve_ask_user_tool_result_context(
         self,
@@ -7246,77 +7325,11 @@ class ChatRuntime:
             interrupt_request = self._extract_interrupt_request(data.get("chunk"))
             if interrupt_request:
                 if self._is_ask_user_request(interrupt_request):
-                    assistant_message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
-                    tool_call_id = str(interrupt_request.get("toolCallId") or "").strip()
-                    if not tool_call_id:
-                        tool_call_id = f"{V8_CANONICAL_TOOL_CALL_PREFIX}ask_{uuid.uuid4().hex[:20]}"
-                        interrupt_request["toolCallId"] = tool_call_id
-                    interaction = chat_run.run_handle.request_ask_user_interaction(
-                        request=interrupt_request,
-                        assistant_message_id=assistant_message_id,
-                    )
-                    tool_call_id = str(interaction.get("tool_call_id") or interrupt_request.get("toolCallId") or tool_call_id).strip()
-                    stream_state.pending_ask_user_interaction_id = str(interaction.get("id") or "")
-                    stream_state.pending_ask_user_tool_call_id = tool_call_id
-                    display_args = self._compact_tool_display_args("ask_user", interrupt_request)
-                    profile = self._get_agent_profile(stream_state.current_agent)
-                    tool_start_event = {
-                        "type": "tool_start",
-                        "tool": {
-                            "toolCallId": tool_call_id,
-                            "toolInvocationId": tool_call_id,
-                            "toolName": "ask_user",
-                            "args": display_args,
-                        },
-                        "timestamp": 0,
-                    }
-                    tool_call_node = {
-                        "id": f"{assistant_message_id}:tool_call:{tool_call_id}",
-                        "kind": "execution",
-                        "executionType": "tool_call",
-                        "toolCallId": tool_call_id,
-                        "toolInvocationId": tool_call_id,
-                        "toolName": "ask_user",
-                        "args": display_args,
-                        "state": "waiting_input",
-                        "timestamp": self._now_timestamp_ms(),
-                        "agentName": profile["name"],
-                        "agentAvatar": profile["avatar"],
-                        "agentRoleLabel": profile["roleLabel"],
-                    }
-                    runtime_event = self._emit_message_targeted_runtime_event(
+                    return self._begin_ask_user_wait(
                         chat_run,
                         stream_state,
-                        topic="tool.started",
-                        payload=tool_start_event,
-                        node=tool_call_node,
-                        agent_id=stream_state.current_agent,
-                        runtime_node=stream_state.current_agent,
+                        request_payload=interrupt_request,
                     )
-                    payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
-                    if isinstance(payload, dict):
-                        tool_start_event["message_id"] = payload.get("message_id")
-                        tool_start_event["node_id"] = payload.get("node_id")
-                        tool_start_event["transcript_version"] = payload.get("transcript_version")
-                    stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": "ask_user", "args": display_args})
-                    emitted_events.append(tool_start_event)
-                    emitted_events.append(
-                        self._build_ask_user_event(
-                            chat_run,
-                            request_payload=interrupt_request,
-                            interaction=interaction,
-                        )
-                    )
-                    chat_run.run_handle.refresh_chat_snapshot()
-                    stream_state.interrupted_signal = {
-                        "command": "ask_user_requested",
-                        "reason": "ask_user",
-                        "payload": {
-                            "interaction_id": interaction.get("id"),
-                            "tool_call_id": tool_call_id,
-                        },
-                    }
-                    return emitted_events
                 if self._is_external_tool_request(interrupt_request):
                     tool_call_id = str(interrupt_request.get("toolCallId") or "").strip()
                     requested_tool_name = str(
@@ -7726,6 +7739,29 @@ class ChatRuntime:
                 )
                 resolved_tool_call_id = str((interaction or {}).get("tool_call_id") or "").strip()
                 if not interaction or not resolved_tool_call_id:
+                    output_payload = self._coerce_json_like_value(to_jsonable(getattr(output, "content", output)))
+                    if (
+                        isinstance(output_payload, dict)
+                        and str(output_payload.get("error") or "").strip() == "ask_user_unavailable_in_runtime_gate"
+                    ):
+                        request_payload = self._build_ask_user_request_from_tool_call(
+                            args=data.get("input") if isinstance(data.get("input"), dict) else {},
+                            tool_call_id=candidate_tool_call_id,
+                        )
+                        chat_run.emit_runtime_event(
+                            "ask_user.runtime_gate.recovered",
+                            {
+                                "candidateToolCallId": candidate_tool_call_id,
+                                "reason": "ask_user_unavailable_in_runtime_gate",
+                            },
+                            agent_id=stream_state.current_agent,
+                            node=stream_state.current_agent or "chat_runtime",
+                        )
+                        return self._begin_ask_user_wait(
+                            chat_run,
+                            stream_state,
+                            request_payload=request_payload,
+                        )
                     chat_run.emit_runtime_event(
                         "ask_user.tool_result.unmatched",
                         {
@@ -8553,7 +8589,111 @@ class ChatRuntime:
             {"type": "done", "status": status, "run_id": chat_run.active_run_id},
         ]
 
-    def finalize_success_run(self, chat_run: ChatRunContext) -> dict[str, Any]:
+    @staticmethod
+    def _completion_final_text(chat_run: ChatRunContext, stream_state: ChatStreamState | None = None) -> str:
+        if stream_state is not None:
+            authoritative = str(stream_state.authoritative_final_text or "").strip()
+            if authoritative:
+                return authoritative
+            buffered = "".join(str(item or "") for item in stream_state.output_buffer).strip()
+            if buffered:
+                return buffered
+        row = db.get_chat_canonical_message_by_run(
+            session_id=chat_run.session_id,
+            run_id=chat_run.active_run_id,
+            role="assistant",
+        ) or {}
+        return str(row.get("content_text") or "").strip()
+
+    @staticmethod
+    def _completion_spec_brief(chat_run: ChatRunContext) -> dict[str, Any]:
+        prepared_brief = dict(getattr(chat_run.prepared, "spec_brief", None) or {})
+        prepared_spec_id = str(prepared_brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
+        workspace_path = str(getattr(chat_run.scope_result.binding, "workspace_path", "") or "").strip()
+        if prepared_spec_id and workspace_path:
+            try:
+                return spec_service.build_brief(workspace_path=workspace_path, spec_id=prepared_spec_id)
+            except Exception:
+                return prepared_brief
+        if not workspace_path:
+            return prepared_brief
+        spec_id = ""
+        for event in reversed(db.get_runtime_events(chat_run.session_id, after_seq=0)):
+            if str(event.get("run_id") or event.get("runId") or "").strip() != chat_run.active_run_id:
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            tool_payload = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+            result = tool_payload.get("result") if isinstance(tool_payload.get("result"), dict) else {}
+            candidate = str(result.get("specId") or "").strip()
+            if candidate:
+                spec_id = candidate
+                break
+        for row in reversed(db.get_chat_canonical_messages(chat_run.session_id)):
+            if spec_id:
+                break
+            if str(row.get("run_id") or "").strip() != chat_run.active_run_id:
+                continue
+            if str(row.get("role") or "").strip().lower() != "tool":
+                continue
+            match = re.search(r'"specId"\s*:\s*"([^"]+)"', str(row.get("content_text") or ""))
+            if match:
+                spec_id = match.group(1).strip()
+                break
+        if not spec_id:
+            return prepared_brief
+        try:
+            return spec_service.build_brief(workspace_path=workspace_path, spec_id=spec_id)
+        except Exception:
+            return prepared_brief
+
+    def finalize_success_run(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState | None = None,
+    ) -> dict[str, Any]:
+        episodes = db.list_runtime_episodes(run_id=chat_run.active_run_id, limit=200)
+        handoffs_by_episode = {
+            str(episode.get("episodeId") or episode.get("id") or ""): db.list_runtime_episode_handoffs(
+                str(episode.get("episodeId") or episode.get("id") or "")
+            )
+            for episode in episodes
+            if str(episode.get("episodeId") or episode.get("id") or "").strip()
+        }
+        decision = evaluate_supervisor_completion(
+            episodes=episodes,
+            handoffs_by_episode=handoffs_by_episode,
+            final_text=self._completion_final_text(chat_run, stream_state),
+            spec_mode=bool(getattr(chat_run.prepared, "spec_mode", False)),
+            spec_brief=self._completion_spec_brief(chat_run) if getattr(chat_run.prepared, "spec_mode", False) else None,
+        )
+        if decision.action == "waiting_input":
+            chat_run.emit_runtime_event(
+                "run.completion.waiting_for_spec_approval",
+                {"reason": decision.reason, **dict(decision.details or {})},
+                agent_id=None,
+                node="completion_gate",
+            )
+            chat_run.run_handle.transition("waiting_input", reason=decision.reason, node="completion_gate")
+            return {
+                "type": "done",
+                "status": "waiting_input",
+                "reason": decision.reason,
+                "run_id": chat_run.active_run_id,
+            }
+        if decision.action == "fail":
+            chat_run.emit_runtime_event(
+                "run.completion.blocked",
+                {"reason": decision.reason, **dict(decision.details or {})},
+                agent_id=None,
+                node="completion_gate",
+            )
+            chat_run.run_handle.fail(decision.reason, node="completion_gate")
+            return {
+                "type": "done",
+                "status": "failed",
+                "reason": decision.reason,
+                "run_id": chat_run.active_run_id,
+            }
         chat_run.run_handle.complete(reason="stream_finished", node="run_manager")
         return {"type": "done", "status": "finished", "run_id": chat_run.active_run_id}
 
@@ -8967,7 +9107,7 @@ class ChatRuntime:
                 for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                     yield flushed_event
                 self.persist_final_assistant_message(chat_run, stream_state)
-                yield self.finalize_success_run(chat_run)
+                yield self.finalize_success_run(chat_run, stream_state)
                 return
 
             spec_runtime_execution_allowed = bool(
@@ -9162,7 +9302,7 @@ class ChatRuntime:
             await self.emit_subagent_swarm_projection(chat_run, last_execution_bundle)
             self.persist_final_assistant_message(chat_run, stream_state)
             self.emit_task_planning_mode_decision(chat_run, stream_state)
-            yield self.finalize_success_run(chat_run)
+            yield self.finalize_success_run(chat_run, stream_state)
         except Exception as exc:
             logging.getLogger("v8chat.chat_runtime").exception(
                 "Chat run '%s' failed during stream execution",

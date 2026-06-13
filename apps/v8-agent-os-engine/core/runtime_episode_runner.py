@@ -664,6 +664,22 @@ class RuntimeEpisodeRunner:
                 tool_call_id=f"episode:{episode.get('episodeId')}:research_plan",
             )
             visible = _first_tool_message_content(plan_result) or search_visible
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="research",
+                compact_summary=_preview(visible or f"Research plan prepared for: {query}"),
+                status="degraded",
+                confidence="low",
+                consumer_hint="This is a research plan, not source-backed evidence. Route a research run before using it as evidence.",
+                extra={
+                    "query": query,
+                    "researchRefs": [],
+                    "runMode": "plan",
+                    "researchState": "plan_only",
+                    "degradedReason": "research_plan_only_no_evidence",
+                    "recommendedNextAction": "route_research_run",
+                },
+            )
         return build_handoff_ref(
             producer_episode_id=str(episode.get("episodeId") or ""),
             kind="research",
@@ -1789,9 +1805,13 @@ class RuntimeEpisodeRunner:
                 or (
                     status == "failed"
                     and bool(results)
-                    and len(failed) >= failure_degrade_threshold
                     and not waiting_child
                 )
+            )
+            degraded_reason = "child_delegation_budget_boundary" if budget_boundary_only else (
+                "delegation_failure_threshold_reached"
+                if len(failed) >= failure_degrade_threshold
+                else "delegation_worker_failed"
             )
             summary = f"Delegation dispatched {len(results) or target_count} worker(s)."
             if local_results:
@@ -1837,9 +1857,7 @@ class RuntimeEpisodeRunner:
                             "delegationState": "delegation_degraded",
                             "dispatchStatus": "delegation_degraded",
                             "degraded": True,
-                            "degradedReason": "child_delegation_budget_boundary"
-                            if budget_boundary_only
-                            else "delegation_failure_threshold_reached",
+                            "degradedReason": degraded_reason,
                             "failureThreshold": failure_degrade_threshold,
                         }
                         if should_degrade

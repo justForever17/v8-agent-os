@@ -374,6 +374,7 @@ def _route_intent_for_blocked_tool(
         inputs.update(
             {
                 "query": query,
+                "mode": "run",
                 "taskBriefs": [
                     {
                         "taskBriefId": "blocked-tool-research",

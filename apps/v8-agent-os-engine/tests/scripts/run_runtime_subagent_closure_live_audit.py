@@ -57,6 +57,7 @@ class LiveCaseResult:
     handoff_kinds: list[str] = field(default_factory=list)
     handoff_markers: list[str] = field(default_factory=list)
     key_events: list[str] = field(default_factory=list)
+    active_episode_kinds: list[str] = field(default_factory=list)
     degraded_count: int = 0
     repeated_failure_count: int = 0
     fake_agent_swarm_risk: bool = False
@@ -485,6 +486,7 @@ def _summarize_result(result: LiveCaseResult) -> None:
     result.observed_topics = topics[:200]
     result.repeated_failure_count = max(0, failure_topics - 1)
 
+    active_episode_kinds: list[str] = []
     for episode in episodes:
         episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
         kind = str(episode.get("kind") or episode.get("runtimeKind") or "").strip()
@@ -492,8 +494,12 @@ def _summarize_result(result: LiveCaseResult) -> None:
             result.episode_ids.append(episode_id)
         if kind and kind not in result.episode_kinds:
             result.episode_kinds.append(kind)
+        state = str(episode.get("state") or episode.get("status") or "").strip().lower()
+        if kind and state not in {"completed", "failed", "cancelled", "canceled", "degraded"} and kind not in active_episode_kinds:
+            active_episode_kinds.append(kind)
         if not str(episode.get("session_id") or episode.get("sessionId") or "").strip():
             result.key_events.append(_redact({"unboundEpisode": episode_id, "kind": kind}))
+    result.active_episode_kinds = active_episode_kinds
     for row in handoffs:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
         kind = str((payload or {}).get("kind") or "").strip()
@@ -508,6 +514,26 @@ def _summarize_result(result: LiveCaseResult) -> None:
             result.degraded_count += 1
     if "delegation" in result.episode_kinds and result.degraded_count and not any("subagent.task." in topic for topic in topics):
         result.fake_agent_swarm_risk = False
+
+
+def _expected_kinds_seen(result: LiveCaseResult) -> bool:
+    return all(
+        kind in result.episode_kinds or any(kind in handoff for handoff in result.handoff_kinds)
+        for kind in result.spec.expect_kinds
+    )
+
+
+def _expected_markers_seen(result: LiveCaseResult) -> bool:
+    marker_text = " ".join([*result.handoff_kinds, *result.handoff_markers, *result.observed_topics, *result.key_events]).lower()
+    return all(marker.lower() in marker_text for marker in result.spec.expect_handoff_markers)
+
+
+def _acceptance_contract_observed(result: LiveCaseResult) -> bool:
+    if not _expected_kinds_seen(result):
+        return False
+    if _expected_markers_seen(result):
+        return True
+    return bool(result.spec.allow_degraded and result.degraded_count > 0)
 
 
 def _evaluate(result: LiveCaseResult) -> None:
@@ -614,7 +640,7 @@ def _run_case(
     deadline = time.time() + max(5, max_wait)
     while time.time() < deadline:
         _summarize_result(result)
-        if result.episode_ids and (result.handoff_kinds or result.degraded_count):
+        if _acceptance_contract_observed(result):
             break
         time.sleep(2)
     if bool(case.data.get("requireContextGovernance")) and bool(case.data.get("preferContextCompaction")):
@@ -624,10 +650,27 @@ def _run_case(
             if result.compaction_applied:
                 break
             time.sleep(3)
-    acceptance_seen = bool(result.episode_ids and (result.handoff_kinds or result.degraded_count))
+    acceptance_seen = _acceptance_contract_observed(result)
     idle_timeout = min(12, max(5, max_wait // 10)) if acceptance_seen else min(120, max(20, max_wait // 2))
     idle, idle_state = _wait_for_session_idle(session_id, timeout=idle_timeout)
     result.key_events.append(_redact({"postRunIdle": idle, "idleState": idle_state}))
+    if not idle and not acceptance_seen:
+        cleanup = _cancel_active_runs(
+            engine_url,
+            session_id,
+            idle_state,
+            reason="live_audit_no_acceptance_terminal_cleanup",
+        )
+        result.key_events.append(_redact({"noAcceptanceTerminalCleanup": cleanup}))
+        result.status = "failed"
+        result.failure_reason = _redact(
+            {
+                "reason": "run_did_not_converge_before_acceptance",
+                "activeEpisodeKinds": result.active_episode_kinds,
+                "idleState": idle_state,
+            }
+        )
+        return result
     if acceptance_seen and not idle:
         cleanup = _cancel_active_runs(
             engine_url,
@@ -674,6 +717,7 @@ def _write_report(results: list[LiveCaseResult], *, output_dir: Path) -> Path:
                     "episodeKinds": item.episode_kinds,
                     "handoffKinds": item.handoff_kinds,
                     "handoffMarkers": item.handoff_markers[:40],
+                    "activeEpisodeKinds": item.active_episode_kinds,
                     "observedTopics": item.observed_topics,
                     "degradedCount": item.degraded_count,
                     "repeatedFailureCount": item.repeated_failure_count,

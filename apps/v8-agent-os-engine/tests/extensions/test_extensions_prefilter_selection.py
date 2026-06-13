@@ -1361,6 +1361,12 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         self.assertIn("elon-musk-perspective", result)
         self.assertIn("munger-perspective", result)
 
+    def test_fetch_skill_instructions_description_allows_exact_known_skill_name(self):
+        description = str(getattr(fetch_skill_instructions, "description", "") or "")
+
+        self.assertIn("exact installed Skill", description)
+        self.assertIn("prefilter did not select it", description)
+
     def test_fetch_skill_instructions_reads_existing_skill_path_without_fuzzy_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             skill_root = Path(temp_dir) / ".agents" / "skills" / "sanyueqi-perspective"
@@ -1975,6 +1981,95 @@ description: 三月七视角 skill。
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
+
+    def test_skill_authoring_query_exposes_nuwa_and_skill_creator(self):
+        service = ExtensionsRuntimeService()
+        skills = [
+            {
+                "skillId": "global:nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "女娲造人：调研人物并生成可运行的人物Skill。触发词：「造skill」「蒸馏XX」「女娲」「造人」。",
+                "path": "C:/skills/huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "aliases": [],
+                "triggers": ["女娲", "造skill", "蒸馏XX", "造人"],
+                "keywords": ["persona skill"],
+                "tags": [],
+                "capabilityProfile": {
+                    "skillClass": "skill_authoring",
+                    "primaryArtifactTypes": ["skill"],
+                    "primaryOperations": ["create", "search", "analyze"],
+                    "interactionMode": "guided_workflow",
+                    "capabilityConfidence": 0.95,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                    "evidenceSignals": {"artifactMatches": {"skill": ["女娲", "造skill", "人物skill"]}},
+                },
+            },
+            {
+                "skillId": "global:skill-creator",
+                "name": "skill-creator",
+                "folder": "skill-creator",
+                "description": "Guide for creating effective skills and reusable agent workflows.",
+                "path": "C:/skills/skill-creator",
+                "skillName": "skill-creator",
+                "aliases": [],
+                "triggers": [],
+                "keywords": ["skill", "workflow", "SKILL.md"],
+                "tags": [],
+                "capabilityProfile": {
+                    "skillClass": "artifact_producer",
+                    "primaryArtifactTypes": ["skill"],
+                    "primaryOperations": ["create", "edit"],
+                    "interactionMode": "file_workflow",
+                    "capabilityConfidence": 0.92,
+                    "profileSource": "rules",
+                    "secondaryArtifactHints": [],
+                    "secondaryOperationHints": [],
+                    "evidenceSignals": {"artifactMatches": {"skill": ["skill", "SKILL.md"]}},
+                },
+            },
+            {
+                "skillId": "global:frontend",
+                "name": "frontend-design",
+                "folder": "frontend-design",
+                "description": "Use this skill when users need frontend UI design.",
+                "path": "C:/skills/frontend-design",
+                "skillName": "frontend-design",
+            },
+        ]
+
+        with patch.object(
+            service,
+            "_resolve_prefilter_policy",
+            return_value={
+                "enabled": True,
+                "available": True,
+                "mode": "two_stage",
+                "modelId": "test-prefilter",
+                "role": "extensions_prefilter",
+                "reason": "",
+                "skills": {"stage1Enabled": True, "stage1TopK": 5, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
+                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
+            },
+        ), patch.object(
+            service,
+            "_resolve_skill_inventory",
+            return_value={"items": skills, "rootDescriptors": []},
+        ):
+            bundle = service.build_contextual_route(
+                user_query="使用女娲技能调研绝区零的玲，生成玲的skill",
+                available_tools=[],
+                loaded_agents=None,
+                skill_limit=5,
+                mcp_limit=0,
+                plugin_host_limit=0,
+            )
+
+        self.assertIn("huashu-nuwa", bundle.selected_skill_names)
+        self.assertIn("skill-creator", bundle.selected_skill_names)
 
     def test_capability_aware_stage1_keeps_methodology_skills_for_decision_quality_queries(self):
         service = ExtensionsRuntimeService()

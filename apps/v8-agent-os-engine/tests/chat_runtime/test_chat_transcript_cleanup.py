@@ -690,6 +690,46 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_ask_user_runtime_gate_unavailable_recovers_to_waiting_interaction(self):
+        self.chat_run.run_handle = SimpleNamespace(
+            request_ask_user_interaction=lambda request, assistant_message_id: {
+                "id": "ask_interaction_gate_recovered",
+                "tool_call_id": request.get("toolCallId"),
+                "assistant_message_id": assistant_message_id,
+                "status": "pending",
+                "question": request.get("question"),
+                "prompt": request.get("prompt"),
+            },
+            refresh_chat_snapshot=lambda: None,
+        )
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_end",
+                "run_id": "ask_user_gate_callback",
+                "name": "ask_user",
+                "data": {
+                    "input": {
+                        "toolCallId": "call_v8_ask_user_gate_recovered",
+                        "question": "请审批 requirements 阶段。",
+                    },
+                    "output": {
+                        "ok": False,
+                        "error": "ask_user_unavailable_in_runtime_gate",
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(emitted[0]["tool"]["toolCallId"], "call_v8_ask_user_gate_recovered")
+        self.assertEqual(emitted[0]["tool"]["args"], {"question": "请审批 requirements 阶段。"})
+        self.assertEqual(emitted[1]["name"], "ask_user")
+        self.assertEqual(self.stream_state.interrupted_signal["command"], "ask_user_requested")
+        self.assertEqual(self.chat_run.events[-2]["topic"], "ask_user.runtime_gate.recovered")
+        self.assertEqual(self.chat_run.events[-1]["topic"], "tool.started")
+
     def test_run_system_command_result_is_compacted_to_preview(self):
         compacted = self.runtime._compact_tool_result_value(
             "run_system_command",

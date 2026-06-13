@@ -802,9 +802,8 @@ export async function submitChatMessage(
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
-                plannerMode: options.taskPlanningMode ? "force" : undefined,
+                plannerMode: options.taskPlanningMode ? "off" : undefined,
                 specMode: options.taskPlanningMode ? true : undefined,
-                taskPlanningMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
@@ -1076,9 +1075,8 @@ export async function sendChatMessageStream(
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
-                plannerMode: options.taskPlanningMode ? "force" : undefined,
+                plannerMode: options.taskPlanningMode ? "off" : undefined,
                 specMode: options.taskPlanningMode ? true : undefined,
-                taskPlanningMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0

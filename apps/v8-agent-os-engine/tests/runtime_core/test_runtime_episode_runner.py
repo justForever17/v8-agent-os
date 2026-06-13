@@ -480,6 +480,46 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     assert handoff["runMode"] == "run"
 
 
+def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):
+    calls: list[dict] = []
+
+    def _fake_research_broker(**kwargs):
+        calls.append(dict(kwargs))
+        from langchain_core.messages import ToolMessage
+        from langgraph.types import Command
+
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"mode={kwargs.get('mode')} query={kwargs.get('query')}",
+                        tool_call_id=str(kwargs.get("tool_call_id") or "test"),
+                    )
+                ]
+            }
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "prepare research plan"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={"inputs": {"mode": "plan", "query": "先规划资料收集路径"}},
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert [item["mode"] for item in calls] == ["search_experience", "plan"]
+    assert handoff["kind"] == "research_evidence_bundle"
+    assert handoff["status"] == "degraded"
+    assert handoff["runMode"] == "plan"
+    assert handoff["researchRefs"] == []
+    assert handoff["degradedReason"] == "research_plan_only_no_evidence"
+
+
 def test_runtime_episode_rpa_prepare_draft_creates_trace_bundle(monkeypatch):
     episode = build_runtime_episode(
         need={
@@ -857,6 +897,93 @@ def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
     assert payload["kind"] == "subagent_result_bundle"
     assert payload["delegationRefs"] == ["delegation-local-1"]
     assert payload["results"][0]["compactTranscript"] == "patch proposal ready"
+
+
+def test_delegation_episode_degrades_when_local_worker_fails(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "local subagent task"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "id": "brief-local-fail",
+                        "title": "Review one design risk",
+                        "goal": "Review one design risk and return residual risk.",
+                        "agentId": "review_worker",
+                        "acceptanceTiers": {"must": ["Return a concrete finding."]},
+                    }
+                ],
+                "targetCount": 1,
+            }
+        },
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command, Send
+
+    def _fake_dispatch(**kwargs):
+        assert kwargs["mode"] == "dispatch"
+        return Command(
+            goto=[
+                Send(
+                    "parallel_delegate_task",
+                    {
+                        "parallel_branch": {
+                            "agentId": "review_worker",
+                            "agentName": "Review Worker",
+                            "delegationId": "delegation-local-fail-1",
+                            "invocationId": "invoke-local-fail-1",
+                            "taskBriefId": "brief-local-fail",
+                            "reason": "Review one design risk",
+                        },
+                        "messages": [],
+                        "todos": [],
+                    },
+                )
+            ],
+            update={},
+        )
+
+    async def _fake_run_parallel_agent_branch(state, agent_data):
+        branch = state["parallel_branch"]
+        return [], [], {
+            "invocationId": branch["invocationId"],
+            "taskBriefId": branch["taskBriefId"],
+            "agentId": branch["agentId"],
+            "agentName": branch["agentName"],
+            "delegationId": branch["delegationId"],
+            "targetLabel": branch["agentName"],
+            "status": "failed",
+            "error": "worker_model_error",
+            "compactTranscript": "worker failed before producing a concrete finding",
+        }, []
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda self: {"review_worker": {"node_func": object()}})
+    import graph.parallel_support as parallel_support
+
+    monkeypatch.setattr(parallel_support, "_run_parallel_agent_branch", _fake_run_parallel_agent_branch)
+
+    runner = RuntimeEpisodeRunner()
+    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["delegation"])
+    assert claimed is not None
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = db.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "completed"
+    payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
+    assert payload["kind"] == "delegation_degraded"
+    assert payload["status"] == "degraded"
+    assert payload["delegationState"] == "delegation_degraded"
+    assert payload["degradedReason"] == "delegation_worker_failed"
+    assert payload["failedDelegationCount"] == 1
+    assert payload["acceptanceCheck"]["must"]["passed"] is False
+    assert "narrow_contract" in payload["recoveryHints"]
 
 
 def test_delegation_episode_degrades_when_all_workers_are_child_budget_blocked(monkeypatch):

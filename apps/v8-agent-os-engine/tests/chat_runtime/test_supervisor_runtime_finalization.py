@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
@@ -13,6 +14,8 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_message,
     _should_hide_todo_tools_for_direct_writing,
 )
+from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
+from runtimes.chat.runtime import ChatRuntime
 
 
 def test_runtime_episode_handoff_ready_requires_resume_terminal_state():
@@ -184,3 +187,96 @@ def test_runtime_or_artifact_writing_keeps_supervisor_todo_tools_available():
     }
 
     assert not _should_hide_todo_tools_for_direct_writing(state, "调研后生成 skill 并保存到工作区。")
+
+
+def test_completion_gate_blocks_active_runtime_episode():
+    decision = evaluate_supervisor_completion(
+        episodes=[{"episodeId": "episode_research", "state": "active", "kind": "research"}],
+        final_text="开始并行搜索~",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "runtime_episode_active_at_stream_end"
+
+
+def test_completion_gate_blocks_research_plan_claimed_as_ready_evidence():
+    decision = evaluate_supervisor_completion(
+        episodes=[{"episodeId": "episode_research", "state": "completed", "kind": "research"}],
+        handoffs_by_episode={
+            "episode_research": [
+                {
+                    "handoffRefId": "handoff_research",
+                    "kind": "research_evidence_bundle",
+                    "status": "ready",
+                    "runMode": "plan",
+                }
+            ]
+        },
+        final_text="现在我重新启动调研。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "research_plan_only_claimed_evidence_ready"
+
+
+def test_completion_gate_keeps_spec_stage_waiting_for_approval():
+    decision = evaluate_supervisor_completion(
+        spec_mode=True,
+        spec_brief={
+            "specId": "spec_demo",
+            "currentStage": "requirements",
+            "pipelineControl": {
+                "runtimeExecutionAllowed": False,
+                "blockedByApproval": "requirements",
+                "blockedReason": "approval_required",
+            },
+        },
+        final_text="需求文档已生成，请审批。",
+    )
+
+    assert decision.action == "waiting_input"
+    assert decision.reason == "approval_required"
+
+
+def test_completion_gate_blocks_spec_mode_without_created_stage():
+    decision = evaluate_supervisor_completion(
+        spec_mode=True,
+        spec_brief={},
+        final_text="接下来我会编写需求文档。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "spec_stage_not_created"
+
+
+def test_completion_spec_brief_uses_current_run_spec_tool_result():
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_brief={}, spec_id=""),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-spec",
+        active_run_id="run-spec",
+    )
+    expected = {
+        "specId": "spec_live",
+        "currentStage": "requirements",
+        "pipelineControl": {"blockedByApproval": "requirements", "blockedReason": "approval_required"},
+    }
+
+    with (
+        patch(
+            "runtimes.chat.runtime.db.get_runtime_events",
+            return_value=[
+                {
+                    "run_id": "run-spec",
+                    "topic": "tool.finished",
+                    "payload": {"tool": {"toolName": "spec_broker", "result": {"specId": "spec_live"}}},
+                }
+            ],
+        ),
+        patch("runtimes.chat.runtime.db.get_chat_canonical_messages", return_value=[]),
+        patch("runtimes.chat.runtime.spec_service.build_brief", return_value=expected) as build_brief,
+    ):
+        brief = ChatRuntime._completion_spec_brief(chat_run)
+
+    assert brief == expected
+    build_brief.assert_called_once_with(workspace_path="E:/Projects/test3", spec_id="spec_live")

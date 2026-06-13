@@ -74,6 +74,8 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const provider = data.provider;
     const modelName = data.model;
     const agentId = root.agentId;
+    const specMode = data.specMode === true;
+    const taskPlanningMode = !specMode && data.taskPlanningMode === true;
 
     return {
         conversationId: String(conversationId),
@@ -115,12 +117,17 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 commandPreset: data.commandPreset,
                 fileUrls,
                 attachments: dedupedAttachments,
-                plannerMode: typeof data.plannerMode === "string"
+                plannerMode: specMode
+                    ? "off"
+                    : typeof data.plannerMode === "string"
                     ? data.plannerMode
-                    : data.taskPlanningMode === true
+                    : taskPlanningMode
                         ? "force"
                         : undefined,
-                taskPlanningMode: data.taskPlanningMode === true,
+                specMode,
+                taskPlanningMode,
+                taskPlanningSource: typeof data.taskPlanningSource === "string" ? data.taskPlanningSource : undefined,
+                taskPlanningRequestedByComposer: data.taskPlanningRequestedByComposer === true,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,
             },
         },

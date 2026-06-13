@@ -29,6 +29,8 @@ class PlannerFirstResponseResult:
     status: str = "pending"
     session_id: str = ""
     run_id: str = ""
+    model_profile: str = ""
+    attempts: list[dict[str, Any]] = field(default_factory=list)
     submit_latency_ms: int | None = None
     first_visible_ms: int | None = None
     first_visible_kind: str = ""
@@ -298,6 +300,7 @@ def _write_report(result: PlannerFirstResponseResult, output_dir: Path) -> Path:
         "# Planner First Response Live Audit",
         "",
         f"- Status: {result.status}",
+        f"- Model: `{result.model_profile}`",
         f"- Session: `{result.session_id}`",
         f"- Run: `{result.run_id}`",
         f"- submitLatencyMs: {result.submit_latency_ms}",
@@ -316,6 +319,15 @@ def _write_report(result: PlannerFirstResponseResult, output_dir: Path) -> Path:
             lines.append(f"- [{finding.get('severity')}] {finding.get('code')}: {finding.get('summary')}")
     else:
         lines.append("- none")
+    if result.attempts:
+        lines.extend(["", "## Model Attempts", ""])
+        for attempt in result.attempts:
+            lines.append(
+                "- "
+                f"`{attempt.get('modelProfile')}`: {attempt.get('status')} "
+                f"firstActivityMs={attempt.get('firstActivityMs')} "
+                f"kind={attempt.get('firstActivityKind') or '-'}"
+            )
     lines.extend(["", f"Raw JSON: `{json_path}`", ""])
     md_path = output_dir / "PLANNER_FIRST_RESPONSE_LIVE_AUDIT_ZH.md"
     md_path.write_text("\n".join(lines), encoding="utf-8")
@@ -324,13 +336,15 @@ def _write_report(result: PlannerFirstResponseResult, output_dir: Path) -> Path:
 
 def _run(args: argparse.Namespace) -> PlannerFirstResponseResult:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    session_id = f"planner-first-response-live-{timestamp}"
+    profile_slug = "".join(ch if ch.isalnum() else "-" for ch in str(args.model_profile or "model")).strip("-").lower()
+    session_id = f"planner-first-response-live-{timestamp}-{profile_slug[:32]}"
     prompt = (
         "普通 Planner 模式验证，不开启 Spec Mode。请规划一个不含 Computer Use/RPA 的小型任务："
         "先调研 V8OS Memory Evidence Pack 的改进点，再给出 Engineering 计划，并让一个子代理复核风险。"
         "不要真实写文件。关键验收是：Supervisor 应尽快开始真实思考/工具/todo 活动，不能先被 Planner 长时间卡住。"
     )
     result = PlannerFirstResponseResult(session_id=session_id)
+    result.model_profile = str(args.model_profile or "")
     started = time.perf_counter()
     run_id, latency, response = _submit(
         args.engine_url,
@@ -375,12 +389,66 @@ def _run(args: argparse.Namespace) -> PlannerFirstResponseResult:
     return result
 
 
+def _fallback_profiles(args: argparse.Namespace) -> list[str]:
+    raw = str(getattr(args, "model_fallbacks", "") or "").strip()
+    if raw:
+        profiles = [item.strip() for item in raw.split(",") if item.strip()]
+        return profiles or [str(args.model_profile)]
+    return [str(args.model_profile)]
+
+
+def _run_with_fallbacks(args: argparse.Namespace) -> PlannerFirstResponseResult:
+    attempts: list[PlannerFirstResponseResult] = []
+    for profile in _fallback_profiles(args):
+        args.model_profile = profile
+        attempt = _run(args)
+        attempts.append(attempt)
+        if attempt.status == "passed":
+            break
+        if attempt.status == "degraded" and not args.fallback_on_degraded:
+            break
+    result = attempts[-1] if attempts else PlannerFirstResponseResult(status="failed")
+    result.attempts = [
+        {
+            "modelProfile": item.model_profile,
+            "status": item.status,
+            "sessionId": item.session_id,
+            "runId": item.run_id,
+            "firstActivityMs": item.first_activity_ms,
+            "firstActivityKind": item.first_activity_kind,
+            "findings": list(item.findings),
+        }
+        for item in attempts
+    ]
+    if attempts and attempts[0] is not result:
+        result.findings.append(
+            {
+                "severity": "P1",
+                "code": "model_fallback_used",
+                "summary": "首选模型未在验收窗口内产生可用首响，已按 fallback 顺序切换。",
+            }
+        )
+        result.status = "failed" if any(item.get("severity") == "P0" for item in result.findings) else "degraded"
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run live Planner first-response audit.")
     parser.add_argument("--live", action="store_true", help="Submit a real live chat run.")
     parser.add_argument("--engine-url", default=DEFAULT_ENGINE_URL)
     parser.add_argument("--workspace", default=str(DEFAULT_WORKSPACE))
     parser.add_argument("--model-profile", default="deepseek-v4-flash")
+    parser.add_argument(
+        "--model-fallbacks",
+        default="",
+        help="Comma-separated model profiles to try in order. When set, overrides --model-profile for live attempts.",
+    )
+    parser.add_argument(
+        "--fallback-on-degraded",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Continue to the next model when the current model only reaches degraded first-response acceptance.",
+    )
     parser.add_argument("--first-activity-budget-ms", type=int, default=3000)
     parser.add_argument("--first-activity-wait", type=int, default=60)
     parser.add_argument("--observe-after-activity", type=int, default=8)
@@ -390,13 +458,19 @@ def main() -> int:
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
     if not args.live:
-        print(json.dumps({"live": False, "workspace": args.workspace, "modelProfile": args.model_profile}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"live": False, "workspace": args.workspace, "modelProfile": args.model_profile, "modelFallbacks": _fallback_profiles(args)},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     ok, error = _wait_for_engine(args.engine_url)
     if not ok:
         print(f"[planner-first-response-live] Engine unavailable: {error}", file=sys.stderr)
         return 2
-    result = _run(args)
+    result = _run_with_fallbacks(args)
     if args.write_report:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         output_dir = Path(args.output_dir) if args.output_dir else DEFAULT_REPORT_ROOT / "planner_first_response" / timestamp

@@ -248,12 +248,15 @@ def _split_spec_refs(value: Any) -> list[str]:
                 item = f"TASK-{int(match.group(1)):03d}"
             normalized.append(item)
         return list(dict.fromkeys(normalized))
-    return [item.strip() for item in re.split(r"[,/，、\s]+", text) if item.strip()][:12]
+    return []
 
 
 def _extract_task_field(excerpt: str, labels: tuple[str, ...]) -> str:
     for label in labels:
-        match = re.search(rf"(?im)^\s*(?:[-*]\s*)?{re.escape(label)}\s*[:：]\s*(.+?)\s*$", excerpt)
+        match = re.search(
+            rf"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*[:：](?:\*\*)?\s*(.+?)\s*$",
+            excerpt,
+        )
         if match:
             return match.group(1).strip()
     for label in labels:
@@ -383,12 +386,12 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
                 "taskId": normalized_id,
                 "title": title or f"Execute approved {normalized_id}",
                 "excerpt": _safe_compact_text(excerpt, limit=5000),
-                "runtimeLane": _extract_task_field(excerpt, ("runtimeLane", "runtime lane", "Runtime", "执行泳道", "执行通道", "执行方")),
-                "dependsOn": _split_spec_refs(_extract_task_field(excerpt, ("dependsOn", "depends on", "依赖"))),
+                "runtimeLane": _extract_task_field(excerpt, ("runtimeLane", "runtime lane", "Runtime", "Lane", "执行泳道", "执行通道", "执行方")),
+                "dependsOn": _split_spec_refs(_extract_task_field(excerpt, ("dependsOn", "depends on", "Depends", "依赖"))),
                 "specRefs": _split_spec_refs(
                     " ".join(
                         [
-                            _extract_task_field(excerpt, ("specRefs", "spec refs", "引用")),
+                            _extract_task_field(excerpt, ("specRefs", "spec refs", "Refs", "引用")),
                             _extract_task_field(excerpt, ("需求引用", "requirement refs", "requirements")),
                             _extract_task_field(excerpt, ("设计引用", "design refs", "design")),
                         ]

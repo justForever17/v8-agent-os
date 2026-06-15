@@ -467,6 +467,92 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
     assert "references/research/01-writings.md" in by_id["TASK-003"]["acceptanceTiers"]["must"][-2]
 
 
+def test_runtime_broker_parses_bold_markdown_task_fields_without_ref_noise(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        feature_name="ling-perspective-skill",
+        user_request="create ling perspective skill",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: Deliver the skill.\n- AC-REQ-001: Skill exists.\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="design")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: Use huashu-nuwa structure.\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="tasks")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# Tasks\n\n"
+            "## TASK-001: Create Skill Directory Structure\n\n"
+            "- **Lane:** engineering\n"
+            "- **Depends:** —\n"
+            "- **Refs:** Design §3 (Directory Structure), REQ-001\n"
+            "- **Output:** `.agents/skills/ling-perspective/`\n"
+            "- **Acceptance:** Directory listing confirms all paths exist.\n\n"
+            "## TASK-002: Research — Agent 1\n\n"
+            "- **Lane:** research\n"
+            "- **Depends:** TASK-001\n"
+            "- **Refs:** Design §5 Agent 1, huashu-nuwa Phase 1\n"
+            "- **Output:** `references/research/01-writings.md`\n"
+            "- **Acceptance:** File exists with cited claims.\n\n"
+            "## TASK-003: SKILL.md Construction\n\n"
+            "- **Lane:** engineering\n"
+            "- **Depends:** TASK-002\n"
+            "- **Refs:** Design §4, skill-template, skill-creator\n"
+            "- **Output:** `SKILL.md`\n"
+            "- **Acceptance:** Valid YAML frontmatter.\n"
+        ),
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    spec_brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)
+    pipeline = spec_brief["documents"]["tasks"]["pipelineDiagnostics"]
+    assert pipeline["valid"] is True
+    assert pipeline["missingFields"] == []
+
+    with bind_runtime_context(
+        session_id="session-spec-bold",
+        run_id="run-spec-bold",
+        rootRunId="root-spec-bold",
+        workspace_path=str(workspace),
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            runtime_kind="engineering",
+            need={"kind": "engineering", "reason": "approved_spec_runtime_execution", "specId": spec_id},
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-spec-bold",
+        )
+
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    by_id = {item["taskBriefId"]: item for item in episode["inputs"]["workerBriefs"]}
+    assert by_id["TASK-001"]["dependency"] == []
+    assert by_id["TASK-001"]["familyHint"] == "engineering"
+    assert by_id["TASK-002"]["dependency"] == ["TASK-001"]
+    assert by_id["TASK-002"]["familyHint"] == "research"
+    assert by_id["TASK-002"]["context"]["specRefs"] == ["REQ-001", "DES-001"]
+    assert "Design" not in by_id["TASK-002"]["context"]["specRefs"]
+    assert by_id["TASK-003"]["dependency"] == ["TASK-002"]
+    assert by_id["TASK-003"]["writeRequired"] is True
+
+
 def test_delegation_broker_refuses_generic_dispatch_for_ready_spec_episode():
     active_episode = {
         "kind": "engineering",

@@ -235,9 +235,9 @@ acceptance/proof expectations.
 
 
 _TASKS_PIPELINE_REQUIREMENTS = {
-    "runtimeLane": ("runtime lane", "runtimelane", "runtime泳道", "执行泳道", "执行通道", "执行频道", "执行方"),
-    "dependsOn": ("depends on", "dependson", "dependsOn", "依赖"),
-    "specRefs": ("spec refs", "specrefs", "specrefs", "specId", "spec ids", "需求", "设计", "引用"),
+    "runtimeLane": ("runtime lane", "runtimelane", "runtime泳道", "lane", "执行泳道", "执行通道", "执行频道", "执行方"),
+    "dependsOn": ("depends on", "dependson", "dependsOn", "depends", "依赖"),
+    "specRefs": ("spec refs", "specrefs", "specrefs", "refs", "specId", "spec ids", "需求", "设计", "引用"),
     "expectedOutput": ("expected output", "expectedoutput", "output", "输出", "产物"),
     "acceptanceProof": ("acceptance", "proof", "验收", "证明", "proofRequired", "proof refs"),
 }

@@ -8526,6 +8526,20 @@ class ChatRuntime:
             )
 
         task_briefs = [dict(item) for item in list((plan or {}).get("taskBriefs") or []) if isinstance(item, dict)]
+        if not task_briefs:
+            route_context = (state or {}).get("current_route_context")
+            if isinstance(route_context, dict):
+                for episode in list(route_context.get("capabilityEpisodes") or []):
+                    if not isinstance(episode, dict):
+                        continue
+                    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+                    for key in ("workerBriefs", "taskBriefs"):
+                        candidates = [dict(item) for item in list(inputs.get(key) or []) if isinstance(item, dict)]
+                        if candidates:
+                            task_briefs = candidates
+                            break
+                    if task_briefs:
+                        break
         task_capsules: list[dict[str, Any]] = []
         for item in task_briefs[:12]:
             capsule = item.get("engineeringTaskCapsule") if isinstance(item.get("engineeringTaskCapsule"), dict) else {}

@@ -52,21 +52,24 @@ def _slugify(value: str) -> str:
 
 _ID_PREFIX_ALIASES = {
     "REQ": ("REQ", "FR", "NFR"),
-    "TASK": ("TASK", "TSK"),
+    "TASK": ("TASK", "TSK", "T"),
 }
 
 
 def _canonical_id(raw_id: str, prefix: str) -> str:
     item = str(raw_id or "").upper()
-    if prefix == "TASK" and item.startswith("TSK-"):
-        return "TASK-" + item.split("-", 1)[1]
+    if prefix == "TASK":
+        match = re.match(r"^(?:TASK|TSK|T)-(\d+)$", item)
+        if match:
+            return f"TASK-{int(match.group(1)):03d}"
     return item
 
 
 def _extract_ids(markdown: str, prefix: str) -> list[str]:
     aliases = _ID_PREFIX_ALIASES.get(prefix.upper(), (prefix.upper(),))
     prefix_pattern = "|".join(re.escape(item) for item in aliases)
-    pattern = re.compile(rf"\b(({prefix_pattern})-[0-9]{{3,}})\b", re.IGNORECASE)
+    digit_pattern = r"[0-9]{2,}" if prefix.upper() == "TASK" else r"[0-9]{3,}"
+    pattern = re.compile(rf"\b(({prefix_pattern})-{digit_pattern})\b", re.IGNORECASE)
     seen: set[str] = set()
     ids: list[str] = []
     for match in pattern.finditer(markdown or ""):
@@ -249,7 +252,7 @@ def _tasks_pipeline_diagnostics(markdown: str) -> dict[str, Any]:
         if not any(str(marker).lower() in normalized for marker in markers):
             missing.append(field)
     has_pipeline_table = bool(re.search(r"(?im)^\|\s*task id\s*\|", text)) or "## task pipeline" in normalized
-    has_task_details = bool(re.search(r"(?im)^###\s+(?:TASK|TSK)-\d{3,}\b", text))
+    has_task_details = bool(re.search(r"(?im)^###\s+(?:TASK|TSK|T)-\d{2,}\b", text))
     return {
         "valid": bool(task_ids) and not missing,
         "taskCount": len(task_ids),
@@ -989,7 +992,13 @@ class SpecService:
             return (0, len(content))
         refs = [ref]
         if ref.upper().startswith("TASK-"):
-            refs.append("TSK-" + ref.split("-", 1)[1])
+            number = ref.split("-", 1)[1]
+            refs.append("TSK-" + number)
+            refs.append("T-" + number)
+            try:
+                refs.append(f"T-{int(number):02d}")
+            except Exception:
+                pass
         match = None
         for candidate_ref in refs:
             match = re.search(rf"(?im)^.*\b{re.escape(candidate_ref)}\b.*$", content)
@@ -1005,7 +1014,7 @@ class SpecService:
         # paragraph/list item rather than the entire markdown heading section.
         line = content[line_start:line_end]
         if re.match(r"\s*[-*]\s+", line):
-            next_item = re.search(r"(?m)^\s*[-*]\s+(?:REQ|FR|NFR|BFIX|DES|TASK|TSK|AC)-\d{3,}\b", content[line_end:])
+            next_item = re.search(r"(?m)^\s*[-*]\s+(?:REQ|FR|NFR|BFIX|DES|TASK|TSK|T|AC)-\d{2,}\b", content[line_end:])
             next_heading = re.search(r"(?m)^##+\s+", content[line_end:])
             candidates = [len(content)]
             if next_item:

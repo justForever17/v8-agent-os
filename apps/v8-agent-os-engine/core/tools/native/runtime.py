@@ -238,9 +238,16 @@ def _split_spec_refs(value: Any) -> list[str]:
     text = str(value or "").strip()
     if not text:
         return []
-    refs = re.findall(r"\b(?:REQ|BFIX|DES|TASK|TSK|AC)-\d{3,}\b", text, flags=re.IGNORECASE)
+    refs = re.findall(r"\b(?:REQ|BFIX|DES|TASK|TSK|T|AC)-\d{2,}\b", text, flags=re.IGNORECASE)
     if refs:
-        return [ref.upper().replace("TSK-", "TASK-") for ref in refs]
+        normalized: list[str] = []
+        for ref in refs:
+            item = ref.upper()
+            match = re.match(r"^(?:TASK|TSK|T)-(\d+)$", item)
+            if match:
+                item = f"TASK-{int(match.group(1)):03d}"
+            normalized.append(item)
+        return list(dict.fromkeys(normalized))
     return [item.strip() for item in re.split(r"[,/，、\s]+", text) if item.strip()][:12]
 
 
@@ -249,22 +256,96 @@ def _extract_task_field(excerpt: str, labels: tuple[str, ...]) -> str:
         match = re.search(rf"(?im)^\s*(?:[-*]\s*)?{re.escape(label)}\s*[:：]\s*(.+?)\s*$", excerpt)
         if match:
             return match.group(1).strip()
+    for label in labels:
+        match = re.search(
+            rf"(?im)^\s*\|\s*(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*\|\s*(.+?)\s*\|\s*$",
+            excerpt,
+        )
+        if match:
+            value = re.sub(r"`([^`]+)`", r"\1", match.group(1)).strip()
+            return value.strip()
     return ""
+
+
+def _task_id_aliases(task_id: str) -> list[str]:
+    normalized = str(task_id or "").strip().upper()
+    aliases = [normalized] if normalized else []
+    match = re.match(r"^TASK-(\d+)$", normalized)
+    if match:
+        number = int(match.group(1))
+        aliases.extend([f"TSK-{number:03d}", f"T-{number:03d}", f"T-{number:02d}"])
+    return list(dict.fromkeys([item for item in aliases if item]))
+
+
+def _canonical_task_id(raw: Any, *, index: int = 0) -> str:
+    text = str(raw or "").strip().upper()
+    match = re.match(r"^(?:TASK|TSK|T)-(\d+)$", text)
+    if match:
+        return f"TASK-{int(match.group(1)):03d}"
+    return f"TASK-{index + 1:03d}"
+
+
+def _extract_task_ids_from_markdown(markdown: str) -> list[str]:
+    text = str(markdown or "")
+    seen: set[str] = set()
+    ids: list[str] = []
+
+    def add_from(pattern: str) -> None:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.MULTILINE):
+            raw = match.group(1) if match.lastindex else match.group(0)
+            task_id = _canonical_task_id(raw, index=len(ids))
+            if task_id not in seen:
+                seen.add(task_id)
+                ids.append(task_id)
+
+    add_from(r"^\s*#{2,6}\s+((?:TASK|TSK|T)-\d{2,})\b")
+    add_from(r"^\s*[-*]\s*(?:\[[ xX]\]\s*)?((?:TASK|TSK|T)-\d{2,})\b")
+    if ids:
+        return ids
+    pattern = re.compile(r"\b(?:TASK|TSK|T)-\d{2,}\b", flags=re.IGNORECASE)
+    for match in pattern.finditer(text):
+        task_id = _canonical_task_id(match.group(0), index=len(ids))
+        if task_id not in seen:
+            seen.add(task_id)
+            ids.append(task_id)
+    return ids
+
+
+def _find_task_line_match(text: str, refs: list[str]) -> re.Match[str] | None:
+    if not refs:
+        return None
+    ref_pattern = "|".join(re.escape(ref) for ref in refs)
+    preferred_patterns = (
+        rf"(?im)^\s*#{{2,6}}\s+(?:{ref_pattern})\b.*$",
+        rf"(?im)^\s*(?:[-*]\s*(?:\[[ xX]\]\s*)?)(?:{ref_pattern})\b.*$",
+    )
+    for pattern in preferred_patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match
+    for pattern in (
+        rf"(?im)^\s*(?!\|.*~)(?:{ref_pattern})\b.*$",
+        rf"(?im)^.*\b(?:{ref_pattern})\b.*$",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match
+    return None
 
 
 def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dict[str, Any]]:
     text = str(markdown or "")
     sections: list[dict[str, Any]] = []
-    for index, task_id in enumerate(task_ids):
-        normalized_id = str(task_id or f"TASK-{index + 1:03d}").upper().replace("TSK-", "TASK-")
-        refs = [normalized_id]
-        if normalized_id.startswith("TASK-"):
-            refs.append("TSK-" + normalized_id.split("-", 1)[1])
-        match = None
-        for ref in refs:
-            match = re.search(rf"(?im)^.*\b{re.escape(ref)}\b.*$", text)
-            if match:
-                break
+    normalized_task_ids = [_canonical_task_id(task_id, index=index) for index, task_id in enumerate(task_ids)]
+    heading_task_ids = _extract_task_ids_from_markdown(text)
+    if heading_task_ids:
+        normalized_task_ids = heading_task_ids
+    if not normalized_task_ids:
+        normalized_task_ids = _extract_task_ids_from_markdown(text)
+    for index, task_id in enumerate(normalized_task_ids):
+        normalized_id = _canonical_task_id(task_id, index=index)
+        refs = _task_id_aliases(normalized_id)
+        match = _find_task_line_match(text, refs)
         if not match:
             sections.append(
                 {
@@ -275,7 +356,7 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
             )
             continue
         start = text.rfind("\n", 0, match.start()) + 1
-        next_task = re.search(r"(?im)^\s*(?:#{2,6}\s*)?(?:[-*]\s*(?:\[[ xX]\]\s*)?)?(?:TASK|TSK)-\d{3,}\b", text[match.end() :])
+        next_task = re.search(r"(?im)^\s*(?:#{2,6}\s*)?(?:[-*]\s*(?:\[[ xX]\]\s*)?)?(?:TASK|TSK|T)-\d{2,}\b", text[match.end() :])
         next_heading = re.search(r"(?m)^##+\s+", text[match.end() :])
         candidates = [len(text)]
         if next_task:
@@ -285,19 +366,37 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
         end = min(candidates)
         excerpt = text[start:end].strip()
         first_line = excerpt.splitlines()[0] if excerpt else normalized_id
-        title = re.sub(r"(?i)^.*\b(?:TASK|TSK)-\d{3,}\b\s*[:：.\-、]?\s*", "", first_line).strip()
+        title = re.sub(r"(?i)^.*\b(?:TASK|TSK|T)-\d{2,}\b\s*[:：.\-、]?\s*", "", first_line).strip()
         title = re.sub(r"^\[[ xX]\]\s*", "", title).strip("-:： ")
+        output_file = _extract_task_field(excerpt, ("expectedOutput", "expected output", "output", "输出", "产物"))
+        if not output_file:
+            output_match = re.search(r"(?ims)\*\*输出文件\*\*\s*[:：]?\s*\n(?P<body>.*?)(?:\n---|\n###\s+|\Z)", excerpt)
+            if output_match:
+                output_file = _safe_compact_text(output_match.group("body"), limit=900)
+        acceptance = _extract_task_field(excerpt, ("acceptance", "验收"))
+        if not acceptance:
+            acceptance_match = re.search(r"(?ims)\*\*验收标准\*\*\s*[:：]?\s*\n(?P<body>.*?)(?:\n---|\n###\s+|\Z)", excerpt)
+            if acceptance_match:
+                acceptance = _safe_compact_text(acceptance_match.group("body"), limit=1200)
         sections.append(
             {
                 "taskId": normalized_id,
                 "title": title or f"Execute approved {normalized_id}",
                 "excerpt": _safe_compact_text(excerpt, limit=5000),
-                "runtimeLane": _extract_task_field(excerpt, ("runtimeLane", "runtime lane", "执行泳道", "执行通道", "执行方")),
+                "runtimeLane": _extract_task_field(excerpt, ("runtimeLane", "runtime lane", "Runtime", "执行泳道", "执行通道", "执行方")),
                 "dependsOn": _split_spec_refs(_extract_task_field(excerpt, ("dependsOn", "depends on", "依赖"))),
-                "specRefs": _split_spec_refs(_extract_task_field(excerpt, ("specRefs", "spec refs", "引用"))),
+                "specRefs": _split_spec_refs(
+                    " ".join(
+                        [
+                            _extract_task_field(excerpt, ("specRefs", "spec refs", "引用")),
+                            _extract_task_field(excerpt, ("需求引用", "requirement refs", "requirements")),
+                            _extract_task_field(excerpt, ("设计引用", "design refs", "design")),
+                        ]
+                    )
+                ),
                 "inputRefs": _extract_task_field(excerpt, ("inputRefs", "input refs", "输入")),
-                "expectedOutput": _extract_task_field(excerpt, ("expectedOutput", "expected output", "output", "输出", "产物")),
-                "acceptance": _extract_task_field(excerpt, ("acceptance", "验收")),
+                "expectedOutput": output_file,
+                "acceptance": acceptance,
                 "proofRequired": _extract_task_field(excerpt, ("proofRequired", "proof required", "proof", "证明")),
             }
         )
@@ -383,6 +482,73 @@ def _required_runtime_access_from_spec_bundle(bundle: dict[str, Any], kind: str)
     return list(dict.fromkeys(groups))
 
 
+def _spec_task_runtime_family(task: dict[str, Any], route_kind: str) -> str:
+    lane = str(task.get("runtimeLane") or "").strip().lower()
+    if "research" in lane or "调研" in lane:
+        return "research"
+    if "supervisor" in lane or "governance" in lane or "主管" in lane:
+        return "governance"
+    if "engineering" in lane or "工程" in lane:
+        return "engineering"
+    if "creative" in lane or "media" in lane or "创意" in lane:
+        return "creative_media"
+    if "delegation" in lane or "subagent" in lane or "子agent" in lane or "孙agent" in lane:
+        return "delegation"
+    probe = " ".join(
+        [
+            str(task.get("title") or ""),
+            str(task.get("excerpt") or ""),
+            str(task.get("expectedOutput") or ""),
+        ]
+    ).lower()
+    if any(token in probe for token in ("research", "调研", "source", "evidence", "citation", "来源")):
+        return "research"
+    if any(token in probe for token in ("delegation", "subagent", "agent swarm", "子agent", "孙agent", "并行子")):
+        return "research" if "research" in probe or "调研" in probe else "delegation"
+    if any(token in probe for token in ("creative", "media", "image", "video", "audio", "素材", "视频", "图片")):
+        return "creative_media"
+    if any(token in probe for token in ("governance", "supervisor", "验收", "确认", "检查点")):
+        return "governance"
+    if any(token in probe for token in ("engineering", "工程", "write", "file", "artifact", "skill.md", "目录", "构建", "验证")):
+        return "engineering"
+    return _normalize_capability_kind(route_kind) or "engineering"
+
+
+def _spec_task_required_capabilities(family: str, *, writes_artifact: bool) -> list[str]:
+    if family == "research":
+        return ["source_backed_research", "evidence_pack", "research_handoff"]
+    if family == "creative_media":
+        return ["creative_asset_request", "artifact_handoff"]
+    if family == "delegation":
+        return ["delegation", "handoff"]
+    if family == "governance":
+        return ["spec_section_read", "verification", "handoff_reconciliation"]
+    capabilities = ["spec_section_read", "verification", "proof_handoff"]
+    if writes_artifact:
+        capabilities.append("workspace_mutation")
+    return capabilities
+
+
+def _spec_task_execution_lane(family: str) -> str:
+    if family in {"research", "delegation", "governance"}:
+        return "subagent"
+    if family == "creative_media":
+        return "auto"
+    return "engineering"
+
+
+def _spec_task_deliverable_kind(family: str) -> str:
+    if family == "research":
+        return "evidence"
+    if family == "creative_media":
+        return "artifact"
+    if family == "delegation":
+        return "handoff"
+    if family == "governance":
+        return "verification"
+    return "artifact"
+
+
 def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dict[str, Any]]:
     spec_id = str(bundle.get("specId") or "").strip()
     workspace_path = str(bundle.get("workspacePath") or "").strip()
@@ -405,11 +571,23 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
     for index, task in enumerate(tasks):
         task_id = str(task.get("taskId") or f"TASK-{index + 1:03d}").strip().upper().replace("TSK-", "TASK-")
         lane = str(task.get("runtimeLane") or kind or "engineering").strip()
+        family = _spec_task_runtime_family(task, kind)
+        if family == "governance" and kind != "governance":
+            continue
         output = str(task.get("expectedOutput") or "").strip()
         acceptance = str(task.get("acceptance") or "").strip()
         proof = str(task.get("proofRequired") or "").strip()
         spec_refs = list(task.get("specRefs") or []) or list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
-        allow_child = bool(re.search(r"(?i)subagent|agent|parallel|fanout|子agent|孙agent|并行", " ".join([lane, str(task.get("excerpt") or "")])))
+        writes_artifact = family in {"engineering", "creative_media"}
+        child_signal = re.search(
+            r"(?i)sub\s*agent|sub-agent|worker|parallel|fanout|子\s*agent|孙\s*agent|子agent|孙agent|并行",
+            " ".join([lane, str(task.get("title") or ""), str(task.get("excerpt") or "")]),
+        )
+        allow_child = bool(
+            child_signal
+            and family in {"delegation", "engineering", "research"}
+            and not (family == "research" and re.search(r"(?i)调研 Agent|research agent", str(task.get("title") or "")))
+        )
         context = {
             "source": "approved_spec_execution_bundle",
             "specId": spec_id,
@@ -442,8 +620,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "context": context,
                 "writeSet": [workspace_path] if workspace_path else [],
                 "behaviorScope": ["approved_spec_execution", "runtime_first", "verification"],
-                "requiredCapabilities": ["spec_section_read", "verification", "proof_handoff"]
-                + (["workspace_mutation"] if kind == "engineering" else []),
+                "requiredCapabilities": _spec_task_required_capabilities(family, writes_artifact=writes_artifact),
                 "acceptanceContract": {
                     "must": [
                         f"Execute approved {task_id} only within the approved Spec scope.",
@@ -461,8 +638,10 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 },
                 "dependency": list(task.get("dependsOn") or []),
                 "parallelGroup": lane or kind,
-                "executionLaneHint": "auto",
-                "familyHint": "engineering" if kind == "engineering" else kind,
+                "executionLaneHint": _spec_task_execution_lane(family),
+                "familyHint": "" if family == "governance" else family,
+                "deliverableKind": _spec_task_deliverable_kind(family),
+                "writeRequired": family in {"engineering", "creative_media"},
                 "allowChildDelegation": allow_child,
                 "childDelegationBudget": {"maxDepth": 1, "inherits": ["taskId", "specId", "specRefs", "detailRefs"]} if allow_child else {},
                 "specRefs": {
@@ -481,8 +660,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                     ],
                 },
                 "engineeringTaskCapsule": {
-                    "deliverableKind": "artifact",
-                    "writeRequired": kind == "engineering",
+                    "deliverableKind": _spec_task_deliverable_kind(family),
+                    "writeRequired": family in {"engineering", "creative_media"},
                     "specId": spec_id,
                     "taskId": task_id,
                     "runtimeLane": lane,

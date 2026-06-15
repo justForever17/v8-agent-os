@@ -356,6 +356,138 @@ def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
     assert runtime_access_from_route_context(command.update["current_route_context"]) == ["delegation.recursive"]
 
 
+def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="生成玲的 skill。",
+        feature_name="ling-skill",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: 生成工作区 skill。\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="design")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: 六维调研后生成 SKILL.md。\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="tasks")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# 任务分解\n\n"
+            "| 阶段 | 平行度 | 说明 |\n"
+            "|------|--------|------|\n"
+            "| T-03 ~ T-08 调研 Agent Swarm | 6路并行 | 六维信息采集 |\n\n"
+            "### T-02: 创建 Skill 目录结构\n\n"
+            "| 属性 | 值 |\n|------|-----|\n"
+            "| **Runtime** | `engineering` |\n"
+            "| **依赖** | T-01 |\n"
+            "| **需求引用** | REQ-001 |\n"
+            "| **设计引用** | DES-001 |\n\n"
+            "**输出文件**：\n- `.agents/skills/ling-perspective/`\n\n"
+            "### T-03: 调研 Agent 1 — 著作与系统性设定\n\n"
+            "| 属性 | 值 |\n|------|-----|\n"
+            "| **Runtime** | `research` (via delegation_broker) |\n"
+            "| **依赖** | T-02 |\n"
+            "| **需求引用** | REQ-001 |\n"
+            "| **设计引用** | DES-001 |\n\n"
+            "**输出文件**：\n- `references/research/01-writings.md`\n\n"
+            "**验收标准**：\n- [ ] 来源数 >= 5\n\n"
+            "### T-04: 调研 Agent 2 — 对话与剧情台词\n\n"
+            "| 属性 | 值 |\n|------|-----|\n"
+            "| **Runtime** | `research` (via delegation_broker) |\n"
+            "| **依赖** | T-02 |\n"
+            "| **需求引用** | REQ-001 |\n"
+            "| **设计引用** | DES-001 |\n\n"
+            "**输出文件**：\n- `references/research/02-conversations.md`\n\n"
+            "### T-12: Skill 构建\n\n"
+            "| 属性 | 值 |\n|------|-----|\n"
+            "| **Runtime** | `engineering` |\n"
+            "| **依赖** | T-04 |\n"
+            "| **需求引用** | REQ-001 |\n"
+            "| **设计引用** | DES-001 |\n\n"
+            "**输出文件**：\n- `SKILL.md`\n"
+            "### T-13: 质量验证\n\n"
+            "| 属性 | 值 |\n|------|-----|\n"
+            "| **Runtime** | `engineering` (子 agent 执行测试) |\n"
+            "| **依赖** | T-12 |\n"
+            "| **需求引用** | REQ-001 |\n"
+            "| **设计引用** | DES-001 |\n\n"
+            "**输出文件**：\n- `verification-report.md`\n"
+        ),
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+
+    with bind_runtime_context(
+        session_id="session-spec-tid",
+        run_id="run-spec-tid",
+        rootRunId="root-spec-tid",
+        workspace_path=str(workspace),
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            runtime_kind="engineering",
+            need={"kind": "engineering", "reason": "approved_spec_runtime_execution", "specId": spec_id},
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-spec-tid",
+        )
+
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    inputs = episode["inputs"]
+    bundle = inputs["specExecutionBundle"]
+    worker_briefs = inputs["workerBriefs"]
+
+    assert [task["taskId"] for task in bundle["tasks"]] == ["TASK-002", "TASK-003", "TASK-004", "TASK-012", "TASK-013"]
+    by_id = {item["taskBriefId"]: item for item in worker_briefs}
+    assert by_id["TASK-003"]["familyHint"] == "research"
+    assert by_id["TASK-003"]["deliverableKind"] == "evidence"
+    assert by_id["TASK-003"]["writeRequired"] is False
+    assert by_id["TASK-003"]["allowChildDelegation"] is False
+    assert by_id["TASK-004"]["familyHint"] == "research"
+    assert by_id["TASK-012"]["familyHint"] == "engineering"
+    assert by_id["TASK-012"]["deliverableKind"] == "artifact"
+    assert by_id["TASK-012"]["writeRequired"] is True
+    assert by_id["TASK-012"]["allowChildDelegation"] is False
+    assert by_id["TASK-013"]["allowChildDelegation"] is True
+    assert "references/research/01-writings.md" in by_id["TASK-003"]["acceptanceTiers"]["must"][-2]
+
+
+def test_delegation_broker_refuses_generic_dispatch_for_ready_spec_episode():
+    active_episode = {
+        "kind": "engineering",
+        "reason": "approved_spec_runtime_execution",
+        "inputs": {
+            "specExecutionBundle": {"kind": "SpecExecutionBundle", "status": "ready", "specId": "spec_ready"},
+        },
+    }
+    with bind_runtime_context(session_id="session-spec-delegation", run_id="run-spec-delegation"):
+        command = delegation_broker.func(
+            mode="dispatch",
+            state={"current_route_context": {"capabilityEpisodes": [active_episode]}},
+            tool_call_id="call-delegation-spec-missing",
+        )
+
+    payload = _tool_message_payload(command)
+    assert payload["ok"] is False
+    assert payload["error"] == "spec_delegation_missing_tasks"
+    assert payload["dispatchStatus"] == "missing_tasks"
+
+
 def test_runtime_broker_list_with_episode_intent_auto_routes_but_catalog_stays_list():
     catalog = runtime_broker.func(
         mode="list",

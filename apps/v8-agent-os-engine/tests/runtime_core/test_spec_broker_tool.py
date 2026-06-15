@@ -224,6 +224,58 @@ def test_spec_broker_start_same_feature_creates_new_current_spec(tmp_path):
     assert {item["specId"] for item in listing["specs"]} == {first["specId"], second["specId"]}
 
 
+def test_spec_broker_blocks_bugfix_restart_when_current_spec_ready_for_execution(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="生成玲的 skill",
+            feature_name="ling-skill",
+            content="# Requirements\n\n- REQ-001: deliver skill.\n",
+        )
+    )
+    spec_id = created["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            kind="design",
+            content="# Design\n\n- DES-001: design.\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            kind="tasks",
+            content="# Tasks\n\n- [ ] TASK-001: deliver. runtimeLane: Engineering; specRefs: REQ-001, DES-001\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="tasks"))["pipelineControl"]["runtimeExecutionAllowed"] is True
+
+    blocked = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            kind="bugfix",
+            feature_name="ling-skill-fix",
+            user_request="SKILL.md 为空，需要修复失败的执行结果。",
+            content="# Bugfix\n\n- BFIX-001: repair empty skill.\n",
+        )
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["kind"] == "spec_runtime_execution_active"
+    assert blocked["specId"] == spec_id
+
+
 def test_spec_broker_default_resolution_ignores_delivered_specs(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

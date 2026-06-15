@@ -367,6 +367,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 "The `need` payload should cite `specId`, task/detail refs, required runtime lanes, expected artifacts, and proof expectations from the approved tasks. "
                 "Use Engineering/Research/Delegation/Creative runtimes as appropriate; if the Spec or selected skill calls for broad research or subagent swarms, express that as Research Runtime and/or top-level Delegation episodes, not hidden Supervisor-only work. "
                 "Do not call memory_broker, fetch_skill_instructions, research_broker, web_broker, delegation_broker, or write_native_file directly in this stage; route those needs through runtime_broker. "
+                "If a runtime episode fails or returns degraded handoff, repair or reroute the same approved specId; do not start a new bugfix/requirements Spec unless the user explicitly asks for a new Spec. "
                 "Supervisor todo tools are hidden in Spec Mode; use approved Spec tasks as the execution contract and runtime episode ledgers/proofs as execution truth. "
                 "Use `spec_broker(mode='brief'|'read_section')` only when you need exact approved task/spec refs for the runtime route."
             )

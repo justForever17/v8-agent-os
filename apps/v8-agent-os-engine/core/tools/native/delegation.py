@@ -534,6 +534,70 @@ def _filter_meaningful_delegation_tasks(values: list[Any]) -> list[Any]:
     return [item for item in values if _delegation_task_has_meaningful_content(item)]
 
 
+def _delegation_has_ready_spec_execution_context(context: dict[str, Any]) -> bool:
+    for episode in list((context or {}).get("capabilityEpisodes") or []):
+        if not isinstance(episode, dict):
+            continue
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        for payload in (inputs.get("specExecutionBundle"), episode.get("specExecutionBundle")):
+            if isinstance(payload, dict) and str(payload.get("status") or "").strip().lower() == "ready":
+                return True
+    return False
+
+
+def _delegation_tasks_are_generic_spec_routes(tasks: list[Any]) -> bool:
+    normalized = normalize_task_briefs(tasks)
+    if not normalized:
+        return False
+    for task in normalized:
+        task_id = str(task.get("taskBriefId") or "").strip().lower()
+        blob = " ".join(
+            [
+                task_id,
+                str(task.get("goal") or ""),
+                str(task.get("context") or ""),
+                str(task.get("routeQuery") or ""),
+            ]
+        ).lower()
+        if task_id.startswith("route-") or "execute approved spec" in blob or "approved_spec_runtime_execution" in blob:
+            continue
+        return False
+    return True
+
+
+def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) -> Command:
+    runtime_context = get_runtime_context()
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "unknown").strip() or "unknown"
+    return Command(
+        goto="supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode="dispatch",
+                        ok=False,
+                        summary=(
+                            "delegation_broker 拒绝把已审批 Spec 执行降级成泛化子任务。"
+                            "请先由 runtime_broker/Spec 执行分发层提供具体 taskBriefs/workerBriefs。"
+                        ),
+                        recommended_next_action=(
+                            "Call runtime_broker(mode='route', need={'kind':'engineering','specId':'<current specId>'}) "
+                            "or dispatch with explicit tasks copied from the approved tasks.md."
+                        ),
+                        error="spec_delegation_missing_tasks",
+                        dispatchStatus="missing_tasks",
+                        missingTasks=True,
+                        diagnosticKey="delegation_missing_tasks",
+                        dispatchGroup=f"delegation_missing_tasks:{run_id}",
+                        autoDispatchSource=source,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        },
+    )
+
+
 @tool
 def delegation_broker(
     mode: str = "observe",
@@ -638,6 +702,12 @@ def delegation_broker(
             elif need_reason:
                 requested_tasks = [normalize_task_brief({"title": need_reason[:96], "goal": need_reason, "brief": need_reason, "executionLaneHint": "auto"})]
                 dispatch_task_source = "followup_minimal"
+        if (
+            dispatch_task_source != "explicit"
+            and _delegation_has_ready_spec_execution_context(inherited_context)
+            and (not requested_tasks or _delegation_tasks_are_generic_spec_routes(requested_tasks))
+        ):
+            return _delegation_missing_spec_tasks_command(tool_call_id=tool_call_id, source=dispatch_task_source)
         if target_count and target_count > len(requested_tasks) and requested_tasks:
             seed = dict(requested_tasks[-1])
             for index in range(len(requested_tasks), int(target_count)):

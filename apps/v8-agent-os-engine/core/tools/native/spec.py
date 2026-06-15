@@ -402,6 +402,46 @@ def _spec_resolve_active_spec_id(
     return str(candidates[0].get("specId") or "").strip()
 
 
+def _latest_runtime_execution_ready_spec(workspace: str) -> dict[str, Any]:
+    try:
+        listing = spec_service.list_specs(workspace_path=workspace, include_archived=False, limit=10)
+    except Exception:
+        return {}
+    for item in list(listing.get("specs") or []):
+        if not isinstance(item, dict):
+            continue
+        spec_id = str(item.get("specId") or "").strip()
+        if not spec_id:
+            continue
+        try:
+            brief = spec_service.build_brief(workspace_path=workspace, spec_id=spec_id)
+        except Exception:
+            continue
+        pipeline = dict(brief.get("pipelineControl") or {})
+        if bool(pipeline.get("runtimeExecutionAllowed")) and str(brief.get("lifecycle") or "").strip().lower() == "active":
+            return brief
+    return {}
+
+
+def _spec_runtime_execution_active_payload(*, active_spec: dict[str, Any]) -> str:
+    spec_id = str(active_spec.get("specId") or "").strip()
+    return _spec_broker_payload(
+        ok=False,
+        kind="spec_runtime_execution_active",
+        summary=(
+            "当前工作区已有一个 tasks 已审批、等待执行/修复的 Spec。"
+            "不要新建 bugfix/requirements Spec 来绕过当前交付合同。"
+        ),
+        specId=spec_id,
+        featureName=active_spec.get("featureName"),
+        pipelineControl=active_spec.get("pipelineControl"),
+        recommendedNextAction=(
+            "继续使用当前 specId，通过 runtime_broker(mode='route', need={'kind':'engineering','specId':'<current specId>'}) "
+            "执行或修复；需要查看内容时用 spec_broker(mode='read_section'/'brief')。"
+        ),
+    )
+
+
 @tool
 def spec_broker(
     mode: str = "start",
@@ -493,6 +533,14 @@ def spec_broker(
                 elif not spec_id:
                     spec_id = continuation_spec_id
             requested_kind = _spec_kind_from_inputs(kind, requested_stage)
+            if not continuation_spec_id and not str(spec_id or "").strip() and (requested_stage in {"", "requirements", "bugfix"} or requested_kind == "bugfix"):
+                active_spec = _latest_runtime_execution_ready_spec(workspace)
+                if active_spec and (
+                    requested_kind == "bugfix"
+                    or requested_stage == "bugfix"
+                    or re.search(r"(?i)fail|failed|failure|repair|recover|empty|validation|修复|失败|报错|为空|验证", " ".join([user_request, feature_name or "", comment, content[:1200]]))
+                ):
+                    return _spec_runtime_execution_active_payload(active_spec=active_spec)
             if requested_stage in {"design", "tasks"}:
                 inferred_spec_id = _spec_resolve_active_spec_id(
                     workspace=workspace,

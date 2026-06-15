@@ -241,6 +241,12 @@ def _spec_id_from_state(state) -> str:
     if not isinstance(state, dict):
         return ""
     route_context = dict(state.get("current_route_context") or {})
+    for container in (state, route_context):
+        continuation = container.get("specContinuation") if isinstance(container, dict) else None
+        if isinstance(continuation, dict):
+            value = continuation.get("specId") or continuation.get("spec_id")
+            if str(value or "").strip():
+                return str(value).strip()
     for key in ("specId", "spec_id"):
         value = state.get(key) or route_context.get(key)
         if str(value or "").strip():
@@ -259,6 +265,10 @@ def _spec_runtime_execution_allowed(state) -> bool:
     if not isinstance(state, dict):
         return False
     route_context = dict(state.get("current_route_context") or {})
+    for container in (state, route_context):
+        continuation = container.get("specContinuation") if isinstance(container, dict) else None
+        if isinstance(continuation, dict) and bool(continuation.get("runtimeExecutionAllowed")):
+            return True
     if bool(
         state.get("runtimeAllowed")
         or state.get("runtimeExecutionAllowed")

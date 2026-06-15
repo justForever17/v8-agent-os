@@ -845,6 +845,38 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("Supervisor todo tools are hidden in Spec Mode", guidance.content)
         self.assertIn("approved Spec tasks as the execution contract", guidance.content)
 
+    def test_spec_continuation_runtime_stage_overrides_missing_spec_id_gate(self):
+        tools = [
+            SimpleNamespace(name="spec_broker"),
+            SimpleNamespace(name="memory_broker"),
+            SimpleNamespace(name="runtime_broker"),
+            SimpleNamespace(name="write_native_file"),
+        ]
+        state = {
+            "current_route_context": {
+                "specMode": True,
+                "specContinuation": {
+                    "specId": "spec-ready",
+                    "nextStage": "runtime_execution",
+                    "runtimeExecutionAllowed": True,
+                },
+            }
+        }
+
+        visible = _filter_spec_tools_for_mode(tools, state)
+        guidance = _spec_mode_stage_guidance(
+            state=state,
+            user_query="[SPEC CONTINUATION] activeSpecId: spec-ready nextStage: runtime_execution",
+            selected_tools=visible,
+        )
+
+        self.assertEqual([item.name for item in visible], ["spec_broker", "runtime_broker"])
+        self.assertIsNotNone(guidance)
+        self.assertIn("Spec Runtime Execution Gate", guidance.content)
+        self.assertIn("specId=spec-ready", guidance.content)
+        self.assertIn("runtime_broker(mode='route'", guidance.content)
+        self.assertNotIn("no specId exists yet", guidance.content)
+
     def test_approved_spec_runtime_stage_does_not_force_memory_first(self):
         tools = [SimpleNamespace(name="memory_broker"), SimpleNamespace(name="runtime_broker")]
         state = {

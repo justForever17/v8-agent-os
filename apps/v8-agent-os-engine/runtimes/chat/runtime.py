@@ -4466,6 +4466,46 @@ class ChatRuntime:
             "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
             "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
         }
+        prepared_spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
+        prepared_spec_brief = (
+            dict(getattr(chat_run.prepared, "spec_brief", None) or {})
+            if isinstance(getattr(chat_run.prepared, "spec_brief", None), dict)
+            else {}
+        )
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        spec_continuation = (
+            dict(resume_value.get("specContinuation") or {})
+            if isinstance(resume_value.get("specContinuation"), dict)
+            else {}
+        )
+        continuation_spec_id = str(spec_continuation.get("specId") or spec_continuation.get("spec_id") or "").strip()
+        if continuation_spec_id and not prepared_spec_id:
+            prepared_spec_id = continuation_spec_id
+        if prepared_spec_id:
+            pipeline = (
+                prepared_spec_brief.get("pipelineControl")
+                if isinstance(prepared_spec_brief.get("pipelineControl"), dict)
+                else {}
+            )
+            current_route_context = {
+                **current_route_context,
+                "specId": prepared_spec_id,
+                "spec_id": prepared_spec_id,
+                "specBrief": prepared_spec_brief,
+                "spec_brief": prepared_spec_brief,
+                "specExecutionGate": {
+                    "runtimeExecutionAllowed": bool(pipeline.get("runtimeExecutionAllowed")),
+                    "reason": self._spec_dispatch_gate_reason(prepared_spec_brief, spec_id=prepared_spec_id),
+                    "source": "spec_pipeline_control",
+                },
+            }
+        if spec_continuation:
+            next_stage = str(spec_continuation.get("nextStage") or "").strip()
+            current_route_context = {
+                **current_route_context,
+                "specContinuation": spec_continuation,
+                **({"specNextStage": next_stage, "spec_next_stage": next_stage} if next_stage else {}),
+            }
         if compat_diagnostics:
             current_route_context = {
                 **current_route_context,

@@ -155,16 +155,19 @@ def _wait_for_idle(session_id: str, *, timeout_s: int) -> tuple[bool, dict[str, 
     return False, last_state
 
 
-def _find_spec_by_marker_or_target(workspace: Path, marker: str, target_rel: str) -> dict[str, Any] | None:
+def _find_spec_by_marker_or_target(workspace: Path, marker: str, target_rel: str, *, spec_id: str = "") -> dict[str, Any] | None:
     root = workspace / ".v8" / "specs"
     if not root.exists():
         return None
     newest: tuple[float, dict[str, Any]] | None = None
     normalized_target = target_rel.replace("\\", "/").lower()
+    expected_spec_id = str(spec_id or "").strip()
     for manifest_path in root.glob("*/spec.json"):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
+            continue
+        if expected_spec_id and str(manifest.get("specId") or "").strip() != expected_spec_id:
             continue
         haystack = json.dumps(manifest, ensure_ascii=False)
         for doc_path in manifest_path.parent.glob("*.md"):
@@ -182,10 +185,10 @@ def _find_spec_by_marker_or_target(workspace: Path, marker: str, target_rel: str
     return newest[1] if newest else None
 
 
-def _wait_for_stage(workspace: Path, marker: str, target_rel: str, stage: str, *, timeout_s: int) -> dict[str, Any] | None:
+def _wait_for_stage(workspace: Path, marker: str, target_rel: str, stage: str, *, timeout_s: int, spec_id: str = "") -> dict[str, Any] | None:
     deadline = time.time() + max(5, timeout_s)
     while time.time() < deadline:
-        found = _find_spec_by_marker_or_target(workspace, marker, target_rel)
+        found = _find_spec_by_marker_or_target(workspace, marker, target_rel, spec_id=spec_id)
         if found:
             manifest = found["manifest"]
             doc = (manifest.get("documents") or {}).get(stage)
@@ -233,10 +236,63 @@ def _stage_quality(stage: str, content: str, *, marker: str, target_rel: str) ->
     return findings
 
 
-def _approve_stage(workspace: Path, spec_id: str, stage: str, comment: str) -> dict[str, Any]:
-    from core.spec_service import spec_service
-
-    return spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage=stage, approver="live-audit", comment=comment)
+def _approve_stage(
+    engine_url: str,
+    *,
+    session_id: str,
+    spec_id: str,
+    stage: str,
+    comment: str,
+    timeout_s: float = 60.0,
+) -> dict[str, Any]:
+    try:
+        from core.database import db
+    except Exception as exc:  # noqa: BLE001 - live diagnostics preserve storage errors.
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    normalized_stage = str(stage or "").strip().lower()
+    deadline = time.time() + max(1.0, timeout_s)
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            pending = db.list_pending_approvals(session_id=session_id, status="pending")
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        for approval in pending:
+            if str(approval.get("approval_kind") or "").strip() != "spec_stage_approval":
+                continue
+            request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+            if str(request.get("specId") or "").strip() != spec_id:
+                continue
+            if str(request.get("stage") or "").strip().lower() != normalized_stage:
+                continue
+            approval_id = str(approval.get("id") or approval.get("approval_id") or "").strip()
+            if not approval_id:
+                continue
+            response = _json_request(
+                f"{_engine_api_base(engine_url)}/approvals/{approval_id}/approve",
+                method="POST",
+                payload={
+                    "reason": comment,
+                    "response": {
+                        "decision": "approved",
+                        "source": "spec_mode_project_live_audit",
+                        "specId": spec_id,
+                        "stage": normalized_stage,
+                        "comment": comment,
+                    },
+                },
+                timeout=12,
+            )
+            return {
+                "ok": True,
+                "approvalId": approval_id,
+                "stage": normalized_stage,
+                "response": response,
+                "resumeScheduled": bool(response.get("resume_scheduled")) if isinstance(response, dict) else False,
+            }
+        last_error = "pending_spec_stage_approval_not_found"
+        time.sleep(1.5)
+    return {"ok": False, "error": last_error or "pending_spec_stage_approval_not_found", "specId": spec_id, "stage": normalized_stage}
 
 
 def _collect_durable(result: SpecLiveResult) -> None:
@@ -386,34 +442,22 @@ def _run(args: argparse.Namespace) -> SpecLiveResult:
         result.stages.append(StageObservation(stage=stage, found=bool(content), path=str(path or ""), content_chars=len(content), quality_findings=quality))
         for item in quality:
             result.findings.append({"severity": "P1", "code": f"{stage}_{item}", "summary": f"{stage} 文档质量缺口：{item}"})
-    approved = _approve_stage(workspace, result.spec_id, "requirements", "live audit approved requirements")
+    approved = _approve_stage(
+        args.engine_url,
+        session_id=session_id,
+        spec_id=result.spec_id,
+        stage="requirements",
+        comment="live audit approved requirements",
+    )
     result.stages[-1].approved = bool(approved.get("ok"))
+    result.key_events.append({"requirementsApproval": approved})
+    if not approved.get("ok"):
+        result.findings.append({"severity": "P0", "code": "requirements_approval_failed", "summary": str(approved.get("error") or "requirements approval failed")})
+        result.status = "failed"
+        return result
 
-    for stage, prompt_text in (
-        (
-            "design",
-            "requirements.md 已审批。请进入 design.md：优先通过 Research Runtime/Context7 或官方资料做必要查证，写完整技术设计。不要执行代码。",
-        ),
-        (
-            "tasks",
-            "design.md 已审批。请进入 tasks.md：把实现拆成可执行任务，每个任务必须使用 TASK-001 这种稳定 ID，并引用 REQ-### 与 DES-### ID。不要执行代码。",
-        ),
-    ):
-        run_id, latency, response = _submit(
-            args.engine_url,
-            session_id=session_id,
-            workspace=workspace,
-            model_profile=args.model_profile,
-            prompt=prompt_text,
-            spec_id=result.spec_id,
-            client_tag=f"{marker}-{stage}",
-        )
-        if run_id:
-            result.run_ids.append(run_id)
-        result.submit_latencies_ms.append(latency)
-        result.key_events.append({f"{stage}Submit": {"latencyMs": latency, "accepted": response.get("accepted"), "runId": run_id}})
-        _wait_for_idle(session_id, timeout_s=max(30, args.max_wait // 2))
-        stage_payload = _wait_for_stage(workspace, marker, target_rel, stage, timeout_s=args.max_wait)
+    for stage in ("design", "tasks"):
+        stage_payload = _wait_for_stage(workspace, marker, target_rel, stage, timeout_s=args.max_wait, spec_id=result.spec_id)
         if not stage_payload:
             result.findings.append({"severity": "P0", "code": f"{stage}_missing", "summary": f"等待窗口内未生成 {stage}.md"})
             result.status = "failed"
@@ -425,26 +469,20 @@ def _run(args: argparse.Namespace) -> SpecLiveResult:
         result.stages.append(observation)
         for item in quality:
             result.findings.append({"severity": "P1", "code": f"{stage}_{item}", "summary": f"{stage} 文档质量缺口：{item}"})
-        approved = _approve_stage(workspace, result.spec_id, stage, f"live audit approved {stage}")
+        approved = _approve_stage(
+            args.engine_url,
+            session_id=session_id,
+            spec_id=result.spec_id,
+            stage=stage,
+            comment=f"live audit approved {stage}",
+        )
         observation.approved = bool(approved.get("ok"))
+        result.key_events.append({f"{stage}Approval": approved})
+        if not approved.get("ok"):
+            result.findings.append({"severity": "P0", "code": f"{stage}_approval_failed", "summary": str(approved.get("error") or f"{stage} approval failed")})
+            result.status = "failed"
+            return result
 
-    run_id, latency, response = _submit(
-        args.engine_url,
-        session_id=session_id,
-        workspace=workspace,
-        model_profile=args.model_profile,
-        prompt=(
-            "tasks.md 已审批。现在请按已批准 Spec 分发执行，允许只在目标输出目录写入 index.html 和 README.md。"
-            "请注意最终项目必须是 Spec Mode Live Counter 计数器，不是 live audit 报告页或执行状态面板。"
-            "执行完成后必须给出 proof/handoff，并引用 specId 与 TASK-###/REQ-###/DES-### ID。"
-        ),
-        spec_id=result.spec_id,
-        client_tag=f"{marker}-execute",
-    )
-    if run_id:
-        result.run_ids.append(run_id)
-    result.submit_latencies_ms.append(latency)
-    result.key_events.append({"executeSubmit": {"latencyMs": latency, "accepted": response.get("accepted"), "runId": run_id}})
     _wait_for_idle(session_id, timeout_s=args.max_wait)
     time.sleep(2)
     _collect_durable(result)

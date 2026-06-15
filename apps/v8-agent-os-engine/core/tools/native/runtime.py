@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any, Optional
 
 from langchain_core.messages import ToolMessage
@@ -24,7 +25,10 @@ from core.runtime_tool_access import (
     runtime_access_from_route_context,
     runtime_tool_groups_catalog,
 )
+from core.spec_service import spec_service
 from erc.runtime_context import get_runtime_context
+
+
 def _runtime_broker_payload(
     *,
     mode: str,
@@ -189,6 +193,317 @@ def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, 
     return brief
 
 
+def _safe_compact_text(value: Any, *, limit: int = 6000) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...[truncated]"
+
+
+def _spec_id_from_route_need(need: dict[str, Any], inputs: dict[str, Any], state: dict[str, Any] | None) -> str:
+    for source in (
+        need,
+        inputs,
+        dict((state or {}).get("current_route_context") or {}),
+        dict(state or {}),
+    ):
+        for key in ("specId", "spec_id", "currentSpecId", "activeSpecId"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | None) -> str:
+    runtime_context = get_runtime_context()
+    for source in (
+        inputs,
+        dict((state or {}).get("current_route_context") or {}),
+        dict(state or {}),
+        runtime_context,
+    ):
+        workspace = str(source.get("workspacePath") or source.get("workspace_path") or "").strip()
+        if workspace:
+            return workspace
+    return ""
+
+
+def _spec_runtime_execution_allowed(spec_brief: dict[str, Any]) -> bool:
+    pipeline = dict(spec_brief.get("pipelineControl") or {})
+    approved = {str(item).strip().lower() for item in list(spec_brief.get("approvedStages") or [])}
+    return bool(pipeline.get("runtimeExecutionAllowed")) or {"requirements", "design", "tasks"}.issubset(approved)
+
+
+def _split_spec_refs(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    refs = re.findall(r"\b(?:REQ|BFIX|DES|TASK|TSK|AC)-\d{3,}\b", text, flags=re.IGNORECASE)
+    if refs:
+        return [ref.upper().replace("TSK-", "TASK-") for ref in refs]
+    return [item.strip() for item in re.split(r"[,/，、\s]+", text) if item.strip()][:12]
+
+
+def _extract_task_field(excerpt: str, labels: tuple[str, ...]) -> str:
+    for label in labels:
+        match = re.search(rf"(?im)^\s*(?:[-*]\s*)?{re.escape(label)}\s*[:：]\s*(.+?)\s*$", excerpt)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dict[str, Any]]:
+    text = str(markdown or "")
+    sections: list[dict[str, Any]] = []
+    for index, task_id in enumerate(task_ids):
+        normalized_id = str(task_id or f"TASK-{index + 1:03d}").upper().replace("TSK-", "TASK-")
+        refs = [normalized_id]
+        if normalized_id.startswith("TASK-"):
+            refs.append("TSK-" + normalized_id.split("-", 1)[1])
+        match = None
+        for ref in refs:
+            match = re.search(rf"(?im)^.*\b{re.escape(ref)}\b.*$", text)
+            if match:
+                break
+        if not match:
+            sections.append(
+                {
+                    "taskId": normalized_id,
+                    "title": f"Execute approved {normalized_id}",
+                    "excerpt": normalized_id,
+                }
+            )
+            continue
+        start = text.rfind("\n", 0, match.start()) + 1
+        next_task = re.search(r"(?im)^\s*(?:#{2,6}\s*)?(?:[-*]\s*(?:\[[ xX]\]\s*)?)?(?:TASK|TSK)-\d{3,}\b", text[match.end() :])
+        next_heading = re.search(r"(?m)^##+\s+", text[match.end() :])
+        candidates = [len(text)]
+        if next_task:
+            candidates.append(match.end() + next_task.start())
+        if next_heading:
+            candidates.append(match.end() + next_heading.start())
+        end = min(candidates)
+        excerpt = text[start:end].strip()
+        first_line = excerpt.splitlines()[0] if excerpt else normalized_id
+        title = re.sub(r"(?i)^.*\b(?:TASK|TSK)-\d{3,}\b\s*[:：.\-、]?\s*", "", first_line).strip()
+        title = re.sub(r"^\[[ xX]\]\s*", "", title).strip("-:： ")
+        sections.append(
+            {
+                "taskId": normalized_id,
+                "title": title or f"Execute approved {normalized_id}",
+                "excerpt": _safe_compact_text(excerpt, limit=5000),
+                "runtimeLane": _extract_task_field(excerpt, ("runtimeLane", "runtime lane", "执行泳道", "执行通道", "执行方")),
+                "dependsOn": _split_spec_refs(_extract_task_field(excerpt, ("dependsOn", "depends on", "依赖"))),
+                "specRefs": _split_spec_refs(_extract_task_field(excerpt, ("specRefs", "spec refs", "引用"))),
+                "inputRefs": _extract_task_field(excerpt, ("inputRefs", "input refs", "输入")),
+                "expectedOutput": _extract_task_field(excerpt, ("expectedOutput", "expected output", "output", "输出", "产物")),
+                "acceptance": _extract_task_field(excerpt, ("acceptance", "验收")),
+                "proofRequired": _extract_task_field(excerpt, ("proofRequired", "proof required", "proof", "证明")),
+            }
+        )
+    return sections
+
+
+def _approved_spec_execution_bundle(
+    need: dict[str, Any],
+    inputs: dict[str, Any],
+    *,
+    state: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    spec_id = _spec_id_from_route_need(need, inputs, state)
+    if not spec_id:
+        return None
+    workspace_path = _workspace_path_from_route(inputs, state)
+    if not workspace_path:
+        return None
+    try:
+        detail = spec_service.read_spec(workspace_path=workspace_path, spec_id=spec_id, max_chars=80000)
+    except Exception as exc:  # noqa: BLE001 - keep runtime route recoverable.
+        return {
+            "kind": "SpecExecutionBundle",
+            "specId": spec_id,
+            "workspacePath": workspace_path,
+            "status": "unavailable",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    spec_brief = dict(detail.get("specBrief") or {})
+    if not _spec_runtime_execution_allowed(spec_brief):
+        return None
+    stages = dict(detail.get("stages") or {})
+    docs: dict[str, Any] = {}
+    for stage in ("requirements", "bugfix", "design", "tasks"):
+        payload = stages.get(stage)
+        if not isinstance(payload, dict):
+            continue
+        docs[stage] = {
+            "stage": stage,
+            "detailRef": payload.get("documentRef") or f"spec://{spec_id}/{stage}",
+            "relativePath": payload.get("relativePath"),
+            "ids": list(payload.get("ids") or []),
+            "content": _safe_compact_text(payload.get("content"), limit=12000 if stage == "tasks" else 9000),
+            "truncated": bool(payload.get("truncated")),
+        }
+    task_doc = dict(docs.get("tasks") or {})
+    task_sections = _task_sections_from_markdown(str(task_doc.get("content") or ""), list(task_doc.get("ids") or []))
+    return {
+        "kind": "SpecExecutionBundle",
+        "status": "ready",
+        "specId": spec_id,
+        "featureName": spec_brief.get("featureName"),
+        "workspacePath": workspace_path,
+        "specDir": spec_brief.get("specDir"),
+        "approvedStages": list(spec_brief.get("approvedStages") or []),
+        "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
+        "documents": docs,
+        "tasks": task_sections,
+        "distribution": {
+            "strategy": "task_sliced_with_stage_context",
+            "mainRuntimeReceives": ["SpecExecutionBundle", "all approved stage summaries/content", "task briefs"],
+            "subagentReceives": ["assigned task excerpt", "linked requirement/design refs", "detailRefs"],
+            "grandchildReceives": ["parent task slice", "required refs only"],
+        },
+    }
+
+
+def _required_runtime_access_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[str]:
+    lanes = " ".join(
+        str(task.get("runtimeLane") or task.get("excerpt") or "")
+        for task in list(bundle.get("tasks") or [])
+        if isinstance(task, dict)
+    ).lower()
+    groups: list[str] = []
+    if kind == "engineering":
+        groups.append("delegation.recursive")
+    if any(token in lanes for token in ("research", "调研", "evidence", "source")):
+        groups.append("research.core")
+    if any(token in lanes for token in ("delegation", "subagent", "agent", "子agent", "孙agent", "并行")):
+        groups.append("delegation.recursive")
+    if any(token in lanes for token in ("creative", "media", "image", "video", "audio", "素材", "视频", "图片")):
+        groups.append("creative_media.core")
+    return list(dict.fromkeys(groups))
+
+
+def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    spec_id = str(bundle.get("specId") or "").strip()
+    workspace_path = str(bundle.get("workspacePath") or "").strip()
+    docs = dict(bundle.get("documents") or {})
+    requirement_doc = dict(docs.get("requirements") or docs.get("bugfix") or {})
+    design_doc = dict(docs.get("design") or {})
+    task_doc = dict(docs.get("tasks") or {})
+    tasks = [item for item in list(bundle.get("tasks") or []) if isinstance(item, dict)]
+    if not tasks:
+        tasks = [
+            {
+                "taskId": "TASK-001",
+                "title": f"Execute approved Spec {spec_id}",
+                "excerpt": "Execute the approved Spec and return typed handoff/proof.",
+                "runtimeLane": kind,
+                "specRefs": list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8],
+            }
+        ]
+    briefs: list[dict[str, Any]] = []
+    for index, task in enumerate(tasks):
+        task_id = str(task.get("taskId") or f"TASK-{index + 1:03d}").strip().upper().replace("TSK-", "TASK-")
+        lane = str(task.get("runtimeLane") or kind or "engineering").strip()
+        output = str(task.get("expectedOutput") or "").strip()
+        acceptance = str(task.get("acceptance") or "").strip()
+        proof = str(task.get("proofRequired") or "").strip()
+        spec_refs = list(task.get("specRefs") or []) or list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
+        allow_child = bool(re.search(r"(?i)subagent|agent|parallel|fanout|子agent|孙agent|并行", " ".join([lane, str(task.get("excerpt") or "")])))
+        context = {
+            "source": "approved_spec_execution_bundle",
+            "specId": spec_id,
+            "taskId": task_id,
+            "taskDetailRef": f"spec://{spec_id}/tasks#{task_id}",
+            "taskExcerpt": task.get("excerpt") or task.get("title") or task_id,
+            "runtimeLane": lane,
+            "specRefs": spec_refs,
+            "stageRefs": {
+                "requirements": requirement_doc.get("detailRef"),
+                "design": design_doc.get("detailRef"),
+                "tasks": task_doc.get("detailRef"),
+            },
+            "stageContent": {
+                "requirements": requirement_doc.get("content"),
+                "design": design_doc.get("content"),
+                "tasks": task_doc.get("content"),
+            },
+            "specExecutionBundle": {
+                key: value
+                for key, value in bundle.items()
+                if key not in {"documents"}
+            },
+        }
+        brief = normalize_task_brief(
+            {
+                "taskBriefId": task_id,
+                "title": task.get("title") or task_id,
+                "goal": f"{task_id}: {task.get('title') or 'Execute approved Spec task'}",
+                "context": context,
+                "writeSet": [workspace_path] if workspace_path else [],
+                "behaviorScope": ["approved_spec_execution", "runtime_first", "verification"],
+                "requiredCapabilities": ["spec_section_read", "verification", "proof_handoff"]
+                + (["workspace_mutation"] if kind == "engineering" else []),
+                "acceptanceContract": {
+                    "must": [
+                        f"Execute approved {task_id} only within the approved Spec scope.",
+                        "Use the linked requirements/design/task refs as the source of truth.",
+                        "Return a typed handoff with specId, taskId, touched artifacts, and proof or degraded blocker.",
+                        *([f"Expected output: {output}"] if output else []),
+                        *([f"Acceptance: {acceptance}"] if acceptance else []),
+                        *([f"Proof required: {proof}"] if proof else []),
+                    ],
+                    "should": [
+                        "Read exact detailRef sections when the compact excerpt is insufficient.",
+                        "Do not use older specs or memory to override the approved current Spec.",
+                    ],
+                    "nice": [],
+                },
+                "dependency": list(task.get("dependsOn") or []),
+                "parallelGroup": lane or kind,
+                "executionLaneHint": "auto",
+                "familyHint": "engineering" if kind == "engineering" else kind,
+                "allowChildDelegation": allow_child,
+                "childDelegationBudget": {"maxDepth": 1, "inherits": ["taskId", "specId", "specRefs", "detailRefs"]} if allow_child else {},
+                "specRefs": {
+                    "specId": spec_id,
+                    "taskId": task_id,
+                    "requirementIds": [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
+                    "designIds": [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
+                    "detailRefs": [
+                        ref
+                        for ref in [
+                            requirement_doc.get("detailRef"),
+                            design_doc.get("detailRef"),
+                            f"spec://{spec_id}/tasks#{task_id}",
+                        ]
+                        if ref
+                    ],
+                },
+                "engineeringTaskCapsule": {
+                    "deliverableKind": "artifact",
+                    "writeRequired": kind == "engineering",
+                    "specId": spec_id,
+                    "taskId": task_id,
+                    "runtimeLane": lane,
+                    "writeSet": [workspace_path] if workspace_path else [],
+                    "proofExpectations": [
+                        "Report exact touched files/artifacts.",
+                        "Reference approved specId and taskId.",
+                        "Attach verification result or recoverable blocker.",
+                    ],
+                },
+                "proofExpectations": [
+                    "Typed runtime handoff",
+                    "Touched files/artifacts",
+                    "Verification proof or degraded blocker",
+                ],
+            }
+        )
+        briefs.append(brief)
+    return briefs
+
+
 def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> str:
     candidates: list[str] = []
     for key in ("kind", "runtimeKind", "runtime_kind", "runtime", "capability", "routeIntent", "route_intent", "tool"):
@@ -292,9 +607,24 @@ def _enrich_route_need_for_episode(
     enriched.setdefault("reason", str(enriched.get("reason") or "capability_route").strip() or "capability_route")
     inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
     planner_briefs = _planner_task_briefs_from_state(state)
+    spec_bundle = _approved_spec_execution_bundle(enriched, inputs, state=state)
+    if spec_bundle:
+        inputs.setdefault("specExecutionBundle", spec_bundle)
+        enriched.setdefault("specId", spec_bundle.get("specId"))
+        if str(spec_bundle.get("status") or "") == "ready":
+            spec_groups = _required_runtime_access_from_spec_bundle(spec_bundle, kind)
+            if spec_groups:
+                existing_groups = list(enriched.get("requiredRuntimeAccess") or [])
+                enriched["requiredRuntimeAccess"] = list(dict.fromkeys([*existing_groups, *spec_groups]))
 
     if kind in {"engineering", "delegation"}:
         route_tasks = planner_briefs or normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        if (
+            spec_bundle
+            and str(spec_bundle.get("status") or "") == "ready"
+            and (not route_tasks or all(str(task.get("taskBriefId") or "").startswith("route-") for task in route_tasks))
+        ):
+            route_tasks = _task_briefs_from_spec_bundle(spec_bundle, kind)
         if not route_tasks:
             route_tasks = [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
         if not inputs.get("workerBriefs"):

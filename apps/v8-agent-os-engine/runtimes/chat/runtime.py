@@ -1306,6 +1306,7 @@ class ChatRuntime:
         skill_references: list[dict[str, str]],
         context_mentions: list[dict[str, str]],
         planner_dispatch_mode: str = "suggest",
+        spec_continuation: dict[str, Any] | None = None,
     ) -> None:
         if not command_preset and not skill_references and not context_mentions and not spec_mode:
             return
@@ -1318,6 +1319,39 @@ class ChatRuntime:
 
             wrapped_sections: list[str] = []
             if spec_mode:
+                continuation = spec_continuation if isinstance(spec_continuation, dict) else {}
+                continuation_spec_id = str(continuation.get("specId") or continuation.get("spec_id") or "").strip()
+                continuation_next_stage = str(continuation.get("nextStage") or "").strip()
+                continuation_lines: list[str] = []
+                if continuation_spec_id or continuation_next_stage:
+                    if continuation_next_stage == "runtime_execution":
+                        current_task_line = (
+                            "Current task: call runtime_broker(mode='route', runtime_kind='engineering', "
+                            f"need={{'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'{continuation_spec_id}'}}) "
+                            "and wait for the runtime episode handoff."
+                        )
+                        continuation_guard_lines = [
+                            "Do not call spec_broker to rewrite requirements/design/tasks.",
+                            "Do not start new memory/web/research detours unless the runtime episode asks for missing evidence.",
+                            "Do not implement final deliverables directly from Supervisor.",
+                        ]
+                    else:
+                        current_task_line = "Current task: produce only this nextStage or route execution if nextStage is runtime_execution."
+                        continuation_guard_lines = [
+                            "If you use spec_broker(write_stage), its stage must exactly equal nextStage.",
+                        ]
+                    continuation_lines.extend(
+                        [
+                            "[SPEC CONTINUATION]",
+                            "This turn is resuming after a real user approval gate. Engine has already chosen the active Spec and next stage.",
+                            f"activeSpecId: {continuation_spec_id or '(missing)'}",
+                            f"nextStage: {continuation_next_stage or '(missing)'}",
+                            current_task_line,
+                            "Previous user wording and old chat history are background only; do not restart requirements/design/tasks from the beginning.",
+                            *continuation_guard_lines,
+                            "[/SPEC CONTINUATION]",
+                        ]
+                    )
                 wrapped_sections.append(
                     "\n".join(
                         [
@@ -1328,6 +1362,7 @@ class ChatRuntime:
                             "If a real `spec_broker` tool call is unavailable or fails, report `recoverable_failed` with the exact reason instead of pretending a file was written.",
                             "Do not implement runtime work before the approved Spec stage allows it. Supervisor todos remain orchestration notes; durable delivery contracts live in `.v8/specs/<feature>/`.",
                             "Use compact SpecBrief/detail refs for runtime and subagent handoff instead of pasting full spec documents into every task.",
+                            *continuation_lines,
                             "[/SPEC MODE]",
                         ]
                     )
@@ -3471,6 +3506,12 @@ class ChatRuntime:
             command_preset=command_preset,
             task_planning_mode=task_planning_mode,
             spec_mode=spec_mode,
+            spec_continuation=(
+                request.resume_value.get("specContinuation")
+                if isinstance(request.resume_value, dict)
+                and isinstance(request.resume_value.get("specContinuation"), dict)
+                else None
+            ),
             planner_mode=planner_mode,
             planner_dispatch_mode=planner_dispatch_mode,
             planner_intent_diagnostics=planner_intent_diagnostics,
@@ -8650,6 +8691,37 @@ class ChatRuntime:
         return str(row.get("content_text") or "").strip()
 
     @staticmethod
+    def _extract_spec_id_from_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            for key in ("specId", "spec_id"):
+                candidate = str(value.get(key) or "").strip()
+                if candidate:
+                    return candidate
+            for nested in value.values():
+                candidate = ChatRuntime._extract_spec_id_from_value(nested)
+                if candidate:
+                    return candidate
+            return ""
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                candidate = ChatRuntime._extract_spec_id_from_value(item)
+                if candidate:
+                    return candidate
+            return ""
+        text = str(value or "")
+        if not text:
+            return ""
+        match = re.search(r'"specId"\s*:\s*"([^"]+)"', text)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r'"spec_id"\s*:\s*"([^"]+)"', text)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+    @staticmethod
     def _completion_spec_brief(chat_run: ChatRunContext) -> dict[str, Any]:
         prepared_brief = dict(getattr(chat_run.prepared, "spec_brief", None) or {})
         prepared_spec_id = str(prepared_brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
@@ -8668,7 +8740,7 @@ class ChatRuntime:
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
             tool_payload = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
             result = tool_payload.get("result") if isinstance(tool_payload.get("result"), dict) else {}
-            candidate = str(result.get("specId") or "").strip()
+            candidate = ChatRuntime._extract_spec_id_from_value(result)
             if candidate:
                 spec_id = candidate
                 break
@@ -9001,6 +9073,23 @@ class ChatRuntime:
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
         }
+        spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        spec_continuation = resume_value.get("specContinuation") if isinstance(resume_value.get("specContinuation"), dict) else {}
+        continuation_spec_id = str(spec_continuation.get("specId") or spec_continuation.get("spec_id") or "").strip()
+        if continuation_spec_id and not spec_id:
+            spec_id = continuation_spec_id
+        if spec_id:
+            context["spec_id"] = spec_id
+            context["specId"] = spec_id
+            if isinstance(chat_run.prepared.spec_brief, dict):
+                context["specBrief"] = dict(chat_run.prepared.spec_brief)
+        if spec_continuation:
+            context["specContinuation"] = dict(spec_continuation)
+            next_stage = str(spec_continuation.get("nextStage") or "").strip()
+            if next_stage:
+                context["spec_next_stage"] = next_stage
+                context["specNextStage"] = next_stage
         if chat_run.prepared.live_audit_context:
             context["live_audit"] = dict(chat_run.prepared.live_audit_context)
         context["workspace_binding"] = build_workspace_binding(context, runtime_kind="chat").as_dict()

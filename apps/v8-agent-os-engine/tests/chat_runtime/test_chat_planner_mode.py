@@ -390,6 +390,77 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(engineering_item.get("deliverableKind"), "plan_only")
         self.assertFalse(engineering_item.get("writeRequired"))
 
+    def test_approved_spec_runtime_execution_uses_deterministic_route_without_planner_model(self):
+        emitted: list[tuple[str, dict]] = []
+        runtime = ChatRuntime()
+        spec_brief = {
+            "specId": "spec-approved",
+            "featureName": "Approved Counter",
+            "workspacePath": r"E:\Projects\test3",
+            "approvedStages": ["requirements", "design", "tasks"],
+            "pipelineControl": {
+                "currentStage": "tasks",
+                "nextStage": "runtime_execution",
+                "runtimeExecutionAllowed": True,
+                "approvedStages": ["requirements", "design", "tasks"],
+            },
+            "documents": {
+                "requirements": {"detailRef": "spec://spec-approved/requirements", "ids": ["REQ-001"], "relativePath": ".v8/specs/counter/requirements.md", "version": 1, "status": "approved"},
+                "design": {"detailRef": "spec://spec-approved/design", "ids": ["DES-001"], "relativePath": ".v8/specs/counter/design.md", "version": 1, "status": "approved"},
+                "tasks": {"detailRef": "spec://spec-approved/tasks", "ids": ["TASK-001"], "relativePath": ".v8/specs/counter/tasks.md", "version": 1, "status": "approved"},
+            },
+            "linkedSections": [{"stage": "tasks", "detailRef": "spec://spec-approved/tasks", "ids": ["TASK-001"]}],
+        }
+        chat_run = SimpleNamespace(
+            active_run_id="run-approved-spec-route",
+            prepared=SimpleNamespace(
+                task_planning_mode=True,
+                planner_mode="force",
+                is_resume_request=False,
+                planner_plan=None,
+                planner_deferred=False,
+                planner_intent_diagnostics={"reason": "approved_spec_runtime_execution"},
+                latest_user_content="[Spec Approval Continuation] nextStage: runtime_execution",
+                skill_references=[],
+                engineering_trigger_decision={},
+                engineering_context_pack=None,
+                planner_dispatch_mode="auto",
+                task_shape_hint={"specMode": True, "specId": "spec-approved", "specBrief": spec_brief},
+                live_audit_context={},
+                spec_mode=True,
+                spec_id="spec-approved",
+                spec_brief=spec_brief,
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path=r"E:\Projects\test3",
+                    resolved_scope="project",
+                )
+            ),
+            emit_runtime_event=lambda topic, payload, **_: emitted.append((topic, payload)),
+        )
+
+        with (
+            patch("runtimes.chat.runtime.llm_factory.create_for_role", side_effect=AssertionError("planner model must not be called")),
+            patch("runtimes.chat.runtime.workflow_ledger_service.activate_runtime_step", lambda *_, **__: None),
+            patch("runtimes.chat.runtime.engineering_lane_service.enrich_planner_plan_with_engineering_contract", lambda plan, **_: plan),
+            patch.object(runtime, "_planner_registry_snapshot", return_value={"subagents": [], "externalWorkers": []}),
+        ):
+            plan = asyncio.run(runtime.ensure_planner_plan(chat_run=chat_run))
+
+        self.assertIsInstance(plan, dict)
+        self.assertTrue((chat_run.prepared.planner_plan or {}).get("planId"))
+        self.assertIn("approved_spec_execution_deterministic_route", plan.get("qualityFlags") or [])
+        self.assertIn("engineering", {str(item.get("kind") or "") for item in plan.get("capabilityPlan") or []})
+        self.assertTrue((plan.get("autoDispatchDecision") or {}).get("willDispatch"))
+        task = plan["taskBriefs"][0]
+        self.assertEqual(task["context"]["specBrief"]["specId"], "spec-approved")
+        self.assertEqual(task["context"]["approvedSpecDigest"]["summary"], "Approved Spec concrete delivery digest generated from requirements/design/tasks.")
+        engineering_capsule = task.get("engineeringTaskCapsule") if isinstance(task.get("engineeringTaskCapsule"), dict) else {}
+        self.assertEqual(engineering_capsule.get("specId"), "spec-approved")
+
     def test_planner_structured_failure_repairs_with_plain_json_before_fallback(self):
         class BrokenStructuredPlanner:
             def with_structured_output(self, _schema):

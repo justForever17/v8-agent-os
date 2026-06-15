@@ -18,9 +18,54 @@ def test_spec_broker_description_lists_write_edit_read_modes():
     assert "write" in description
     assert "update" in description
     assert "read_stage" in description
-    assert "It does not write final project deliverables" in description
+    assert "It never writes final" in description
+    assert "mode='brief'" in description
+    assert "Approved stages are locked" in description
     assert "runtime lane" in description
     assert "runtime_broker" in description
+
+
+def test_spec_broker_rewrite_approved_stage_returns_locked(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="创建一个计数器。",
+            feature_name="Counter",
+            content="# Requirements\n\n- REQ-001: Show a counter.\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(
+        spec_broker.func(
+            mode="approve",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="requirements",
+            comment="approved",
+        )
+    )["ok"]
+
+    locked = _payload(
+        spec_broker.func(
+            mode="rewrite_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="requirements",
+            content="# Requirements\n\n- REQ-001: Rewrite should be blocked.\n",
+        )
+    )
+
+    assert locked["ok"] is False
+    assert locked["kind"] == "spec_stage_locked"
+    assert locked["stage"] == "requirements"
+    assert locked["nextStage"] == "design"
+    assert "stage='design'" in locked["recommendedNextAction"]
+    assert locked["transitionHint"]["nextStage"] == "design"
+    assert "write stage design" in locked["transitionHint"]["whenReady"].lower()
 
 
 def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_path):
@@ -148,6 +193,37 @@ def test_spec_broker_list_and_missing_spec_id_use_latest_active_spec(tmp_path):
     assert approved["specId"] == second_id
 
 
+def test_spec_broker_start_same_feature_creates_new_current_spec(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    first = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="第一次创建 live counter",
+            feature_name="spec-mode-v2-live-counter",
+            content="# Requirements\n\n- REQ-001: first.\n",
+        )
+    )
+    second = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="第二次创建 live counter",
+            feature_name="spec-mode-v2-live-counter",
+            content="# Requirements\n\n- REQ-001: second.\n",
+        )
+    )
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["specId"] != second["specId"]
+    listing = _payload(spec_broker.func(mode="list", workspace_path=str(workspace)))
+    assert listing["specs"][0]["specId"] == second["specId"]
+    assert {item["specId"] for item in listing["specs"]} == {first["specId"], second["specId"]}
+
+
 def test_spec_broker_default_resolution_ignores_delivered_specs(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -192,6 +268,183 @@ def test_spec_broker_default_resolution_ignores_delivered_specs(tmp_path):
 
     assert approved["ok"] is True
     assert approved["specId"] == second_id
+
+
+def test_spec_broker_runtime_context_spec_id_wins_over_feature_match(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    old = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="旧的 live counter 需求",
+            feature_name="spec-mode-v2-live-counter",
+            content="# Requirements\n\n- REQ-001: old live counter.\n",
+        )
+    )
+    current = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="当前 run 的 Spec",
+            feature_name="spec-mode-v2-current-run",
+            content="# Requirements\n\n- REQ-001: current run.\n",
+        )
+    )
+    old_id = old["specId"]
+    current_id = current["specId"]
+    assert old_id != current_id
+
+    for spec_id in (old_id, current_id):
+        assert _payload(
+            spec_broker.func(
+                mode="approve",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                stage="requirements",
+                comment="requirements approved",
+            )
+        )["ok"]
+        assert _payload(
+            spec_broker.func(
+                mode="start",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                kind="design",
+                content="# Design\n\n- DES-001: approved design.\n",
+            )
+        )["ok"]
+        assert _payload(
+            spec_broker.func(
+                mode="approve",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                stage="design",
+                comment="design approved",
+            )
+        )["ok"]
+
+    with bind_runtime_context(
+        workspace_path=str(workspace),
+        spec_id=current_id,
+        specId=current_id,
+    ):
+        tasks = _payload(
+            spec_broker.func(
+                mode="start",
+                workspace_path=str(workspace),
+                feature_name="spec-mode-v2-live-counter",
+                kind="tasks",
+                content="# Tasks\n\n- [ ] TASK-001: runtime lane Engineering; Links: REQ-001, DES-001\n",
+            )
+        )
+
+    assert tasks["ok"] is True
+    assert tasks["specId"] == current_id
+    assert tasks["stage"] == "tasks"
+
+    old_brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=old_id)
+    old_tasks_doc = (old_brief.get("documents") or {}).get("tasks") or {}
+    assert old_tasks_doc.get("status") in {None, "missing", "stale"}
+
+
+def test_spec_broker_continuation_rejects_wrong_stage_without_new_spec(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Spec continuation demo",
+            feature_name="continuation-demo",
+            content="# Requirements\n\n- REQ-001: demo.\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(
+        spec_broker.func(
+            mode="approve",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="requirements",
+            comment="requirements approved",
+        )
+    )["ok"]
+
+    with bind_runtime_context(
+        workspace_path=str(workspace),
+        specContinuation={
+            "kind": "spec_approval_continuation",
+            "specId": spec_id,
+            "nextStage": "design",
+            "approvedStages": ["requirements"],
+        },
+    ):
+        rejected = _payload(
+            spec_broker.func(
+                mode="write_stage",
+                workspace_path=str(workspace),
+                stage="requirements",
+                feature_name="accidental-new-requirements",
+                content="# Requirements\n\n- REQ-001: should not create a new spec.\n",
+            )
+        )
+
+    assert rejected["ok"] is False
+    assert rejected["kind"] == "spec_stage_mismatch"
+    assert rejected["specId"] == spec_id
+    assert rejected["expectedStage"] == "design"
+    listing = _payload(spec_broker.func(mode="list", workspace_path=str(workspace)))
+    assert listing["count"] == 1
+    assert listing["specs"][0]["specId"] == spec_id
+
+
+def test_spec_broker_continuation_defaults_missing_stage_to_next_stage(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Spec continuation stage default demo",
+            feature_name="continuation-stage-default",
+            content="# Requirements\n\n- REQ-001: demo.\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(
+        spec_broker.func(
+            mode="approve",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="requirements",
+            comment="requirements approved",
+        )
+    )["ok"]
+
+    with bind_runtime_context(
+        workspace_path=str(workspace),
+        specContinuation={
+            "kind": "spec_approval_continuation",
+            "specId": spec_id,
+            "nextStage": "design",
+            "approvedStages": ["requirements"],
+        },
+    ):
+        design = _payload(
+            spec_broker.func(
+                mode="write_stage",
+                workspace_path=str(workspace),
+                content="# Design\n\n- DES-001: design generated from continuation.\n",
+            )
+        )
+
+    assert design["ok"] is True
+    assert design["specId"] == spec_id
+    assert design["stage"] == "design"
 
 
 def test_spec_broker_stage_alias_reuses_active_spec_instead_of_creating_default(tmp_path):
@@ -450,6 +703,9 @@ def test_spec_broker_write_stage_stops_live_turn_for_user_approval(monkeypatch, 
     assert payload["specId"].startswith("spec_")
     assert payload["approvalKind"] == "spec_stage_approval"
     assert payload["recommendedNextAction"].startswith("Wait for the Spec approval gate")
+    assert payload["transitionHint"]["state"] == "waiting_user_approval"
+    assert payload["transitionHint"]["nextStageAfterApproval"] == "design"
+    assert "approves requirements" in payload["transitionHint"]["ifApproved"]
 
 
 def test_spec_broker_tasks_stage_stops_live_turn_for_user_approval(monkeypatch, tmp_path):
@@ -527,3 +783,6 @@ def test_spec_broker_tasks_stage_stops_live_turn_for_user_approval(monkeypatch, 
     assert payload["approvalId"] == "approval_tasks"
     assert payload["pipelineControl"]["blockedByApproval"] == "tasks"
     assert payload["pipelineControl"]["runtimeExecutionAllowed"] is False
+    assert payload["transitionHint"]["state"] == "waiting_user_approval"
+    assert payload["transitionHint"]["nextStageAfterApproval"] == "runtime_execution"
+    assert "runtime_broker" in payload["transitionHint"]["ifApproved"]

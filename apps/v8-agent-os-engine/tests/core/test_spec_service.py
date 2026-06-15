@@ -182,6 +182,31 @@ def test_spec_service_delivered_spec_exits_active_list_but_remains_readable(tmp_
     assert brief["specId"] == delivered_id
 
 
+def test_spec_service_starting_same_feature_without_spec_id_creates_new_spec(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    first = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="第一次创建同名功能。",
+        feature_name="Spec Mode Live Counter",
+        stage="requirements",
+    )
+    second = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="第二次创建同名功能。",
+        feature_name="Spec Mode Live Counter",
+        stage="requirements",
+    )
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["specId"] != second["specId"]
+    assert Path(first["specDir"]) != Path(second["specDir"])
+    listing = spec_service.list_specs(workspace_path=str(workspace), include_archived=False)
+    assert {item["specId"] for item in listing["specs"]} == {first["specId"], second["specId"]}
+
+
 def test_spec_service_tasks_pipeline_diagnostics_flags_weak_tasks(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -209,6 +234,47 @@ def test_spec_service_tasks_pipeline_diagnostics_flags_weak_tasks(tmp_path: Path
     assert edited["tasksPipeline"]["valid"] is False
     assert edited["tasksPipeline"]["taskIds"] == ["TASK-001"]
     assert set(edited["tasksPipeline"]["missingFields"]) >= {"runtimeLane", "dependsOn", "specRefs", "expectedOutput", "acceptanceProof"}
+
+
+def test_spec_service_tasks_pipeline_accepts_chinese_runtime_channel(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个计数器。",
+        feature_name="Chinese Runtime Channel",
+        stage="requirements",
+    )
+    spec_id = created["specId"]
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="design")
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="tasks")
+
+    edited = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# Tasks\n\n"
+            "| 任务ID | 任务名称 | 执行通道 | 依赖 | 预期输出 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| TASK-001 | 编写 index.html | engineering | 无 | index.html |\n\n"
+            "### TASK-001: 编写 index.html\n"
+            "- 执行通道: engineering\n"
+            "- 依赖: 无\n"
+            "- 需求引用: REQ-001\n"
+            "- 设计引用: DES-001\n"
+            "- 预期输出路径: index.html\n"
+            "- 验收检查: 页面可用\n"
+            "- 证明方式: grep marker\n"
+        ),
+    )
+
+    assert edited["tasksPipeline"]["valid"] is True
+    assert "runtimeLane" not in edited["tasksPipeline"]["missingFields"]
 
 
 def test_spec_service_accepts_fr_nfr_requirement_ids(tmp_path: Path):
@@ -259,6 +325,29 @@ def test_spec_service_stage_edit_records_history_and_stales_downstream(tmp_path:
     approved_tasks = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
     assert approved_tasks["pipelineControl"]["runtimeExecutionAllowed"] is True
 
+    locked = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="replace_section",
+        section_ref="REQ-001",
+        content="- REQ-001: Supervisor should not rewrite approved stages directly.",
+        reason="agent_attempted_rewrite_after_approval",
+    )
+
+    assert locked["ok"] is False
+    assert locked["kind"] == "spec_stage_locked"
+    assert locked["nextStage"] == "design"
+
+    revision = spec_service.request_revision(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        comment="user requested a requirement change",
+        section_ref="REQ-001",
+    )
+    assert revision["ok"] is True
+
     edited = spec_service.edit_stage(
         workspace_path=str(workspace),
         spec_id=spec_id,
@@ -301,6 +390,26 @@ def test_spec_service_rewrite_stage_marks_downstream_stale(tmp_path: Path):
     spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
     spec_service.create_stage(workspace_path=str(workspace), user_request="修复登录异常。", spec_id=spec_id, stage="tasks")
     spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+
+    locked = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design: Login Fix\n\n## Architecture\n\n- DES-001: Supervisor cannot rewrite approved design.",
+        reason="agent_attempted_rewrite_after_approval",
+    )
+    assert locked["ok"] is False
+    assert locked["kind"] == "spec_stage_locked"
+
+    revision = spec_service.request_revision(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        comment="user requested design rework",
+        section_ref="DES-001",
+    )
+    assert revision["ok"] is True
 
     rewritten = spec_service.edit_stage(
         workspace_path=str(workspace),

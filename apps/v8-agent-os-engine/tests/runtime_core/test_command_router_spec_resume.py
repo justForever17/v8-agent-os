@@ -53,6 +53,8 @@ def test_manual_resume_builds_spec_continuation_request(monkeypatch):
     assert request.resume_value["specContinuation"]["nextStage"] == "design"
     assert request.messages
     assert "not Supervisor self-approval" in request.messages[0].content
+    assert "Engine, not the model, created and bound the canonical specId" in request.messages[0].content
+    assert "spec_broker(mode='write_stage', spec_id='spec_demo', stage='design'" in request.messages[0].content
 
 
 def test_scope_payload_preserves_original_scope_hint(monkeypatch):
@@ -120,6 +122,42 @@ def test_manual_resume_builds_spec_continuation_from_run_metadata_without_scope_
     assert request.data.spec_id == "spec_meta"
     assert request.resume_value is not None
     assert request.resume_value["specContinuation"]["workspacePath"] == "E:/Projects/test2"
+
+
+def test_spec_continuation_prompt_locks_next_stage_to_tasks():
+    content = RuntimeCommandRouter._spec_continuation_prompt(
+        {
+            "specId": "spec_tasks",
+            "approvedStages": ["requirements", "design"],
+            "nextStage": "tasks",
+            "detailRef": "spec://spec_tasks/design",
+            "runtimeExecutionAllowed": False,
+        }
+    )
+
+    assert "nextStage: tasks" in content
+    assert "previous chat history only as background" in content
+    assert "stage='tasks'" in content
+    assert "stage exactly equals nextStage" in content
+
+
+def test_spec_continuation_prompt_routes_runtime_execution_with_current_spec():
+    content = RuntimeCommandRouter._spec_continuation_prompt(
+        {
+            "specId": "spec_ready",
+            "approvedStages": ["requirements", "design", "tasks"],
+            "nextStage": "runtime_execution",
+            "detailRef": "spec://spec_ready/tasks",
+            "runtimeExecutionAllowed": True,
+        }
+    )
+
+    assert "runtime_broker(mode='route'" in content
+    assert "'specId':'spec_ready'" in content
+    assert "wait for the runtime episode handoff" in content
+    assert "Do not rewrite requirements/design/tasks" in content
+    assert "do not call memory_broker/web_broker/research_broker" in content
+    assert "no drafting detour is needed" in content
 
 
 def test_spec_approval_resume_schedules_same_run(monkeypatch):

@@ -381,21 +381,39 @@ class RuntimeCommandRouter:
                 "Spec tasks have been approved by the user. Continue by routing the approved Spec "
                 "to the appropriate runtime execution path. Do not approve anything yourself."
             )
+            required_action = (
+                "Required current tool call shape: "
+                f"runtime_broker(mode='route', runtime_kind='engineering', "
+                f"need={{'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'{spec_id}'}}). "
+                "Then wait for the runtime episode handoff. Do not rewrite requirements/design/tasks, "
+                "do not call memory_broker/web_broker/research_broker for a new task, and do not implement final files directly."
+            )
         else:
             next_instruction = (
                 f"The user has approved the prior Spec stage. Continue the Spec pipeline by preparing "
                 f"the next stage `{next_stage}`. Do not approve this next stage yourself; write it with "
                 "`spec_broker` and then wait for user approval."
             )
+            required_action = (
+                "Required current tool call shape: "
+                f"spec_broker(mode='write_stage', spec_id='{spec_id}', stage='{next_stage}', "
+                f"content='<complete {next_stage}.md markdown>'). "
+                "Do not call spec_broker for requirements/design/tasks unless the stage exactly equals nextStage."
+            )
         return (
             "[Spec Approval Continuation]\n"
             "This is a system-controlled continuation after a real user/client approval gate. "
             "It is not an ask_user answer and it is not Supervisor self-approval.\n"
+            "Engine, not the model, created and bound the canonical specId below. "
+            "Treat older user wording and previous chat history only as background; they must not override nextStage.\n"
             f"specId: {spec_id}\n"
             f"approvedStages: {approved}\n"
             f"nextStage: {next_stage}\n"
             f"detailRef: {payload.get('detailRef') or ''}\n\n"
-            f"{next_instruction}"
+            f"{next_instruction}\n"
+            f"{required_action}\n"
+            "Avoid memory/research/tool detours unless they are required to draft the current nextStage. "
+            "When nextStage is runtime_execution, no drafting detour is needed; route the approved Spec."
         )
 
     def _resume_mode_for_run(self, run_record: Dict[str, Any]) -> str | None:

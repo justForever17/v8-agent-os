@@ -302,6 +302,101 @@ def test_completion_spec_brief_uses_current_run_spec_tool_result():
     build_brief.assert_called_once_with(workspace_path="E:/Projects/test3", spec_id="spec_live")
 
 
+def test_completion_spec_brief_extracts_spec_id_from_command_tool_message():
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_brief={}, spec_id=""),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-spec",
+        active_run_id="run-spec",
+    )
+    expected = {
+        "specId": "spec_command_live",
+        "currentStage": "requirements",
+        "pipelineControl": {"blockedByApproval": "requirements", "blockedReason": "approval_required"},
+    }
+
+    with (
+        patch(
+            "runtimes.chat.runtime.db.get_runtime_events",
+            return_value=[
+                {
+                    "run_id": "run-spec",
+                    "topic": "tool.finished",
+                    "payload": {
+                        "tool": {
+                            "toolName": "spec_broker",
+                            "result": {
+                                "graph": None,
+                                "update": {
+                                    "messages": [
+                                        {
+                                            "content": (
+                                                '{\n'
+                                                '  "ok": true,\n'
+                                                '  "kind": "spec_stage_waiting_user_approval",\n'
+                                                '  "specId": "spec_command_live"\n'
+                                                '}'
+                                            )
+                                        }
+                                    ]
+                                },
+                            },
+                        }
+                    },
+                }
+            ],
+        ),
+        patch("runtimes.chat.runtime.db.get_chat_canonical_messages", return_value=[]),
+        patch("runtimes.chat.runtime.spec_service.build_brief", return_value=expected) as build_brief,
+    ):
+        brief = ChatRuntime._completion_spec_brief(chat_run)
+
+    assert brief == expected
+    build_brief.assert_called_once_with(workspace_path="E:/Projects/test3", spec_id="spec_command_live")
+
+
+def test_finalize_success_waits_for_spec_stage_approval_from_command_tool_message():
+    emitted = []
+    run_handle = SimpleNamespace(
+        complete=Mock(),
+        transition=Mock(),
+        fail=Mock(),
+    )
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=True, spec_id="", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-spec",
+        active_run_id="run-spec",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    completion_brief = {
+        "specId": "spec_command_live",
+        "currentStage": "requirements",
+        "pipelineControl": {"blockedByApproval": "requirements", "blockedReason": "approval_required"},
+    }
+
+    with (
+        patch("runtimes.chat.runtime.db.list_runtime_episodes", return_value=[]),
+        patch("runtimes.chat.runtime.db.list_runtime_episode_handoffs", return_value=[]),
+        patch.object(ChatRuntime, "_completion_final_text", return_value="需求文档已准备好，等待审批。"),
+        patch.object(ChatRuntime, "_completion_spec_brief", return_value=completion_brief),
+        patch("runtimes.chat.runtime.spec_service.mark_delivered") as mark_delivered,
+    ):
+        result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "waiting_approval"
+    run_handle.transition.assert_called_once_with(
+        "waiting_approval",
+        reason="approval_required",
+        node="completion_gate",
+    )
+    run_handle.complete.assert_not_called()
+    mark_delivered.assert_not_called()
+    assert emitted[0][0] == "run.completion.waiting_for_spec_approval"
+    assert emitted[0][1]["specId"] == "spec_command_live"
+
+
 def test_finalize_success_marks_runtime_allowed_spec_delivered():
     emitted = []
     run_handle = SimpleNamespace(

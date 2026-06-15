@@ -41,6 +41,82 @@ def _spec_broker_payload(**payload: Any) -> str:
     return json.dumps(_spec_compact_dict(payload), ensure_ascii=False, indent=2)
 
 
+def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return compact next-step guidance for the Spec state machine."""
+
+    control = dict(pipeline or {})
+    current = str(stage or control.get("currentStage") or "").strip().lower()
+    next_stage = str(control.get("nextStage") or "").strip().lower()
+    blocked = str(control.get("blockedByApproval") or "").strip().lower()
+    if blocked:
+        downstream = {
+            "requirements": "design",
+            "bugfix": "design",
+            "design": "tasks",
+            "tasks": "runtime_execution",
+        }.get(blocked, next_stage)
+        if downstream == "runtime_execution":
+            approved_action = (
+                "If the user approves tasks, route the approved Spec to runtime execution with runtime_broker(mode='route')."
+            )
+        else:
+            approved_action = (
+                f"If the user approves {blocked}, write only the next stage {downstream} with "
+                f"spec_broker(mode='write_stage', spec_id='<current specId>', stage='{downstream}', content='<complete markdown>')."
+            )
+        return {
+            "state": "waiting_user_approval",
+            "specId": spec_id,
+            "currentStage": blocked,
+            "nextStageAfterApproval": downstream,
+            "ifApproved": approved_action,
+            "ifRevisionRequested": (
+                f"Edit only the current unapproved stage {blocked} using replace_section, append_section, or rewrite_stage."
+            ),
+            "doNot": [
+                "Do not move downstream before the user/client approval event.",
+                "Do not self-approve this stage.",
+            ],
+        }
+    if bool(control.get("runtimeExecutionAllowed")) or next_stage == "runtime_execution":
+        return {
+            "state": "runtime_execution_ready",
+            "specId": spec_id,
+            "currentStage": current,
+            "nextStage": "runtime_execution",
+            "requiredNextTool": "runtime_broker",
+            "whenReady": (
+                "Call runtime_broker(mode='route', runtime_kind='engineering', "
+                "need={'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'<current specId>'}) "
+                "and wait for the runtime episode handoff."
+            ),
+            "doNot": [
+                "Do not rewrite requirements/design/tasks.",
+                "Do not implement final deliverables through spec_broker.",
+                "Do not treat this as Supervisor self-approval.",
+            ],
+        }
+    if next_stage in _SPEC_STAGES:
+        return {
+            "state": "stage_ready_to_write",
+            "specId": spec_id,
+            "currentStage": current,
+            "nextStage": next_stage,
+            "requiredNextTool": "spec_broker",
+            "whenReady": (
+                f"Write stage {next_stage} with spec_broker(mode='write_stage', spec_id='<current specId>', "
+                f"stage='{next_stage}', content='<complete markdown>')."
+            ),
+        }
+    return {
+        "state": "inspect_spec_brief",
+        "specId": spec_id,
+        "currentStage": current,
+        "nextStage": next_stage,
+        "whenReady": "Call spec_broker(mode='brief') and follow specBrief.pipelineControl.nextStage.",
+    }
+
+
 def _request_spec_stage_approval(
     *,
     session_id: str,
@@ -116,6 +192,7 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
         approvalStatus=approval.get("status") or "pending",
         detailRef=f"spec://{spec_id}/{stage}" if spec_id and stage else "",
         pipelineControl=pipeline,
+        transitionHint=_spec_transition_hint(spec_id=spec_id, stage=stage, pipeline=pipeline),
         recommendedNextAction="Wait for the Spec approval gate before continuing to the next Spec stage.",
     )
     return Command(
@@ -172,6 +249,72 @@ def _spec_tokenize_for_match(text: str) -> list[str]:
     return tokens[:80]
 
 
+def _spec_context_spec_id() -> str:
+    runtime_context = get_runtime_context() or {}
+    if not isinstance(runtime_context, dict):
+        return ""
+    continuation = runtime_context.get("specContinuation")
+    if isinstance(continuation, dict):
+        value = str(continuation.get("specId") or continuation.get("spec_id") or "").strip()
+        if value:
+            return value
+    for key in ("spec_id", "specId", "currentSpecId", "activeSpecId"):
+        value = str(runtime_context.get(key) or "").strip()
+        if value:
+            return value
+    for key in ("specBrief", "currentSpec", "activeSpec"):
+        value = runtime_context.get(key)
+        if isinstance(value, dict):
+            nested = str(value.get("specId") or value.get("spec_id") or "").strip()
+            if nested:
+                return nested
+    return ""
+
+
+def _spec_context_continuation() -> dict[str, Any]:
+    runtime_context = get_runtime_context() or {}
+    if not isinstance(runtime_context, dict):
+        return {}
+    continuation = runtime_context.get("specContinuation")
+    if isinstance(continuation, dict) and str(continuation.get("specId") or "").strip():
+        return dict(continuation)
+    return {}
+
+
+def _spec_context_next_stage() -> str:
+    continuation = _spec_context_continuation()
+    if continuation:
+        next_stage = str(continuation.get("nextStage") or "").strip().lower()
+        if next_stage in _SPEC_STAGES:
+            return next_stage
+    runtime_context = get_runtime_context() or {}
+    if not isinstance(runtime_context, dict):
+        return ""
+    for key in ("spec_next_stage", "specNextStage"):
+        value = str(runtime_context.get(key) or "").strip().lower()
+        if value in _SPEC_STAGES:
+            return value
+    return ""
+
+
+def _spec_stage_mismatch_payload(*, attempted_stage: str, expected_stage: str, spec_id: str) -> str:
+    return _spec_broker_payload(
+        ok=False,
+        kind="spec_stage_mismatch",
+        summary=(
+            f"Current Spec continuation expects stage '{expected_stage}', "
+            f"but the tool call attempted stage '{attempted_stage or 'unspecified'}'."
+        ),
+        specId=spec_id,
+        attemptedStage=attempted_stage,
+        expectedStage=expected_stage,
+        recommendedNextAction=(
+            "Call spec_broker with mode='write_stage', the current specId, "
+            f"stage='{expected_stage}', and the full Markdown draft for that stage."
+        ),
+    )
+
+
 def _spec_resolve_active_spec_id(
     *,
     workspace: str,
@@ -182,13 +325,14 @@ def _spec_resolve_active_spec_id(
     comment: str,
 ) -> str:
     explicit = str(spec_id or "").strip()
+    context_spec_id = "" if explicit else _spec_context_spec_id()
     try:
         listing = spec_service.list_specs(workspace_path=workspace, include_archived=False, limit=30)
     except Exception:
-        return explicit
+        return explicit or context_spec_id
     candidates = [item for item in list(listing.get("specs") or []) if isinstance(item, dict)]
     if not candidates:
-        return explicit
+        return explicit or context_spec_id
     feature = _spec_match_text(feature_name)
     feature_alias = _spec_strip_stage_suffix(feature)
     explicit_alias = _spec_strip_stage_suffix(explicit)
@@ -210,6 +354,13 @@ def _spec_resolve_active_spec_id(
             return str(exact_named[0].get("specId") or "").strip()
         if explicit.startswith("spec_"):
             return explicit
+
+    if context_spec_id:
+        exact_context = [item for item in candidates if str(item.get("specId") or "").strip() == context_spec_id]
+        if len(exact_context) == 1:
+            return context_spec_id
+        if context_spec_id.startswith("spec_"):
+            return context_spec_id
 
     if feature:
         exact = [
@@ -267,24 +418,36 @@ def spec_broker(
     max_chars: int = 4000,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str | Command:
-    """Controlled Spec Mode tool for writing and governing Spec documents.
+    """Controlled Spec Mode state-machine tool for `.v8/specs/<feature>/`.
 
-    Use this tool for Spec artifacts only: requirements/bugfix, design, tasks,
-    approvals, revisions, and section reads under `.v8/specs/<feature>/`.
-    It does not write final project deliverables such as SKILL.md or source files.
+    It writes and reads Spec contract documents only: `requirements.md` or
+    `bugfix.md`, then `design.md`, then `tasks.md`. It never writes final
+    deliverables such as source files, SKILL.md, images, or README.md.
 
-    Common modes:
-    - `start`, `create`, `write_stage`: create/write a stage; pass the full Markdown draft in `content`.
-    - `edit`, `write`, `update`, `rewrite_stage`: rewrite the current stage or inferred active stage.
-    - `replace_section`, `append_section`: local stage edits by stable section ID.
-    - `read`, `read_stage`, `read_section`: read the current stage/section.
-    - `approve`, `revise`, `brief`, `list`: approve, request changes, inspect status, or list Specs.
+    Engine creates the canonical `specId`; never invent one. If the current run
+    is already bound to a Spec, omit `spec_id` or reuse the provided/current
+    `specId`. When unsure, first call `spec_broker(mode='brief')` and follow
+    `specBrief.pipelineControl.nextStage`.
 
-    Stages are `requirements` or `bugfix`, then `design`, then `tasks`. The
-    `tasks` stage must be a pipeline-ready contract with TASK IDs, runtime lane,
-    dependencies, Spec refs, expected output, and acceptance/proof expectations.
-    After `tasks` is approved, route execution with `runtime_broker`; do not use
-    Spec tools or Supervisor direct file tools as the implementation path.
+    Write flow:
+    - `mode='write_stage'`, `stage='requirements'|'bugfix'|'design'|'tasks'`,
+      `content='<complete markdown document>'`.
+    - `mode='edit'|'write'|'update'|'rewrite_stage'` rewrites an existing
+      unapproved stage; `read`/`read_stage`/`read_section` read the current
+      document or section.
+    - Use `replace_section`/`append_section`/`rewrite_stage` only while the
+      current stage is still unapproved or after a real user revision gate.
+    - Approved stages are locked. If you try to rewrite an approved stage, the
+      tool returns `spec_stage_locked`; move to `nextStage` instead.
+
+    In a Spec approval continuation, the active `specId` and `nextStage` are
+    supplied by Engine. The only valid document write is for that exact
+    `nextStage`. Do not restart requirements/design/tasks from older chat text.
+
+    `tasks.md` must be pipeline-ready: TASK IDs, runtime lane, dependencies,
+    requirement/design refs, expected output paths, and acceptance/proof checks.
+    After tasks are approved, route execution with `runtime_broker`; do not
+    implement through Spec tools or Supervisor direct file writes.
     """
     normalized_mode = str(mode or "start").strip().lower()
     if normalized_mode in {"edit", "write", "update"}:
@@ -314,6 +477,21 @@ def spec_broker(
                 normalized_mode = "rewrite_stage"
         if normalized_mode in {"start", "create", "create_stage", "write_stage", "stage"}:
             requested_stage = _spec_stage_from_inputs(stage, kind)
+            continuation_next_stage = _spec_context_next_stage()
+            continuation_spec_id = _spec_context_spec_id()
+            if continuation_next_stage and continuation_spec_id:
+                if not requested_stage:
+                    requested_stage = continuation_next_stage
+                    stage = continuation_next_stage
+                    spec_id = spec_id or continuation_spec_id
+                elif requested_stage != continuation_next_stage:
+                    return _spec_stage_mismatch_payload(
+                        attempted_stage=requested_stage,
+                        expected_stage=continuation_next_stage,
+                        spec_id=continuation_spec_id,
+                    )
+                elif not spec_id:
+                    spec_id = continuation_spec_id
             requested_kind = _spec_kind_from_inputs(kind, requested_stage)
             if requested_stage in {"design", "tasks"}:
                 inferred_spec_id = _spec_resolve_active_spec_id(
@@ -344,6 +522,14 @@ def spec_broker(
                     content=str(content),
                     reason=comment or "initial_stage_markdown",
                 )
+            result.setdefault(
+                "transitionHint",
+                _spec_transition_hint(
+                    spec_id=str(result.get("specId") or spec_id or ""),
+                    stage=str(result.get("stage") or stage or ""),
+                    pipeline=result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {},
+                ),
+            )
             result.setdefault("recommendedNextAction", "Show the current stage to the user for approval before moving downstream.")
             stop_command = _maybe_stop_for_spec_stage_approval(result, tool_call_id=tool_call_id)
             if stop_command is not None:
@@ -375,6 +561,14 @@ def spec_broker(
                 stage=_spec_stage_from_inputs(stage, kind),
                 approver="user",
                 comment=comment,
+            )
+            result.setdefault(
+                "transitionHint",
+                _spec_transition_hint(
+                    spec_id=str(result.get("specId") or resolved_spec_id or ""),
+                    stage=str(result.get("stage") or ""),
+                    pipeline=result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {},
+                ),
             )
             result.setdefault("recommendedNextAction", "Create the next Spec stage, or wait for runtime execution if tasks are approved.")
             return _spec_broker_payload(**result)
@@ -426,6 +620,14 @@ def spec_broker(
                 content=edit_content,
                 section_ref=section_ref,
                 reason=comment or normalized_mode,
+            )
+            result.setdefault(
+                "transitionHint",
+                _spec_transition_hint(
+                    spec_id=str(result.get("specId") or resolved_spec_id or ""),
+                    stage=str(result.get("stage") or resolved_stage or ""),
+                    pipeline=result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {},
+                ),
             )
             result.setdefault("recommendedNextAction", "Show the edited stage to the user for approval before moving downstream.")
             stop_command = _maybe_stop_for_spec_stage_approval(result, tool_call_id=tool_call_id)
@@ -483,5 +685,6 @@ def spec_broker(
 __all__ = [
     "_spec_broker_payload",
     "_spec_broker_workspace",
+    "_spec_transition_hint",
     "spec_broker",
 ]

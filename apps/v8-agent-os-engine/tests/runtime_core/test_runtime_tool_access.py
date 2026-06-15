@@ -25,6 +25,7 @@ from core.runtime_tool_access import (
     filter_visible_tools_for_actor,
     runtime_access_from_route_context,
 )
+from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
 from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
 from graph.agent_factories import _select_contextual_subagent_native_tools
@@ -266,6 +267,93 @@ def test_runtime_broker_route_binds_session_run_root_and_workspace_before_enqueu
     assert episode["rootRunId"] == "root-route-binding"
     assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
     assert episode["inputs"]["workspace_path"] == r"E:\Projects\test7"
+
+
+def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="Build a tiny counter app.",
+        feature_name="counter-app",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: Build a browser counter app with the marker SPEC_DRY_RUN.\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="design")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: Implement the UI in index.html and document usage in README.md.\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="tasks")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# Tasks\n\n"
+            "### TASK-001: Implement counter artifact\n\n"
+            "- runtimeLane: Engineering\n"
+            "- dependsOn: []\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- inputRefs: approved requirements and design\n"
+            "- expectedOutput: index.html and README.md\n"
+            "- acceptance: index.html contains SPEC_DRY_RUN and a clickable increment button.\n"
+            "- proofRequired: report touched files and smoke verification.\n"
+        ),
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+
+    with bind_runtime_context(
+        session_id="session-spec-distribution",
+        run_id="run-spec-distribution",
+        rootRunId="root-spec-distribution",
+        workspace_path=str(workspace),
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            runtime_kind="engineering",
+            need={
+                "kind": "engineering",
+                "reason": "approved_spec_runtime_execution",
+                "specId": spec_id,
+            },
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-spec-distribution",
+        )
+
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    inputs = episode["inputs"]
+    bundle = inputs["specExecutionBundle"]
+    task = inputs["workerBriefs"][0]
+
+    assert payload["episodeKind"] == "engineering"
+    assert bundle["status"] == "ready"
+    assert bundle["specId"] == spec_id
+    assert bundle["documents"]["requirements"]["content"].count("REQ-001") == 1
+    assert bundle["documents"]["design"]["content"].count("DES-001") == 1
+    assert bundle["tasks"][0]["taskId"] == "TASK-001"
+    assert task["taskBriefId"] == "TASK-001"
+    assert task["context"]["specId"] == spec_id
+    assert task["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#TASK-001"
+    assert "REQ-001" in task["context"]["stageContent"]["requirements"]
+    assert "DES-001" in task["context"]["stageContent"]["design"]
+    assert "SPEC_DRY_RUN" in task["context"]["taskExcerpt"]
+    assert task["engineeringTaskCapsule"]["specId"] == spec_id
+    assert task["engineeringTaskCapsule"]["taskId"] == "TASK-001"
+    assert runtime_access_from_route_context(command.update["current_route_context"]) == ["delegation.recursive"]
 
 
 def test_runtime_broker_list_with_episode_intent_auto_routes_but_catalog_stays_list():

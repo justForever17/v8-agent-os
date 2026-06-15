@@ -185,6 +185,41 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("general-purpose intelligent Supervisor", system_content)
         self.assertIn("specialized strengthened runtimes", system_content)
 
+    def test_supervisor_operating_contract_is_system_owned(self):
+        with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(
+            "graph.supervisor_context._build_workspace_rules_context",
+            return_value=("", []),
+        ), patch(
+            "graph.supervisor_context._build_artifact_awareness_context",
+            return_value=("", []),
+        ), patch(
+            "graph.supervisor_context._render_engineering_context",
+            return_value=("", []),
+        ):
+            result = build_supervisor_system_content(
+                state={},
+                config=SimpleNamespace(system_prompt="Custom editable persona prompt."),
+                user_query="开启 Spec Mode 做一个项目。",
+                current_scope="global",
+                scope_chain=["global"],
+                session_id="sess_test",
+                messages=[],
+                loaded_agents=[],
+                supervisor_tools=[],
+                memory_runtime=_MemoryRuntimeStub(),
+            )
+
+        system_content = result["system_content"]
+        self.assertIn("[Supervisor Operating Contract]", system_content)
+        self.assertIn("not an all-powerful executor", system_content)
+        self.assertIn("user/client approval gates are blocking and cannot be self-approved", system_content)
+        self.assertIn("`delegation_broker` is how you dispatch subagents", system_content)
+        self.assertIn("`ask_user` asks the human for missing information", system_content)
+        self.assertLess(
+            system_content.index("Custom editable persona prompt."),
+            system_content.index("[Supervisor Operating Contract]"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

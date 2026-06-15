@@ -282,122 +282,137 @@ async def ensure_planner_plan(
     planning_error: str | None = None
     planner_repair_note: str | None = None
     planner_timeout_seconds = float(timeout_seconds or planner_model_timeout_seconds)
+    approved_spec_runtime_execution = bool(
+        getattr(chat_run.prepared, "spec_mode", False)
+        and chat_runtime._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None))
+    )
     force_deferred_fallback = bool(
         defer_on_timeout
         and chat_runtime._planner_request_requires_runtime_episode_fallback(chat_run)
     )
-    try:
-        base_planner_model = chat_runtime._create_planner_chat_model(
-            streaming=False,
-            temperature=0,
-            max_tokens=planner_model_max_tokens,
-            _request_kind="planner",
-        )
-        if planner_output_mode in {"native", "structured", "structured_output"}:
-            planner_model = base_planner_model.with_structured_output(PlannerPlanPayload)
-            raw_plan = await ainvoke_model_off_event_loop(
-                planner_model,
-                [
-                    SystemMessage(content=chat_runtime._planner_system_prompt()),
-                    HumanMessage(content=planner_user_message),
-                ],
-                timeout_seconds=planner_timeout_seconds,
+    if approved_spec_runtime_execution:
+        plan = dict(fallback_plan)
+        flags = [
+            str(item).strip()
+            for item in list(plan.get("qualityFlags") or [])
+            if str(item).strip()
+        ]
+        flags.append("approved_spec_execution_deterministic_route")
+        plan["qualityFlags"] = list(dict.fromkeys(flags))
+        plan["repairCount"] = int(plan.get("repairCount") or 0) + 1
+    else:
+        try:
+            base_planner_model = chat_runtime._create_planner_chat_model(
+                streaming=False,
+                temperature=0,
+                max_tokens=planner_model_max_tokens,
+                _request_kind="planner",
             )
-        else:
-            raw_response = await ainvoke_model_off_event_loop(
-                base_planner_model,
-                [
-                    SystemMessage(content=chat_runtime._planner_json_contract_prompt()),
-                    HumanMessage(content=planner_user_message),
-                ],
-                timeout_seconds=planner_timeout_seconds,
-            )
-            if isinstance(raw_response, (BaseModel, dict, list)):
-                raw_plan = raw_response
+            if planner_output_mode in {"native", "structured", "structured_output"}:
+                planner_model = base_planner_model.with_structured_output(PlannerPlanPayload)
+                raw_plan = await ainvoke_model_off_event_loop(
+                    planner_model,
+                    [
+                        SystemMessage(content=chat_runtime._planner_system_prompt()),
+                        HumanMessage(content=planner_user_message),
+                    ],
+                    timeout_seconds=planner_timeout_seconds,
+                )
             else:
-                raw_plan = extract_planner_payload_from_text(raw_response)
-                if raw_plan is None:
-                    raise ValueError("planner_json_no_parseable_payload")
-        plan = chat_runtime._normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
-    except asyncio.TimeoutError:
-        planning_error = f"planner_model_timeout_after_{planner_timeout_seconds:g}s"
-        if defer_on_timeout:
-            chat_run.prepared.planner_deferred = True
-            chat_run.emit_runtime_event(
-                "planner.deferred",
-                {
-                    "summary": "Planner lane deferred so Supervisor can start the first real turn.",
-                    "reason": planning_error,
-                    "timeoutSeconds": planner_timeout_seconds,
-                    "fallbackContinues": force_deferred_fallback,
-                    "messageSurfacePriority": "diagnostic",
-                    "traceRef": {"runId": chat_run.active_run_id},
-                },
-                agent_id=None,
-                node="planner_lane",
-            )
-            if not force_deferred_fallback:
-                chat_run.prepared.planner_plan = None
-                return None
-        logging.getLogger("v8chat.chat_runtime").warning(
-            "Planner lane fell back to deterministic plan for run '%s': %s",
-            chat_run.active_run_id,
-            planning_error,
-        )
-        fallback_plan = chat_runtime._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
-        plan = fallback_plan
-    except Exception as exc:
-        planning_error = compact_planner_error(exc)
-        if defer_on_timeout:
-            chat_run.prepared.planner_deferred = True
-            chat_run.emit_runtime_event(
-                "planner.deferred",
-                {
-                    "summary": "Planner lane deferred after an invalid first-turn planning attempt.",
-                    "reason": planning_error,
-                    "timeoutSeconds": planner_timeout_seconds,
-                    "fallbackContinues": force_deferred_fallback,
-                    "messageSurfacePriority": "diagnostic",
-                    "traceRef": {"runId": chat_run.active_run_id},
-                },
-                agent_id=None,
-                node="planner_lane",
-            )
-            if not force_deferred_fallback:
-                chat_run.prepared.planner_plan = None
-                return None
+                raw_response = await ainvoke_model_off_event_loop(
+                    base_planner_model,
+                    [
+                        SystemMessage(content=chat_runtime._planner_json_contract_prompt()),
+                        HumanMessage(content=planner_user_message),
+                    ],
+                    timeout_seconds=planner_timeout_seconds,
+                )
+                if isinstance(raw_response, (BaseModel, dict, list)):
+                    raw_plan = raw_response
+                else:
+                    raw_plan = extract_planner_payload_from_text(raw_response)
+                    if raw_plan is None:
+                        raise ValueError("planner_json_no_parseable_payload")
+            plan = chat_runtime._normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
+        except asyncio.TimeoutError:
+            planning_error = f"planner_model_timeout_after_{planner_timeout_seconds:g}s"
+            if defer_on_timeout:
+                chat_run.prepared.planner_deferred = True
+                chat_run.emit_runtime_event(
+                    "planner.deferred",
+                    {
+                        "summary": "Planner lane deferred so Supervisor can start the first real turn.",
+                        "reason": planning_error,
+                        "timeoutSeconds": planner_timeout_seconds,
+                        "fallbackContinues": force_deferred_fallback,
+                        "messageSurfacePriority": "diagnostic",
+                        "traceRef": {"runId": chat_run.active_run_id},
+                    },
+                    agent_id=None,
+                    node="planner_lane",
+                )
+                if not force_deferred_fallback:
+                    chat_run.prepared.planner_plan = None
+                    return None
             logging.getLogger("v8chat.chat_runtime").warning(
-                "Planner lane used deterministic deferred fallback for run '%s': %s",
+                "Planner lane fell back to deterministic plan for run '%s': %s",
                 chat_run.active_run_id,
                 planning_error,
             )
             fallback_plan = chat_runtime._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
             plan = fallback_plan
-        else:
-            repaired_plan, repair_error = await try_repair_planner_plan_with_plain_json(
-                chat_runtime,
-                planner_user_message=planner_user_message,
-                fallback_plan=fallback_plan,
-                structured_error=planning_error,
-            )
-            if repaired_plan is not None:
-                planner_repair_note = "plain_json_repair_used"
-                planning_error = None
-                plan = repaired_plan
-                logging.getLogger("v8chat.chat_runtime").info(
-                    "Planner lane repaired structured output for run '%s' via plain JSON retry.",
-                    chat_run.active_run_id,
+        except Exception as exc:
+            planning_error = compact_planner_error(exc)
+            if defer_on_timeout:
+                chat_run.prepared.planner_deferred = True
+                chat_run.emit_runtime_event(
+                    "planner.deferred",
+                    {
+                        "summary": "Planner lane deferred after an invalid first-turn planning attempt.",
+                        "reason": planning_error,
+                        "timeoutSeconds": planner_timeout_seconds,
+                        "fallbackContinues": force_deferred_fallback,
+                        "messageSurfacePriority": "diagnostic",
+                        "traceRef": {"runId": chat_run.active_run_id},
+                    },
+                    agent_id=None,
+                    node="planner_lane",
                 )
-            else:
-                if repair_error:
-                    planning_error = compact_planner_error(f"{planning_error}; {repair_error}")
+                if not force_deferred_fallback:
+                    chat_run.prepared.planner_plan = None
+                    return None
                 logging.getLogger("v8chat.chat_runtime").warning(
-                    "Planner lane fell back to deterministic plan for run '%s': %s",
+                    "Planner lane used deterministic deferred fallback for run '%s': %s",
                     chat_run.active_run_id,
                     planning_error,
                 )
                 fallback_plan = chat_runtime._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
                 plan = fallback_plan
+            else:
+                repaired_plan, repair_error = await try_repair_planner_plan_with_plain_json(
+                    chat_runtime,
+                    planner_user_message=planner_user_message,
+                    fallback_plan=fallback_plan,
+                    structured_error=planning_error,
+                )
+                if repaired_plan is not None:
+                    planner_repair_note = "plain_json_repair_used"
+                    planning_error = None
+                    plan = repaired_plan
+                    logging.getLogger("v8chat.chat_runtime").info(
+                        "Planner lane repaired structured output for run '%s' via plain JSON retry.",
+                        chat_run.active_run_id,
+                    )
+                else:
+                    if repair_error:
+                        planning_error = compact_planner_error(f"{planning_error}; {repair_error}")
+                    logging.getLogger("v8chat.chat_runtime").warning(
+                        "Planner lane fell back to deterministic plan for run '%s': %s",
+                        chat_run.active_run_id,
+                        planning_error,
+                    )
+                    fallback_plan = chat_runtime._fallback_planner_plan(chat_run=chat_run, reason=planning_error)
+                    plan = fallback_plan
 
     plan = chat_runtime._validate_and_repair_planner_plan(plan, fallback_plan=fallback_plan)
     plan = chat_runtime._verify_and_repair_planner_contract(plan, fallback_plan=fallback_plan, chat_run=chat_run)

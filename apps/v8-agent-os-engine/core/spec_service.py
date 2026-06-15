@@ -232,7 +232,7 @@ acceptance/proof expectations.
 
 
 _TASKS_PIPELINE_REQUIREMENTS = {
-    "runtimeLane": ("runtime lane", "runtimelane", "runtime泳道", "执行泳道", "执行方"),
+    "runtimeLane": ("runtime lane", "runtimelane", "runtime泳道", "执行泳道", "执行通道", "执行频道", "执行方"),
     "dependsOn": ("depends on", "dependson", "dependsOn", "依赖"),
     "specRefs": ("spec refs", "specrefs", "specrefs", "specId", "spec ids", "需求", "设计", "引用"),
     "expectedOutput": ("expected output", "expectedoutput", "output", "输出", "产物"),
@@ -285,6 +285,24 @@ class SpecService:
             if existing:
                 slug = existing.name
         return SpecPaths(workspace=workspace, root=root, slug=slug, spec_dir=root / slug, manifest=root / slug / "spec.json")
+
+    def _new_spec_paths(self, workspace_path: str, *, feature_name: str) -> SpecPaths:
+        base = self.resolve_paths(workspace_path, feature_name=feature_name)
+        if not base.manifest.exists():
+            return base
+        for _ in range(20):
+            suffix = uuid.uuid4().hex[:8]
+            slug = _slugify(f"{feature_name}-{suffix}")
+            candidate = SpecPaths(
+                workspace=base.workspace,
+                root=base.root,
+                slug=slug,
+                spec_dir=base.root / slug,
+                manifest=base.root / slug / "spec.json",
+            )
+            if not candidate.manifest.exists():
+                return candidate
+        raise RuntimeError("spec_unique_slug_exhausted")
 
     def _find_by_spec_id(self, root: Path, spec_id: str) -> Path | None:
         if not root.exists():
@@ -485,6 +503,32 @@ class SpecService:
             stale[stage]["stale"] = False
             stale[stage]["clearedAt"] = _now_iso()
 
+    def _stage_is_approved(self, manifest: dict[str, Any], stage: str) -> bool:
+        approval = dict(manifest.get("approvals") or {}).get(stage)
+        return isinstance(approval, dict) and bool(approval.get("approved"))
+
+    def _approved_stage_locked_payload(self, manifest: dict[str, Any], *, workspace_path: str, stage: str, action: str) -> dict[str, Any]:
+        spec_id = str(manifest.get("specId") or "")
+        next_stage = self.next_stage(manifest, stage)
+        return {
+            "ok": False,
+            "kind": "spec_stage_locked",
+            "stage": stage,
+            "action": action,
+            "specId": spec_id,
+            "nextStage": next_stage,
+            "summary": (
+                f"Spec stage '{stage}' is already approved and locked. "
+                "Do not rewrite or edit an approved stage in this run; continue to the next stage."
+            ),
+            "recommendedNextAction": (
+                f"Use spec_broker(mode='write_stage', stage='{next_stage}', spec_id='{spec_id}', content='...') "
+                "when nextStage is a document stage, or route runtime execution when nextStage is runtime_execution."
+            ),
+            "pipelineControl": self._pipeline_control(manifest),
+            "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
+        }
+
     def _ensure_manifest(self, paths: SpecPaths, *, feature_name: str, kind: str, user_request: str) -> dict[str, Any]:
         manifest = self._load_manifest(paths)
         if not manifest:
@@ -538,7 +582,10 @@ class SpecService:
             raise ValueError(f"unsupported_spec_stage:{normalized_stage}")
         title_source = feature_name or (request_text.splitlines()[0] if request_text else "V8OS Spec")
         title = _safe_text(title_source, limit=80)
-        paths = self.resolve_paths(workspace_path, feature_name=title, spec_id=spec_id)
+        if not spec_id and normalized_stage == initial_stage:
+            paths = self._new_spec_paths(workspace_path, feature_name=title)
+        else:
+            paths = self.resolve_paths(workspace_path, feature_name=title, spec_id=spec_id)
         manifest = self._ensure_manifest(paths, feature_name=title, kind=inferred_kind, user_request=request_text)
         kind_value = str(manifest.get("kind") or inferred_kind)
         dependency = _stage_dependency(normalized_stage, kind_value)
@@ -552,6 +599,13 @@ class SpecService:
                 "pipelineControl": self._pipeline_control(manifest),
                 "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=str(manifest.get("specId") or "")),
             }
+        if self._stage_is_approved(manifest, normalized_stage):
+            return self._approved_stage_locked_payload(
+                manifest,
+                workspace_path=workspace_path,
+                stage=normalized_stage,
+                action="create_stage" if not overwrite else "overwrite_stage",
+            )
         filename = SPEC_DOCS[normalized_stage]
         doc_path = paths.spec_dir / filename
         previous_content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
@@ -801,6 +855,13 @@ class SpecService:
         filename = SPEC_DOCS.get(normalized_stage)
         if not filename:
             raise ValueError(f"unsupported_spec_stage:{normalized_stage}")
+        if self._stage_is_approved(manifest, normalized_stage):
+            return self._approved_stage_locked_payload(
+                manifest,
+                workspace_path=workspace_path,
+                stage=normalized_stage,
+                action=str(action or "edit_stage"),
+            )
         doc_path = paths.spec_dir / filename
         if not doc_path.exists():
             raise ValueError(f"spec_document_not_found:{normalized_stage}")

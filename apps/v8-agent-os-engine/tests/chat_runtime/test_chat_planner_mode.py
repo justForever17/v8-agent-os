@@ -152,6 +152,45 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(task_context["specBrief"]["specId"], "spec_ready")
         self.assertIn("tasks", task_context["specBrief"]["documents"])
 
+    def test_spec_mode_current_spec_brief_replaces_stale_task_context(self):
+        plan = {
+            "planId": "plan-spec-current",
+            "executionStrategy": "delegate",
+            "capabilityPlan": [{"kind": "engineering", "taskBriefId": "task-1", "reason": "implement"}],
+            "taskBriefs": [
+                {
+                    "taskBriefId": "task-1",
+                    "goal": "Implement current approved spec.",
+                    "context": {"specBrief": {"specId": "spec_old", "documents": {"tasks": {"ids": ["TASK-OLD"]}}}},
+                }
+            ],
+        }
+
+        repaired = verify_and_repair_planner_contract(
+            plan,
+            fallback_plan=plan,
+            task_shape_hint={
+                "specMode": True,
+                "specId": "spec_current",
+                "specBrief": {
+                    "specId": "spec_current",
+                    "featureName": "Current Spec",
+                    "approvedStages": ["requirements", "design", "tasks"],
+                    "pipelineControl": {"runtimeExecutionAllowed": True},
+                    "documents": {
+                        "requirements": {"detailRef": "spec://spec_current/requirements", "ids": ["REQ-001"], "version": 1, "status": "approved"},
+                        "design": {"detailRef": "spec://spec_current/design", "ids": ["DES-001"], "version": 1, "status": "approved"},
+                        "tasks": {"detailRef": "spec://spec_current/tasks", "ids": ["TASK-001"], "version": 1, "status": "approved"},
+                    },
+                },
+            },
+        )
+
+        task_context = repaired["taskBriefs"][0]["context"]
+        self.assertEqual(task_context["specBrief"]["specId"], "spec_current")
+        self.assertEqual(task_context["specBrief"]["documents"]["tasks"]["ids"], ["TASK-001"])
+        self.assertNotIn("spec_old", str(task_context))
+
     def test_supervisor_request_model_override_is_explicit_and_non_default(self):
         self.assertTrue(
             _is_request_model_override(

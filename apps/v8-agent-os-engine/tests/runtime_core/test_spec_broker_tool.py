@@ -1,6 +1,7 @@
 import json
 
 from core.tools.native.spec import spec_broker
+from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
 from langgraph.types import Command
 
@@ -140,6 +141,52 @@ def test_spec_broker_list_and_missing_spec_id_use_latest_active_spec(tmp_path):
             workspace_path=str(workspace),
             stage="requirements",
             comment="approve latest active spec",
+        )
+    )
+
+    assert approved["ok"] is True
+    assert approved["specId"] == second_id
+
+
+def test_spec_broker_default_resolution_ignores_delivered_specs(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    first = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="同题旧 Spec",
+            feature_name="duplicate-topic",
+            content="# Requirements\n\n- REQ-001: old.\n",
+        )
+    )
+    second = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="同题当前 Spec",
+            feature_name="duplicate-topic-current",
+            content="# Requirements\n\n- REQ-001: current.\n",
+        )
+    )
+    assert first["ok"] and second["ok"]
+    first_id = first["specId"]
+    second_id = second["specId"]
+
+    # Mark the old spec delivered after the current one was created. Even if
+    # its updatedAt becomes newer, it must not be an automatic active candidate.
+    spec_service.mark_delivered(workspace_path=str(workspace), spec_id=first_id, run_id="run-old")
+
+    listing = _payload(spec_broker.func(mode="list", workspace_path=str(workspace)))
+    assert [item["specId"] for item in listing["specs"]] == [second_id]
+
+    approved = _payload(
+        spec_broker.func(
+            mode="approve",
+            workspace_path=str(workspace),
+            stage="requirements",
+            comment="approve the current active spec",
         )
     )
 

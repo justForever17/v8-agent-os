@@ -8718,12 +8718,13 @@ class ChatRuntime:
             for episode in episodes
             if str(episode.get("episodeId") or episode.get("id") or "").strip()
         }
+        completion_spec_brief = self._completion_spec_brief(chat_run) if getattr(chat_run.prepared, "spec_mode", False) else None
         decision = evaluate_supervisor_completion(
             episodes=episodes,
             handoffs_by_episode=handoffs_by_episode,
             final_text=self._completion_final_text(chat_run, stream_state),
             spec_mode=bool(getattr(chat_run.prepared, "spec_mode", False)),
-            spec_brief=self._completion_spec_brief(chat_run) if getattr(chat_run.prepared, "spec_mode", False) else None,
+            spec_brief=completion_spec_brief,
         )
         if decision.action in {"waiting_input", "waiting_approval"}:
             wait_status = "waiting_approval" if decision.action == "waiting_approval" else "waiting_input"
@@ -8754,6 +8755,35 @@ class ChatRuntime:
                 "reason": decision.reason,
                 "run_id": chat_run.active_run_id,
             }
+        if getattr(chat_run.prepared, "spec_mode", False):
+            brief = dict(completion_spec_brief or {})
+            pipeline = brief.get("pipelineControl") if isinstance(brief.get("pipelineControl"), dict) else {}
+            spec_id = str(brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
+            workspace_path = str(getattr(chat_run.scope_result.binding, "workspace_path", "") or "").strip()
+            if spec_id and workspace_path and bool(pipeline.get("runtimeExecutionAllowed")):
+                try:
+                    delivered = spec_service.mark_delivered(
+                        workspace_path=workspace_path,
+                        spec_id=spec_id,
+                        run_id=chat_run.active_run_id,
+                        session_id=chat_run.session_id,
+                    )
+                    chat_run.emit_runtime_event(
+                        "spec.lifecycle.delivered",
+                        {
+                            "specId": spec_id,
+                            "lifecycle": delivered.get("lifecycle"),
+                            "deliveredAt": delivered.get("deliveredAt"),
+                        },
+                        agent_id=None,
+                        node="completion_gate",
+                    )
+                except Exception:
+                    logging.getLogger("v8chat.chat_runtime").exception(
+                        "Failed to mark delivered Spec '%s' for run '%s'",
+                        spec_id,
+                        chat_run.active_run_id,
+                    )
         chat_run.run_handle.complete(reason="stream_finished", node="run_manager")
         return {"type": "done", "status": "finished", "run_id": chat_run.active_run_id}
 

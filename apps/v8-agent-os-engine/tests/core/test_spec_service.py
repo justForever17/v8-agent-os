@@ -144,6 +144,44 @@ def test_spec_service_tasks_template_is_pipeline_ready(tmp_path: Path):
     assert "runtimeLane:" in content
 
 
+def test_spec_service_delivered_spec_exits_active_list_but_remains_readable(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    first = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="生成第一份已交付 Spec。",
+        feature_name="Delivered Spec",
+        stage="requirements",
+    )
+    delivered_id = first["specId"]
+    delivered = spec_service.mark_delivered(
+        workspace_path=str(workspace),
+        spec_id=delivered_id,
+        run_id="run-delivered",
+        session_id="session-delivered",
+    )
+    assert delivered["ok"] is True
+    assert delivered["lifecycle"] == "delivered"
+
+    second = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="生成第二份当前 Spec。",
+        feature_name="Current Spec",
+        stage="requirements",
+    )
+    current_id = second["specId"]
+
+    active_listing = spec_service.list_specs(workspace_path=str(workspace), include_archived=False)
+    assert [item["specId"] for item in active_listing["specs"]] == [current_id]
+
+    full_listing = spec_service.list_specs(workspace_path=str(workspace), include_archived=True)
+    assert {item["specId"] for item in full_listing["specs"]} == {delivered_id, current_id}
+    brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=delivered_id)
+    assert brief["lifecycle"] == "delivered"
+    assert brief["specId"] == delivered_id
+
+
 def test_spec_service_tasks_pipeline_diagnostics_flags_weak_tasks(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

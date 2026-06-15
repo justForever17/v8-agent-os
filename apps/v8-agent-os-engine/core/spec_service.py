@@ -20,6 +20,8 @@ SPEC_DOCS = {
 SPEC_STAGE_ORDER = ("requirements", "bugfix", "design", "tasks")
 SPEC_LIFECYCLE_ACTIVE = "active"
 SPEC_LIFECYCLE_ARCHIVED = "archived"
+SPEC_LIFECYCLE_DELIVERED = "delivered"
+_INACTIVE_SPEC_LIFECYCLES = {SPEC_LIFECYCLE_ARCHIVED, SPEC_LIFECYCLE_DELIVERED}
 
 
 def _stage_order(kind: str) -> tuple[str, ...]:
@@ -363,7 +365,7 @@ class SpecService:
                 if not manifest:
                     continue
                 lifecycle = str(manifest.get("lifecycle") or SPEC_LIFECYCLE_ACTIVE)
-                if lifecycle == SPEC_LIFECYCLE_ARCHIVED and not include_archived:
+                if lifecycle in _INACTIVE_SPEC_LIFECYCLES and not include_archived:
                     continue
                 specs.append(self._manifest_summary(paths, manifest))
         specs.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
@@ -744,6 +746,38 @@ class SpecService:
             "stage": normalized_stage,
             "specId": spec_id,
             "summary": "Revision comment recorded; downstream stages remain blocked until approval.",
+            "pipelineControl": self._pipeline_control(manifest),
+            "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
+        }
+
+    def mark_delivered(
+        self,
+        *,
+        workspace_path: str,
+        spec_id: str,
+        reason: str = "runtime_delivery_completed",
+        run_id: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+        manifest = self._load_manifest(paths)
+        if not manifest:
+            raise ValueError(f"spec_not_found:{spec_id}")
+        now = _now_iso()
+        manifest["lifecycle"] = SPEC_LIFECYCLE_DELIVERED
+        manifest["deliveredAt"] = now
+        manifest["deliveryReason"] = _safe_text(reason, limit=500)
+        if run_id:
+            manifest["deliveryRunId"] = _safe_text(run_id, limit=160)
+        if session_id:
+            manifest["deliverySessionId"] = _safe_text(session_id, limit=160)
+        self._write_manifest(paths, manifest)
+        return {
+            "ok": True,
+            "kind": "spec_delivered",
+            "specId": spec_id,
+            "lifecycle": SPEC_LIFECYCLE_DELIVERED,
+            "deliveredAt": now,
             "pipelineControl": self._pipeline_control(manifest),
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
         }

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
@@ -300,3 +300,48 @@ def test_completion_spec_brief_uses_current_run_spec_tool_result():
 
     assert brief == expected
     build_brief.assert_called_once_with(workspace_path="E:/Projects/test3", spec_id="spec_live")
+
+
+def test_finalize_success_marks_runtime_allowed_spec_delivered():
+    emitted = []
+    run_handle = SimpleNamespace(
+        complete=Mock(),
+        transition=Mock(),
+        fail=Mock(),
+    )
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=True, spec_id="spec_ready", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-spec",
+        active_run_id="run-spec",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    completion_brief = {
+        "specId": "spec_ready",
+        "currentStage": "tasks",
+        "pipelineControl": {"runtimeExecutionAllowed": True},
+    }
+
+    with (
+        patch("runtimes.chat.runtime.db.list_runtime_episodes", return_value=[]),
+        patch("runtimes.chat.runtime.db.list_runtime_episode_handoffs", return_value=[]),
+        patch.object(ChatRuntime, "_completion_final_text", return_value="交付完成。"),
+        patch.object(ChatRuntime, "_completion_spec_brief", return_value=completion_brief),
+        patch(
+            "runtimes.chat.runtime.spec_service.mark_delivered",
+            return_value={"ok": True, "lifecycle": "delivered", "deliveredAt": "2026-06-15T00:00:00Z"},
+        ) as mark_delivered,
+    ):
+        result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "finished"
+    mark_delivered.assert_called_once_with(
+        workspace_path="E:/Projects/test3",
+        spec_id="spec_ready",
+        run_id="run-spec",
+        session_id="session-spec",
+    )
+    run_handle.complete.assert_called_once_with(reason="stream_finished", node="run_manager")
+    assert emitted[0][0] == "spec.lifecycle.delivered"
+    assert emitted[0][1]["specId"] == "spec_ready"

@@ -182,6 +182,8 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("[Execution Hints]", system_content)
         self.assertIn("[/Execution Hints]", system_content)
         self.assertLess(system_content.index("[Execution Hints]"), system_content.index("[/Execution Hints]"))
+        self.assertIn("general-purpose intelligent Supervisor", system_content)
+        self.assertIn("specialized strengthened runtimes", system_content)
 
 
 if __name__ == "__main__":

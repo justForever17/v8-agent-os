@@ -36,6 +36,7 @@ import {
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
+import { SupervisorActivitySummary } from "@/src/components/chat/SupervisorActivitySummary";
 import {
     type PhoneRuntimeStageActivity,
 } from "@/src/lib/runtime-stage";
@@ -126,6 +127,277 @@ function hasToolCallId(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode 
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
 }
 
+type Translate = (key: string, params?: Record<string, string | number>) => string;
+
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function compactTraceText(value: unknown, maxLength = 92) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+        return "";
+    }
+    return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 3))}...` : text;
+}
+
+function toPositiveNumber(value: unknown) {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function readStringField(value: unknown, keys: string[]) {
+    const record = asRecord(value);
+    for (const key of keys) {
+        const candidate = record[key];
+        if (typeof candidate === "string" && candidate.trim()) {
+            return candidate.trim();
+        }
+    }
+    return "";
+}
+
+function getToolDisplayName(node: PhoneUiExecutionNode) {
+    return String(
+        node.toolName
+        || node.data?.toolName
+        || node.data?.tool_name
+        || node.label
+        || node.topic
+        || "",
+    ).trim();
+}
+
+function isCommandToolName(toolName: string) {
+    return /(shell|terminal|command|cmd|bash|powershell|process|exec|read_thread_terminal)/i.test(toolName);
+}
+
+function isFileEditToolName(toolName: string) {
+    return /(apply_patch|write|edit|replace|create_file|update_file|delete_file|move_file|filesystem|file_write)/i.test(toolName);
+}
+
+function extractToolInput(node: PhoneUiExecutionNode) {
+    if (node.args !== undefined && node.args !== null) {
+        return node.args;
+    }
+    const data = asRecord(node.data);
+    return data.args ?? data.input ?? data.payload ?? data;
+}
+
+function extractCommandPreview(node: PhoneUiExecutionNode) {
+    const input = extractToolInput(node);
+    const direct = readStringField(input, ["command", "cmd", "script", "input", "code", "text"]);
+    if (direct) {
+        return compactTraceText(direct);
+    }
+    if (typeof input === "string") {
+        return compactTraceText(input);
+    }
+    return compactTraceText(getToolDisplayName(node));
+}
+
+function formatTraceDuration(node: PhoneUiExecutionNode, resultNode?: PhoneUiExecutionNode) {
+    const data = asRecord(node.data);
+    const resultData = asRecord(resultNode?.data);
+    const ms = toPositiveNumber(
+        data.durationMs
+        || data.duration_ms
+        || resultData.durationMs
+        || resultData.duration_ms
+        || resultData.elapsedMs
+        || resultData.elapsed_ms,
+    );
+    const seconds = toPositiveNumber(
+        data.durationSeconds
+        || data.duration_seconds
+        || data.elapsedSeconds
+        || data.elapsed_seconds
+        || resultData.durationSeconds
+        || resultData.duration_seconds
+        || resultData.elapsedSeconds
+        || resultData.elapsed_seconds,
+    ) || (ms > 0 ? ms / 1000 : 0);
+    if (!seconds) {
+        return "";
+    }
+    if (seconds < 1) {
+        return `${Math.max(1, Math.round(seconds * 1000))}ms`;
+    }
+    if (seconds < 10) {
+        return `${Number(seconds.toFixed(1))}s`;
+    }
+    return `${Math.round(seconds)}s`;
+}
+
+function looksLikeFilePath(value: string) {
+    const text = value.trim();
+    if (!text || text.length > 260) {
+        return false;
+    }
+    return /[\\/]/.test(text) || /\.[a-z0-9]{1,8}$/i.test(text);
+}
+
+function addPatchFilePaths(text: string, paths: Set<string>) {
+    const patchPathPattern = /^(?:\*\*\* (?:Add|Update|Delete) File:|--- a\/|\+\+\+ b\/)\s*(.+)$/gmi;
+    let match = patchPathPattern.exec(text);
+    while (match) {
+        const candidate = match[1]?.trim();
+        if (candidate && !candidate.startsWith("/dev/null") && looksLikeFilePath(candidate)) {
+            paths.add(candidate);
+        }
+        match = patchPathPattern.exec(text);
+    }
+}
+
+function collectFilePaths(value: unknown, paths: Set<string>, depth = 0) {
+    if (depth > 4 || value === null || value === undefined) {
+        return;
+    }
+    if (typeof value === "string") {
+        addPatchFilePaths(value, paths);
+        if (looksLikeFilePath(value)) {
+            paths.add(value.trim());
+        }
+        return;
+    }
+    if (Array.isArray(value)) {
+        value.forEach((item) => collectFilePaths(item, paths, depth + 1));
+        return;
+    }
+    const record = asRecord(value);
+    Object.entries(record).forEach(([key, item]) => {
+        const normalizedKey = key.toLowerCase();
+        if (typeof item === "string") {
+            addPatchFilePaths(item, paths);
+            if (
+                /(path|file|filename|target|source|destination|workspace|canonical)/.test(normalizedKey)
+                && looksLikeFilePath(item)
+            ) {
+                paths.add(item.trim());
+            }
+            return;
+        }
+        collectFilePaths(item, paths, depth + 1);
+    });
+}
+
+function buildTraceGroupSummary(
+    nodes: PhoneUiTimelineNode[],
+    resultNodesByToolCallId: Map<string, PhoneUiExecutionNode>,
+    t: Translate,
+) {
+    const executionNodes = nodes.filter(isExecutionNode);
+    const toolCalls = executionNodes.filter((node) => node.executionType === "tool_call");
+    const reasoningCount = executionNodes.filter((node) => node.executionType === "reasoning").length;
+    const runtimeProgressCount = executionNodes.filter((node) => node.executionType === "runtime_progress").length;
+    const commandCount = toolCalls.filter((node) => isCommandToolName(getToolDisplayName(node))).length;
+    const editedFilePaths = new Set<string>();
+
+    toolCalls.forEach((node) => {
+        const toolName = getToolDisplayName(node);
+        if (!isFileEditToolName(toolName)) {
+            return;
+        }
+        collectFilePaths(extractToolInput(node), editedFilePaths);
+        if (hasToolCallId(node)) {
+            const resultNode = resultNodesByToolCallId.get(node.toolCallId.trim());
+            collectFilePaths(resultNode?.result ?? resultNode?.data, editedFilePaths);
+        }
+    });
+
+    const toolCount = toolCalls.length;
+    const editedFileCount = editedFilePaths.size;
+    const previewLines: string[] = [];
+    const pushPreview = (line: string) => {
+        const compacted = compactTraceText(line, 110);
+        if (compacted && !previewLines.includes(compacted)) {
+            previewLines.push(compacted);
+        }
+    };
+
+    toolCalls.forEach((node) => {
+        if (previewLines.length >= 3) {
+            return;
+        }
+        const toolName = getToolDisplayName(node);
+        if (isCommandToolName(toolName)) {
+            const command = extractCommandPreview(node);
+            const resultNode = hasToolCallId(node) ? resultNodesByToolCallId.get(node.toolCallId.trim()) : undefined;
+            const duration = formatTraceDuration(node, resultNode);
+            pushPreview(duration
+                ? t("src.components.chat.messagebubble.trace_preview_ran_command_with_duration", { command, duration })
+                : t("src.components.chat.messagebubble.trace_preview_ran_command", { command }));
+            return;
+        }
+        pushPreview(t("src.components.chat.messagebubble.trace_preview_called_tool", {
+            tool: compactTraceText(toolName || t("src.components.chat.messagebubble.tool"), 64),
+        }));
+    });
+
+    if (previewLines.length === 0 && reasoningCount > 0) {
+        const reasoningNode = executionNodes.find((node) => node.executionType === "reasoning");
+        pushPreview(compactTraceText(
+            reasoningNode?.content
+            || reasoningNode?.label
+            || reasoningNode?.topic
+            || t("src.components.chat.messagebubble.trace_preview_thought_complete"),
+        ));
+    }
+
+    if (previewLines.length === 0 && runtimeProgressCount > 0) {
+        const progressNode = executionNodes.find((node) => node.executionType === "runtime_progress");
+        pushPreview(compactTraceText(
+            progressNode?.label
+            || progressNode?.topic
+            || t("src.components.chat.messagebubble.trace_runtime_updated"),
+        ));
+    }
+
+    let title = "";
+    if (reasoningCount > 0 && toolCount > 0 && editedFileCount === 0) {
+        title = commandCount > 0 && commandCount === toolCount
+            ? t("src.components.chat.messagebubble.trace_thought_and_ran_commands", { count: commandCount })
+            : t("src.components.chat.messagebubble.trace_thought_and_called_tools", { count: toolCount });
+    } else {
+        const parts: string[] = [];
+        if (editedFileCount > 0) {
+            parts.push(t("src.components.chat.messagebubble.trace_edited_files", { count: editedFileCount }));
+        }
+        if (toolCount > 0) {
+            parts.push(commandCount > 0 && commandCount === toolCount
+                ? t("src.components.chat.messagebubble.trace_ran_commands", { count: commandCount })
+                : t("src.components.chat.messagebubble.trace_called_tools", { count: toolCount }));
+        }
+        if (parts.length > 0) {
+            title = parts.join("  ");
+        } else if (reasoningCount > 0) {
+            title = t("src.components.chat.messagebubble.trace_thought_complete");
+        } else if (runtimeProgressCount > 0) {
+            title = t("src.components.chat.messagebubble.trace_runtime_updated");
+        } else {
+            title = t("src.components.chat.messagebubble.trace_activity_updated");
+        }
+    }
+
+    const iconName = editedFileCount > 0
+        ? "file-document-edit-outline"
+        : commandCount > 0
+            ? "console-line"
+            : toolCount > 0
+                ? "tools"
+                : reasoningCount > 0
+                    ? "brain"
+                    : "progress-clock";
+
+    return {
+        title,
+        iconName,
+        previewLines,
+    };
+}
+
 function TraceGroup({
     id,
     nodes,
@@ -144,6 +416,7 @@ function TraceGroup({
     expanded,
     onToggle,
     label,
+    t,
     fallbackTitle,
     fallbackDescription,
 }: {
@@ -164,32 +437,23 @@ function TraceGroup({
     expanded?: boolean;
     onToggle: () => void;
     label: string;
+    t: Translate;
     fallbackTitle: string;
     fallbackDescription: string;
 }) {
     const isExpanded = expanded ?? !collapsedByDefault;
+    const summary = buildTraceGroupSummary(nodes, resultNodesByToolCallId, t);
 
     return (
         <View style={styles.traceGroup}>
-            <Pressable
-                accessibilityRole="button"
+            <SupervisorActivitySummary
+                title={summary.title}
+                iconName={summary.iconName}
+                expanded={isExpanded}
+                previewLines={summary.previewLines}
                 accessibilityLabel={label}
-                style={[
-                    styles.traceToggle,
-                    isExpanded && styles.traceToggleExpanded,
-                ]}
                 onPress={onToggle}
-            >
-                <MaterialCommunityIcons
-                    name="chevron-right"
-                    size={15}
-                    color={textColor}
-                    style={[
-                        styles.traceToggleIcon,
-                        { transform: [{ rotate: isExpanded ? "90deg" : "0deg" }] },
-                    ]}
-                />
-            </Pressable>
+            />
             {isExpanded ? (
                 <View style={styles.traceGroupContent}>
                     {nodes.map((node, index) => (
@@ -705,6 +969,16 @@ export const MessageBubble = memo(function MessageBubble({
         }
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
+    const hasAssistantNarrativeText = useMemo(() => {
+        if (hasStructuredNodes) {
+            return renderableNodes.some((node) => (
+                node.kind === "narrative"
+                && parsePhoneContentBlocks(String(node.content || "")).some((block) => block.type !== "voice" && block.content.trim())
+            ));
+        }
+        return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
+    }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
+    const showInlineActivityDots = assistantActive && hasStructuredNodes && !hasAssistantNarrativeText;
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText;
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
@@ -1047,6 +1321,7 @@ export const MessageBubble = memo(function MessageBubble({
                                                 label={expanded ?? !segment.collapsedByDefault
                                                     ? t("src.components.chat.messagebubble.collapse_trace_group")
                                                     : t("src.components.chat.messagebubble.expand_trace_group")}
+                                                t={t}
                                                 fallbackTitle={t("src.components.chat.messagebubble.node_render_failed")}
                                                 fallbackDescription={t("src.components.chat.messagebubble.this_node_has_been_downgraded_so_the_rest_of_the_reply_remains_visible")}
                                             />
@@ -1102,6 +1377,11 @@ export const MessageBubble = memo(function MessageBubble({
                                         </NodeRenderBoundary>
                                     );
                                 })
+                            ) : null}
+                            {showInlineActivityDots ? (
+                                <View style={styles.assistantInlineActivity}>
+                                    <AssistantActivityDots active={assistantActive} primaryColor={palette.primary} />
+                                </View>
                             ) : null}
 
                         </View>
@@ -1402,6 +1682,10 @@ const styles = StyleSheet.create({
     traceGroupContent: {
         width: "100%",
         gap: 3,
+    },
+    assistantInlineActivity: {
+        alignSelf: "flex-start",
+        paddingTop: 2,
     },
     assistantText: {
         fontSize: 14,

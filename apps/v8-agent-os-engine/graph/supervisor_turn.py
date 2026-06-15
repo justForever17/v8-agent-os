@@ -58,8 +58,16 @@ def _has_tool(tools, tool_name: str) -> bool:
     return any(_tool_ref_name(tool) == expected for tool in list(tools or []))
 
 
-def _should_force_memory_broker_first(*, user_query: str, passive_rag_diagnostics: dict, selected_tools) -> bool:
+def _should_force_memory_broker_first(
+    *,
+    user_query: str,
+    passive_rag_diagnostics: dict,
+    selected_tools,
+    state=None,
+) -> bool:
     if not _has_tool(selected_tools, "memory_broker"):
+        return False
+    if _spec_mode_active(state) and _spec_runtime_execution_allowed(state):
         return False
     if passive_rag_diagnostics.get("has_recall_cue") is True:
         return True
@@ -171,16 +179,29 @@ _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
 _SUPERVISOR_TODO_TOOL_NAMES = {"write_todos", "update_todo"}
 _SPEC_BROKER_TOOL_NAMES = {"spec_broker"}
 _FAST_FIRST_TURN_MAX_TOKENS = 900
-_SPEC_MODE_ALLOWED_TOOL_NAMES = {
+_SPEC_MODE_INITIAL_ALLOWED_TOOL_NAMES = {
     "ask_user",
+    "fetch_skill_instructions",
     "memory_broker",
     "research_broker",
+    "spec_broker",
+    "tool_observation_detail",
+    "web_broker",
+}
+_SPEC_MODE_ALLOWED_TOOL_NAMES = {
+    "ask_user",
+    "fetch_skill_instructions",
+    "memory_broker",
+    "research_broker",
+    "spec_broker",
+    "tool_observation_detail",
+    "web_broker",
+}
+_SPEC_MODE_EXECUTION_TOOL_NAMES = {
+    "ask_user",
     "runtime_broker",
     "spec_broker",
     "tool_observation_detail",
-    "update_todo",
-    "web_broker",
-    "write_todos",
 }
 
 
@@ -216,10 +237,35 @@ def _spec_mode_active(state) -> bool:
     )
 
 
+def _spec_id_from_state(state) -> str:
+    if not isinstance(state, dict):
+        return ""
+    route_context = dict(state.get("current_route_context") or {})
+    for key in ("specId", "spec_id"):
+        value = state.get(key) or route_context.get(key)
+        if str(value or "").strip():
+            return str(value).strip()
+    for key in ("spec_brief", "specBrief"):
+        candidate = state.get(key)
+        if isinstance(candidate, dict) and str(candidate.get("specId") or candidate.get("spec_id") or "").strip():
+            return str(candidate.get("specId") or candidate.get("spec_id")).strip()
+        candidate = route_context.get(key)
+        if isinstance(candidate, dict) and str(candidate.get("specId") or candidate.get("spec_id") or "").strip():
+            return str(candidate.get("specId") or candidate.get("spec_id")).strip()
+    return ""
+
+
 def _spec_runtime_execution_allowed(state) -> bool:
     if not isinstance(state, dict):
         return False
     route_context = dict(state.get("current_route_context") or {})
+    if bool(
+        state.get("runtimeAllowed")
+        or state.get("runtimeExecutionAllowed")
+        or route_context.get("runtimeAllowed")
+        or route_context.get("runtimeExecutionAllowed")
+    ):
+        return True
     candidates = (
         state.get("spec_brief"),
         state.get("specBrief"),
@@ -237,12 +283,123 @@ def _spec_runtime_execution_allowed(state) -> bool:
 
 def _filter_spec_tools_for_mode(tools, state):
     if _spec_mode_active(state):
+        allowed = _SPEC_MODE_ALLOWED_TOOL_NAMES
+        if not _spec_id_from_state(state):
+            allowed = _SPEC_MODE_INITIAL_ALLOWED_TOOL_NAMES
+        elif _spec_runtime_execution_allowed(state):
+            allowed = _SPEC_MODE_EXECUTION_TOOL_NAMES
         return [
             tool_ref
             for tool_ref in list(tools or [])
-            if _tool_ref_name(tool_ref) in _SPEC_MODE_ALLOWED_TOOL_NAMES
+            if _tool_ref_name(tool_ref) in allowed
         ]
     return _filter_tool_names(tools, _SPEC_BROKER_TOOL_NAMES)
+
+
+def _selected_skill_names_from_state(state, messages=None) -> list[str]:
+    names: list[str] = []
+
+    def add(value) -> None:
+        text = str(value or "").strip()
+        if text and text not in names:
+            names.append(text)
+
+    if isinstance(state, dict):
+        route_context = dict(state.get("current_route_context") or {})
+        for value in list(route_context.get("selectedSkillNames") or []):
+            add(value)
+        for key in ("skill_references", "skillReferences"):
+            for item in list(state.get(key) or route_context.get(key) or []):
+                if isinstance(item, dict):
+                    add(item.get("name") or item.get("id"))
+        for mention in list(state.get("context_mentions") or state.get("contextMentions") or []):
+            if not isinstance(mention, dict):
+                continue
+            if str(mention.get("kind") or "").strip().lower() == "skill":
+                add(mention.get("name") or mention.get("id") or mention.get("label"))
+
+    for message in list(messages or []):
+        content = str(getattr(message, "content", "") or "")
+        if "[SKILL REFERENCES]" not in content:
+            continue
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- name:"):
+                add(stripped.split(":", 1)[1])
+    return names
+
+
+def _looks_like_skill_creation_request(user_query: str) -> bool:
+    text = str(user_query or "").strip().lower()
+    if not text:
+        return False
+    return (
+        ("skill" in text and any(marker in text for marker in ("生成", "创建", "造", "做", "write", "create", "generate")))
+        or "造skill" in text
+        or "造 skill" in text
+        or "女娲" in text
+        or "huashu-nuwa" in text
+    )
+
+
+def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, messages=None) -> SystemMessage | None:
+    if not _spec_mode_active(state):
+        return None
+    if _spec_runtime_execution_allowed(state):
+        if not _has_tool(selected_tools, "runtime_broker"):
+            return None
+        spec_id = _spec_id_from_state(state) or "current approved spec"
+        return SystemMessage(
+            content=(
+                "[Spec Runtime Execution Gate]\n"
+                f"Spec Mode is active for specId={spec_id}, and the user has approved requirements, design, and tasks. "
+                "The next durable action MUST route the approved Spec into execution with `runtime_broker(mode='route', need=...)` unless you must ask the user for a missing permission/scope. "
+                "The `need` payload should cite `specId`, task/detail refs, required runtime lanes, expected artifacts, and proof expectations from the approved tasks. "
+                "Use Engineering/Research/Delegation/Creative runtimes as appropriate; if the Spec or selected skill calls for broad research or subagent swarms, express that as Research Runtime and/or top-level Delegation episodes, not hidden Supervisor-only work. "
+                "Do not call memory_broker, fetch_skill_instructions, research_broker, web_broker, delegation_broker, or write_native_file directly in this stage; route those needs through runtime_broker. "
+                "Supervisor todo tools are hidden in Spec Mode; use approved Spec tasks as the execution contract and runtime episode ledgers/proofs as execution truth. "
+                "Use `spec_broker(mode='brief'|'read_section')` only when you need exact approved task/spec refs for the runtime route."
+            )
+        )
+    if not _has_tool(selected_tools, "spec_broker"):
+        return None
+    spec_id = _spec_id_from_state(state)
+    if spec_id:
+        return SystemMessage(
+            content=(
+                "[Spec Pipeline Gate]\n"
+                f"Spec Mode is active for specId={spec_id}. Runtime execution is still blocked by the Spec pipeline. "
+                "Use `spec_broker(mode='read'|'read_stage')` to inspect the current stage; "
+                "use `spec_broker(mode='write_stage'|'rewrite_stage'|'edit'|'write'|'update', stage='requirements|bugfix|design|tasks', content='<markdown>')` to write or revise it; "
+                "use `spec_broker(mode='approve', stage='<stage>')` only when the user/client approval is available. "
+                "Spec documents are not final project deliverables; after approved tasks, use the execution surface such as runtime_broker or limited write_native_file for artifacts. "
+                "If a selected skill asks for parallel subagents, Agent Swarm, or many research shards, translate that into Research Runtime evidence or explicit top-level delegation after the relevant Spec stage is approved; do not assume subagents can spawn grandchildren implicitly. "
+                "Do not route Engineering/Research/Delegation runtime work until the Spec brief says runtimeExecutionAllowed=true."
+            )
+        )
+    skill_names = _selected_skill_names_from_state(state, messages=messages)
+    if _looks_like_skill_creation_request(user_query) and "skill-creator" not in {item.lower() for item in skill_names}:
+        skill_names.append("skill-creator")
+    skill_instruction = ""
+    if skill_names and _has_tool(selected_tools, "fetch_skill_instructions"):
+        calls = ", ".join(f"fetch_skill_instructions(skill_name={name!r}, detail_level='full')" for name in skill_names[:3])
+        skill_instruction = (
+            "Before writing the first Spec stage, read the selected/required skill contracts with real tool calls: "
+            f"{calls}. Do not replace these reads with memory, research, or prose claims.\n"
+        )
+    return SystemMessage(
+        content=(
+            "[Spec Pipeline Gate]\n"
+            "Spec Mode is active but no specId exists yet. The first durable action for this request must be a real "
+            "`spec_broker(mode='write_stage', stage='requirements'|'bugfix', content='<approval-quality markdown>')` call. "
+            f"{skill_instruction}"
+            "You may use `memory_broker`, `research_broker`, or `web_broker` only for bounded discovery needed to write a better Spec stage; "
+            "keep discovery concise and cite the evidence in the Spec content. "
+            "If a selected skill asks for parallel subagents, Agent Swarm, or many research shards, write that execution requirement into the Spec and use `research_broker` only for bounded pre-Spec discovery; do not call Delegation or assume subagents can spawn grandchildren before approval. "
+            "Do not call `runtime_broker`, Engineering, Delegation, or other execution runtimes before the initial Spec stage exists. "
+            "If requirements are unclear, ask the user; otherwise create the first stage via spec_broker after any necessary discovery."
+        )
+    )
 
 
 def _task_shape_from_state(state) -> dict:
@@ -603,6 +760,11 @@ def execute_supervisor_turn(
             )
             route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
         filtered_supervisor_tools = route_bundle.filtered_tools
+        filtered_supervisor_tools = _filter_spec_tools_for_mode(filtered_supervisor_tools, state)
+        try:
+            route_bundle.filtered_tools = list(filtered_supervisor_tools)
+        except Exception:
+            pass
         if _should_hide_todo_tools_for_direct_writing(state, user_query):
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, _SUPERVISOR_TODO_TOOL_NAMES)
         if not _is_network_supervisor_compat_transport(state):
@@ -723,8 +885,17 @@ def execute_supervisor_turn(
             user_query=user_query,
             passive_rag_diagnostics=passive_rag_diagnostics,
             selected_tools=filtered_supervisor_tools,
+            state=state,
         ):
             prepared_messages.append(_memory_broker_first_guidance(user_query))
+        spec_guidance = _spec_mode_stage_guidance(
+            state=state,
+            user_query=user_query,
+            selected_tools=filtered_supervisor_tools,
+            messages=prepared_messages,
+        )
+        if spec_guidance is not None:
+            prepared_messages.append(spec_guidance)
         if fast_first_turn_route:
             prepared_messages.append(_fast_first_turn_guidance())
         if _runtime_episode_handoff_ready(state):

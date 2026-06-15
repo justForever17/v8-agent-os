@@ -4412,9 +4412,19 @@ def fetch_skill_instructions(
     section_text = _skill_instruction_section(skill.get("instructions") or "", section)
     instructions_block = ""
     if normalized_detail == "full":
+        full_instructions = str(skill.get("instructions") or "")
+        try:
+            instruction_offset = max(0, min(int(offset or 0), len(full_instructions)))
+        except (TypeError, ValueError):
+            instruction_offset = 0
+        visible_instructions = full_instructions[instruction_offset:]
         instructions_block = (
             "=== INSTRUCTIONS (FULL) ===\n"
-            f"{skill['instructions']}"
+            f"Read Offset: {instruction_offset}\n"
+            f"Returned Chars: {len(visible_instructions)}\n"
+            f"Total Chars: {len(full_instructions)}\n"
+            f"Next Offset: \n\n"
+            f"{visible_instructions}"
         )
     elif normalized_detail == "section":
         instructions_block = (

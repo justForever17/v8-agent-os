@@ -60,6 +60,17 @@ _ENGINEERING_ROUTE_TOOLS = {
 _RESEARCH_ROUTE_TOOLS = {"web_broker"}
 _PLANNING_WEB_TOOL_LIMIT = 3
 _SPEC_PLANNING_WEB_TOOL_LIMIT = 8
+_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT = 3
+_SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS = {
+    "ask_user",
+    "fetch_skill_instructions",
+    "memory_broker",
+    "research_broker",
+    "runtime_broker",
+    "spec_broker",
+    "update_todo",
+    "write_todos",
+}
 
 
 def _planning_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
@@ -86,6 +97,34 @@ def _spec_mode_active(state_mapping: dict[str, Any]) -> bool:
         or route_context.get("specMode")
         or route_context.get("spec_mode")
     )
+
+
+def _spec_runtime_execution_allowed(state_mapping: dict[str, Any]) -> bool:
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    if bool(
+        state_mapping.get("runtimeAllowed")
+        or state_mapping.get("runtimeExecutionAllowed")
+        or route_context.get("runtimeAllowed")
+        or route_context.get("runtimeExecutionAllowed")
+    ):
+        return True
+    for key in ("specExecutionGate", "spec_execution_gate"):
+        gate = state_mapping.get(key) or route_context.get(key)
+        if isinstance(gate, dict) and bool(gate.get("runtimeExecutionAllowed") or gate.get("runtimeAllowed")):
+            return True
+    candidates = (
+        state_mapping.get("spec_brief"),
+        state_mapping.get("specBrief"),
+        route_context.get("specBrief"),
+        route_context.get("spec_brief"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        pipeline = candidate.get("pipelineControl") if isinstance(candidate.get("pipelineControl"), dict) else {}
+        if bool(pipeline.get("runtimeExecutionAllowed") or pipeline.get("runtimeAllowed")):
+            return True
+    return False
 
 
 def _command_segment_head(segment: str) -> str:
@@ -197,6 +236,37 @@ def _planning_fact_gathering_allowed(
         args = _safe_tool_args(tool_call.get("args"))
         return _planning_readonly_command_allowed(str(args.get("command") or args.get("_raw") or ""))
     return False
+
+
+def _supervisor_direct_pressure_count(tool_calls_or_names: list[Any]) -> int:
+    count = 0
+    for item in tool_calls_or_names:
+        if isinstance(item, dict):
+            tool_name = str(item.get("name") or "").strip()
+            args = _safe_tool_args(item.get("args"))
+        else:
+            tool_name = str(item or "").strip()
+            args = {}
+        if not tool_name or tool_name in _SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS:
+            continue
+        if tool_name == "run_system_command" and _planning_readonly_command_allowed(str(args.get("command") or args.get("_raw") or "")):
+            continue
+        if tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_", "rpa_")):
+            count += 1
+    return count
+
+
+def _supervisor_limited_write_native_file_allowed(
+    tool_name: str,
+    *,
+    direct_pressure_count: int,
+    project_write_count: int,
+) -> bool:
+    return (
+        str(tool_name or "").strip() == "write_native_file"
+        and project_write_count <= _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT
+        and direct_pressure_count <= 10
+    )
 
 
 def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
@@ -538,8 +608,8 @@ def _message_tool_calls(message: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _supervisor_direct_tool_names(state: Any, current_tool_call: dict[str, Any]) -> list[str]:
-    names: list[str] = []
+def _supervisor_direct_tool_calls(state: Any, current_tool_call: dict[str, Any]) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
     seen_current = False
     current_id = str((current_tool_call or {}).get("id") or "").strip()
     current_name = str((current_tool_call or {}).get("name") or "").strip()
@@ -548,12 +618,20 @@ def _supervisor_direct_tool_names(state: Any, current_tool_call: dict[str, Any])
             name = str(call.get("name") or "").strip()
             if not name:
                 continue
-            names.append(name)
+            calls.append(call)
             if current_id and str(call.get("id") or "").strip() == current_id:
                 seen_current = True
     if current_name and not seen_current:
-        names.append(current_name)
-    return names
+        calls.append(current_tool_call)
+    return calls
+
+
+def _supervisor_direct_tool_names(state: Any, current_tool_call: dict[str, Any]) -> list[str]:
+    return [
+        str(call.get("name") or "").strip()
+        for call in _supervisor_direct_tool_calls(state, current_tool_call)
+        if str(call.get("name") or "").strip()
+    ]
 
 
 def _supervisor_direct_scope_approved(run_id: str, operation_fingerprint: str) -> bool:
@@ -649,8 +727,10 @@ def _supervisor_direct_scope_hard_block_message(
         return None
     planner_dispatch_status = dict(state_mapping.get("planner_dispatch_status") or {})
     route_required = _supervisor_direct_scope_requires_engineering_route(state_mapping)
-    tool_names = _supervisor_direct_tool_names(getattr(request, "state", None), tool_call)
+    tool_calls = _supervisor_direct_tool_calls(getattr(request, "state", None), tool_call)
+    tool_names = [str(call.get("name") or "").strip() for call in tool_calls if str(call.get("name") or "").strip()]
     tool_step_count = len([name for name in tool_names if name])
+    direct_pressure_count = _supervisor_direct_pressure_count(tool_calls)
     project_write_count = len([name for name in tool_names if name in SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS])
     from erc.runtime_context import get_runtime_context
 
@@ -669,6 +749,34 @@ def _supervisor_direct_scope_hard_block_message(
         if isinstance(tool_call.get("metadata"), dict):
             tool_call["metadata"]["planningFactGathering"] = True
         return None
+    if _spec_mode_active(state_mapping) and not _spec_runtime_execution_allowed(state_mapping):
+        content = (
+            "[spec gate]\n"
+            f"Blocked execution tool before approved Spec execution stage: {tool_name}\n"
+            "Spec Mode requires requirements/bugfix, design, and tasks to be written and approved before execution runtimes or mutating tools run.\n"
+            "Next step: use spec_broker to continue the current Spec stage, or use research_broker/web_broker/fetch_skill_instructions for bounded evidence gathering."
+        )
+        return ToolMessage(
+            content=content,
+            name=tool_name,
+            tool_call_id=str(tool_call.get("id") or ""),
+            status="error",
+            additional_kwargs={
+                "riskCode": "spec_runtime_execution_not_approved",
+                "blockedTool": tool_name,
+                "specMode": True,
+                "runtimeExecutionAllowed": False,
+                "allowedNextTools": [
+                    "spec_broker",
+                    "fetch_skill_instructions",
+                    "research_broker",
+                    "web_broker",
+                    "memory_broker",
+                    "ask_user",
+                ],
+                "recommendedNextAction": "continue_spec_stage",
+            },
+        )
 
     hard_reasons: list[str] = []
     boundary = _task_boundary_from_state(state_mapping)
@@ -688,11 +796,16 @@ def _supervisor_direct_scope_hard_block_message(
         hard_reasons.append("task_boundary_route_correction")
     if bool(planner_dispatch_status.get("blocked")):
         hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
-    if route_required:
+    limited_write_allowed = _supervisor_limited_write_native_file_allowed(
+        tool_name,
+        direct_pressure_count=direct_pressure_count,
+        project_write_count=project_write_count,
+    )
+    if route_required and not limited_write_allowed:
         hard_reasons.append("capability_route_required")
-    if tool_step_count > 10:
+    if direct_pressure_count > 10:
         hard_reasons.append("supervisor_tool_steps_gt_10")
-    if project_write_count > 3:
+    if project_write_count > _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT:
         hard_reasons.append("supervisor_project_file_writes_gt_3")
     if not hard_reasons:
         return None
@@ -739,6 +852,7 @@ def _supervisor_direct_scope_hard_block_message(
             "runId": run_id,
             "blockedTool": tool_name,
             "toolStepCount": tool_step_count,
+            "directPressureCount": direct_pressure_count,
             "projectWriteCount": project_write_count,
             "reasons": hard_reasons,
             "capabilityNeed": route_intent,

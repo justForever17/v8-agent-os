@@ -71,6 +71,9 @@ SKILL_MARKERS = [
     "调研来源",
 ]
 PLACEHOLDER_PATTERN = re.compile(r"(待调研|待补充|待填充|占位|空目录|空模板|placeholder|todo|tbd|无官方设定来源|仅示例|示例内容)", re.I)
+SPEC_STAGES = ("requirements", "bugfix", "design", "tasks")
+SUBMIT_REQUEST_TIMEOUT_SECONDS = 30
+ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 
 
 @dataclass
@@ -96,6 +99,8 @@ class HuashuAuditResult:
     generated_files: list[str] = field(default_factory=list)
     final_text: str = ""
     report_dir: str | None = None
+    target: str = ""
+    target_skill_dir_name: str = ""
 
     def add(self, severity: str, code: str, summary: str, evidence: Any = "") -> None:
         self.findings.append(Finding(severity, code, summary, _redact(evidence) if evidence else ""))
@@ -105,8 +110,16 @@ class HuashuAuditResult:
         return any(item.severity in {"P0", "P1"} for item in self.findings)
 
 
-def _target_dir(workspace: Path) -> Path:
-    return workspace / ".agents" / "skills" / TARGET_SKILL_DIR_NAME
+def _target_dir(workspace: Path, skill_dir_name: str = TARGET_SKILL_DIR_NAME) -> Path:
+    return workspace / ".agents" / "skills" / skill_dir_name
+
+
+def _skill_markers(target: str, game: str) -> list[str]:
+    markers = [target, "心智模型", "决策启发式", "表达DNA", "诚实边界", "调研来源"]
+    game_prefix = str(game or "").strip()[:2]
+    if game_prefix:
+        markers.append(game_prefix)
+    return markers
 
 
 def _report_dir(output_root: Path, timestamp: str) -> Path:
@@ -194,8 +207,360 @@ def _backup_existing_target(target_dir: Path, workspace: Path, timestamp: str) -
     return backup_dir
 
 
-def _prompt(target: str, game: str, target_dir: Path) -> str:
-    return f"""这是一次 V8OS 主链 live 验收，请完整执行，不要只给计划。
+def _same_path(left: str | Path | None, right: Path) -> bool:
+    if not left:
+        return False
+    try:
+        return Path(str(left)).expanduser().resolve() == right.expanduser().resolve()
+    except Exception:
+        return str(left).strip().lower() == str(right).strip().lower()
+
+
+def _clear_workspace_sessions(workspace: Path) -> list[str]:
+    from core.database import db
+
+    deleted: list[str] = []
+    for row in db.get_sessions():
+        session_id = str(row.get("id") or "").strip()
+        if not session_id:
+            continue
+        binding = db.get_session_scope_binding(session_id) or {}
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        candidates = [
+            binding.get("workspace_path"),
+            metadata.get("workspacePath"),
+            metadata.get("workspace_path"),
+        ]
+        if not any(_same_path(candidate, workspace) for candidate in candidates):
+            continue
+        db.delete_session(session_id)
+        try:
+            db.close_session_scope_binding(session_id, status="cleared_by_live_audit")
+        except Exception:
+            pass
+        deleted.append(session_id)
+    return deleted
+
+
+def _find_pending_spec_stage_targets(workspace: Path) -> list[dict[str, Any]]:
+    from core.spec_service import spec_service
+
+    targets: list[dict[str, Any]] = []
+    try:
+        listing = spec_service.list_specs(workspace_path=str(workspace), include_archived=False, limit=20)
+    except Exception as exc:  # noqa: BLE001
+        return [{"error": f"{type(exc).__name__}: {exc}"}]
+    for spec in listing.get("specs") or []:
+        if not isinstance(spec, dict):
+            continue
+        spec_id = str(spec.get("specId") or "").strip()
+        if not spec_id:
+            continue
+        pipeline = spec.get("pipelineControl") if isinstance(spec.get("pipelineControl"), dict) else {}
+        documents = spec.get("documents") if isinstance(spec.get("documents"), dict) else {}
+        approved = set(str(item) for item in list(pipeline.get("approvedStages") or []))
+        candidates = [
+            str(pipeline.get("blockedByApproval") or "").strip(),
+            str(pipeline.get("currentStage") or spec.get("currentStage") or "").strip(),
+        ]
+        for stage in candidates:
+            normalized_stage = stage.lower()
+            if normalized_stage not in SPEC_STAGES:
+                continue
+            if normalized_stage in approved:
+                continue
+            if normalized_stage not in documents:
+                continue
+            targets.append(
+                {
+                    "specId": spec_id,
+                    "stage": normalized_stage,
+                    "source": "spec_pipeline_pending_approval",
+                }
+            )
+            break
+    return targets
+
+
+def _current_run_status(run_id: str | None) -> str:
+    if not run_id:
+        return ""
+    try:
+        from core.database import db
+
+        record = db.get_run_record(str(run_id)) or {}
+        return str(record.get("status") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _resume_waiting_run_after_spec_approval(
+    engine_url: str,
+    result: LiveCaseResult,
+    approvals: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not result.run_id or not approvals:
+        return None
+    status = _current_run_status(result.run_id)
+    if status not in {"waiting_input", "waiting_approval", "paused"}:
+        return None
+    response = _json_request(
+        f"{_engine_api_base(engine_url)}/runs/{result.run_id}/commands/resume",
+        method="POST",
+        payload={
+            "reason": "spec_auto_approved",
+            "payload": {
+                "autoSpecApprovals": approvals,
+                "source": "huashu_nuwa_skill_live_audit",
+            },
+        },
+        timeout=12,
+    )
+    return {"runId": result.run_id, "previousStatus": status, "resumeResponse": response}
+
+
+def _approve_pending_spec_stage_approvals(
+    engine_url: str,
+    result: LiveCaseResult,
+    approvals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not result.run_id or not approvals:
+        return []
+    approved_keys = {
+        (
+            str(item.get("specId") or "").strip(),
+            str(item.get("stage") or "").strip().lower(),
+        )
+        for item in approvals
+        if isinstance(item, dict)
+    }
+    approved_keys.discard(("", ""))
+    if not approved_keys:
+        return []
+    try:
+        from core.database import db
+
+        pending = db.list_pending_approvals(run_id=str(result.run_id), status="pending")
+    except Exception as exc:  # noqa: BLE001
+        return [{"error": f"{type(exc).__name__}: {exc}"}]
+    responses: list[dict[str, Any]] = []
+    for approval in pending:
+        approval_kind = str(approval.get("approval_kind") or "").strip()
+        if approval_kind != "spec_stage_approval":
+            continue
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        key = (
+            str(request.get("specId") or "").strip(),
+            str(request.get("stage") or "").strip().lower(),
+        )
+        if key not in approved_keys:
+            continue
+        approval_id = str(approval.get("id") or approval.get("approval_id") or "").strip()
+        if not approval_id:
+            continue
+        try:
+            response = _json_request(
+                f"{_engine_api_base(engine_url)}/approvals/{approval_id}/approve",
+                method="POST",
+                payload={
+                    "reason": "spec stage approved by huashu-nuwa live audit",
+                    "response": {
+                        "decision": "approved",
+                        "source": "huashu_nuwa_skill_live_audit",
+                        "specId": key[0],
+                        "stage": key[1],
+                    },
+                },
+                timeout=12,
+            )
+        except Exception as exc:  # noqa: BLE001
+            responses.append({"approvalId": approval_id, "specId": key[0], "stage": key[1], "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        responses.append(
+            {
+                "approvalId": approval_id,
+                "specId": key[0],
+                "stage": key[1],
+                "status": "approved",
+                "resumeScheduled": bool(response.get("resume_scheduled") if isinstance(response, dict) else False),
+            }
+        )
+    return responses
+
+
+def _auto_respond_pending_ask_user(engine_url: str, result: LiveCaseResult) -> list[dict[str, Any]]:
+    if not result.session_id:
+        return []
+    try:
+        from core.database import db
+
+        interactions = db.list_ask_user_interactions(session_id=result.session_id, status="pending")
+    except Exception as exc:  # noqa: BLE001
+        return [{"error": f"{type(exc).__name__}: {exc}"}]
+    responses: list[dict[str, Any]] = []
+    for interaction in interactions:
+        interaction_id = str(interaction.get("id") or "").strip()
+        if not interaction_id:
+            continue
+        if result.run_id and str(interaction.get("run_id") or "").strip() not in {"", str(result.run_id)}:
+            continue
+        answer = (
+            "同意，批准继续。请按已批准 Spec 和 live 验收要求继续进入下一阶段；"
+            "如果是质量检查点，请在诚实边界中记录限制后继续交付当前最优版本。"
+        )
+        try:
+            response = _json_request(
+                f"{_engine_api_base(engine_url)}/ask-user/{interaction_id}/respond",
+                method="POST",
+                payload={
+                    "reason": "auto-approved by huashu-nuwa live audit",
+                    "response": {
+                        "answer": answer,
+                        "approved": True,
+                        "source": "huashu_nuwa_skill_live_audit",
+                    },
+                },
+                timeout=12,
+            )
+        except Exception as exc:  # noqa: BLE001
+            responses.append({"interactionId": interaction_id, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        responses.append(
+            {
+                "interactionId": interaction_id,
+                "question": str(interaction.get("question") or interaction.get("prompt") or "")[:240],
+                "status": "responded",
+                "responseKind": response.get("command_event", {}).get("topic") if isinstance(response, dict) else None,
+            }
+        )
+    return responses
+
+
+def _latest_run_id_for_session(session_id: str, *, wait_seconds: float = 0.0) -> str | None:
+    from core.database import db
+
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return None
+    deadline = time.time() + max(0.0, wait_seconds)
+    while True:
+        try:
+            runs = db.list_run_records(session_id=session_id, limit=1)
+        except Exception:
+            runs = []
+        if runs:
+            run_id = str(runs[0].get("id") or "").strip()
+            if run_id:
+                return run_id
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
+def _looks_like_submit_timeout(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "timeout" in text or "timed out" in text
+
+
+def _recover_submit_timeout_result(
+    result: LiveCaseResult,
+    *,
+    session_id: str,
+    started: float,
+    exc: Exception,
+) -> bool:
+    error = f"{type(exc).__name__}: {exc}"
+    if not _looks_like_submit_timeout(exc):
+        return False
+    run_id = _latest_run_id_for_session(session_id, wait_seconds=30)
+    if not run_id:
+        return False
+    result.status = "submitted"
+    result.session_id = session_id
+    result.run_id = run_id
+    result.failure_reason = None
+    result.latency_ms = int((time.perf_counter() - started) * 1000)
+    result.key_events.append(
+        _redact(
+            {
+                "submitTimedOutButRunRecovered": True,
+                "sessionId": session_id,
+                "runId": run_id,
+                "submitError": error,
+            }
+        )
+    )
+    return True
+
+
+def _poll_case_with_spec_auto_approve(
+    engine_url: str,
+    result: LiveCaseResult,
+    *,
+    max_wait: float,
+    workspace: Path,
+    auto_approve_spec: bool,
+) -> LiveCaseResult:
+    if not auto_approve_spec:
+        return _poll_case(engine_url, result, max_wait=max_wait)
+    deadline = time.time() + max_wait
+    pending_resume_approvals: list[dict[str, Any]] = []
+    while time.time() < deadline:
+        approvals = _find_pending_spec_stage_targets(workspace)
+        if approvals:
+            result.key_events.append(_redact({"autoSpecApprovalTargets": approvals})[:1600])
+            pending_resume_approvals.extend(approvals)
+            approval_responses = _approve_pending_spec_stage_approvals(engine_url, result, approvals)
+            if approval_responses:
+                result.key_events.append(_redact({"autoSpecApprovalResponses": approval_responses})[:1600])
+                pending_resume_approvals = []
+                result.status = "submitted"
+                result.failure_reason = None
+        ask_responses = _auto_respond_pending_ask_user(engine_url, result)
+        if ask_responses:
+            result.key_events.append(_redact({"autoAskUserResponses": ask_responses})[:1600])
+            pending_resume_approvals = []
+        remaining = max(1.0, deadline - time.time())
+        result = _poll_case(engine_url, result, max_wait=min(8.0, remaining))
+        approval_responses = _approve_pending_spec_stage_approvals(engine_url, result, pending_resume_approvals)
+        if approval_responses:
+            result.key_events.append(_redact({"autoSpecApprovalResponses": approval_responses})[:1600])
+            pending_resume_approvals = []
+            result.status = "submitted"
+            result.failure_reason = None
+            continue
+        ask_responses = _auto_respond_pending_ask_user(engine_url, result)
+        if ask_responses:
+            result.key_events.append(_redact({"autoAskUserResponses": ask_responses})[:1600])
+            pending_resume_approvals = []
+            result.status = "submitted"
+            result.failure_reason = None
+            continue
+        if result.status != "timeout":
+            return result
+        result.status = "submitted"
+        result.failure_reason = None
+    result.status = "timeout"
+    result.failure_reason = "run_or_episode_not_terminal_within_max_wait"
+    return result
+
+
+def _live_run_still_active(live: LiveCaseResult) -> bool:
+    run_id = str(live.run_id or "").strip()
+    if not run_id:
+        return False
+    try:
+        from core.database import db
+
+        record = db.get_run_record(run_id) or {}
+    except Exception:
+        return False
+    return str(record.get("status") or "").strip() in ACTIVE_RUN_STATUSES
+
+
+def _prompt(target: str, game: str, target_dir: Path, *, skill_dir_name: str, user_prompt: str = "") -> str:
+    user_prompt_line = f"用户原始请求：{user_prompt.strip()}\n\n" if user_prompt.strip() else ""
+    return f"""{user_prompt_line}这是一次 V8OS 主链 live 验收，请完整执行，不要只给计划。
 
 目标：使用已选择的 huashu-nuwa skill，调研米哈游游戏《{game}》角色「{target}」，并按 huashu-nuwa 的要求蒸馏生成一个可运行的角色视角 skill。
 
@@ -218,12 +583,12 @@ def _prompt(target: str, game: str, target_dir: Path) -> str:
    - references/sources/
 4. SKILL.md 必须是可被 SkillLoader 发现的有效 skill 文件，开头必须包含 YAML frontmatter，例如：
    ---
-   name: sanyueqi-perspective
-   description: 三月七（《{game}》）的思维框架与表达方式。用于以三月七视角分析问题、回应选择、生成台词风格建议。
+   name: {skill_dir_name}
+   description: {target}（《{game}》）的思维框架与表达方式。用于以{target}视角分析问题、回应选择、生成台词风格建议。
    ---
    并且正文至少包含这些一级或二级章节：使用说明、身份卡、心智模型、决策启发式、表达DNA、时间线、诚实边界、调研来源。
    这不是简短角色扮演提示词；正文必须达到至少 4500 个 Unicode 字符。请在交付前重新读取磁盘上的 SKILL.md 并确认字符数，而不是按字节数估计。
-5. 三月七是虚构角色，请把 huashu-nuwa 的人物调研六维适配为：
+5. {target}是虚构角色，请把 huashu-nuwa 的人物调研六维适配为：
    - 官方设定、角色故事、角色档案、命途/版本设定
    - 剧情台词、短信、同行任务、活动剧情中的表达方式
    - 口头禅、句式、语气、幽默方式、情绪节奏
@@ -232,18 +597,25 @@ def _prompt(target: str, game: str, target_dir: Path) -> str:
    - 版本时间线、登场节点和信息截止边界
 6. Research Runtime 必须产出可核验来源；Web Research Architect 必须把清洗材料提纯为 evidence pack / claim table / source matrix，不能把搜索 snippet 当最终调研结论。
 7. 如果遇到 gemini-video 或视频转写要求，但本轮没有 Gemini key 或本地视频：优先使用 V8OS 内置视觉/附件/字幕/网页读取能力；仍不可用时在诚实边界注明“未进行视频画面级分析”，不要假装看过视频。
-8. 本 live 验收已经授权写入 test7 工作区；文件副作用应走 Engineering/runtime 路径。不要写到全局 ~/.agents/skills，也不要写到旧 .claude/skills。
+8. 本 live 验收已经授权写入当前工作区；文件副作用应走 Engineering/runtime 路径。不要写到全局 ~/.agents/skills，也不要写到旧 .claude/skills。
 9. huashu-nuwa 的 Phase 1.5 / Phase 2.5 检查点在本次验收中视为用户授权继续：如果质量足够请继续；如果不足，请补证或在诚实边界标注后交付当前最优版本，不要无限等待用户。
 
 最终回复只需要给出：生成目录、关键文件清单、调研质量摘要、无法覆盖的信息边界、二次复用方式。
 """
 
 
-def _make_live_result(session_id: str, prompt: str, title: str = "huashu-nuwa 真实生成三月七 skill") -> LiveCaseResult:
+def _make_live_result(
+    session_id: str,
+    prompt: str,
+    *,
+    target: str = "三月七",
+    skill_dir_name: str = TARGET_SKILL_DIR_NAME,
+    title: str | None = None,
+) -> LiveCaseResult:
     skill_refs, mentions = _huashu_skill_reference()
     case = LiveCaseSpec(
-        case_id="huashu_nuwa_sanyueqi_skill",
-        title=title,
+        case_id=f"huashu_nuwa_{skill_dir_name}_skill",
+        title=title or f"huashu-nuwa 真实生成{target} skill",
         prompt=prompt,
         expected_all_tools=["fetch_skill_instructions"],
         expected_any_tools=["research_broker", "runtime_broker", "web_broker"],
@@ -264,12 +636,15 @@ def _submit_live_case(
     target: str,
     game: str,
     target_dir: Path,
+    skill_dir_name: str,
     model_profile: str,
     timestamp: str,
+    spec_mode: bool = False,
+    user_prompt: str = "",
 ) -> LiveCaseResult:
-    session_id = f"huashu-nuwa-sanyueqi-live-{timestamp}"
-    prompt = _prompt(target, game, target_dir)
-    result = _make_live_result(session_id, prompt)
+    session_id = f"huashu-nuwa-{skill_dir_name}-live-{timestamp}"
+    prompt = _prompt(target, game, target_dir, skill_dir_name=skill_dir_name, user_prompt=user_prompt)
+    result = _make_live_result(session_id, prompt, target=target, skill_dir_name=skill_dir_name)
     payload = {
         "session_id": session_id,
         "conversationId": session_id,
@@ -282,6 +657,7 @@ def _submit_live_case(
             "clientMessageId": f"{session_id}-user",
             "workspacePath": str(workspace),
             "modelProfile": model_profile,
+            "specMode": bool(spec_mode),
             "allowSideEffects": True,
             "huashuNuwaSkillLiveAudit": True,
             "targetSkillPath": str(target_dir),
@@ -291,8 +667,15 @@ def _submit_live_case(
     }
     started = time.perf_counter()
     try:
-        response = _json_request(f"{_engine_api_base(engine_url)}/chat/submit", method="POST", payload=payload, timeout=30)
+        response = _json_request(
+            f"{_engine_api_base(engine_url)}/chat/submit",
+            method="POST",
+            payload=payload,
+            timeout=SUBMIT_REQUEST_TIMEOUT_SECONDS,
+        )
     except Exception as exc:  # noqa: BLE001
+        if _recover_submit_timeout_result(result, session_id=session_id, started=started, exc=exc):
+            return result
         result.status = "failed"
         result.session_id = session_id
         result.failure_reason = _redact(f"{type(exc).__name__}: {exc}")
@@ -342,14 +725,14 @@ def _repair_prompt(*, target: str, game: str, target_dir: Path, findings: list[F
 0.2 修复完成前不要给最终交付回复；最终回复必须基于磁盘上已写入并可读取的文件，而不是“准备好了/待执行”的计划。
 1. SKILL.md 必须以 YAML frontmatter 开头：
    ---
-   name: sanyueqi-perspective
-   description: 三月七（《{game}》）的思维框架与表达方式。用于以三月七视角分析问题、回应选择、生成台词风格建议。
+   name: {target_dir.name}
+   description: {target}（《{game}》）的思维框架与表达方式。用于以{target}视角分析问题、回应选择、生成台词风格建议。
    ---
 2. SKILL.md 正文必须显式包含：使用说明、身份卡、心智模型、决策启发式、表达DNA、时间线、诚实边界、调研来源。
 3. SKILL.md 不能是简短角色扮演提示词；它必须是可复用 skill，至少 4500 个 Unicode 字符（不是字节数），能教另一个 agent 如何以「{target}」视角思考和表达。
 4. references/research/01-writings.md 到 06-timeline.md 必须全部保留，每个文件必须有来源 URL 或来源说明/可信度标记；缺来源的文件直接追加 `## 来源与可信度` 小节即可。
 5. 不要声称分析过未实际读取的视频；如无视频画面证据，在诚实边界写清。
-6. 修复完成后再次让 SkillLoader 能在 test7 workspace 发现并 fetch `sanyueqi-perspective`。
+6. 修复完成后再次让 SkillLoader 能在当前 workspace 发现并 fetch `{target_dir.name}`。
 
 这是第 {attempt} 次自动修复尝试。请直接修复文件并交付，不要只解释原因。
 """
@@ -366,9 +749,16 @@ def _submit_repair_case(
     session_id: str,
     findings: list[Finding],
     attempt: int,
+    spec_mode: bool = False,
 ) -> LiveCaseResult:
     prompt = _repair_prompt(target=target, game=game, target_dir=target_dir, findings=findings, attempt=attempt)
-    result = _make_live_result(session_id, prompt, title=f"huashu-nuwa 三月七 skill 自动修复 #{attempt}")
+    result = _make_live_result(
+        session_id,
+        prompt,
+        target=target,
+        skill_dir_name=target_dir.name,
+        title=f"huashu-nuwa {target} skill 自动修复 #{attempt}",
+    )
     payload = {
         "session_id": session_id,
         "conversationId": session_id,
@@ -381,6 +771,7 @@ def _submit_repair_case(
             "clientMessageId": f"{session_id}-repair-{attempt}",
             "workspacePath": str(workspace),
             "modelProfile": model_profile,
+            "specMode": bool(spec_mode),
             "allowSideEffects": True,
             "huashuNuwaSkillLiveAudit": True,
             "targetSkillPath": str(target_dir),
@@ -391,8 +782,15 @@ def _submit_repair_case(
     }
     started = time.perf_counter()
     try:
-        response = _json_request(f"{_engine_api_base(engine_url)}/chat/submit", method="POST", payload=payload, timeout=30)
+        response = _json_request(
+            f"{_engine_api_base(engine_url)}/chat/submit",
+            method="POST",
+            payload=payload,
+            timeout=SUBMIT_REQUEST_TIMEOUT_SECONDS,
+        )
     except Exception as exc:  # noqa: BLE001
+        if _recover_submit_timeout_result(result, session_id=session_id, started=started, exc=exc):
+            return result
         result.status = "failed"
         result.failure_reason = _redact(f"{type(exc).__name__}: {exc}")
         result.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -525,7 +923,16 @@ def _has_structured_skill_file_read(live: LiveCaseResult, relative_path: str) ->
     return False
 
 
-def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, target_dir: Path, workspace: Path) -> None:
+def _validate_live_result(
+    result: HuashuAuditResult,
+    live: LiveCaseResult,
+    target_dir: Path,
+    workspace: Path,
+    *,
+    target: str,
+    game: str,
+    skill_dir_name: str,
+) -> None:
     result.session_id = live.session_id
     result.run_id = live.run_id
     result.observed_tools = list(live.actual_tools)
@@ -598,13 +1005,13 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
         result.add("P0", "skill_missing_frontmatter", "SKILL.md 缺少 YAML frontmatter，SkillLoader 会忽略该 skill。", skill_text[:1200])
     if len(skill_text) < 4000:
         result.add("P1", "skill_file_too_short", "SKILL.md 内容过短，疑似空模板或未完成。", {"chars": len(skill_text), "preview": skill_text[:1200]})
-    missing_markers = [marker for marker in SKILL_MARKERS if marker not in skill_text]
+    missing_markers = [marker for marker in _skill_markers(target, game) if marker not in skill_text]
     if missing_markers:
         result.add("P1", "skill_missing_required_sections", "SKILL.md 缺少关键内容标记。", {"missing": missing_markers})
     if PLACEHOLDER_PATTERN.search(skill_text):
         result.add("P1", "skill_contains_placeholder_text", "SKILL.md 仍含占位/待补充文本。", skill_text[:1200])
     if str(target_dir).lower().startswith(str(Path.home() / ".agents" / "skills").lower()):
-        result.add("P0", "skill_written_to_global_root", "最终产物写到了全局 skill 目录，而不是 test7 工作区。", str(target_dir))
+        result.add("P0", "skill_written_to_global_root", "最终产物写到了全局 skill 目录，而不是目标工作区。", str(target_dir))
     if ".claude" in str(target_dir).lower():
         result.add("P0", "skill_written_to_legacy_claude_root", "最终产物写到了旧 .claude/skills 目录。", str(target_dir))
 
@@ -630,7 +1037,7 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
         from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 
         matches = SkillLoader.resolve_skill_matches(
-            TARGET_SKILL_DIR_NAME,
+            skill_dir_name,
             force_refresh=True,
             runtime_kind="chat",
             explicit_workspace_path=str(workspace),
@@ -647,7 +1054,7 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
             result.add(
                 "P0",
                 "generated_skill_not_discoverable",
-                "生成后 SkillLoader 无法在 test7 workspace 发现 sanyueqi-perspective。",
+                f"生成后 SkillLoader 无法在目标 workspace 发现 {skill_dir_name}。",
                 {"matches": matches[:8]},
             )
         fetch_candidates = [str(target_dir)]
@@ -657,7 +1064,7 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
                 for item in (
                     target_match.get("skillId"),
                     target_match.get("skillName"),
-                    TARGET_SKILL_DIR_NAME,
+                    skill_dir_name,
                 )
                 if str(item or "").strip()
             )
@@ -665,14 +1072,14 @@ def _validate_live_result(result: HuashuAuditResult, live: LiveCaseResult, targe
         fetch_errors: list[str] = []
         for fetch_name in fetch_candidates:
             fetched = fetch_skill_instructions.func(fetch_name, detail_level="summary")
-            if "三月七" in fetched or TARGET_SKILL_DIR_NAME in fetched:
+            if target in fetched or skill_dir_name in fetched:
                 break
             fetch_errors.append(f"{fetch_name}: {fetched[:600]}")
-        if "三月七" not in fetched and TARGET_SKILL_DIR_NAME not in fetched:
+        if target not in fetched and skill_dir_name not in fetched:
             result.add(
                 "P1",
                 "generated_skill_fetch_smoke_failed",
-                "生成后的 skill fetch smoke 未返回三月七相关内容。",
+                f"生成后的 skill fetch smoke 未返回 {target} 相关内容。",
                 "\n\n".join(fetch_errors)[:3000] or fetched[:2000],
             )
     except Exception as exc:  # noqa: BLE001
@@ -683,13 +1090,16 @@ def _write_report(result: HuashuAuditResult, output_root: Path) -> Path:
     report_dir = _report_dir(output_root, result.timestamp)
     report_dir.mkdir(parents=True, exist_ok=True)
     result.report_dir = str(report_dir)
-    report_path = report_dir / "HUASHU_NUWA_SANYUEQI_LIVE_AUDIT_ZH.md"
+    target_label = result.target or "target"
+    report_path = report_dir / "HUASHU_NUWA_SKILL_LIVE_AUDIT_ZH.md"
     json_path = report_dir / "result.json"
     lines = [
-        "# huashu-nuwa 三月七 Skill Live Audit",
+        f"# huashu-nuwa {target_label} Skill Live Audit",
         "",
         f"- generatedAt: {datetime.now().isoformat()}",
         f"- status: {result.status}",
+        f"- target: {result.target or 'n/a'}",
+        f"- targetSkillDirName: {result.target_skill_dir_name or 'n/a'}",
         f"- modelProfile: {result.model_profile}",
         f"- sessionId: {result.session_id or 'n/a'}",
         f"- runId: {result.run_id or 'n/a'}",
@@ -739,6 +1149,8 @@ def _write_report(result: HuashuAuditResult, output_root: Path) -> Path:
         "sessionId": result.session_id,
         "runId": result.run_id,
         "targetDir": result.target_dir,
+        "target": result.target,
+        "targetSkillDirName": result.target_skill_dir_name,
         "backupDir": result.backup_dir,
         "modelProfile": result.model_profile,
         "findings": [finding.__dict__ for finding in result.findings],
@@ -752,7 +1164,7 @@ def _write_report(result: HuashuAuditResult, output_root: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run huashu-nuwa live audit for creating March 7th skill in test7 workspace.")
+    parser = argparse.ArgumentParser(description="Run huashu-nuwa live audit for creating a character skill in a workspace.")
     parser.add_argument("--preflight", action="store_true", help="Run local/engine preflight checks only.")
     parser.add_argument("--validate-existing-session", default="", help="Validate an already executed live session and generated target directory.")
     parser.add_argument("--live", action="store_true", help="Required to submit a real live Supervisor run.")
@@ -761,6 +1173,11 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, default=Path(r"E:\Projects\test7"))
     parser.add_argument("--target", default="三月七")
     parser.add_argument("--game", default="崩坏：星穹铁道")
+    parser.add_argument("--target-skill-dir", default=TARGET_SKILL_DIR_NAME)
+    parser.add_argument("--user-prompt", default="", help="Original user utterance to prepend before the audit contract.")
+    parser.add_argument("--spec-mode", action="store_true", help="Submit the live prompt with specMode=true.")
+    parser.add_argument("--auto-approve-spec", action="store_true", help="Automatically approve generated Spec stages for this workspace during polling.")
+    parser.add_argument("--clear-workspace-sessions", action="store_true", help="Delete existing Engine sessions bound to this workspace before live submission.")
     parser.add_argument("--model-profile", default=None)
     parser.add_argument("--max-wait", type=float, default=3600.0)
     parser.add_argument("--repair-attempts", type=int, default=2)
@@ -770,12 +1187,24 @@ def main() -> int:
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     workspace = args.workspace.resolve()
-    target_dir = _target_dir(workspace)
+    if args.target_skill_dir:
+        requested_target_dir = Path(args.target_skill_dir)
+        if requested_target_dir.is_absolute():
+            target_dir = requested_target_dir.resolve()
+            skill_dir_name = target_dir.name
+        else:
+            skill_dir_name = str(requested_target_dir).strip() or TARGET_SKILL_DIR_NAME
+            target_dir = _target_dir(workspace, skill_dir_name)
+    else:
+        skill_dir_name = TARGET_SKILL_DIR_NAME
+        target_dir = _target_dir(workspace, skill_dir_name)
     model_profile = args.model_profile or _default_model_profile_label()
     result = HuashuAuditResult(
         timestamp=timestamp,
         target_dir=str(target_dir),
         model_profile=model_profile,
+        target=args.target,
+        target_skill_dir_name=skill_dir_name,
     )
 
     preflight_findings = _preflight(workspace, require_engine=args.live, engine_url=args.engine_url)
@@ -792,7 +1221,15 @@ def main() -> int:
 
     if str(args.validate_existing_session or "").strip():
         live = _load_existing_live_case(str(args.validate_existing_session).strip())
-        _validate_live_result(result, live, target_dir, workspace)
+        _validate_live_result(
+            result,
+            live,
+            target_dir,
+            workspace,
+            target=args.target,
+            game=args.game,
+            skill_dir_name=skill_dir_name,
+        )
         result.session_id = live.session_id
         result.run_id = live.run_id
         result.observed_tools = list(live.actual_tools)
@@ -824,6 +1261,9 @@ def main() -> int:
         return 1
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
+    if args.clear_workspace_sessions:
+        deleted_sessions = _clear_workspace_sessions(workspace)
+        print(f"clearedWorkspaceSessions={len(deleted_sessions)}")
     backup_dir = _backup_existing_target(target_dir, workspace, timestamp)
     result.backup_dir = str(backup_dir) if backup_dir else None
     live = _submit_live_case(
@@ -832,11 +1272,20 @@ def main() -> int:
         target=args.target,
         game=args.game,
         target_dir=target_dir,
+        skill_dir_name=skill_dir_name,
         model_profile=model_profile,
         timestamp=timestamp,
+        spec_mode=args.spec_mode,
+        user_prompt=args.user_prompt,
     )
     if live.status != "failed":
-        live = _poll_case(args.engine_url, live, max_wait=args.max_wait)
+        live = _poll_case_with_spec_auto_approve(
+            args.engine_url,
+            live,
+            max_wait=args.max_wait,
+            workspace=workspace,
+            auto_approve_spec=args.auto_approve_spec,
+        )
     final_candidate: HuashuAuditResult | None = None
     attempts_used = 0
     for attempt in range(0, max(0, args.repair_attempts) + 1):
@@ -845,8 +1294,28 @@ def main() -> int:
             target_dir=str(target_dir),
             backup_dir=result.backup_dir,
             model_profile=model_profile,
+            target=args.target,
+            target_skill_dir_name=skill_dir_name,
         )
-        _validate_live_result(candidate, live, target_dir, workspace)
+        _validate_live_result(
+            candidate,
+            live,
+            target_dir,
+            workspace,
+            target=args.target,
+            game=args.game,
+            skill_dir_name=skill_dir_name,
+        )
+        if candidate.has_blocking_failures and live.status == "timeout" and _live_run_still_active(live):
+            candidate.add(
+                "P0",
+                "live_run_still_active_no_repair_submitted",
+                "Live run 超时但 Engine run 仍处于 active 状态；harness 不再向同一会话插入 repair guidance，以免污染长任务事件链。",
+                {"runId": live.run_id, "sessionId": live.session_id, "failureReason": live.failure_reason},
+            )
+            final_candidate = candidate
+            attempts_used = attempt
+            break
         if not candidate.has_blocking_failures or attempt >= max(0, args.repair_attempts):
             final_candidate = candidate
             attempts_used = attempt
@@ -860,12 +1329,19 @@ def main() -> int:
             game=args.game,
             target_dir=target_dir,
             model_profile=model_profile,
-            session_id=candidate.session_id or live.session_id or f"huashu-nuwa-sanyueqi-live-{timestamp}",
+            session_id=candidate.session_id or live.session_id or f"huashu-nuwa-{skill_dir_name}-live-{timestamp}",
             findings=candidate.findings,
             attempt=attempts_used,
+            spec_mode=args.spec_mode,
         )
         if live.status != "failed":
-            live = _poll_case(args.engine_url, live, max_wait=args.max_wait)
+            live = _poll_case_with_spec_auto_approve(
+                args.engine_url,
+                live,
+                max_wait=args.max_wait,
+                workspace=workspace,
+                auto_approve_spec=args.auto_approve_spec,
+            )
     if final_candidate is not None:
         result.session_id = final_candidate.session_id
         result.run_id = final_candidate.run_id

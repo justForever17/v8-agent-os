@@ -31,6 +31,7 @@ from core.realtime_protocol import (
 from erc.command_service import command_service
 from erc.command_router import runtime_command_router
 from erc.models import RuntimeCommand
+from erc.run_service import run_service
 from erc.session_runtime import session_runtime_service
 from runtimes.memory.scope_resolution import ScopeBindingConflictError
 from runtimes.chat.runtime import chat_runtime
@@ -39,6 +40,7 @@ from runtimes.chat.runtime import chat_runtime
 router = APIRouter()
 _UPLOAD_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 logger = logging.getLogger("v8chat.chat_realtime")
+_BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS = 90.0
 
 
 def _engine_now_ms() -> int:
@@ -76,6 +78,46 @@ def _runtime_error_event(topic: str, message: str, *, session_id: str | None = N
             "agent_id": None,
         },
     )
+
+
+def _emit_background_chat_run_event(
+    topic: str,
+    request: ChatRequest,
+    *,
+    transport: str,
+    run_id: str | None,
+    payload: dict | None = None,
+) -> None:
+    session_id = str(request.session_id or "").strip()
+    if not session_id:
+        return
+    try:
+        event = build_runtime_event(
+            kind="event",
+            topic=topic,
+            session_id=session_id,
+            run_id=run_id,
+            seq=db.get_next_runtime_seq(session_id),
+            payload={
+                "transport": transport,
+                "resumeRunId": request.resume_run_id,
+                **(payload or {}),
+            },
+            source={
+                "plane": "engine",
+                "component": "chat_realtime",
+                "node": "background_drain",
+                "agent_id": None,
+            },
+        )
+        db.add_runtime_event(event)
+    except Exception:
+        logger.debug(
+            "Failed to persist background chat run event %s for run %s",
+            topic,
+            run_id or request.resume_run_id,
+            exc_info=True,
+        )
 
 
 def _runtime_ack_event(topic: str, payload: dict, *, session_id: str | None = None, run_id: str | None = None):
@@ -361,9 +403,87 @@ def _fire_on_chat_end_if_terminal(session_id: str, run_id: str | None) -> None:
 
 async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str | None = None) -> None:
     active_run_id = run_id or request.resume_run_id
-    async for _ in iter_chat_events(request, transport=transport, run_id=run_id):
-        pass
-    _fire_on_chat_end_if_terminal(request.session_id or "", active_run_id)
+    _emit_background_chat_run_event(
+        "run.resume.worker.started",
+        request,
+        transport=transport,
+        run_id=active_run_id,
+        payload={"timeoutSeconds": _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS},
+    )
+    event_iter = None
+    try:
+        event_iter = iter_chat_events(request, transport=transport, run_id=run_id).__aiter__()
+        try:
+            first_event = await asyncio.wait_for(
+                event_iter.__anext__(),
+                timeout=_BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS,
+            )
+        except StopAsyncIteration:
+            _emit_background_chat_run_event(
+                "run.resume.worker.finished_empty",
+                request,
+                transport=transport,
+                run_id=active_run_id,
+            )
+            return
+        except asyncio.TimeoutError:
+            timeout_message = (
+                "Background chat run did not produce its first event within "
+                f"{_BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS:g}s."
+            )
+            _emit_background_chat_run_event(
+                "run.resume.worker.first_event_timeout",
+                request,
+                transport=transport,
+                run_id=active_run_id,
+                payload={"timeoutSeconds": _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS},
+            )
+            if active_run_id:
+                run_service.transition_run(
+                    active_run_id,
+                    status="failed",
+                    error_message=timeout_message,
+                    metadata={"resume_worker_timeout": True, "transport": transport},
+                )
+            return
+        _emit_background_chat_run_event(
+            "run.resume.worker.first_event",
+            request,
+            transport=transport,
+            run_id=active_run_id,
+            payload={
+                "eventTopic": first_event.get("topic") if isinstance(first_event, dict) else None,
+                "eventType": first_event.get("type") if isinstance(first_event, dict) else None,
+            },
+        )
+        async for _ in event_iter:
+            pass
+    except Exception:
+        _emit_background_chat_run_event(
+            "run.resume.worker.failed",
+            request,
+            transport=transport,
+            run_id=active_run_id,
+        )
+        logging.getLogger("v8chat.chat_realtime").exception(
+            "Background chat run drain failed for run '%s' transport '%s'",
+            active_run_id or "<unknown>",
+            transport,
+        )
+        raise
+    finally:
+        if event_iter is not None:
+            aclose = getattr(event_iter, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception:
+                    logger.debug(
+                        "Failed to close background chat event iterator for run %s",
+                        active_run_id,
+                        exc_info=True,
+                    )
+        _fire_on_chat_end_if_terminal(request.session_id or "", active_run_id)
 
 
 def _schedule_chat_run(request: ChatRequest, *, transport: str, run_id: str | None = None) -> str | None:

@@ -1656,6 +1656,12 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
     if not instructions:
         instructions = text
     continuation_manifest = _section("CONTINUATION MANIFEST")
+    read_offset_raw = _skill_header_value(instructions, "Read Offset") or _skill_header_value(text, "Read Offset")
+    total_chars = _skill_header_value(instructions, "Total Chars") or _skill_header_value(text, "Total Chars")
+    try:
+        read_offset = int(read_offset_raw or "0")
+    except ValueError:
+        read_offset = 0
     cleaned_lines: list[str] = []
     skip_prefixes = (
         "Skill Root:",
@@ -1684,18 +1690,39 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
     base_lines = [*lines, *_surface_ref_lines(raw_ref, include_raw=True)]
     base_rendered = "\n".join(line for line in base_lines if line).strip()
     if len(base_rendered) > budget:
-        block_lines = [
-            "Skill instructions: main document too large for the current agent-visible budget" + (f" ({skill_name})" if skill_name else ""),
-            "Status: blocked until the complete main SKILL.md contract can be read.",
-            f"Main document chars: {len(cleaned or instructions)}",
-            f"Current visible budget chars: {budget}",
-            "Reason: partial SKILL.md output can cause the agent to start with an incomplete workflow.",
-            "Next:",
-            "- Re-run fetch_skill_instructions in a larger context/tool budget or a long-context runtime.",
-            "- Do not execute this skill until the complete main SKILL.md contract is visible.",
+        prefix = "\n".join(line for line in lines if line).strip()
+        suffix_probe = "\n".join(
+            [
+                "...[main SKILL.md truncated; continue this same SKILL.md with the command below before executing the skill]",
+                "Continuation:",
+                "- fetch_skill_instructions(skill_name=..., detail_level='full', offset=<next offset>)",
+                "Execution guard: do not start implementing from a partial SKILL.md; continue reading until the document is complete.",
+                *_surface_ref_lines(raw_ref, include_raw=True),
+            ]
+        ).strip()
+        reserved = len(prefix) + len(suffix_probe) + 180
+        body_budget = max(420, budget - reserved)
+        visible_body = cleaned[:body_budget].rstrip()
+        next_offset = read_offset + len(visible_body)
+        continuation = (
+            f"fetch_skill_instructions(skill_name={skill_name!r}, detail_level='full', offset={next_offset})"
+            if skill_name
+            else f"fetch_skill_instructions(skill_name=..., detail_level='full', offset={next_offset})"
+        )
+        truncated_lines = [
+            prefix,
+            visible_body,
+            (
+                f"...[main SKILL.md truncated at offset {next_offset}"
+                + (f" of {total_chars}" if total_chars else "")
+                + "; continue this same SKILL.md before executing the skill]"
+            ),
+            "Continuation:",
+            f"- {continuation}",
+            "Execution guard: do not start implementing from a partial SKILL.md; continue reading until the document is complete.",
             *_surface_ref_lines(raw_ref, include_raw=True),
         ]
-        return "\n".join(line for line in block_lines if line).strip()
+        return "\n".join(line for line in truncated_lines if line).strip()
 
     if continuation_manifest:
         manifest_lines = [

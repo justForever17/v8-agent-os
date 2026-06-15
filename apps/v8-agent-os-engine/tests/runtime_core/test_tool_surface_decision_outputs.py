@@ -489,7 +489,7 @@ def test_fetch_skill_instructions_drops_manifest_before_truncating_main_contract
     assert "too large" not in visible
 
 
-def test_fetch_skill_instructions_blocks_when_main_contract_cannot_fit():
+def test_fetch_skill_instructions_truncates_main_contract_with_same_document_offset():
     message = ToolMessage(
         content=(
             "Skill Name: too-large-skill\n"
@@ -507,10 +507,12 @@ def test_fetch_skill_instructions_blocks_when_main_contract_cannot_fit():
         ).content
     )
 
-    assert "main document too large" in visible
-    assert "blocked until the complete main SKILL.md contract can be read" in visible
-    assert "Do not execute this skill" in visible
-    assert "Do not start from a partial skill contract." not in visible
+    assert "Skill instructions: too-large-skill" in visible
+    assert "Do not start from a partial skill contract." in visible
+    assert "main SKILL.md truncated at offset" in visible
+    assert "fetch_skill_instructions(skill_name='too-large-skill', detail_level='full', offset=" in visible
+    assert "do not start implementing from a partial SKILL.md" in visible
+    assert "blocked until the complete main SKILL.md contract can be read" not in visible
 
 
 def test_fetch_skill_relative_file_keeps_resource_document_content():

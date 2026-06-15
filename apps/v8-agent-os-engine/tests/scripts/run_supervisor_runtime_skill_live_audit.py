@@ -492,6 +492,9 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
                 "handoff.ref.created",
                 "planner.fallback.used",
                 "human_guidance.injected",
+                "run.resume.scheduling",
+                "run.resume.scheduled",
+                "run.resume.not_scheduled",
             }:
                 result.key_events.append(_redact({"topic": topic, "payload": payload})[:1600])
         terminal, facts = _load_run_terminal(result)

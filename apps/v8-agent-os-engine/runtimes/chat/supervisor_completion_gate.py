@@ -146,9 +146,9 @@ def evaluate_supervisor_completion(
         pipeline = brief.get("pipelineControl") if isinstance(brief.get("pipelineControl"), Mapping) else {}
         blocked_reason = str(pipeline.get("blockedReason") or "").strip()
         blocked_stage = str(pipeline.get("blockedByApproval") or "").strip()
-        if blocked_stage or blocked_reason in {"approval_required", "stale_downstream"}:
+        if blocked_stage or blocked_reason == "approval_required":
             return SupervisorCompletionDecision(
-                action="waiting_input",
+                action="waiting_approval",
                 reason=blocked_reason or "approval_required",
                 details={
                     "specId": brief.get("specId"),
@@ -156,6 +156,12 @@ def evaluate_supervisor_completion(
                     "blockedByApproval": blocked_stage,
                 },
             )
+        # A fast client-side approval can be applied before the turn that wrote
+        # the previous stage reaches finalization. In that race window the
+        # pipeline legitimately has `nextStage=design|tasks` and no approval
+        # block yet; the command router will schedule the continuation run.
+        # Treating this as a failure poisons the run with a false terminal
+        # status while the continuation is already in flight.
 
     if normalized_episodes and _looks_forward_only(final_text):
         return SupervisorCompletionDecision(

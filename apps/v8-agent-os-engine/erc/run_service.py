@@ -49,11 +49,16 @@ class RunService:
         error_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        persisted_metadata: Optional[Dict[str, Any]] = None
+        if metadata is not None:
+            existing = db.get_run_record(run_id) or {}
+            persisted_metadata = dict(existing.get("metadata") or {})
+            persisted_metadata.update(metadata or {})
         db.update_run_record(
             run_id,
             status=status,
             error_message=error_message,
-            metadata=metadata,
+            metadata=persisted_metadata,
         )
         run_record = db.get_run_record(run_id) or {}
         run_ledger_service.record_event(

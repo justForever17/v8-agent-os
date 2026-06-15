@@ -690,7 +690,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_ask_user_runtime_gate_unavailable_recovers_to_waiting_interaction(self):
+    async def test_ask_user_runtime_gate_unavailable_does_not_create_fake_wait(self):
         self.chat_run.run_handle = SimpleNamespace(
             request_ask_user_interaction=lambda request, assistant_message_id: {
                 "id": "ask_interaction_gate_recovered",
@@ -723,12 +723,13 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertEqual(emitted[0]["tool"]["toolCallId"], "call_v8_ask_user_gate_recovered")
-        self.assertEqual(emitted[0]["tool"]["args"], {"question": "请审批 requirements 阶段。"})
-        self.assertEqual(emitted[1]["name"], "ask_user")
-        self.assertEqual(self.stream_state.interrupted_signal["command"], "ask_user_requested")
-        self.assertEqual(self.chat_run.events[-2]["topic"], "ask_user.runtime_gate.recovered")
-        self.assertEqual(self.chat_run.events[-1]["topic"], "tool.started")
+        self.assertEqual(emitted, [])
+        self.assertIsNone(self.stream_state.interrupted_signal)
+        self.assertEqual(self.chat_run.events[-1]["topic"], "ask_user.runtime_gate.unavailable")
+        self.assertEqual(
+            self.chat_run.events[-1]["payload"]["recommendedNextAction"],
+            "Continue from the tool result or route to a runtime that can pause safely.",
+        )
 
     def test_run_system_command_result_is_compacted_to_preview(self):
         compacted = self.runtime._compact_tool_result_value(

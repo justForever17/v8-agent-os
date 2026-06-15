@@ -10,7 +10,7 @@ from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from graph.workflow_assembly import build_planner_auto_dispatch_node, build_runtime_episode_wait_node
 from graph.parallel_support import build_parallel_delegate_join_node
 from graph.supervisor_builder import _is_request_model_override
-from graph.supervisor_turn import _filter_spec_tools_for_mode
+from graph.supervisor_turn import _filter_spec_tools_for_mode, _should_force_memory_broker_first, _spec_mode_stage_guidance
 from runtimes.chat.planner_contract_verifier import verify_and_repair_planner_contract
 from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
@@ -73,6 +73,14 @@ class ChatPlannerModeTests(unittest.TestCase):
         create_for_role.assert_called_once()
         self.assertEqual(create_for_role.call_args.args[0], "supervisor")
         self.assertEqual(create_for_role.call_args.kwargs["_request_kind"], "planner")
+
+    def test_planner_prompt_maps_skill_swarm_to_research_or_top_level_delegation(self):
+        prompt = ChatRuntime()._planner_system_prompt()
+
+        self.assertIn("parallel agents, subagents, Agent Swarm", prompt)
+        self.assertIn("Research Runtime task", prompt)
+        self.assertIn("Do not assume a subagent can spawn child agents", prompt)
+        self.assertIn("huashu-nuwa", prompt)
 
     def test_spec_mode_unapproved_spec_blocks_planner_auto_dispatch(self):
         plan = {
@@ -648,22 +656,149 @@ class ChatPlannerModeTests(unittest.TestCase):
 
     def test_spec_broker_hidden_until_spec_mode(self):
         tools = [
+            SimpleNamespace(name="ask_user"),
+            SimpleNamespace(name="fetch_skill_instructions"),
             SimpleNamespace(name="spec_broker"),
+            SimpleNamespace(name="tool_observation_detail"),
+            SimpleNamespace(name="memory_broker"),
             SimpleNamespace(name="runtime_broker"),
+            SimpleNamespace(name="delegation_broker"),
             SimpleNamespace(name="research_broker"),
+            SimpleNamespace(name="web_broker"),
+            SimpleNamespace(name="write_todos"),
+            SimpleNamespace(name="update_todo"),
             SimpleNamespace(name="workspace_broker"),
             SimpleNamespace(name="run_system_command"),
             SimpleNamespace(name="write_native_file"),
         ]
 
         hidden = _filter_spec_tools_for_mode(tools, {"current_route_context": {"specMode": False}})
-        visible = _filter_spec_tools_for_mode(tools, {"current_route_context": {"specMode": True}})
+        initial_visible = _filter_spec_tools_for_mode(tools, {"current_route_context": {"specMode": True}})
+        staged_visible = _filter_spec_tools_for_mode(tools, {"current_route_context": {"specMode": True, "specId": "spec-1"}})
+        execution_visible = _filter_spec_tools_for_mode(
+            tools,
+            {
+                "current_route_context": {
+                    "specMode": True,
+                    "specId": "spec-1",
+                    "specBrief": {"pipelineControl": {"runtimeExecutionAllowed": True}},
+                }
+            },
+        )
 
         self.assertEqual(
             [item.name for item in hidden],
-            ["runtime_broker", "research_broker", "workspace_broker", "run_system_command", "write_native_file"],
+            ["ask_user", "fetch_skill_instructions", "tool_observation_detail", "memory_broker", "runtime_broker", "delegation_broker", "research_broker", "web_broker", "write_todos", "update_todo", "workspace_broker", "run_system_command", "write_native_file"],
         )
-        self.assertEqual([item.name for item in visible], ["spec_broker", "runtime_broker", "research_broker"])
+        self.assertEqual(
+            [item.name for item in initial_visible],
+            ["ask_user", "fetch_skill_instructions", "spec_broker", "tool_observation_detail", "memory_broker", "research_broker", "web_broker"],
+        )
+        self.assertEqual(
+            [item.name for item in staged_visible],
+            ["ask_user", "fetch_skill_instructions", "spec_broker", "tool_observation_detail", "memory_broker", "research_broker", "web_broker"],
+        )
+        self.assertEqual(
+            [item.name for item in execution_visible],
+            ["ask_user", "spec_broker", "tool_observation_detail", "runtime_broker"],
+        )
+
+    def test_approved_spec_runtime_stage_guides_runtime_broker_first(self):
+        tools = [
+            SimpleNamespace(name="memory_broker"),
+            SimpleNamespace(name="runtime_broker"),
+            SimpleNamespace(name="write_todos"),
+            SimpleNamespace(name="write_native_file"),
+            SimpleNamespace(name="research_broker"),
+            SimpleNamespace(name="fetch_skill_instructions"),
+        ]
+        state = {
+            "current_route_context": {
+                "specMode": True,
+                "specId": "spec-ready",
+                "specBrief": {"pipelineControl": {"runtimeExecutionAllowed": True}},
+            }
+        }
+
+        guidance = _spec_mode_stage_guidance(
+            state=state,
+            user_query="[Spec Approval Continuation] nextStage: runtime_execution",
+            selected_tools=tools,
+        )
+
+        self.assertIsNotNone(guidance)
+        self.assertIn("Spec Runtime Execution Gate", guidance.content)
+        self.assertIn("runtime_broker(mode='route'", guidance.content)
+        self.assertIn("Do not call memory_broker", guidance.content)
+        self.assertIn("fetch_skill_instructions", guidance.content)
+        self.assertIn("write_native_file directly", guidance.content)
+        self.assertIn("Supervisor todo tools are hidden in Spec Mode", guidance.content)
+        self.assertIn("approved Spec tasks as the execution contract", guidance.content)
+
+    def test_approved_spec_runtime_stage_does_not_force_memory_first(self):
+        tools = [SimpleNamespace(name="memory_broker"), SimpleNamespace(name="runtime_broker")]
+        state = {
+            "current_route_context": {
+                "specMode": True,
+                "specId": "spec-ready",
+                "specBrief": {"pipelineControl": {"runtimeExecutionAllowed": True}},
+            }
+        }
+
+        forced = _should_force_memory_broker_first(
+            user_query="[Spec Approval Continuation] previous stages approved",
+            passive_rag_diagnostics={"has_recall_cue": True},
+            selected_tools=tools,
+            state=state,
+        )
+
+        self.assertFalse(forced)
+
+    def test_spec_mode_without_spec_id_guidance_reads_skill_before_stage(self):
+        tools = [
+            SimpleNamespace(name="fetch_skill_instructions"),
+            SimpleNamespace(name="spec_broker"),
+            SimpleNamespace(name="memory_broker"),
+        ]
+        state = {
+            "current_route_context": {"specMode": True},
+            "context_mentions": [{"kind": "skill", "name": "huashu-nuwa"}],
+        }
+
+        guidance = _spec_mode_stage_guidance(
+            state=state,
+            user_query="使用女娲技能生成玲的 skill",
+            selected_tools=tools,
+            messages=[],
+        )
+
+        self.assertIsNotNone(guidance)
+        content = str(guidance.content)
+        self.assertIn("fetch_skill_instructions(skill_name='huashu-nuwa'", content)
+        self.assertIn("fetch_skill_instructions(skill_name='skill-creator'", content)
+        self.assertIn("spec_broker", content)
+        self.assertIn("mode='write_stage'", content)
+        self.assertIn("You may use `memory_broker`, `research_broker`, or `web_broker`", content)
+        self.assertIn("do not call Delegation or assume subagents can spawn grandchildren", content)
+        self.assertIn("Do not call `runtime_broker`", content)
+
+    def test_spec_mode_existing_spec_guidance_names_read_and_edit_modes(self):
+        tools = [SimpleNamespace(name="spec_broker")]
+        state = {"current_route_context": {"specMode": True, "specId": "spec-1"}}
+
+        guidance = _spec_mode_stage_guidance(
+            state=state,
+            user_query="继续",
+            selected_tools=tools,
+            messages=[],
+        )
+
+        self.assertIsNotNone(guidance)
+        content = str(guidance.content)
+        self.assertIn("mode='read'|'read_stage'", content)
+        self.assertIn("mode='write_stage'|'rewrite_stage'|'edit'|'write'|'update'", content)
+        self.assertIn("mode='approve'", content)
+        self.assertIn("do not assume subagents can spawn grandchildren implicitly", content)
 
     def test_planner_dispatch_mode_accepts_auto_and_off(self):
         runtime = ChatRuntime()

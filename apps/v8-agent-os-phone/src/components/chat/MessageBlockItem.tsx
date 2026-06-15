@@ -15,6 +15,7 @@ import { DownloadFileCard } from "@/src/components/chat/DownloadFileCard";
 import { ThinkingCard } from "@/src/components/chat/ThinkingCard";
 import { ToolCard } from "@/src/components/chat/ToolCard";
 import { VoiceCard } from "@/src/components/chat/VoiceCard";
+import { SupervisorContextDivider } from "@/src/components/chat/SupervisorActivitySummary";
 import { Badge } from "@/src/components/ui/badge";
 import { Card, CardContent } from "@/src/components/ui/card";
 import type { PhoneContentBlock } from "@/src/lib/content-detector";
@@ -72,6 +73,119 @@ function asRecord(value: unknown): Record<string, unknown> {
         : {};
 }
 
+function readContextGovernancePayload(value: unknown) {
+    const record = asRecord(value);
+    const payload = asRecord(record.payload);
+    return Object.keys(payload).length > 0 ? payload : record;
+}
+
+function normalizeProbeText(...values: unknown[]) {
+    return values
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(" ");
+}
+
+function toPositiveNumber(value: unknown) {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function readPositiveNumber(record: Record<string, unknown>, keys: string[]) {
+    for (const key of keys) {
+        const value = toPositiveNumber(record[key]);
+        if (value > 0) {
+            return value;
+        }
+    }
+    return 0;
+}
+
+function hasTruthyField(record: Record<string, unknown>, keys: string[]) {
+    return keys.some((key) => Boolean(record[key]));
+}
+
+function isCompactionSkipReason(reason: string) {
+    return new Set(["", "compaction_not_needed", "none", "prepared", "context_prepared", "skipped", "unchanged"])
+        .has(reason.trim().toLowerCase());
+}
+
+function resolveContextCompactionNotice(node: Extract<PhoneUiTimelineNode, { kind: "governance" }>) {
+    const payload = readContextGovernancePayload(node.requestInfo);
+    const durableFlush = asRecord(payload.durable_flush || payload.durableFlush);
+    const statusProbe = normalizeProbeText(
+        payload.status,
+        payload.phase,
+        payload.state,
+        payload.stage,
+        payload.compaction_status,
+        payload.compactionStatus,
+        payload.compaction_phase,
+        payload.compactionPhase,
+        durableFlush.status,
+        durableFlush.phase,
+        durableFlush.reason,
+        node.status,
+        node.reason,
+        node.topic,
+    );
+    const durableReason = normalizeProbeText(durableFlush.reason, durableFlush.status);
+    const savedTokens = readPositiveNumber(payload, ["estimated_saved_tokens", "estimatedSavedTokens"]);
+    const blockCount = readPositiveNumber(payload, ["block_count", "blockCount", "compressed_messages", "compressedMessages"]);
+    const compactionApplied = Boolean(payload.compaction_applied || payload.compactionApplied);
+    const completedByReason = !isCompactionSkipReason(durableReason)
+        && /(compact|compress|summary|baseline)/.test(durableReason || statusProbe)
+        && /(applied|complete|completed|done|success|succeeded|persisted|refreshed|ok|\u5df2|\u5b8c\u6210|\u538b\u7f29)/.test(durableReason || statusProbe);
+    const completed = compactionApplied || savedTokens > 0 || completedByReason;
+
+    if (completed) {
+        let detailKey = "";
+        let detailParams: Record<string, string | number> = {};
+        if (savedTokens > 0 && blockCount > 0) {
+            detailKey = "src.components.chat.messageblockitem.context_compaction_completed_detail_tokens_blocks";
+            detailParams = { tokens: Math.round(savedTokens), count: Math.round(blockCount) };
+        } else if (savedTokens > 0) {
+            detailKey = "src.components.chat.messageblockitem.context_compaction_completed_detail_tokens";
+            detailParams = { tokens: Math.round(savedTokens) };
+        } else if (blockCount > 0) {
+            detailKey = "src.components.chat.messageblockitem.context_compaction_completed_detail_blocks";
+            detailParams = { count: Math.round(blockCount) };
+        }
+        return {
+            phase: "completed" as const,
+            labelKey: "src.components.chat.messageblockitem.context_compaction_completed",
+            detailKey,
+            detailParams,
+        };
+    }
+
+    const explicitlyRunning = hasTruthyField(payload, [
+        "compaction_started",
+        "compactionStarted",
+        "compaction_running",
+        "compactionRunning",
+        "compaction_in_progress",
+        "compactionInProgress",
+        "compression_started",
+        "compressionStarted",
+        "compression_running",
+        "compressionRunning",
+    ]);
+    const runningByStatus = /(compact|compress|compression|\u538b\u7f29)/.test(statusProbe)
+        && /(start|started|running|progress|in_progress|pending|preparing|\u6b63\u5728|\u5904\u7406\u4e2d)/.test(statusProbe);
+
+    if (explicitlyRunning || runningByStatus) {
+        return {
+            phase: "running" as const,
+            labelKey: "src.components.chat.messageblockitem.context_compaction_running",
+            detailKey: "",
+            detailParams: {},
+        };
+    }
+
+    return null;
+}
+
 function extractSafetyEventSummary(requestInfo: unknown): Record<string, unknown> | undefined {
     const request = asRecord(requestInfo);
     const direct = asRecord(request.eventSummary);
@@ -82,42 +196,6 @@ function extractSafetyEventSummary(requestInfo: unknown): Record<string, unknown
     const details = asRecord(safety.details);
     const nested = asRecord(details.eventSummary);
     return Object.keys(nested).length ? nested : undefined;
-}
-
-function ContextGovernanceDivider({
-    label,
-    detail,
-}: {
-    label: string;
-    detail: string;
-}) {
-    const { colors } = useUiPrefs();
-    return (
-        <View style={styles.contextGovernanceWrap}>
-            <View style={[styles.contextGovernanceLine, { backgroundColor: colors.border }]} />
-            <View
-                style={[
-                    styles.contextGovernanceChip,
-                    {
-                        borderColor: colors.border,
-                        backgroundColor: colors.surfaceStrong,
-                        shadowColor: colors.text,
-                    },
-                ]}
-            >
-                <View style={[styles.contextGovernanceDot, { backgroundColor: colors.accent }]} />
-                <Text style={[styles.contextGovernanceLabel, { color: colors.text }]} numberOfLines={1}>
-                    {label}
-                </Text>
-                {detail ? (
-                    <Text style={[styles.contextGovernanceDetail, { color: colors.textMuted }]} numberOfLines={1}>
-                        {detail}
-                    </Text>
-                ) : null}
-            </View>
-            <View style={[styles.contextGovernanceLine, { backgroundColor: colors.border }]} />
-        </View>
-    );
 }
 
 function HumanGuidanceInlineCard({
@@ -398,11 +476,22 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return null;
         }
         if (node.governanceType === "context_governance") {
+            const compactionNotice = resolveContextCompactionNotice(node);
+            if (compactionNotice) {
+                return (
+                    <SupervisorContextDivider
+                        phase={compactionNotice.phase}
+                        label={t(compactionNotice.labelKey)}
+                        detail={compactionNotice.detailKey ? t(compactionNotice.detailKey, compactionNotice.detailParams) : ""}
+                    />
+                );
+            }
             if (!isNoticeableContextGovernance(node.requestInfo)) {
                 return null;
             }
             return (
-                <ContextGovernanceDivider
+                <SupervisorContextDivider
+                    phase="completed"
                     label={t("src.components.chat.messageblockitem.context_governance")}
                     detail={String(node.reason || node.topic || node.status || "").trim()}
                 />
@@ -731,48 +820,6 @@ const styles = StyleSheet.create({
     unresolvedSubtitle: {
         fontSize: 11,
         lineHeight: 16,
-    },
-    contextGovernanceWrap: {
-        width: "100%",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: spacing.sm,
-        marginVertical: spacing.xs,
-    },
-    contextGovernanceLine: {
-        flex: 1,
-        height: StyleSheet.hairlineWidth,
-        opacity: 0.55,
-    },
-    contextGovernanceChip: {
-        maxWidth: "78%",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-        paddingHorizontal: spacing.sm,
-        paddingVertical: 6,
-        borderRadius: radii.pill,
-        borderWidth: 1,
-        shadowOpacity: 0.08,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 2 },
-        elevation: 1,
-    },
-    contextGovernanceDot: {
-        width: 6,
-        height: 6,
-        borderRadius: 999,
-        opacity: 0.9,
-    },
-    contextGovernanceLabel: {
-        fontSize: 11,
-        lineHeight: 15,
-        fontWeight: "700",
-    },
-    contextGovernanceDetail: {
-        flexShrink: 1,
-        fontSize: 10,
-        lineHeight: 14,
     },
     humanGuidanceCard: {
         width: "100%",

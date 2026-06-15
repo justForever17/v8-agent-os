@@ -1473,6 +1473,19 @@ class DatabaseManager:
             conn.execute('''
                 INSERT INTO messages (id, session_id, role, content, reasoning_content, tool_calls, tool_results, images, metadata_json, agent_id, agent_name, agent_avatar, agent_role_label, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    role = excluded.role,
+                    content = excluded.content,
+                    reasoning_content = excluded.reasoning_content,
+                    tool_calls = excluded.tool_calls,
+                    tool_results = excluded.tool_results,
+                    images = excluded.images,
+                    metadata_json = excluded.metadata_json,
+                    agent_id = excluded.agent_id,
+                    agent_name = excluded.agent_name,
+                    agent_avatar = excluded.agent_avatar,
+                    agent_role_label = excluded.agent_role_label
             ''', (msg_id, session_id, role, content, reasoning_content, tc_str, tr_str, img_str, meta_str, agent_id, agent_name, agent_avatar, agent_role_label, now_iso))
             
             # Automatically bump session updated_at
@@ -2067,22 +2080,35 @@ class DatabaseManager:
         metadata: Optional[dict] = None,
     ):
         meta_str = json.dumps(metadata) if metadata else None
-        finished_at = utc_now_iso() if status in {"completed", "failed", "cancelled"} else None
+        terminal = status in {"completed", "failed", "cancelled"}
+        finished_at = utc_now_iso() if terminal else None
         def _write():
             with self.get_connection() as conn:
                 conn.execute(
                     '''
                     UPDATE run_records
                     SET status = ?,
-                        error_message = COALESCE(?, error_message),
+                        error_message = CASE
+                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, error_message)
+                            ELSE ?
+                        END,
                         metadata = COALESCE(?, metadata),
                         finished_at = CASE
                             WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, finished_at)
-                            ELSE finished_at
+                            ELSE NULL
                         END
                     WHERE id = ?
                     ''',
-                    (status, error_message, meta_str, status, finished_at, run_id),
+                    (
+                        status,
+                        status,
+                        error_message,
+                        error_message,
+                        meta_str,
+                        status,
+                        finished_at,
+                        run_id,
+                    ),
                 )
                 conn.commit()
 

@@ -3,13 +3,17 @@ from __future__ import annotations
 import uuid
 from typing import Any, Callable, Dict, Optional
 
-from api.models import ChatMessage, ChatRequest, EngineConfig
+from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 from core.database import db
+from core.realtime_protocol import build_runtime_event
+from core.spec_service import spec_service
 
 from erc.kernel import erc_kernel
 from erc.models import RuntimeCommand, RuntimeEventsPayload, RuntimeSnapshotPayload
 from erc.recovery_policy import derive_recovery_class
+from erc.run_service import run_service
 from erc.session_runtime import session_runtime_service
+from erc.workflow_ledger import workflow_ledger_service
 from runtimes.automation.runtime import automation_runtime
 from runtimes.memory.scope_resolution import session_scope_binding_service
 
@@ -98,7 +102,27 @@ class RuntimeCommandRouter:
         if topic == "approval.approve":
             result = erc_kernel.approve(approval_id, response=command.response)
             if result:
-                self._resume_from_approval(result.get("approval") or {}, command.response or {})
+                approval = result.get("approval") or {}
+                spec_approval_result = None
+                if self._approval_kind(approval) == "spec_stage_approval":
+                    spec_approval_result = self._apply_spec_stage_approval(approval, command.response or {})
+                    result["spec_stage_approval"] = spec_approval_result
+                if isinstance(spec_approval_result, dict) and spec_approval_result.get("ok") is False:
+                    resume_info = {
+                        "resume_mode": "chat",
+                        "resume_scheduled": False,
+                        "resume_error": "spec_stage_approval_apply_failed",
+                    }
+                else:
+                    resume_info = self._resume_from_approval(approval, command.response or {})
+                if resume_info:
+                    result.update(resume_info)
+                if self._approval_kind(approval) == "spec_stage_approval" and not bool(
+                    (resume_info or {}).get("resume_scheduled")
+                ):
+                    reason = str((resume_info or {}).get("resume_error") or "spec_approval_resume_not_scheduled")
+                    self._restore_waiting_approval_after_resume_failure(approval, reason=reason)
+                    result["resume_error"] = reason
             return result
         if topic == "approval.reject":
             return erc_kernel.reject(approval_id, response=command.response)
@@ -125,7 +149,7 @@ class RuntimeCommandRouter:
             "project_id": binding.project_id,
             "workspace_id": binding.workspace_id,
             "workspace_path": binding.workspace_path,
-            "scope_hint": binding.resolved_scope,
+            "scope_hint": binding.scope_hint,
             "scope_mode": "explicit",
         }
 
@@ -213,12 +237,35 @@ class RuntimeCommandRouter:
             resume_value=resume_value,
         )
 
-    def _build_manual_resume_chat_request(self, run_record: Dict[str, Any]) -> ChatRequest:
+    def _build_manual_resume_chat_request(
+        self,
+        run_record: Dict[str, Any],
+        *,
+        spec_hint: Dict[str, Any] | None = None,
+    ) -> ChatRequest:
         scope_payload = self._scope_payload_for_session(run_record["session_id"])
         metadata = dict(run_record.get("metadata") or {})
         resume_value = dict(metadata.get("manual_resume_value") or {})
+        messages: list[ChatMessage] = []
+        request_data: ChatRequestData | None = None
+        spec_continuation = self._build_spec_continuation_payload(
+            run_record=run_record,
+            scope_payload=scope_payload,
+            resume_reason=str(metadata.get("resume_reason") or "manual_resume"),
+            spec_hint=spec_hint or {},
+        )
+        if spec_continuation:
+            resume_value.setdefault("specContinuation", spec_continuation)
+            spec_id = str(spec_continuation.get("specId") or "").strip()
+            request_data = ChatRequestData(specMode=True, specId=spec_id)
+            messages.append(
+                ChatMessage(
+                    role="user",
+                    content=self._spec_continuation_prompt(spec_continuation),
+                )
+            )
         return ChatRequest(
-            messages=[],
+            messages=messages,
             config=self._engine_config_from_run(run_record),
             session_id=run_record["session_id"],
             conversation_id=run_record.get("conversation_id") or run_record["session_id"],
@@ -230,6 +277,125 @@ class RuntimeCommandRouter:
             scope_mode=scope_payload.get("scope_mode") or "explicit",
             resume_run_id=run_record["id"],
             resume_value=resume_value,
+            data=request_data,
+        )
+
+    def _build_spec_continuation_payload(
+        self,
+        *,
+        run_record: Dict[str, Any],
+        scope_payload: Dict[str, Any],
+        resume_reason: str,
+        spec_hint: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any] | None:
+        workspace_path = self._workspace_path_for_run(run_record, scope_payload)
+        if not workspace_path:
+            return None
+        hint = dict(spec_hint or {})
+        spec_id = str(hint.get("specId") or hint.get("spec_id") or "").strip()
+        if not spec_id:
+            try:
+                listing = spec_service.list_specs(workspace_path=workspace_path, include_archived=False, limit=1)
+            except Exception:
+                return None
+            spec_item = next(
+                (
+                    item
+                    for item in list(listing.get("specs") or [])
+                    if isinstance(item, dict) and str(item.get("specId") or "").strip()
+                ),
+                None,
+            )
+            if not spec_item:
+                return None
+            spec_id = str(spec_item.get("specId") or "").strip()
+        try:
+            brief = spec_service.build_brief(workspace_path=workspace_path, spec_id=spec_id)
+        except Exception:
+            return None
+        pipeline = brief.get("pipelineControl") if isinstance(brief.get("pipelineControl"), dict) else {}
+        blocked_stage = str(pipeline.get("blockedByApproval") or "").strip()
+        if blocked_stage:
+            return None
+        next_stage = str(pipeline.get("nextStage") or "").strip()
+        approved = [str(item) for item in list(brief.get("approvedStages") or []) if str(item or "").strip()]
+        if not approved and not bool(pipeline.get("runtimeExecutionAllowed")):
+            return None
+        if not next_stage:
+            return None
+        return {
+            "kind": "spec_approval_continuation",
+            "specId": spec_id,
+            "featureName": brief.get("featureName"),
+            "workspacePath": workspace_path,
+            "currentStage": brief.get("currentStage"),
+            "approvedStages": approved,
+            "nextStage": next_stage,
+            "runtimeExecutionAllowed": bool(pipeline.get("runtimeExecutionAllowed")),
+            "detailRef": f"spec://{spec_id}/{brief.get('currentStage')}" if brief.get("currentStage") else f"spec://{spec_id}",
+            "resumeReason": resume_reason,
+            "runId": run_record.get("id"),
+        }
+
+    def _workspace_path_for_run(self, run_record: Dict[str, Any], scope_payload: Dict[str, Any]) -> str:
+        candidates: list[Any] = [
+            scope_payload.get("workspace_path"),
+            scope_payload.get("workspacePath"),
+        ]
+        metadata = dict(run_record.get("metadata") or {})
+        candidates.extend(
+            [
+                metadata.get("workspace_path"),
+                metadata.get("workspacePath"),
+            ]
+        )
+        task_shape = metadata.get("taskShapeHint") if isinstance(metadata.get("taskShapeHint"), dict) else {}
+        spec_brief = task_shape.get("specBrief") if isinstance(task_shape.get("specBrief"), dict) else {}
+        candidates.extend([spec_brief.get("workspacePath"), spec_brief.get("workspace_path")])
+        engineering_pack = (
+            metadata.get("engineeringContextPack")
+            if isinstance(metadata.get("engineeringContextPack"), dict)
+            else {}
+        )
+        workspace = engineering_pack.get("workspace") if isinstance(engineering_pack.get("workspace"), dict) else {}
+        candidates.extend(
+            [
+                workspace.get("workspaceRoot"),
+                workspace.get("workspacePath"),
+                workspace.get("root"),
+            ]
+        )
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _spec_continuation_prompt(payload: Dict[str, Any]) -> str:
+        next_stage = str(payload.get("nextStage") or "").strip()
+        spec_id = str(payload.get("specId") or "").strip()
+        approved = ", ".join(str(item) for item in list(payload.get("approvedStages") or [])) or "none"
+        if bool(payload.get("runtimeExecutionAllowed")):
+            next_instruction = (
+                "Spec tasks have been approved by the user. Continue by routing the approved Spec "
+                "to the appropriate runtime execution path. Do not approve anything yourself."
+            )
+        else:
+            next_instruction = (
+                f"The user has approved the prior Spec stage. Continue the Spec pipeline by preparing "
+                f"the next stage `{next_stage}`. Do not approve this next stage yourself; write it with "
+                "`spec_broker` and then wait for user approval."
+            )
+        return (
+            "[Spec Approval Continuation]\n"
+            "This is a system-controlled continuation after a real user/client approval gate. "
+            "It is not an ask_user answer and it is not Supervisor self-approval.\n"
+            f"specId: {spec_id}\n"
+            f"approvedStages: {approved}\n"
+            f"nextStage: {next_stage}\n"
+            f"detailRef: {payload.get('detailRef') or ''}\n\n"
+            f"{next_instruction}"
         )
 
     def _resume_mode_for_run(self, run_record: Dict[str, Any]) -> str | None:
@@ -279,6 +445,7 @@ class RuntimeCommandRouter:
 
     def _schedule_resume(self, run_record: Dict[str, Any], result: Dict[str, Any]) -> None:
         resume_mode = self._resume_mode_for_run(run_record)
+        resume_scheduled = False
         if resume_mode == "automation_agent":
             invocation = automation_runtime.build_invocation_from_run(run_record)
             invocation_kwargs = dict(invocation["kwargs"])
@@ -293,19 +460,116 @@ class RuntimeCommandRouter:
                 trigger_source=invocation["trigger_source"],
                 kwargs=invocation_kwargs,
             )
+            resume_scheduled = True
         elif resume_mode == "chat" and self._schedule_chat_run is not None:
             resume_request = self._build_manual_resume_chat_request(run_record)
-            self._schedule_chat_run(resume_request, transport="system_resume")
+            scheduled_run_id = self._schedule_chat_run(
+                resume_request,
+                transport="system_resume",
+                run_id=str(run_record["id"]),
+            )
+            resume_scheduled = bool(scheduled_run_id)
+            self._emit_resume_event(
+                run_record,
+                "run.resume.scheduled" if resume_scheduled else "run.resume.not_scheduled",
+                {
+                    "resumeMode": resume_mode,
+                    "transport": "system_resume",
+                    "scheduledRunId": scheduled_run_id or run_record.get("id"),
+                    **({} if resume_scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
+                },
+            )
 
         result["resume_mode"] = resume_mode
-        result["resume_scheduled"] = bool(resume_mode)
+        result["resume_scheduled"] = resume_scheduled
 
-    def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> None:
-        if str(approval.get("approval_kind") or "").strip() == "mcp_app_tool_call":
-            return
+    def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any] | None:
+        approval_kind = self._approval_kind(approval)
+        if approval_kind == "mcp_app_tool_call":
+            return None
         run_record = db.get_run_record(approval.get("run_id", ""))
         if not run_record:
-            return
+            return None
+        if approval_kind == "spec_stage_approval":
+            if self._schedule_chat_run is None:
+                self._emit_resume_event(
+                    run_record,
+                    "run.resume.not_scheduled",
+                    {
+                        "resumeMode": "chat",
+                        "approvalKind": approval_kind,
+                        "approvalId": approval.get("id") or approval.get("approval_id"),
+                        "reason": "chat_scheduler_unavailable",
+                    },
+                )
+                return {"resume_mode": "chat", "resume_scheduled": False}
+            request_payload = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+            resume_request = self._build_manual_resume_chat_request(
+                run_record,
+                spec_hint=request_payload,
+            )
+            has_spec_continuation = bool(
+                isinstance(resume_request.resume_value, dict)
+                and isinstance(resume_request.resume_value.get("specContinuation"), dict)
+            )
+            if not has_spec_continuation:
+                self._emit_resume_event(
+                    run_record,
+                    "run.resume.not_scheduled",
+                    {
+                        "resumeMode": "chat",
+                        "approvalKind": approval_kind,
+                        "approvalId": approval.get("id") or approval.get("approval_id"),
+                        "reason": "spec_continuation_unavailable",
+                    },
+                )
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "spec_continuation": False,
+                    "resume_error": "spec_continuation_unavailable",
+                }
+            self._emit_resume_event(
+                run_record,
+                "run.resume.scheduling",
+                {
+                    "resumeMode": "chat",
+                    "approvalKind": approval_kind,
+                    "approvalId": approval.get("id") or approval.get("approval_id"),
+                    "transport": "system_resume",
+                    "specContinuation": True,
+                    "specId": request_payload.get("specId") or request_payload.get("spec_id"),
+                    "stage": request_payload.get("stage"),
+                },
+            )
+            scheduled_run_id = self._schedule_chat_run(
+                resume_request,
+                transport="system_resume",
+                run_id=str(run_record["id"]),
+            )
+            scheduled = bool(scheduled_run_id)
+            self._emit_resume_event(
+                run_record,
+                "run.resume.scheduled" if scheduled else "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "approvalKind": approval_kind,
+                    "approvalId": approval.get("id") or approval.get("approval_id"),
+                    "transport": "system_resume",
+                    "scheduledRunId": scheduled_run_id or run_record.get("id"),
+                    "specContinuation": has_spec_continuation,
+                    "specId": request_payload.get("specId") or request_payload.get("spec_id"),
+                    "stage": request_payload.get("stage"),
+                    **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
+                },
+            )
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": scheduled,
+                "resumed_run_id": scheduled_run_id or run_record["id"],
+                "spec_continuation": has_spec_continuation,
+                **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
+            }
         if run_record.get("run_type") == "automation":
             invocation = automation_runtime.build_invocation_from_run(run_record)
             invocation_kwargs = dict(invocation["kwargs"])
@@ -320,19 +584,172 @@ class RuntimeCommandRouter:
                 trigger_source=invocation["trigger_source"],
                 kwargs=invocation_kwargs,
             )
-            return
+            return {"resume_mode": "automation_agent", "resume_scheduled": True}
         if self._schedule_chat_run is None:
-            return
+            self._emit_resume_event(
+                run_record,
+                "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "approvalKind": approval_kind,
+                    "approvalId": approval.get("id") or approval.get("approval_id"),
+                    "reason": "chat_scheduler_unavailable",
+                },
+            )
+            return {"resume_mode": "chat", "resume_scheduled": False}
         resume_request = self._build_resume_chat_request(approval, response)
         if resume_request:
-            self._schedule_chat_run(resume_request, transport="system_resume")
+            scheduled_run_id = self._schedule_chat_run(
+                resume_request,
+                transport="system_resume",
+                run_id=str(run_record["id"]),
+            )
+            self._emit_resume_event(
+                run_record,
+                "run.resume.scheduled" if scheduled_run_id else "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "approvalKind": approval_kind,
+                    "approvalId": approval.get("id") or approval.get("approval_id"),
+                    "transport": "system_resume",
+                    "scheduledRunId": scheduled_run_id or run_record.get("id"),
+                    **({} if scheduled_run_id else {"reason": "chat_scheduler_returned_empty_run_id"}),
+                },
+            )
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": bool(scheduled_run_id),
+                "resumed_run_id": scheduled_run_id or run_record["id"],
+            }
+        return {"resume_mode": "chat", "resume_scheduled": False}
 
     def _resume_from_ask_user(self, interaction: Dict[str, Any], response: Dict[str, Any]) -> None:
         if self._schedule_chat_run is None:
             return
         resume_request = self._build_resume_chat_request_from_ask_user(interaction, response)
         if resume_request:
-            self._schedule_chat_run(resume_request, transport="system_resume")
+            self._schedule_chat_run(
+                resume_request,
+                transport="system_resume",
+                run_id=str(interaction.get("run_id") or ""),
+            )
+
+    @staticmethod
+    def _approval_kind(approval: Dict[str, Any]) -> str:
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        return str(
+            approval.get("approval_kind")
+            or request.get("approvalKind")
+            or request.get("approval_kind")
+            or ""
+        ).strip()
+
+    def _apply_spec_stage_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        run_record = db.get_run_record(str(approval.get("run_id") or ""))
+        if not run_record:
+            return {"ok": False, "error": "run_not_found"}
+        scope_payload = self._scope_payload_for_session(str(run_record.get("session_id") or ""))
+        workspace_path = (
+            str(request.get("workspacePath") or request.get("workspace_path") or "").strip()
+            or self._workspace_path_for_run(run_record, scope_payload)
+        )
+        spec_id = str(request.get("specId") or request.get("spec_id") or "").strip()
+        stage = str(request.get("stage") or request.get("specStage") or request.get("spec_stage") or "").strip().lower()
+        if not workspace_path:
+            return {"ok": False, "error": "workspace_path_missing"}
+        if not spec_id:
+            return {"ok": False, "error": "spec_id_missing"}
+        if not stage:
+            return {"ok": False, "error": "spec_stage_missing"}
+        approval_id = str(approval.get("id") or approval.get("approval_id") or "").strip()
+        approver = str(response.get("source") or response.get("approver") or "user").strip() or "user"
+        comment = str(response.get("comment") or response.get("reason") or "approved via governance approval").strip()
+        try:
+            approved = spec_service.approve_stage(
+                workspace_path=workspace_path,
+                spec_id=spec_id,
+                stage=stage,
+                approver=f"{approver}:{approval_id}" if approval_id else approver,
+                comment=comment,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "specId": spec_id,
+                "stage": stage,
+                "workspacePath": workspace_path,
+            }
+        return {
+            "ok": True,
+            "specId": spec_id,
+            "stage": stage,
+            "workspacePath": workspace_path,
+            "approvalId": approval_id,
+            "nextStage": approved.get("nextStage") if isinstance(approved, dict) else None,
+        }
+
+    def _restore_waiting_approval_after_resume_failure(self, approval: Dict[str, Any], *, reason: str) -> None:
+        run_id = str(approval.get("run_id") or "").strip()
+        if not run_id:
+            return
+        run_record = db.get_run_record(run_id)
+        if not run_record or str(run_record.get("status") or "") != "running":
+            return
+        approval_id = str(approval.get("id") or approval.get("approval_id") or "").strip()
+        metadata = {
+            "approval_resume_scheduled": False,
+            "approval_resume_error": reason,
+            "approval_id": approval_id,
+            "approval_kind": self._approval_kind(approval),
+        }
+        run_service.transition_run(
+            run_id,
+            status="waiting_approval",
+            metadata=metadata,
+        )
+        workflow_ledger_service.sync_run_status(
+            run_id,
+            run_status="waiting_approval",
+            reason=reason,
+            metadata=metadata,
+        )
+        self._emit_resume_event(
+            run_record,
+            "run.resume.not_scheduled",
+            {
+                "resumeMode": "chat",
+                "approvalKind": self._approval_kind(approval),
+                "approvalId": approval_id,
+                "reason": reason,
+                "restoredStatus": "waiting_approval",
+            },
+        )
+
+    def _emit_resume_event(self, run_record: Dict[str, Any], topic: str, payload: Dict[str, Any]) -> None:
+        session_id = str(run_record.get("session_id") or "").strip()
+        run_id = str(run_record.get("id") or "").strip()
+        if not session_id or not run_id:
+            return
+        try:
+            db.add_runtime_event(
+                build_runtime_event(
+                    topic=topic,
+                    session_id=session_id,
+                    conversation_id=run_record.get("conversation_id") or session_id,
+                    run_id=run_id,
+                    payload=payload,
+                    source={
+                        "plane": "engine",
+                        "component": "erc",
+                        "node": "command_router",
+                        "agent_id": None,
+                    },
+                )
+            )
+        except Exception:
+            return
 
     def _schedule_automation_run(
         self,

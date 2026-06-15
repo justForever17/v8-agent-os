@@ -125,6 +125,50 @@ def test_retention_prune_preserves_user_visible_messages(monkeypatch):
             assert conn.execute("SELECT COUNT(*) FROM chat_canonical_messages").fetchone()[0] == 1
 
 
+def test_add_message_is_idempotent_for_canonical_projection_updates():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = DatabaseManager(Path(temp_dir) / "state.db")
+        db.create_or_update_session("s1", "demo", user_id="user")
+
+        db.add_message("assistant-1", "s1", "assistant", "draft", metadata={"run_id": "run-1"})
+        db.add_message(
+            "assistant-1",
+            "s1",
+            "assistant",
+            "final",
+            reasoning_content="reasoned",
+            tool_calls=[{"name": "spec_broker"}],
+            metadata={"run_id": "run-1", "finalized": True},
+        )
+
+        rows = db.get_messages("s1")
+        assert len(rows) == 1
+        assert rows[0]["id"] == "assistant-1"
+        assert rows[0]["content"] == "final"
+        assert rows[0]["reasoning_content"] == "reasoned"
+        assert rows[0]["tool_calls"] == [{"name": "spec_broker"}]
+        assert rows[0]["metadata"]["finalized"] is True
+
+
+def test_run_transition_to_non_terminal_clears_terminal_error_state():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = DatabaseManager(Path(temp_dir) / "state.db")
+        db.create_or_update_session("s1", "demo", user_id="user")
+        db.create_run_record("run-1", "s1", run_type="chat", status="running")
+
+        db.update_run_record("run-1", status="failed", error_message="spec_next_stage_not_created")
+        failed = db.get_run_record("run-1")
+        assert failed["status"] == "failed"
+        assert failed["error_message"] == "spec_next_stage_not_created"
+        assert failed["finished_at"]
+
+        db.update_run_record("run-1", status="running")
+        resumed = db.get_run_record("run-1")
+        assert resumed["status"] == "running"
+        assert resumed["error_message"] is None
+        assert resumed["finished_at"] is None
+
+
 def test_retention_prunes_old_checkpoints_but_keeps_active_thread(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)

@@ -234,8 +234,28 @@ def test_completion_gate_keeps_spec_stage_waiting_for_approval():
         final_text="需求文档已生成，请审批。",
     )
 
-    assert decision.action == "waiting_input"
+    assert decision.action == "waiting_approval"
     assert decision.reason == "approval_required"
+
+
+def test_completion_gate_allows_fast_approval_continuation_window():
+    decision = evaluate_supervisor_completion(
+        spec_mode=True,
+        spec_brief={
+            "specId": "spec_demo",
+            "currentStage": "requirements",
+            "pipelineControl": {
+                "runtimeExecutionAllowed": False,
+                "blockedByApproval": "",
+                "blockedReason": "",
+                "nextStage": "design",
+            },
+        },
+        final_text="需求已经审批，后面继续。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
 
 
 def test_completion_gate_blocks_spec_mode_without_created_stage():

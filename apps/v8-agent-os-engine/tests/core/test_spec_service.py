@@ -112,6 +112,67 @@ def test_spec_service_normalizes_tsk_task_ids(tmp_path: Path):
     assert "TSK-001" in section["content"]
 
 
+def test_spec_service_tasks_template_is_pipeline_ready(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个计数器。",
+        feature_name="Counter",
+        stage="requirements",
+    )
+    spec_id = created["specId"]
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="design")
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+
+    tasks = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个计数器。",
+        spec_id=spec_id,
+        stage="tasks",
+    )
+
+    assert tasks["ok"] is True
+    assert tasks["tasksPipeline"]["valid"] is True
+    assert tasks["tasksPipeline"]["taskCount"] >= 3
+    assert not tasks["tasksPipeline"]["missingFields"]
+    assert tasks["specBrief"]["documents"]["tasks"]["pipelineDiagnostics"]["valid"] is True
+    content = (workspace / ".v8" / "specs" / Path(tasks["specDir"]).name / "tasks.md").read_text(encoding="utf-8")
+    assert "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |" in content
+    assert "runtimeLane:" in content
+
+
+def test_spec_service_tasks_pipeline_diagnostics_flags_weak_tasks(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个计数器。",
+        feature_name="Counter Weak Tasks",
+        stage="requirements",
+    )
+    spec_id = created["specId"]
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="design")
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="tasks")
+
+    edited = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content="# Tasks\n\n- [ ] TASK-001: 做完。\n",
+    )
+
+    assert edited["tasksPipeline"]["valid"] is False
+    assert edited["tasksPipeline"]["taskIds"] == ["TASK-001"]
+    assert set(edited["tasksPipeline"]["missingFields"]) >= {"runtimeLane", "dependsOn", "specRefs", "expectedOutput", "acceptanceProof"}
+
+
 def test_spec_service_accepts_fr_nfr_requirement_ids(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

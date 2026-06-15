@@ -112,6 +112,38 @@ from runtimes.network_supervisor.openai_compat import build_external_tool_alias_
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
 
+_SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
+    "ask_user",
+    "fetch_skill_instructions",
+    "memory_broker",
+    "research_broker",
+    "runtime_broker",
+    "spec_broker",
+    "update_todo",
+    "web_broker",
+    "write_todos",
+}
+
+
+def _chat_runtime_readonly_command_allowed(command: str) -> bool:
+    try:
+        from graph.tool_routing import _planning_readonly_command_allowed
+
+        return _planning_readonly_command_allowed(command)
+    except Exception:
+        return False
+
+
+def _chat_runtime_supervisor_tool_is_lightweight(tool_name: str, tool_inputs: dict[str, Any] | None = None) -> bool:
+    normalized = str(tool_name or "").strip()
+    if normalized in _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS:
+        return True
+    if normalized == "run_system_command":
+        inputs = dict(tool_inputs or {})
+        return _chat_runtime_readonly_command_allowed(str(inputs.get("command") or inputs.get("_raw") or ""))
+    return False
+
+
 class StreamFilter:
     """
     仅在流开头抑制常见空输出/JSON 围栏碎片，
@@ -4609,6 +4641,14 @@ class ChatRuntime:
         runner_bundle.diagnostics = diagnostics
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
+    @staticmethod
+    def _is_spec_continuation_resume(chat_run: ChatRunContext) -> bool:
+        if not chat_run.is_resume_request:
+            return False
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        continuation = resume_value.get("specContinuation")
+        return isinstance(continuation, dict) and str(continuation.get("specId") or "").strip() != ""
+
     async def create_guidance_bundle(
         self,
         *,
@@ -4670,6 +4710,8 @@ class ChatRuntime:
 
     async def resolve_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         if chat_run.is_resume_request:
+            if self._is_spec_continuation_resume(chat_run):
+                return await self.create_execution_bundle(chat_run=chat_run)
             return await self.create_resume_bundle(chat_run=chat_run)
         return await self.create_execution_bundle(chat_run=chat_run)
 
@@ -5445,6 +5487,7 @@ class ChatRuntime:
         stream_state: ChatStreamState,
         *,
         tool_name: str,
+        tool_inputs: dict[str, Any] | None = None,
         owner: dict[str, Any],
     ) -> None:
         if stream_state.supervisor_direct_scope_exceeded_emitted:
@@ -5453,6 +5496,8 @@ class ChatRuntime:
             return
         normalized_tool = str(tool_name or "").strip()
         if normalized_tool in {"delegation_broker", "runtime_broker"}:
+            return
+        if _chat_runtime_supervisor_tool_is_lightweight(normalized_tool, tool_inputs):
             return
         project_write_tools = {"write_native_file", "replace_native_file", "edit_native_file", "delete_native_file"}
         if normalized_tool in project_write_tools:
@@ -5488,11 +5533,14 @@ class ChatRuntime:
         stream_state: ChatStreamState,
         *,
         tool_name: str,
+        tool_inputs: dict[str, Any] | None = None,
         owner: dict[str, Any],
     ) -> bool:
         normalized_tool = str(tool_name or "").strip()
         if normalized_tool == "delegation_broker":
             stream_state.supervisor_direct_scope_gate_active = False
+            return False
+        if _chat_runtime_supervisor_tool_is_lightweight(normalized_tool, tool_inputs):
             return False
         if not stream_state.supervisor_direct_scope_gate_active:
             return False
@@ -7630,12 +7678,14 @@ class ChatRuntime:
                 chat_run,
                 stream_state,
                 tool_name=str(name or ""),
+                tool_inputs=inputs if isinstance(inputs, dict) else {},
                 owner=owner,
             )
             if self._enforce_supervisor_direct_scope_gate(
                 chat_run,
                 stream_state,
                 tool_name=str(name or ""),
+                tool_inputs=inputs if isinstance(inputs, dict) else {},
                 owner=owner,
             ):
                 return emitted_events
@@ -7744,24 +7794,18 @@ class ChatRuntime:
                         isinstance(output_payload, dict)
                         and str(output_payload.get("error") or "").strip() == "ask_user_unavailable_in_runtime_gate"
                     ):
-                        request_payload = self._build_ask_user_request_from_tool_call(
-                            args=data.get("input") if isinstance(data.get("input"), dict) else {},
-                            tool_call_id=candidate_tool_call_id,
-                        )
                         chat_run.emit_runtime_event(
-                            "ask_user.runtime_gate.recovered",
+                            "ask_user.runtime_gate.unavailable",
                             {
                                 "candidateToolCallId": candidate_tool_call_id,
                                 "reason": "ask_user_unavailable_in_runtime_gate",
+                                "resultPreview": output_str[:200],
+                                "recommendedNextAction": "Continue from the tool result or route to a runtime that can pause safely.",
                             },
                             agent_id=stream_state.current_agent,
                             node=stream_state.current_agent or "chat_runtime",
                         )
-                        return self._begin_ask_user_wait(
-                            chat_run,
-                            stream_state,
-                            request_payload=request_payload,
-                        )
+                        return emitted_events
                     chat_run.emit_runtime_event(
                         "ask_user.tool_result.unmatched",
                         {
@@ -8640,6 +8684,21 @@ class ChatRuntime:
                 spec_id = match.group(1).strip()
                 break
         if not spec_id:
+            try:
+                listing = spec_service.list_specs(workspace_path=workspace_path, include_archived=False, limit=1)
+                latest = next(
+                    (
+                        item
+                        for item in list(listing.get("specs") or [])
+                        if isinstance(item, dict) and str(item.get("specId") or "").strip()
+                    ),
+                    None,
+                )
+                if latest is not None:
+                    spec_id = str(latest.get("specId") or "").strip()
+            except Exception:
+                spec_id = ""
+        if not spec_id:
             return prepared_brief
         try:
             return spec_service.build_brief(workspace_path=workspace_path, spec_id=spec_id)
@@ -8666,17 +8725,18 @@ class ChatRuntime:
             spec_mode=bool(getattr(chat_run.prepared, "spec_mode", False)),
             spec_brief=self._completion_spec_brief(chat_run) if getattr(chat_run.prepared, "spec_mode", False) else None,
         )
-        if decision.action == "waiting_input":
+        if decision.action in {"waiting_input", "waiting_approval"}:
+            wait_status = "waiting_approval" if decision.action == "waiting_approval" else "waiting_input"
             chat_run.emit_runtime_event(
                 "run.completion.waiting_for_spec_approval",
                 {"reason": decision.reason, **dict(decision.details or {})},
                 agent_id=None,
                 node="completion_gate",
             )
-            chat_run.run_handle.transition("waiting_input", reason=decision.reason, node="completion_gate")
+            chat_run.run_handle.transition(wait_status, reason=decision.reason, node="completion_gate")
             return {
                 "type": "done",
-                "status": "waiting_input",
+                "status": wait_status,
                 "reason": decision.reason,
                 "run_id": chat_run.active_run_id,
             }

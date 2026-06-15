@@ -177,12 +177,86 @@ Source: {source_label} `{approved_ref}`.
 def _template_tasks(title: str) -> str:
     return f"""# Tasks: {title}
 
-Each task must link to requirement or bugfix IDs and design IDs.
+Task documents are the execution contract for runtime dispatch. Each task must
+carry a stable ID, runtime lane, dependencies, Spec refs, expected output, and
+acceptance/proof expectations.
 
-- [ ] TASK-001: Prepare runtime context and confirm approved spec refs. Links: REQ-001/BFIX-001, DES-001
-- [ ] TASK-002: Implement the scoped change through the appropriate runtime. Links: DES-002, DES-003
-- [ ] TASK-003: Verify proof and reconcile handoff. Links: AC-REQ-001/AC-BFIX-001, DES-004
+## Pipeline Contract
+
+- Execution truth lives in runtime episodes, typed handoffs, artifacts, and proof ledgers.
+- Supervisor todos are only orchestration milestones and must not replace this task contract.
+- Runtime lanes should be one of: Research, Engineering, Creative Media, Delegation/Subagent, Memory, or Governance.
+
+## Task Pipeline
+
+| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |
+| --- | --- | --- | --- | --- | --- | --- |
+| TASK-001 | Governance | Prepare runtime route with approved Spec refs. | - | REQ-001/BFIX-001, DES-001 | Runtime need payload with specId and detailRefs. | Route cites approved Spec refs. |
+| TASK-002 | Engineering/Research/Delegation | Execute the scoped change through the appropriate runtime. | TASK-001 | DES-002, DES-003 | Runtime handoff, artifact, or degraded handoff. | Handoff/proof links task and Spec IDs. |
+| TASK-003 | Governance | Verify proof and reconcile final delivery. | TASK-002 | AC-REQ-001/AC-BFIX-001, DES-004 | User-facing completion summary. | Verification result is linked to proof/artifact refs. |
+
+## Task Details
+
+### TASK-001: Prepare runtime route
+
+- runtimeLane: Governance
+- dependsOn: []
+- specRefs: REQ-001/BFIX-001, DES-001
+- inputRefs: approved requirements/bugfix, design, tasks
+- expectedOutput: runtime need payload
+- acceptance: runtime route contains specId and approved detailRefs
+- proofRequired: route/episode ledger entry
+
+### TASK-002: Execute scoped change
+
+- runtimeLane: Engineering/Research/Delegation
+- dependsOn: [TASK-001]
+- specRefs: DES-002, DES-003
+- inputRefs: runtime need payload
+- expectedOutput: runtime handoff, artifact, or degraded handoff
+- acceptance: output links task ID and Spec IDs
+- proofRequired: runtime handoff/proof/artifact refs
+
+### TASK-003: Verify and reconcile
+
+- runtimeLane: Governance
+- dependsOn: [TASK-002]
+- specRefs: AC-REQ-001/AC-BFIX-001, DES-004
+- inputRefs: runtime handoff/proof/artifact refs
+- expectedOutput: final delivery summary
+- acceptance: verification result explains pass/degraded/fail
+- proofRequired: proof ledger or explicit degraded reason
 """
+
+
+_TASKS_PIPELINE_REQUIREMENTS = {
+    "runtimeLane": ("runtime lane", "runtimelane", "runtime泳道", "执行泳道", "执行方"),
+    "dependsOn": ("depends on", "dependson", "dependsOn", "依赖"),
+    "specRefs": ("spec refs", "specrefs", "specrefs", "specId", "spec ids", "需求", "设计", "引用"),
+    "expectedOutput": ("expected output", "expectedoutput", "output", "输出", "产物"),
+    "acceptanceProof": ("acceptance", "proof", "验收", "证明", "proofRequired", "proof refs"),
+}
+
+
+def _tasks_pipeline_diagnostics(markdown: str) -> dict[str, Any]:
+    text = str(markdown or "")
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    task_ids = _extract_ids(text, "TASK")
+    missing: list[str] = []
+    for field, markers in _TASKS_PIPELINE_REQUIREMENTS.items():
+        if not any(str(marker).lower() in normalized for marker in markers):
+            missing.append(field)
+    has_pipeline_table = bool(re.search(r"(?im)^\|\s*task id\s*\|", text)) or "## task pipeline" in normalized
+    has_task_details = bool(re.search(r"(?im)^###\s+(?:TASK|TSK)-\d{3,}\b", text))
+    return {
+        "valid": bool(task_ids) and not missing,
+        "taskCount": len(task_ids),
+        "taskIds": task_ids,
+        "missingFields": missing,
+        "hasPipelineTable": has_pipeline_table,
+        "hasTaskDetails": has_task_details,
+        "recommendedFormat": "Task Pipeline table plus TASK detail cards with runtimeLane/dependsOn/specRefs/expectedOutput/acceptance/proofRequired.",
+    }
 
 
 @dataclass(slots=True)
@@ -254,6 +328,11 @@ class SpecService:
                     "status": value.get("status"),
                     "updatedAt": value.get("updatedAt"),
                     "approvedAt": value.get("approvedAt"),
+                    **(
+                        {"pipelineDiagnostics": value.get("pipelineDiagnostics")}
+                        if stage == "tasks" and isinstance(value.get("pipelineDiagnostics"), dict)
+                        else {}
+                    ),
                 }
                 for stage, value in docs.items()
                 if isinstance(value, dict)
@@ -516,7 +595,14 @@ class SpecService:
             "version": max(1, doc_version),
             "status": "draft",
         }
+        if normalized_stage == "tasks":
+            manifest["documents"][normalized_stage]["pipelineDiagnostics"] = _tasks_pipeline_diagnostics(content)
         self._write_manifest(paths, manifest)
+        tasks_pipeline = (
+            dict(manifest["documents"][normalized_stage].get("pipelineDiagnostics") or {})
+            if normalized_stage == "tasks"
+            else None
+        )
         return {
             "ok": True,
             "kind": "spec_stage_ready",
@@ -528,6 +614,7 @@ class SpecService:
             "linkedSections": self._linked_sections(manifest),
             "summary": f"Spec stage '{normalized_stage}' is ready for review.",
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=str(manifest.get("specId") or "")),
+            **({"tasksPipeline": tasks_pipeline} if tasks_pipeline is not None else {}),
         }
 
     def _document_ids(self, stage: str, content: str) -> list[str]:
@@ -564,21 +651,24 @@ class SpecService:
             for stage, payload in dict(manifest.get("approvals") or {}).items()
             if isinstance(payload, dict)
         }
+        docs = dict(manifest.get("documents") or {})
         stale_stages = {
             stage: payload
             for stage, payload in dict(manifest.get("staleStages") or {}).items()
-            if isinstance(payload, dict) and payload.get("stale")
+            if isinstance(payload, dict)
+            and payload.get("stale")
+            and (stage in docs or stage in approvals)
         }
         next_stage = self.next_stage(manifest, current) if current else None
         runtime_allowed = next_stage == "runtime_execution" and approvals.get("tasks") is True and not stale_stages
         blocked_by = None
         blocked_reason = ""
-        if next_stage and next_stage != "runtime_execution":
+        if current and current in docs and approvals.get(current) is not True:
+            blocked_by = current
+            blocked_reason = "approval_required"
+        elif next_stage and next_stage != "runtime_execution":
             blocked_by = current if approvals.get(current) is not True else None
             blocked_reason = "approval_required" if blocked_by else ""
-        if stale_stages:
-            blocked_by = blocked_by or sorted(stale_stages)[0]
-            blocked_reason = "stale_downstream"
         return {
             "currentStage": current,
             "nextStage": next_stage,
@@ -728,8 +818,11 @@ class SpecService:
                 "lastEditAction": edit_action,
             }
         )
+        if normalized_stage == "tasks":
+            doc_meta["pipelineDiagnostics"] = _tasks_pipeline_diagnostics(next_content)
         manifest.setdefault("documents", {})[normalized_stage] = doc_meta
         self._write_manifest(paths, manifest)
+        tasks_pipeline = dict(doc_meta.get("pipelineDiagnostics") or {}) if normalized_stage == "tasks" else None
         return {
             "ok": True,
             "kind": "spec_stage_edited",
@@ -741,6 +834,7 @@ class SpecService:
             "linkedSections": self._linked_sections(manifest),
             "summary": f"Spec stage '{normalized_stage}' edited with {edit_action}; approval is required again.",
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
+            **({"tasksPipeline": tasks_pipeline} if tasks_pipeline is not None else {}),
         }
 
     def next_stage(self, manifest: dict[str, Any], stage: str) -> str | None:
@@ -863,6 +957,11 @@ class SpecService:
                     "detailRef": f"spec://{manifest.get('specId')}/{stage}",
                     "version": value.get("version"),
                     "status": value.get("status"),
+                    **(
+                        {"pipelineDiagnostics": value.get("pipelineDiagnostics")}
+                        if stage == "tasks" and isinstance(value.get("pipelineDiagnostics"), dict)
+                        else {}
+                    ),
                 }
                 for stage, value in docs.items()
                 if isinstance(value, dict)

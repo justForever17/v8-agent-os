@@ -1479,6 +1479,55 @@ def test_child_delegation_retargets_research_goal_away_from_source_agent():
     assert child["metadata"]["targetRepairReason"] == "research_goal"
 
 
+def test_child_delegation_request_preserves_rich_task_brief_for_grandchild():
+    from graph.parallel_support import _child_request_from_send_state
+
+    task_brief = {
+        "taskBriefId": "brief-child-rich",
+        "goal": "调研绝区零角色玲的官方设定、来源和可用于 skill 写作的表达约束。",
+        "brief": "返回 answer/sources/score/limitations/detailRef，而不是只返回任务 ID。",
+        "runtimeAccess": ["research.core", "memory.read"],
+        "acceptanceContract": "父 subagent 能直接基于证据继续写 SKILL.md。",
+    }
+    request = _child_request_from_send_state(
+        {
+            "parallel_branch": {
+                "agentId": "web-research-architect",
+                "agentName": "Web Research Architect",
+                "delegationId": "delegation-child-rich",
+                "invocationId": "invoke-child-rich",
+                "taskBriefId": "brief-child-rich",
+                "reason": "brief-child-rich",
+                "taskBrief": task_brief,
+            }
+        },
+        source_branch={
+            "agentId": "skill-workflow-curator",
+            "agentName": "Skill Workflow Curator",
+            "delegationId": "delegation-parent-rich",
+            "invocationId": "invoke-parent-rich",
+            "allowChildDelegation": True,
+        },
+        source_agent_id="skill-workflow-curator",
+    )
+
+    assert request is not None
+    assert request["childTaskBrief"] == task_brief
+    assert request["childTaskBriefId"] == "brief-child-rich"
+    assert request["childTaskGoal"] == task_brief["goal"]
+    assert request["childTaskGoal"] != request["childTaskBriefId"]
+
+    worker_brief, _child_branch = RuntimeEpisodeRunner._child_worker_brief_from_request(
+        request,
+        workspace_path="E:/Projects/test3",
+    )
+    assert worker_brief["taskBriefId"] == "brief-child-rich"
+    assert "绝区零角色玲" in worker_brief["goal"]
+    assert worker_brief["acceptanceContract"] == "父 subagent 能直接基于证据继续写 SKILL.md。"
+    assert worker_brief["runtimeAccess"] == ["research.core", "memory.read"]
+    assert worker_brief["workspacePath"] == "E:/Projects/test3"
+
+
 def test_child_delegation_retargets_runtime_verification_away_from_skill_curator():
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "verification child target repair"},

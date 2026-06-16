@@ -351,6 +351,49 @@ def _child_request_from_send_state(
     if not request_id:
         stable_part = child_invocation_id or child_delegation_id
         request_id = f"child_{stable_part}" if stable_part else f"child_{uuid.uuid4().hex[:12]}"
+    child_task_brief = (
+        dict(seed.get("childTaskBrief"))
+        if isinstance(seed.get("childTaskBrief"), dict)
+        else dict(child_branch.get("taskBrief"))
+        if isinstance(child_branch.get("taskBrief"), dict)
+        else {}
+    )
+
+    def _first_text(*values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    child_task_brief_id = _first_text(
+        seed.get("childTaskBriefId"),
+        child_branch.get("taskBriefId"),
+        child_task_brief.get("taskBriefId"),
+        child_task_brief.get("id"),
+    )
+    id_like_values = {
+        value
+        for value in (
+            child_task_brief_id,
+            child_invocation_id,
+            child_delegation_id,
+            child_task_brief.get("id"),
+        )
+        if str(value or "").strip()
+    }
+    child_task_goal = ""
+    for value in (
+        seed.get("childTaskGoal"),
+        child_task_brief.get("goal"),
+        child_task_brief.get("brief"),
+        child_task_brief.get("title"),
+        child_branch.get("reason"),
+    ):
+        text = str(value or "").strip()
+        if text and text not in id_like_values:
+            child_task_goal = text
+            break
     return {
         "requestId": request_id,
         "createdAt": seed.get("createdAt") or _now_iso(),
@@ -362,8 +405,9 @@ def _child_request_from_send_state(
         "sourceChildDelegationBudget": dict(source_branch.get("childDelegationBudget") or {}),
         "childInvocationId": child_invocation_id or seed.get("childInvocationId"),
         "childDelegationId": child_delegation_id or seed.get("childDelegationId"),
-        "childTaskBriefId": seed.get("childTaskBriefId") or child_branch.get("taskBriefId"),
-        "childTaskGoal": seed.get("childTaskGoal") or child_branch.get("reason"),
+        "childTaskBriefId": child_task_brief_id,
+        "childTaskGoal": child_task_goal,
+        **({"childTaskBrief": child_task_brief} if child_task_brief else {}),
         "childAgentId": seed.get("childAgentId") or child_branch.get("agentId"),
         "childAgentName": seed.get("childAgentName") or child_branch.get("agentName"),
         "childDepth": seed.get("childDepth") or child_branch.get("delegationDepth"),
@@ -877,6 +921,7 @@ def build_parallel_delegate_join_node():
                     "childDelegationId": branch.get("delegationId") or item.get("childDelegationId"),
                     "childTaskBriefId": branch.get("taskBriefId") or item.get("childTaskBriefId"),
                     "childTaskGoal": branch.get("reason") or item.get("childTaskGoal"),
+                    "childTaskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else item.get("childTaskBrief"),
                     "childAgentId": branch.get("agentId") or item.get("childAgentId"),
                     "childAgentName": branch.get("agentName") or item.get("childAgentName"),
                     "childDepth": branch.get("delegationDepth") or item.get("childDepth"),
@@ -919,18 +964,30 @@ def build_parallel_delegate_join_node():
             child_episodes: list[dict[str, Any]] = []
             for child_summary in child_summaries:
                 child_branch = dict(child_summary.get("childBranch") or {})
-                worker_brief = {
-                    "id": child_summary.get("childTaskBriefId") or child_summary.get("childInvocationId"),
-                    "title": child_summary.get("childTaskGoal") or "child delegation",
-                    "brief": child_summary.get("childTaskGoal") or "Continue the requested child delegation.",
-                    "agentId": child_summary.get("childAgentId"),
-                    "agentName": child_summary.get("childAgentName"),
-                    "runtimeAccess": child_branch.get("runtimeAccess") or ["delegation.recursive"],
-                    "parentDelegationId": child_summary.get("sourceDelegationId"),
-                    "parentInvocationId": invocation_id,
-                    "writeSet": child_branch.get("writeSet"),
-                    "acceptanceHint": child_branch.get("acceptanceHint"),
-                }
+                worker_brief = dict(child_summary.get("childTaskBrief") or {})
+
+                def _set_default_text(key: str, *values: Any) -> None:
+                    if str(worker_brief.get(key) or "").strip():
+                        return
+                    for value in values:
+                        text = str(value or "").strip()
+                        if text:
+                            worker_brief[key] = text
+                            return
+
+                _set_default_text("id", child_summary.get("childTaskBriefId"), child_summary.get("childInvocationId"))
+                _set_default_text("taskBriefId", child_summary.get("childTaskBriefId"), worker_brief.get("id"))
+                _set_default_text("title", child_summary.get("childTaskGoal"), worker_brief.get("goal"), "child delegation")
+                _set_default_text("goal", child_summary.get("childTaskGoal"), worker_brief.get("brief"), worker_brief.get("title"), "Continue the requested child delegation.")
+                _set_default_text("brief", worker_brief.get("goal"), child_summary.get("childTaskGoal"), "Continue the requested child delegation.")
+                _set_default_text("agentId", child_summary.get("childAgentId"))
+                _set_default_text("agentName", child_summary.get("childAgentName"))
+                if not worker_brief.get("runtimeAccess"):
+                    worker_brief["runtimeAccess"] = child_branch.get("runtimeAccess") or ["delegation.recursive"]
+                worker_brief.setdefault("parentDelegationId", child_summary.get("sourceDelegationId"))
+                worker_brief.setdefault("parentInvocationId", invocation_id)
+                worker_brief.setdefault("writeSet", child_branch.get("writeSet"))
+                worker_brief.setdefault("acceptanceHint", child_branch.get("acceptanceHint"))
                 if workspace_path:
                     worker_brief.setdefault("workspacePath", workspace_path)
                 episode = build_runtime_episode(

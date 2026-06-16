@@ -2497,6 +2497,80 @@ class RuntimeEpisodeRunner:
         repaired["originalAgentName"] = worker_brief.get("agentName") or request.get("childAgentName")
         return repaired
 
+    @classmethod
+    def _child_worker_brief_from_request(
+        cls,
+        request: dict[str, Any],
+        *,
+        workspace_path: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        child_branch = dict(((request.get("send") or {}).get("arg") or {}).get("parallel_branch") or {})
+        raw_task_brief = (
+            dict(request.get("childTaskBrief"))
+            if isinstance(request.get("childTaskBrief"), dict)
+            else dict(child_branch.get("taskBrief"))
+            if isinstance(child_branch.get("taskBrief"), dict)
+            else {}
+        )
+        normalized = normalize_task_briefs([raw_task_brief])[0] if raw_task_brief else {}
+        worker_brief: dict[str, Any] = dict(normalized)
+
+        def _set_default_text(key: str, *values: Any) -> None:
+            if str(worker_brief.get(key) or "").strip():
+                return
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    worker_brief[key] = text
+                    return
+
+        child_task_id = (
+            request.get("childTaskBriefId")
+            or worker_brief.get("taskBriefId")
+            or worker_brief.get("id")
+            or request.get("childInvocationId")
+        )
+        id_like_values = {
+            str(value).strip()
+            for value in (
+                child_task_id,
+                request.get("childInvocationId"),
+                request.get("childDelegationId"),
+                worker_brief.get("id"),
+            )
+            if str(value or "").strip()
+        }
+        child_goal = ""
+        for value in (
+            request.get("childTaskGoal"),
+            worker_brief.get("goal"),
+            worker_brief.get("brief"),
+            worker_brief.get("title"),
+            child_branch.get("reason"),
+        ):
+            text = str(value or "").strip()
+            if text and text not in id_like_values:
+                child_goal = text
+                break
+        _set_default_text("id", child_task_id)
+        _set_default_text("taskBriefId", child_task_id)
+        _set_default_text("title", child_goal, "child delegation")
+        _set_default_text("goal", child_goal, worker_brief.get("brief"), worker_brief.get("title"), "Continue the requested child delegation.")
+        _set_default_text("brief", worker_brief.get("goal"), child_goal, "Continue the requested child delegation.")
+        _set_default_text("agentId", request.get("childAgentId"), child_branch.get("agentId"))
+        _set_default_text("agentName", request.get("childAgentName"), child_branch.get("agentName"))
+        if not worker_brief.get("runtimeAccess"):
+            worker_brief["runtimeAccess"] = child_branch.get("runtimeAccess") or ["delegation.recursive"]
+        worker_brief.setdefault("parentDelegationId", request.get("sourceDelegationId"))
+        worker_brief.setdefault("parentInvocationId", request.get("sourceInvocationId"))
+        if child_branch.get("writeSet") and not worker_brief.get("writeSet"):
+            worker_brief["writeSet"] = child_branch.get("writeSet")
+        if child_branch.get("acceptanceHint") and not worker_brief.get("acceptanceHint"):
+            worker_brief["acceptanceHint"] = child_branch.get("acceptanceHint")
+        if workspace_path:
+            worker_brief["workspacePath"] = workspace_path
+        return cls._repair_child_worker_target(worker_brief, request=request, child_branch=child_branch), child_branch
+
     def _enqueue_child_delegation_requests(self, child_requests: list[dict[str, Any]], *, episode: dict[str, Any]) -> list[str]:
         if not child_requests:
             return []
@@ -2516,23 +2590,7 @@ class RuntimeEpisodeRunner:
         ).strip() or None
         child_episode_ids: list[str] = []
         for item in child_requests:
-            child_branch = dict(((item.get("send") or {}).get("arg") or {}).get("parallel_branch") or {})
-            worker_brief = {
-                "id": item.get("childTaskBriefId") or item.get("childInvocationId"),
-                "title": item.get("childTaskGoal") or "child delegation",
-                "goal": item.get("childTaskGoal") or "Continue the requested child delegation.",
-                "brief": item.get("childTaskGoal") or "Continue the requested child delegation.",
-                "agentId": item.get("childAgentId"),
-                "agentName": item.get("childAgentName"),
-                "runtimeAccess": child_branch.get("runtimeAccess") or ["delegation.recursive"],
-                "parentDelegationId": item.get("sourceDelegationId"),
-                "parentInvocationId": item.get("sourceInvocationId"),
-                "writeSet": child_branch.get("writeSet"),
-                "acceptanceHint": child_branch.get("acceptanceHint"),
-            }
-            worker_brief = self._repair_child_worker_target(worker_brief, request=item, child_branch=child_branch)
-            if workspace_path:
-                worker_brief["workspacePath"] = workspace_path
+            worker_brief, child_branch = self._child_worker_brief_from_request(item, workspace_path=workspace_path)
             child_inputs = {
                 "targetCount": 1,
                 "workerBriefs": [worker_brief],

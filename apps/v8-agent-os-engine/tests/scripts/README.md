@@ -14,6 +14,7 @@
 | 脚本 | 用途 | 副作用 |
 | --- | --- | --- |
 | `export_context_management_assessment.py` | 导出超长上下文管理评估报告。 | 写本地报告。 |
+| `export_child_delegation_contract_dry_run.py` | 导出 Subagent → 孙 agent 任务契约与 handoff 回流空运行矩阵，检查孙 agent 拿到的是可执行任务而不是孤立 ID。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `export_memory_capability_assessment.py` | 导出 V8OS memory capability 评估报告。 | 写本地报告。 |
 | `export_native_tools_output_dry_run.py` | 导出 native tools dry-run output，检查工具输出脏数据。 | 默认写 `docs/tools/`；不执行真实副作用。 |
 | `export_prompt_cache_dry_run_matrix.py` | 导出 Prompt Cache provider patch / segment hash / cache decision 空运行矩阵。 | 写本地报告。 |

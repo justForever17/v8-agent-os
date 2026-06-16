@@ -1420,7 +1420,13 @@ def runtime_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Supervisor-only broker to route approved complex work into Research/Engineering/Delegation/etc runtime episodes and wait for typed handoff."""
+    """Supervisor-only broker to route approved complex work into Research/Engineering/Delegation/etc runtime episodes and wait for typed handoff.
+
+    Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when work should be handled by a strengthened runtime.
+    Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
+    Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for runtime execution.
+    A route result queues an episode and returns a waitable typed handoff path; do not claim the runtime completed until the handoff/proof returns.
+    """
     normalized_mode = str(mode or "list").strip().lower()
     route_context = dict((state or {}).get("current_route_context") or {})
     if normalized_mode == "list" and _runtime_list_request_should_route(

@@ -212,9 +212,17 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         system_content = result["system_content"]
         self.assertIn("[Supervisor Operating Contract]", system_content)
         self.assertIn("not an all-powerful executor", system_content)
+        self.assertIn("Path selection:", system_content)
+        self.assertIn("Direct path:", system_content)
+        self.assertIn("Planner path:", system_content)
+        self.assertIn("Runtime path:", system_content)
+        self.assertIn("Subagent path:", system_content)
+        self.assertIn("Spec path:", system_content)
         self.assertIn("user/client approval gates are blocking and cannot be self-approved", system_content)
         self.assertIn("`delegation_broker` is how you dispatch subagents", system_content)
         self.assertIn("`ask_user` asks the human for missing information", system_content)
+        self.assertIn("If the conversation already names a skill, fetch it directly", system_content)
+        self.assertIn("Do not declare completion until", system_content)
         self.assertLess(
             system_content.index("Custom editable persona prompt."),
             system_content.index("[Supervisor Operating Contract]"),

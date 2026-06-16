@@ -613,7 +613,12 @@ def delegation_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks; use only with concrete task briefs, not fake Agent Swarm."""
+    """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks; use only with concrete task briefs, not fake Agent Swarm.
+
+    Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with tasks/worker_briefs that name the goal, evidence refs, required skills/capabilities, deliverables, and acceptance criteria.
+    Subagents may request child work only through their brokered runtime path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
+    Use `mode='observe'` or `mode='resume'` to collect results, degraded handoffs, or recovery hints before you synthesize a final answer.
+    """
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:
         return Command(

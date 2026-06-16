@@ -40,6 +40,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责图片、视频、语音、音乐与未来 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
         "visibility": "secondary",
         "promptHints": [
+            "用法入口：复杂媒体创作或 provider 生成任务通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode，不要让 Supervisor 直接拼 provider raw request。",
             "用户明确 Seedance、Sora、图生视频、文生视频、参考视频、首尾帧、参考音频/音乐或 provider 视频生成时，Creative Media 可作为主 runtime。",
             "简单背景图、图标、封面、角色图、配音、音乐、关键帧等素材需求，可作为 Engineering/Research/Admin 等 runtime 的 CreativeAssetRequest 支撑能力。",
             "科普、课程、产品介绍、讲解类视频若需要可编辑时间线或代码合成，默认由 Engineering 走代码视频链路，Creative Media 只做素材/provider 子能力。",
@@ -65,6 +66,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责桌面观察、窗口交互、结构化执行与视觉保底。",
         "visibility": "secondary",
         "promptHints": [
+            "用法入口：真实 GUI/桌面登录态任务通过 runtime_broker(mode='route', need={'kind':'computer_use', ...}) 进入受控 episode；不要让 Supervisor 猜坐标或直接编造桌面结果。",
             "只有用户明确要求真实桌面终端、让我看着终端窗口、GUI 终端、桌面登录态或必须操作真实窗口时，才把终端类请求交给 Computer Use。",
             "一次性真实桌面探索、窗口观察、登录态 GUI 操作或视觉确认适合 Computer Use；需要可复用流程、模板、对象库和回放时交给 RPA。",
         ],
@@ -74,6 +76,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责 trace 编译、流程固化、.robot 导出、执行与失败回退。",
         "visibility": "secondary",
         "promptHints": [
+            "用法入口：可复用桌面流程通过 runtime_broker(mode='route', need={'kind':'rpa', ...}) 或 RPA 工具组执行；探索和不确定窗口先给 Computer Use。",
             "可复用、可验证、可修复的桌面/浏览器流程应进入 RPA Runtime，例如模板、对象库、定时执行、导出脚本或稳定回放。",
             "一次性探索或不确定目标窗口的临时桌面观察优先 Computer Use；探索结果需要固化时再转为 RPA。",
         ],
@@ -85,9 +88,11 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     },
     "engineering": {
         "displayName": "EngineeringRuntime",
-        "summary": "负责工程任务的 ContextPack、写集治理、Proof Ledger、工作区观测与 workflow hints；它提供执行账本，不替代 Supervisor 编排。",
+        "summary": "负责工程任务的 ContextPack、写集治理、Proof Ledger、工作区观测、验证与 worker 分发；它强化工程交付边界，不替代 Supervisor 与用户沟通。",
         "visibility": "secondary",
         "promptHints": [
+            "用法入口：项目开发、修复、依赖安装、脚手架、验证闭环或已批准 Spec 执行，通过 runtime_broker(mode='route', need={'kind':'engineering', ...}) 创建 Engineering episode。",
+            "Engineering Runtime 的价值是把需求/Spec 转成受控 writeSet、ContextPack、worker briefs、proof/validation 和 typed handoff；不要把它理解为一个普通聊天助手。",
             "科普、课程、产品介绍、讲解类视频默认优先走可编辑代码视频链路，例如 Remotion、Hyperframes、Manim、HTML video 或 ffmpeg。",
             "Remotion、Manim、ffmpeg、Three.js、p5.js 等用代码生成媒体或项目资产的任务属于 Engineering 主路径；Creative Media 只提供素材、配音、音乐或 provider 生成。",
             "用户说打开终端安装、启动或运行命令时，默认解释为逻辑命令会话，优先使用 run_system_command / command_session_broker，而不是拉起真实 GUI 终端。",
@@ -98,6 +103,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责多源联网调研、来源权威度排序、冲突记录、引用矩阵和 run-scoped evidence bundle；为 Engineering、Creative Media、Writing 等 runtime 提供压缩证据，不执行写入或系统副作用。",
         "visibility": "secondary",
         "promptHints": [
+            "用法入口：需要多源/新鲜/冲突/引用矩阵/经验包复用时，通过 runtime_broker(mode='route', need={'kind':'research', ...}) 或受控 research_broker 产出 ResearchAnswerPack。",
             "多源、新鲜、高风险、冲突判断或需要引用来源的问题优先交给 Research Runtime；窄查询或单页读取才使用 web_broker/web_read。",
             "技术设计或 Spec discovery 阶段默认 official_docs_first：优先 Context7/官方文档，再读 GitHub/源码和普通网页；Context7 不可用时必须记录 source gap。",
             "Research Runtime 先 search_experience 复用经验包；缺失、过期、低置信或冲突时再运行新的多源调研。",

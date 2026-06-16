@@ -471,195 +471,112 @@ function MagicPortal({ color }: { color: string }) {
     );
 }
 
-function ScreenGlyph({ cue, color, status }: { cue: CollaborationMicroStageCue; color: string; status: CollaborationMicroStageStatus }) {
-    if (status === "failed") {
-        return (
-            <G stroke="#F87171" strokeWidth={2.2} strokeLinecap="round">
-                <Path d="M18 8 L30 20 M30 8 L18 20" />
-                <Path d="M10 28 H38" opacity={0.45} />
-                <Path d="M13 32 H35" opacity={0.24} />
-            </G>
-        );
-    }
-    if (status === "completed") {
-        return (
-            <G stroke="#34D399" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
-                <Path d="M11 17 L19 25 L37 8" />
-                <Path d="M10 30 H38" opacity={0.42} />
-                <Circle cx={37} cy={29} r={2.2} fill="#34D399" opacity={0.5} />
-            </G>
-        );
-    }
-    if (status === "degraded") {
-        return (
-            <G stroke="#FBBF24" strokeWidth={2} strokeLinecap="round">
-                <Path d="M24 7 L37 31 H11 Z" fill="#F59E0B22" />
-                <Path d="M24 15 V23 M24 27 V27.4" />
-            </G>
-        );
-    }
-    if (cue === "waiting") {
-        return (
-            <G stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none">
-                <Path d="M16 7 H32 M16 29 H32" />
-                <Path d="M18 8 C18 15 30 15 30 22 C30 25 27 28 24 28 C21 28 18 25 18 22 C18 15 30 15 30 8" opacity={0.82} />
-                <Circle cx={24} cy={21} r={1.8} fill={color} />
-            </G>
-        );
-    }
-    if (cue === "handoff") {
-        return (
-            <G stroke={color} strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" fill="none">
-                <Rect x={12} y={8} width={18} height={22} rx={2} fill={`${color}16`} />
-                <Path d="M16 15 H27 M16 20 H25 M16 25 H23" />
-                <Path d="M32 14 L39 19 L32 24" />
-                <Path d="M29 19 H39" />
-            </G>
-        );
-    }
-    if (cue === "research") {
-        return (
-            <G stroke={color} strokeWidth={1.8} strokeLinecap="round" fill="none">
-                <Circle cx={20} cy={15} r={7} fill={`${color}12`} />
-                <Path d="M25 20 L35 29" />
-                <Circle cx={36} cy={11} r={2.4} fill={color} opacity={0.9} />
-                <Circle cx={12} cy={28} r={2.1} fill={color} opacity={0.62} />
-                <Path d="M12 32 H36" opacity={0.38} />
-                <Path d="M34 12 L28 15 M15 27 L20 22" opacity={0.38} />
-            </G>
-        );
-    }
-    if (cue === "engineering") {
-        return (
-            <G stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none">
-                <Rect x={8} y={8} width={32} height={22} rx={2} opacity={0.46} />
-                <Path d="M17 14 L11 19 L17 24" />
-                <Path d="M31 14 L37 19 L31 24" />
-                <Path d="M25 12 L21 26" opacity={0.76} />
-                <Path d="M12 32 H36" opacity={0.34} />
-            </G>
-        );
-    }
-    if (cue === "creative") {
-        return (
-            <G stroke={color} strokeWidth={1.9} strokeLinecap="round" fill="none">
-                <Path d="M12 26 C17 10 31 10 36 26" fill={`${color}10`} />
-                <Circle cx={17} cy={25} r={2.5} fill={color} />
-                <Circle cx={25} cy={17} r={2.5} fill={color} opacity={0.78} />
-                <Circle cx={33} cy={25} r={2.5} fill={color} opacity={0.62} />
-                <Path d="M37 10 L39 13 L42 14 L39 16 L37 19 L35 16 L32 14 L35 13 Z" fill={color} opacity={0.72} />
-            </G>
-        );
-    }
-    if (cue === "child_agent" || cue === "dispatch" || cue === "summon") {
-        return (
-            <G stroke={color} strokeWidth={2} strokeLinecap="round" fill="none">
-                <Circle cx={14} cy={14} r={4} fill={`${color}18`} />
-                <Circle cx={34} cy={14} r={4} fill={`${color}18`} />
-                <Circle cx={24} cy={25} r={4.4} fill={`${color}18`} />
-                <Path d="M18 15 H30 M17 17 L22 23 M31 17 L26 23" opacity={0.78} />
-                <Path d="M10 31 C16 28 32 28 38 31" opacity={0.38} />
-            </G>
-        );
-    }
-    if (cue === "desktop") {
-        return (
-            <G stroke={color} strokeWidth={1.9} strokeLinecap="round" fill="none">
-                <Rect x={10} y={10} width={28} height={17} rx={2} />
-                <Path d="M18 31 H30 M24 27 V31" />
-                <Path d="M15 16 H33 M15 21 H26" opacity={0.5} />
-                <Path d="M32 20 L38 25 L34 26 L36 31 L33 32 L31 27 L28 30 Z" fill={`${color}22`} />
-            </G>
-        );
-    }
-    if (cue === "rpa") {
-        return (
-            <G stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" fill="none">
-                <Rect x={9} y={8} width={9} height={7} rx={2} fill={`${color}16`} />
-                <Rect x={30} y={8} width={9} height={7} rx={2} fill={`${color}16`} />
-                <Rect x={18} y={23} width={12} height={8} rx={2} fill={`${color}16`} />
-                <Path d="M18 11 H30 M24 15 V23" />
-                <Path d="M14 20 L18 24 M34 20 L30 24" opacity={0.7} />
-            </G>
-        );
-    }
-    return (
-        <G stroke={color} strokeWidth={2} strokeLinecap="round" fill="none">
-            <Path d="M12 12 H28 L36 20 L28 28 H12" />
-            <Path d="M28 12 V28" opacity={0.46} />
-            <Circle cx={15} cy={20} r={2} fill={color} />
-            <Circle cx={23} cy={20} r={2} fill={color} opacity={0.7} />
-            <Circle cx={31} cy={20} r={2} fill={color} opacity={0.5} />
-        </G>
-    );
-}
-
 function Workstation({
     cue,
     color,
     status,
     active,
+    isWalking,
 }: {
     cue: CollaborationMicroStageCue;
     color: string;
     status: CollaborationMicroStageStatus;
     active: boolean;
+    isWalking: boolean;
 }) {
-    const scan = useSharedValue(0);
+    let screenContent = null;
+    let screenBg = "#0f172a";
 
-    useEffect(() => {
-        if (!active) {
-            scan.value = withTiming(0, { duration: 160 });
-            return;
-        }
-        scan.value = withRepeat(withTiming(1, { duration: 1250, easing: Easing.linear }), -1, false);
-    }, [active, scan]);
+    if (status === "failed") {
+        screenBg = "#7f1d1d";
+        screenContent = (
+            <G>
+                <Path d="M40 9 L33 21 H47 Z" fill="#ef4444" stroke="#ffffff" strokeWidth={1} />
+                <Path d="M40 13 V17" stroke="#ffffff" strokeWidth={1.5} />
+                <Circle cx="40" cy="19.5" r="0.8" fill="#ffffff" />
+            </G>
+        );
+    } else if (status === "completed") {
+        screenContent = (
+            <G>
+                <Path d="M34 17 L38 21 L46 12" stroke="#10b981" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                <Circle cx="40" cy="16" r="8" fill="none" stroke="#10b981" strokeWidth={0.8} opacity={0.4} />
+            </G>
+        );
+    } else if (status === "degraded") {
+        screenBg = "#7c2d12";
+        screenContent = (
+            <Path d="M22 17 Q27 10 32 17 T42 17 T52 17" stroke="#f97316" strokeWidth={1.5} fill="none" />
+        );
+    } else if (status === "pending") {
+        screenContent = (
+            <G>
+                <Path d="M37 10 H43 L37 20 H43 Z" fill="none" stroke="#fbbf24" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+                <Circle cx="40" cy="15" r="5" fill="none" stroke="#fbbf24" strokeWidth={0.8} strokeDasharray="2,2" />
+            </G>
+        );
+    } else if (active || status === "active") {
+        screenBg = "#090d16";
+        screenContent = (
+            <G>
+                <Path d="M22 9 H38 M24 13 H42 M22 17 H35 M26 21 H40" stroke="#00ffcc" strokeWidth={1} strokeLinecap="round" />
+                <Path d="M40 9 H44" stroke="#fbbf24" strokeWidth={1} strokeLinecap="round" />
+                <Path d="M44 13 H46" stroke="#ffffff" strokeWidth={1} strokeLinecap="round" />
+                <Path d="M37 17 H45" stroke="#38bdf8" strokeWidth={1} strokeLinecap="round" />
+            </G>
+        );
+    }
 
-    const screenLineStyle = useAnimatedStyle(() => ({
-        opacity: active ? 0.35 + scan.value * 0.45 : 0.26,
-        transform: [{ translateX: -16 + scan.value * 32 }],
-    }));
+    const showRobotHead = !isWalking;
 
     return (
         <View style={styles.workstation}>
-            <Svg width={86} height={64} viewBox="0 0 86 64" style={StyleSheet.absoluteFill}>
-                <Defs>
-                    <LinearGradient id="deskTop" x1="0" y1="0" x2="1" y2="0">
-                        <Stop offset="0" stopColor="#FFFFFF" />
-                        <Stop offset="0.48" stopColor="#E2E8F0" />
-                        <Stop offset="1" stopColor="#CBD5E1" />
-                    </LinearGradient>
-                    <LinearGradient id="monitorFrame" x1="0" y1="0" x2="0" y2="1">
-                        <Stop offset="0" stopColor="#334155" />
-                        <Stop offset="1" stopColor="#0F172A" />
-                    </LinearGradient>
-                    <LinearGradient id="deskCabinet" x1="0" y1="0" x2="0" y2="1">
-                        <Stop offset="0" stopColor="#F8FAFC" />
-                        <Stop offset="1" stopColor="#CBD5E1" />
-                    </LinearGradient>
-                </Defs>
-                <Path d="M15 48 C18 41 30 40 33 48" fill="#E2E8F0" stroke="#CBD5E1" strokeWidth={0.8} opacity={0.86} />
-                <Rect x={7} y={40} width={72} height={5} rx={2.5} fill="url(#deskTop)" stroke="#CBD5E1" strokeWidth={0.9} />
-                <Path d="M13 45 L11 62 M43 45 L42 62 M71 45 L74 62" stroke="#CBD5E1" strokeWidth={1.6} strokeLinecap="round" />
-                <Rect x={53} y={45} width={22} height={16} rx={2.4} fill="url(#deskCabinet)" stroke="#CBD5E1" strokeWidth={0.9} />
-                <Path d="M57 50 H71 M57 55 H69" stroke="#94A3B8" strokeWidth={1.2} strokeLinecap="round" />
-                <Rect x={18} y={45} width={23} height={4} rx={1.8} fill="#E2E8F0" stroke="#CBD5E1" strokeWidth={0.8} />
-                <Circle cx={47} cy={42.5} r={2.2} fill={color} opacity={active ? 0.75 : 0.36} />
-                <Path d="M38 40 L42 31 L46 40" stroke="#94A3B8" strokeWidth={2.2} strokeLinecap="round" fill="none" />
-                <Rect x={12} y={4} width={62} height={35} rx={5} fill="url(#monitorFrame)" stroke="#64748B" strokeWidth={1.4} />
-                <Rect x={15} y={7} width={56} height={29} rx={2.6} fill="#020617" />
-                <Path d="M70 7 L49 36 H71 V7 Z" fill="#FFFFFF" opacity={0.07} />
-                <Path d="M20 38 H46" stroke="#CBD5E1" strokeWidth={2.6} strokeLinecap="round" />
+            <Svg width={86} height={64} viewBox="0 0 80 60" style={StyleSheet.absoluteFill}>
+                {/* White workstation tabletop */}
+                <Path d="M2 38 L78 38 L70 32 L10 32 Z" fill="#ffffff" stroke="#e2e8f0" strokeWidth={1} />
+                <Rect x="2" y="38" width="76" height="3" fill="#f1f5f9" />
+                
+                {/* Cabinet drawers */}
+                <Rect x="56" y="41" width="14" height="18" fill="#cbd5e1" stroke="#94a3b8" strokeWidth={0.8} rx={1} />
+                <Path d="M59 46 H67" stroke="#475569" strokeWidth={1} />
+                <Path d="M59 52 H67" stroke="#475569" strokeWidth={1} />
+                
+                {/* Table legs */}
+                <Path d="M6 41 V59" stroke="#94a3b8" strokeWidth={1.5} />
+                <Path d="M50 41 V59" stroke="#94a3b8" strokeWidth={1.5} />
+                
+                {/* Keyboard */}
+                <Path d="M28 36.5 H52 L50 37.8 H30 Z" fill="#e2e8f0" stroke="#94a3b8" strokeWidth={0.5} />
+                
+                {/* Computer stand */}
+                <Path d="M40 32 V28" stroke="#94a3b8" strokeWidth={2.5} />
+                {/* Computer monitor outer frame */}
+                <Rect x="16" y="4" width="48" height="26" rx="2" fill="#e2e8f0" stroke="#cbd5e1" strokeWidth={1} />
+                {/* Computer monitor screen */}
+                <Rect x="18" y="6" width="44" height="22" rx={1} fill={screenBg} />
+                
+                {/* Dynamic screen content */}
+                {screenContent}
+                
+                {/* Glass reflection shine */}
+                <Path d="M62 6 L38 28 H62 Z" fill="#ffffff" opacity={0.08} />
+
+                {/* Chair (Integrated SVG) */}
+                <Path d="M40 53 V58" stroke="#64748b" strokeWidth={1.5} />
+                <Path d="M33 58 H47" stroke="#64748b" strokeWidth={1.5} strokeLinecap="round" />
+                <Rect x="31" y="49" width="18" height="4" rx={1} fill="#e2e8f0" stroke="#cbd5e1" strokeWidth={0.8} />
+                <Rect x="33" y="37" width="14" height="12" rx={3} fill="#ffffff" stroke="#cbd5e1" strokeWidth={1} />
+
+                {/* Sitting robot peeking head */}
+                {showRobotHead && (
+                    <G>
+                        <Circle cx="40" cy="34" r="3.5" fill="#f1f5f9" stroke="#64748b" strokeWidth={0.8} />
+                        <Path d="M40 30.5 V27" stroke="#64748b" strokeWidth={0.8} />
+                        <Circle cx="40" cy="26" r="1.2" fill={color} />
+                        <Rect x="38" y="33.5" width="4" height="1" rx="0.3" fill={color} opacity={0.8} />
+                    </G>
+                )}
             </Svg>
-            <View style={styles.screenSurface} pointerEvents="none">
-                <Svg width={48} height={36} viewBox="0 0 48 36">
-                    <Rect x={1} y={2} width={46} height={32} rx={3} fill={`${color}09`} />
-                    <Path d="M4 7 H44" stroke={color} strokeWidth={0.8} opacity={0.22} />
-                    <Path d="M4 29 H44" stroke={color} strokeWidth={0.8} opacity={0.16} />
-                    <ScreenGlyph cue={cue} color={color} status={status} />
-                </Svg>
-                <Animated.View style={[styles.screenScanLine, { backgroundColor: color }, screenLineStyle]} />
-            </View>
         </View>
     );
 }
@@ -887,7 +804,7 @@ const WorkCell = memo(function WorkCell({
         const target = supervisorX.value + 24 - x;
         const targetY = SUPERVISOR_BASE_TOP + supervisorY.value + 28 - y - 42;
         return {
-            opacity: appeared.value * (1 - submit.value * 0.82),
+            opacity: isHandoff ? (appeared.value * (1 - submit.value * 0.82)) : 0,
             transform: [
                 { translateX: walkBack.value * target + (walkBack.value < 0.02 ? shake.value * 0.9 : 0) },
                 { translateY: walkBack.value * targetY + (walkBack.value > 0 ? Math.sin(walkBack.value * Math.PI * 10) * 1.4 : 0) },
@@ -919,7 +836,13 @@ const WorkCell = memo(function WorkCell({
         <Animated.View style={[styles.workCell, { left: x, top: y }, cellStyle]}>
             {(phase === "opening" || active || cue === "summon") && <MagicPortal color={color} />}
             <WorkbenchShadow />
-            <Workstation cue={cue} color={color} status={actorStatus} active={active} />
+            <Workstation
+                cue={cue}
+                color={color}
+                status={actorStatus}
+                active={active}
+                isWalking={isHandoff}
+            />
             <Animated.View style={[styles.robotLayer, botStyle]}>
                 <GroundShadow width={38} opacity={0.18} />
                 <RobotActor color={color} active={active || isHandoff} status={actorStatus} />

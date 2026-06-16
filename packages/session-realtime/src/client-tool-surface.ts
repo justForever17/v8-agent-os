@@ -104,7 +104,11 @@ function extractSummary(result: unknown): string {
     if (picked) {
         return compactText(picked);
     }
-    return compactText(toText(result));
+    const fallbackText = toText(result);
+    if (fallbackText.startsWith("{") || fallbackText.startsWith("[")) {
+        return "";
+    }
+    return compactText(fallbackText);
 }
 
 function extractActionable(resultText: string, record: Record<string, unknown> | null): string | undefined {

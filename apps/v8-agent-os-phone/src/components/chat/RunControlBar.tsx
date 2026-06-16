@@ -203,7 +203,16 @@ export function RunControlBar({
 
     return (
         <View
-            style={[styles.wrap, { backgroundColor: "transparent", borderColor: "transparent" }]}
+            style={[
+                styles.wrap,
+                {
+                    width: stateMode === "idle" ? 22 : 47,
+                    minWidth: stateMode === "idle" ? 22 : 47,
+                    maxWidth: stateMode === "idle" ? 22 : 47,
+                    backgroundColor: "transparent",
+                    borderColor: "transparent",
+                },
+            ]}
             accessibilityLabel={runId ? `${t("src.components.chat.runcontrolbar.run_controls")} ${runId}` : t("src.components.chat.runcontrolbar.run_controls")}
         >
             <Pressable
@@ -226,26 +235,26 @@ export function RunControlBar({
                 <View style={[styles.stateLight, { backgroundColor: tone.dot }]} />
             </Pressable>
 
-            <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={actionLabel}
-                disabled={actionDisabled}
-                onPress={actionPress}
-                style={[
-                    styles.iconSlot,
-                    { backgroundColor: actionSurface, borderColor: actionBorder },
-                    !actionDisabled ? styles.slotActive : styles.slotInactive,
-                    busy ? styles.disabled : null,
-                ]}
-            >
-                {stateMode === "idle" ? null : (
+            {stateMode === "idle" ? null : (
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={actionLabel}
+                    disabled={actionDisabled}
+                    onPress={actionPress}
+                    style={[
+                        styles.iconSlot,
+                        { backgroundColor: actionSurface, borderColor: actionBorder },
+                        !actionDisabled ? styles.slotActive : styles.slotInactive,
+                        busy ? styles.disabled : null,
+                    ]}
+                >
                     <MaterialCommunityIcons
                         name={actionIcon}
-                        size={15}
+                        size={12}
                         color={actionColor}
                     />
-                )}
-            </Pressable>
+                </Pressable>
+            )}
             {stateInfoOpen ? (
                 <View style={[styles.statePopover, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                     <Text style={[styles.statePopoverTitle, { color: colors.text }]}>{t(tone.stateLabel)}</Text>
@@ -268,24 +277,20 @@ export function RunControlBar({
 
 const styles = StyleSheet.create({
     wrap: {
-        minHeight: 40,
+        height: 22,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
         gap: 3,
-        borderRadius: radii.pill,
-        borderWidth: 0,
-        paddingHorizontal: 0,
-        paddingVertical: 2,
-        width: 69,
-        minWidth: 69,
-        maxWidth: 69,
+        width: 47,
+        minWidth: 47,
+        maxWidth: 47,
         flexShrink: 0,
     },
     iconSlot: {
-        width: 33,
-        height: 33,
-        borderRadius: 17,
+        width: 22,
+        height: 22,
+        borderRadius: 6,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -293,22 +298,22 @@ const styles = StyleSheet.create({
     },
     stateLightOuter: {
         position: "absolute",
-        width: 18,
-        height: 18,
+        width: 14,
+        height: 14,
         borderRadius: 999,
         borderWidth: 1,
         opacity: 0.52,
     },
     stateMotionRing: {
         position: "absolute",
-        width: 27,
-        height: 27,
+        width: 20,
+        height: 20,
         borderRadius: 999,
         borderWidth: 1,
     },
     stateLight: {
-        width: 8,
-        height: 8,
+        width: 6,
+        height: 6,
         borderRadius: 999,
     },
     slotActive: {
@@ -322,11 +327,11 @@ const styles = StyleSheet.create({
     },
     statePopover: {
         position: "absolute",
-        top: 43,
-        left: -8,
+        top: 28,
+        left: -140,
         width: 190,
         borderWidth: 1,
-        borderRadius: 14,
+        borderRadius: 12,
         paddingHorizontal: 12,
         paddingVertical: 10,
         gap: 4,
@@ -345,5 +350,6 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: "600",
         lineHeight: 15,
+        color: "#94A3B8",
     },
 });

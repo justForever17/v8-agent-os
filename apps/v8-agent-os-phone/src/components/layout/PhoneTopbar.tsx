@@ -30,7 +30,11 @@ export type PhoneTopbarAction = {
 };
 
 const ACTION_ORDER = ["desktop-live", "rpa", "theme"] as const;
-const WORDMARK_COLORS = ["#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7", "#8B5CF6"] as const;
+const WORDMARK_COLORS = [
+    "#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7",
+    "#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7",
+    "#8B5CF6"
+] as const;
 const WORDMARK_SHINE_COLORS = [
     "rgba(255,255,255,0)",
     "rgba(255,255,255,0.14)",
@@ -51,14 +55,16 @@ function isRoundAction(key: string) {
 
 function WordmarkText({
     color = "#FFFFFF",
-    text = "V8 OS",
+    text = "V8 Agent OS",
     fontSize = 18.5,
+    numberOfLines = 1,
     style,
     onLayout,
 }: {
     color?: string;
     text?: string;
     fontSize?: number;
+    numberOfLines?: number;
     style?: object;
     onLayout?: (event: LayoutChangeEvent) => void;
 }) {
@@ -66,7 +72,7 @@ function WordmarkText({
     return (
         <Text
             allowFontScaling={false}
-            numberOfLines={1}
+            numberOfLines={numberOfLines}
             onLayout={onLayout}
             style={[styles.wordmarkText, style, { color, fontSize, lineHeight }]}
         >
@@ -77,7 +83,7 @@ function WordmarkText({
 
 export function PhoneWordmark({
     dark,
-    text = "V8 OS",
+    text = "V8 Agent OS",
     fontSize = 18.5,
 }: {
     dark: boolean;
@@ -116,7 +122,7 @@ export function PhoneWordmark({
     }, [gradientFlow]);
 
     const gradientWidth = Math.max(Math.round(textWidth * 2.6), 220);
-    const gradientTravel = Math.max(gradientWidth - textWidth, 84);
+    const gradientTravel = gradientWidth * 0.5;
     const shineWidth = Math.max(Math.round(textWidth * 0.74), 64);
     const translateX = shine.interpolate({
         inputRange: [0, 0.16, 0.28, 0.58, 0.72, 1],
@@ -146,6 +152,7 @@ export function PhoneWordmark({
                 color="rgba(255,255,255,0.01)"
                 text={text}
                 fontSize={fontSize}
+                numberOfLines={undefined}
                 onLayout={handleMeasure}
                 style={styles.wordmarkMeasure}
             />
@@ -163,7 +170,7 @@ export function PhoneWordmark({
                 >
                     <LinearGradient
                         colors={WORDMARK_COLORS}
-                        locations={[0, 0.16, 0.34, 0.52, 0.7, 0.86, 1]}
+                        locations={[0, 0.0833, 0.1667, 0.25, 0.3333, 0.4167, 0.5, 0.5833, 0.6667, 0.75, 0.8333, 0.9167, 1]}
                         start={{ x: 0, y: 0.5 }}
                         end={{ x: 1, y: 0.5 }}
                         style={StyleSheet.absoluteFill}
@@ -281,7 +288,7 @@ function BrandArea({
     return (
         <Pressable
             accessibilityRole="button"
-            accessibilityLabel="V8 OS"
+            accessibilityLabel="V8 Agent OS"
             hitSlop={8}
             onPress={onBrandPress}
             style={({ pressed }) => [styles.brandSide, styles.brandPressable, pressed && styles.brandPressableActive]}
@@ -438,7 +445,9 @@ const styles = StyleSheet.create({
         top: 0,
         opacity: 0,
         minWidth: 90,
-    },
+        // @ts-ignore
+        whiteSpace: "nowrap",
+    } as any,
     wordmarkGradient: {
         height: "100%",
     },

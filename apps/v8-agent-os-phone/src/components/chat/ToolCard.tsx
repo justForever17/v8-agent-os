@@ -159,7 +159,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                     </Animated.View>
                 </Pressable>
 
-                {toolInvocation.clientSurface?.summary ? (
+                {toolInvocation.clientSurface?.summary && !toolInvocation.clientSurface.summary.startsWith("{") && !toolInvocation.clientSurface.summary.startsWith("[") ? (
                     <Text
                         style={[styles.summary, { color: colors.textMuted }]}
                         numberOfLines={2}

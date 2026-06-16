@@ -25,10 +25,8 @@ export const EdgeActionRail = memo(function EdgeActionRail({
 }) {
     const { colors, themeMode } = useUiPrefs();
     const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
-    const edgeHandleWidth = Math.max(12, Math.min(16, collapsedPeekWidth - 8));
     const closedOffset = side === "left" ? -expandedWidth : expandedWidth;
-    const handleBackground = themeMode === "dark" ? "rgba(15,23,42,0.84)" : "rgba(255,255,255,0.92)";
-    const handleBorder = themeMode === "dark" ? "rgba(148,163,184,0.24)" : "rgba(148,163,184,0.32)";
+    const railColor = themeMode === "dark" ? "rgba(148, 163, 184, 0.48)" : "rgba(100, 116, 139, 0.48)";
 
     useEffect(() => {
         Animated.timing(progress, {
@@ -71,9 +69,9 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     side === "left" ? styles.leftEdgeHandle : styles.rightEdgeHandle,
                     {
                         top: top + 2,
-                        width: edgeHandleWidth,
-                        borderColor: handleBorder,
-                        backgroundColor: handleBackground,
+                        width: 22,
+                        borderColor: colors.border,
+                        backgroundColor: colors.surface,
                         shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
                         opacity: collapsedHandleOpacity,
                     },
@@ -83,13 +81,13 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     accessibilityRole="button"
                     style={StyleSheet.absoluteFill}
                     onPress={onOpen}
-                    hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
+                    hitSlop={{ top: 10, bottom: 10, left: 16, right: 16 }}
                 />
                 <View
                     style={[
                         styles.handleAccent,
                         side === "left" ? styles.leftHandleAccent : styles.rightHandleAccent,
-                        { backgroundColor: colors.textSoft },
+                        { backgroundColor: railColor },
                     ]}
                 />
             </Animated.View>
@@ -99,7 +97,7 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     styles.rail,
                     side === "left" ? styles.leftRail : styles.rightRail,
                     {
-                        top,
+                        top: top + 2,
                         width: expandedWidth,
                         transform: [{ translateX }],
                         backgroundColor: "transparent",
@@ -119,11 +117,11 @@ const styles = StyleSheet.create({
     rail: {
         position: "absolute",
         zIndex: 30,
-        minHeight: 48,
+        minHeight: 22,
         borderWidth: 0,
         borderRadius: radii.pill,
         paddingHorizontal: 0,
-        paddingVertical: 2,
+        paddingVertical: 0,
         shadowOpacity: 0,
         elevation: 0,
     },
@@ -144,41 +142,31 @@ const styles = StyleSheet.create({
     edgeHandle: {
         position: "absolute",
         zIndex: 31,
-        height: 35,
+        height: 22,
         borderWidth: 1,
+        borderRadius: 6,
+        flexDirection: "row",
         alignItems: "center",
-        justifyContent: "center",
-        shadowOpacity: 0.12,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 5 },
-        elevation: 3,
+        shadowOpacity: 0.08,
+        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 1.5 },
+        elevation: 2,
     },
     leftEdgeHandle: {
-        left: 0,
-        borderLeftWidth: 0,
-        borderTopRightRadius: 12,
-        borderBottomRightRadius: 12,
-        borderTopLeftRadius: 0,
-        borderBottomLeftRadius: 0,
+        left: 5,
+        justifyContent: "flex-end",
+        paddingRight: 4,
     },
     rightEdgeHandle: {
-        right: 0,
-        borderRightWidth: 0,
-        borderTopLeftRadius: 12,
-        borderBottomLeftRadius: 12,
-        borderTopRightRadius: 0,
-        borderBottomRightRadius: 0,
+        right: 5,
+        justifyContent: "flex-start",
+        paddingLeft: 4,
     },
     handleAccent: {
-        width: 3,
-        height: 18,
+        width: 1.8,
+        height: 11,
         borderRadius: 999,
-        opacity: 0.62,
     },
-    leftHandleAccent: {
-        marginRight: 2,
-    },
-    rightHandleAccent: {
-        marginLeft: 2,
-    },
+    leftHandleAccent: {},
+    rightHandleAccent: {},
 });

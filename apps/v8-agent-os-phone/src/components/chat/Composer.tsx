@@ -76,44 +76,41 @@ function ComposerActionButton({
     colors: ReturnType<typeof useUiPrefs>["colors"];
     t: ReturnType<typeof useUiPrefs>["t"];
 }) {
+    const { themeMode } = useUiPrefs();
     const spin = useSharedValue(0);
-    const pulse = useSharedValue(0);
-    const active = mode === "stop" || specMode;
+
+    const getSpinDuration = () => {
+        if (mode === "stop") return 800;
+        if (specMode) return 1200;
+        if (mode === "send") return 1800;
+        if (mode === "queue") return 1400;
+        return 2000;
+    };
 
     useEffect(() => {
-        if (!active) {
+        if (disabled) {
             cancelAnimation(spin);
-            cancelAnimation(pulse);
             spin.value = withTiming(0, { duration: 180 });
-            pulse.value = withTiming(0, { duration: 160 });
             return;
         }
 
+        const duration = getSpinDuration();
         spin.value = withRepeat(
-            withTiming(1, { duration: 1280, easing: Easing.linear }),
+            withTiming(1, { duration, easing: Easing.linear }),
             -1,
             false,
-        );
-        pulse.value = withRepeat(
-            withTiming(1, { duration: 860, easing: Easing.inOut(Easing.ease) }),
-            -1,
-            true,
         );
 
         return () => {
             cancelAnimation(spin);
-            cancelAnimation(pulse);
         };
-    }, [active, pulse, spin]);
+    }, [disabled, mode, specMode, spin]);
 
     const orbitStyle = useAnimatedStyle(() => ({
-        opacity: active && !disabled ? 1 : 0,
+        opacity: !disabled ? 1 : 0,
         transform: [{ rotate: `${spin.value * 360}deg` }],
     }));
-    const pulseStyle = useAnimatedStyle(() => ({
-        opacity: active && !disabled ? 0.18 + (pulse.value * 0.18) : 0,
-        transform: [{ scale: 1 + (pulse.value * 0.08) }],
-    }));
+
     const iconName: React.ComponentProps<typeof MaterialCommunityIcons>["name"] = mode === "stop"
         ? "stop"
         : mode === "busy"
@@ -121,20 +118,34 @@ function ComposerActionButton({
             : mode === "queue"
                 ? "playlist-plus"
             : "send";
-    const buttonColors = mode === "stop"
-        ? ["#FFF7ED", "#FFF1F2"]
-        : mode === "busy"
-            ? ["#CBD5E1", "#CBD5E1"]
-            : mode === "queue"
-                ? ["#A78BFA", "#F59E0B"]
-            : specMode
-                ? ["#EF4444", "#F97316"]
-            : [colors.accent, "#F59E0B"];
+
+    const buttonColors = disabled
+        ? [colors.surfaceStrong, colors.surfaceStrong]
+        : mode === "stop"
+            ? [colors.surface, colors.surface]
+            : mode === "busy"
+                ? [colors.surfaceStrong, colors.surfaceStrong]
+                : mode === "queue"
+                    ? ["#A78BFA", "#C084FC"]
+                : specMode
+                    ? ["#EF4444", "#F97316"]
+                : ["#6366F1", "#8B5CF6"];
+
     const orbitColors = mode === "stop"
-        ? ["#FB7185", "#EF4444", "#F97316", "#FB7185"]
+        ? ["#FF3B30", "rgba(255, 59, 48, 0.15)", "rgba(255, 59, 48, 0.02)", "#FF3B30"]
         : specMode
-            ? ["#EF4444", "#FB7185", "#F97316", "#EF4444"]
-        : ["#F97316", "#F59E0B", "#7C3AED", "#F97316"];
+            ? ["#F97316", "rgba(249, 115, 22, 0.15)", "rgba(249, 115, 22, 0.02)", "#F97316"]
+        : mode === "queue"
+            ? ["#C084FC", "rgba(192, 132, 252, 0.15)", "rgba(192, 132, 252, 0.02)", "#C084FC"]
+        : mode === "busy"
+            ? ["#64748B", "rgba(100, 116, 139, 0.15)", "rgba(100, 116, 139, 0.02)", "#64748B"]
+        : ["#8B5CF6", "rgba(139, 92, 246, 0.15)", "rgba(139, 92, 246, 0.02)", "#8B5CF6"];
+
+    const getIconColor = () => {
+        if (mode === "busy") return colors.textMuted;
+        if (disabled) return colors.textMuted;
+        return "#FFFFFF";
+    };
 
     return (
         <Pressable
@@ -146,9 +157,15 @@ function ComposerActionButton({
                 : t("src.components.chat.composer.send_message")}
             disabled={disabled}
             onPress={onPress}
-            style={[styles.sendWrap, disabled && styles.disabled]}
+            style={[
+                styles.sendWrap,
+                {
+                    shadowColor: mode === "stop" ? "#FF3B30" : themeMode === "dark" ? "#000000" : "#0F172A",
+                    shadowOpacity: disabled ? 0 : mode === "stop" ? 0.22 : 0.14,
+                },
+                disabled && styles.disabled,
+            ]}
         >
-            <Animated.View pointerEvents="none" style={[styles.sendPulse, pulseStyle]} />
             <Animated.View pointerEvents="none" style={[styles.sendOrbit, orbitStyle]}>
                 <LinearGradient
                     colors={orbitColors as [string, string, string, string]}
@@ -166,7 +183,12 @@ function ComposerActionButton({
                 {mode === "stop" ? (
                     <View style={styles.stopGlyph} />
                 ) : (
-                    <MaterialCommunityIcons name={iconName} size={18} color="#FFFFFF" />
+                    <MaterialCommunityIcons
+                        name={iconName}
+                        size={16}
+                        color={getIconColor()}
+                        style={iconName === "send" ? styles.paperPlaneIcon : null}
+                    />
                 )}
             </LinearGradient>
         </Pressable>
@@ -569,9 +591,9 @@ const styles = StyleSheet.create({
         gap: 0,
     },
     composerCard: {
-        borderRadius: 28,
-        paddingHorizontal: 12,
-        paddingTop: 12,
+        borderRadius: 24,
+        paddingHorizontal: 8,
+        paddingTop: 8,
         paddingBottom: 8,
         borderWidth: 1,
         shadowOpacity: 0.08,
@@ -581,18 +603,18 @@ const styles = StyleSheet.create({
         gap: 8,
     },
     editorCard: {
-        minHeight: 82,
-        borderRadius: 22,
+        minHeight: 72,
+        borderRadius: 18,
         borderWidth: 1,
         overflow: "hidden",
         justifyContent: "flex-start",
         width: "100%",
-        paddingHorizontal: 10,
-        paddingTop: 10,
-        paddingBottom: 6,
+        paddingHorizontal: 6,
+        paddingTop: 6,
+        paddingBottom: 4,
     },
     editorFlow: {
-        minHeight: 60,
+        minHeight: 56,
         width: "100%",
         flexDirection: "row",
         flexWrap: "wrap",
@@ -621,11 +643,11 @@ const styles = StyleSheet.create({
     },
     inputStandalone: {
         width: "100%",
-        minHeight: 66,
+        minHeight: 56,
         alignSelf: "stretch",
-        paddingHorizontal: 4,
-        paddingTop: 6,
-        paddingBottom: 8,
+        paddingHorizontal: 2,
+        paddingTop: 2,
+        paddingBottom: 4,
     },
     inputInline: {
         flexGrow: 1,
@@ -771,36 +793,27 @@ const styles = StyleSheet.create({
         letterSpacing: 0.2,
     },
     sendWrap: {
-        width: 48,
-        height: 48,
-        borderRadius: 24,
+        width: 40,
+        height: 40,
+        borderRadius: 20,
         alignItems: "center",
         justifyContent: "center",
-        shadowColor: "#FB923C",
-        shadowOpacity: 0.18,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 6 },
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 4 },
         elevation: 2,
         position: "relative",
     },
-    sendPulse: {
-        position: "absolute",
-        width: 48,
-        height: 48,
-        borderRadius: 24,
-        backgroundColor: "#FB923C",
-    },
     sendOrbit: {
         position: "absolute",
-        width: 46,
-        height: 46,
-        borderRadius: 23,
-        padding: 2,
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        padding: 0,
     },
     sendOrbitGradient: {
         width: "100%",
         height: "100%",
-        borderRadius: 23,
+        borderRadius: 20,
     },
     sendButton: {
         width: 36,
@@ -812,15 +825,20 @@ const styles = StyleSheet.create({
     },
     sendButtonStop: {
         borderWidth: 1,
-        borderColor: "rgba(239,68,68,0.16)",
+        borderColor: "rgba(255,59,48,0.16)",
     },
     stopGlyph: {
-        width: 12,
-        height: 12,
-        borderRadius: 4,
-        backgroundColor: "#EF4444",
+        width: 11,
+        height: 11,
+        borderRadius: 2,
+        backgroundColor: "#FF3B30",
+    },
+    paperPlaneIcon: {
+        transform: [{ rotate: "-35deg" }],
+        marginLeft: 2,
+        marginTop: -1,
     },
     disabled: {
-        opacity: 0.56,
+        opacity: 0.46,
     },
 });

@@ -6341,72 +6341,92 @@ export default function ChatScreen() {
                                 />
                             )}
 
-                            <EdgeActionRail
-                                side="left"
-                                open={leftRailOpen}
-                                expandedWidth={154}
-                                top={4}
-                                onOpen={() => {
-                                    setLeftRailOpen(true);
-                                    setRightRailOpen(false);
-                                }}
-                                onClose={() => setLeftRailOpen(false)}
-                            >
-                                <View style={styles.leftEdgeRailContent}>
-                                    <Pressable
-                                        style={[styles.edgeIconButton, { backgroundColor: palette.surfaceStrong, borderColor: "transparent" }]}
-                                        onPress={() => {
-                                            setLeftRailOpen(false);
-                                            setHistoryOpen(true);
+                            {(() => {
+                                const leftRunStatus = String(projection.runControlState.status || "completed");
+                                const leftShowApprovalAction = Boolean(
+                                    (projection.runControlState.pendingApproval || leftRunStatus === "waiting_approval") &&
+                                    projection.runControlState.canOpenApproval
+                                );
+                                const leftShowInterruptAction = Boolean(
+                                    leftRunStatus === "running" && projection.runControlState.canInterrupt
+                                );
+                                const leftShowRetryAction = Boolean(
+                                    (projection.runControlState.canRetry ||
+                                        projection.runControlState.canResume ||
+                                        ["failed", "cancelled", "paused"].includes(leftRunStatus))
+                                );
+                                const hasLeftRunAction = leftShowApprovalAction || leftShowInterruptAction || leftShowRetryAction;
+                                const leftExpandedWidth = hasLeftRunAction ? 112 : 88;
+
+                                return (
+                                    <EdgeActionRail
+                                        side="left"
+                                        open={leftRailOpen}
+                                        expandedWidth={leftExpandedWidth}
+                                        top={4}
+                                        onOpen={() => {
+                                            setLeftRailOpen(true);
+                                            setRightRailOpen(false);
                                         }}
+                                        onClose={() => setLeftRailOpen(false)}
                                     >
-                                        <MaterialCommunityIcons name="view-headline" size={20} color={palette.text} />
-                                    </Pressable>
-                                    <Pressable
-                                        accessibilityRole="button"
-                                        accessibilityLabel={t("src.screens.chatscreen.current_workspace")}
-                                        style={[
-                                            styles.edgeIconButton,
-                                            {
-                                                backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : palette.surfaceStrong,
-                                                borderColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primary : "transparent",
-                                            },
-                                        ]}
-                                        onPress={() => {
-                                            setLeftRailOpen(false);
-                                            if (activeConversationId) {
-                                                setWorkspaceInfoOpen(true);
-                                                return;
-                                            }
-                                            setWorkspaceChooserVisible(true);
-                                            clearNewConversationIntent();
-                                        }}
-                                    >
-                                        {scopeLoading ? (
-                                            <ActivityIndicator size="small" color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted} />
-                                        ) : (
-                                            <MaterialCommunityIcons
-                                                name="file-tree-outline"
-                                                size={18}
-                                                color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
+                                        <View style={[styles.leftEdgeRailContent, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                                            <Pressable
+                                                style={[styles.edgeIconButton, { backgroundColor: "transparent", borderColor: "transparent" }]}
+                                                onPress={() => {
+                                                    setLeftRailOpen(false);
+                                                    setHistoryOpen(true);
+                                                }}
+                                            >
+                                                <MaterialCommunityIcons name="view-headline" size={13} color={palette.textMuted} />
+                                            </Pressable>
+                                            <Pressable
+                                                accessibilityRole="button"
+                                                accessibilityLabel={t("src.screens.chatscreen.current_workspace")}
+                                                style={[
+                                                    styles.edgeIconButton,
+                                                    {
+                                                        backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : "transparent",
+                                                        borderColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primary : "transparent",
+                                                    },
+                                                ]}
+                                                onPress={() => {
+                                                    setLeftRailOpen(false);
+                                                    if (activeConversationId) {
+                                                        setWorkspaceInfoOpen(true);
+                                                        return;
+                                                    }
+                                                    setWorkspaceChooserVisible(true);
+                                                    clearNewConversationIntent();
+                                                }}
+                                            >
+                                                {scopeLoading ? (
+                                                    <ActivityIndicator size="small" color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted} />
+                                                ) : (
+                                                    <MaterialCommunityIcons
+                                                        name="file-tree-outline"
+                                                        size={13}
+                                                        color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
+                                                    />
+                                                )}
+                                            </Pressable>
+                                            <RunControlBar
+                                                runId={projection.runControlState.runId}
+                                                status={projection.runControlState.status}
+                                                pendingApproval={projection.runControlState.pendingApproval}
+                                                canOpenApproval={projection.runControlState.canOpenApproval}
+                                                canResume={projection.runControlState.canResume}
+                                                canRetry={projection.runControlState.canRetry}
+                                                canInterrupt={projection.runControlState.canInterrupt}
+                                                busy={runActionBusy}
+                                                onOpenApproval={openApprovalPanel}
+                                                onRetry={() => void handleRunCommand("retry")}
+                                                onInterrupt={() => void handleRunCommand("interrupt")}
                                             />
-                                        )}
-                                    </Pressable>
-                                    <RunControlBar
-                                        runId={projection.runControlState.runId}
-                                        status={projection.runControlState.status}
-                                        pendingApproval={projection.runControlState.pendingApproval}
-                                        canOpenApproval={projection.runControlState.canOpenApproval}
-                                        canResume={projection.runControlState.canResume}
-                                        canRetry={projection.runControlState.canRetry}
-                                        canInterrupt={projection.runControlState.canInterrupt}
-                                        busy={runActionBusy}
-                                        onOpenApproval={openApprovalPanel}
-                                        onRetry={() => void handleRunCommand("retry")}
-                                        onInterrupt={() => void handleRunCommand("interrupt")}
-                                    />
-                                </View>
-                            </EdgeActionRail>
+                                        </View>
+                                    </EdgeActionRail>
+                                );
+                            })()}
 
                             <EdgeActionRail
                                 side="right"
@@ -6427,27 +6447,6 @@ export default function ChatScreen() {
                                         setSelectedRuntimeId(runtimeId);
                                         setRuntimePanelOpen(true);
                                     }}
-                                    leadingAccessory={(
-                                        <Pressable
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t("src.components.chat.runtimetimelinepanel.episode_topology")}
-                                            style={({ pressed }) => [
-                                                styles.executionMapButton,
-                                                {
-                                                    backgroundColor: runtimePanelOpen ? palette.primarySoft : palette.surfaceStrong,
-                                                    borderColor: runtimePanelOpen ? palette.primary : "transparent",
-                                                    opacity: pressed ? 0.82 : 1,
-                                                },
-                                            ]}
-                                            onPress={() => setRuntimePanelOpen(true)}
-                                        >
-                                            <MaterialCommunityIcons
-                                                name="file-tree-outline"
-                                                size={16}
-                                                color={runtimePanelOpen ? palette.primary : palette.textMuted}
-                                            />
-                                        </Pressable>
-                                    )}
                                 />
                             </EdgeActionRail>
                         </View>
@@ -6794,23 +6793,27 @@ const styles = StyleSheet.create({
     leftEdgeRailContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 1,
+        gap: 6,
+        height: 22,
+        borderRadius: 6,
+        borderWidth: 1,
+        paddingHorizontal: 4,
     },
     edgeIconButton: {
-        width: 32,
-        height: 32,
+        width: 22,
+        height: 22,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 16,
-        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 6,
+        borderWidth: 1,
     },
     executionMapButton: {
-        width: 28,
-        height: 28,
+        width: 22,
+        height: 22,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 12,
-        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 6,
+        borderWidth: 1,
     },
     scopeTrigger: {
         width: 40,

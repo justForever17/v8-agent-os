@@ -40,9 +40,10 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责图片、视频、语音、音乐与未来 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：复杂媒体创作或 provider 生成任务通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode，不要让 Supervisor 直接拼 provider raw request。",
-            "用户明确 Seedance、Sora、图生视频、文生视频、参考视频、首尾帧、参考音频/音乐或 provider 视频生成时，Creative Media 可作为主 runtime。",
-            "简单背景图、图标、封面、角色图、配音、音乐、关键帧等素材需求，可作为 Engineering/Research/Admin 等 runtime 的 CreativeAssetRequest 支撑能力。",
+            "用法入口：复杂媒体创作或 provider 生成任务通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入应是 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，而不是 provider raw request。",
+            "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；Supervisor 不直接拼图像/视频/音频 API 请求。",
+            "边界：明确 Seedance/Sora/图生视频/参考视频/首尾帧/参考音频/音乐时可主导；简单背景图、图标、封面、角色图、配音、音乐、关键帧可作为其他 runtime 的 CreativeAssetRequest 支撑能力；科普/课程/产品介绍等可编辑代码视频由 Engineering 主导。",
+            "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
             "科普、课程、产品介绍、讲解类视频若需要可编辑时间线或代码合成，默认由 Engineering 走代码视频链路，Creative Media 只做素材/provider 子能力。",
         ],
     },
@@ -66,9 +67,10 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责桌面观察、窗口交互、结构化执行与视觉保底。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：真实 GUI/桌面登录态任务通过 runtime_broker(mode='route', need={'kind':'computer_use', ...}) 进入受控 episode；不要让 Supervisor 猜坐标或直接编造桌面结果。",
-            "只有用户明确要求真实桌面终端、让我看着终端窗口、GUI 终端、桌面登录态或必须操作真实窗口时，才把终端类请求交给 Computer Use。",
-            "一次性真实桌面探索、窗口观察、登录态 GUI 操作或视觉确认适合 Computer Use；需要可复用流程、模板、对象库和回放时交给 RPA。",
+            "用法入口：真实 GUI/桌面登录态任务通过 runtime_broker(mode='route', need={'kind':'computer_use', ...}) 进入受控 episode；输入应是 goal、app/window 线索、allowedActions、安全/登录态边界。",
+            "执行流程：Computer Use 自己 observe -> plan -> act -> verify，高风险动作配合视觉保底；Supervisor 不猜坐标、不编造桌面状态、不把原始视觉网格当事实。",
+            "边界：只有用户明确要求真实桌面终端、GUI 终端、桌面登录态或必须操作真实窗口时才交给 Computer Use；可复用流程、模板、对象库和回放交给 RPA。",
+            "回流要求：typed handoff 必须给 observedState/actionsTaken/verification/screenshotOrTraceRef/humanAttention/limitations/detailRef；driver trace、坐标候选和 OCR raw 只进 Runtime Surface。",
         ],
     },
     "rpa": {
@@ -104,10 +106,10 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "summary": "负责多源联网调研、来源权威度排序、冲突记录、引用矩阵和 run-scoped evidence bundle；为 Engineering、Creative Media、Writing 等 runtime 提供压缩证据，不执行写入或系统副作用。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：需要多源/新鲜/冲突/引用矩阵/经验包复用时，通过 runtime_broker(mode='route', need={'kind':'research', ...}) 或受控 research_broker 产出 ResearchAnswerPack。",
-            "多源、新鲜、高风险、冲突判断或需要引用来源的问题优先交给 Research Runtime；窄查询或单页读取才使用 web_broker/web_read。",
-            "技术设计或 Spec discovery 阶段默认 official_docs_first：优先 Context7/官方文档，再读 GitHub/源码和普通网页；Context7 不可用时必须记录 source gap。",
-            "Research Runtime 先 search_experience 复用经验包；缺失、过期、低置信或冲突时再运行新的多源调研。",
+            "用法入口：多源、新鲜、高风险、冲突判断、引用矩阵或经验包复用，通过 runtime_broker(mode='route', need={'kind':'research', ...}) 或受控 research_broker；输入应是 question、sourcePolicy、scope、freshness/detailLevel。",
+            "执行流程：Research 先查 search_experience，再走 Source Router -> Research Loop -> Architect synthesis；snippet、footer、captcha、过程日志不能当最终答案。",
+            "回流要求：ResearchAnswerPack 必须给 answer/sources/score/claimTable/limitations/reuseDecision/detailRef；低质量或冲突输出 refresh_required/degraded evidence；sourceMatrix、provider attempts 和网页噪音只进 Runtime Surface。",
+            "技术设计或 Spec discovery 阶段默认 official_docs_first：优先 Context7/官方文档，再读 GitHub/源码和普通网页；Context7 不可用时必须记录 source gap；Research 不写文件、不执行系统副作用。",
         ],
     },
 }

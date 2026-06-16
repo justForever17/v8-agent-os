@@ -340,11 +340,11 @@ class ComputerUseRuntime:
             "supportsRepair": True,
             "visibility": "specialized",
             "promptHints": [
-                "涉及本机 GUI、窗口、文件对话框、真人登录态浏览器或社交通讯应用时，优先交给 ComputerUseRuntime。",
-                "只有用户明确要求真实桌面终端、让我看着终端窗口、GUI 终端或桌面登录态时，才把终端任务交给 ComputerUseRuntime。",
-                "一次性桌面探索、真实 GUI 操作或需要视觉确认的短流程适合 ComputerUseRuntime；可复用流程应转 RPA 固化。",
-                "高风险桌面动作必须配合视觉保底，不要让 Supervisor 自己猜控件。",
-                "当不存在可复用肌肉记忆时，ComputerUseRuntime 应进入学习模式，而不是继续脚本式盲操。",
+                "用法入口：涉及本机 GUI、窗口、文件对话框、真人登录态浏览器或社交通讯应用时，通过 runtime_broker(mode='route', need={'kind':'computer_use', ...}) 创建 episode；输入 goal、app/window 线索、allowedActions、安全/登录态边界。",
+                "执行流程：Computer Use 自己 observe -> plan -> act -> verify，高风险动作配合视觉保底；Supervisor 不猜坐标、不编造桌面状态、不把原始视觉网格当事实。",
+                "边界：只有用户明确要求真实桌面终端、GUI 终端、桌面登录态或必须操作真实窗口时才交给 ComputerUseRuntime；可复用流程、模板、对象库和回放应转 RPA 固化。",
+                "回流要求：typed handoff 必须给 observedState/actionsTaken/verification/screenshotOrTraceRef/humanAttention/limitations/detailRef；driver trace、坐标候选和 OCR raw 只进 Runtime Surface。",
+                "当不存在可复用肌肉记忆时进入学习模式，而不是继续脚本式盲操。",
             ],
             "capabilities": [
                 {

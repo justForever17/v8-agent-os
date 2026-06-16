@@ -1138,6 +1138,30 @@ def test_research_runtime_appears_in_capability_registry_summary():
     assert "research.core" in summary
 
 
+def test_internal_orchestration_runtime_cards_explain_flow_boundary_and_handoff():
+    summary = capability_registry.build_supervisor_summary(
+        user_query="先调研官方文档，再用 Seedance 做视频，最后观察真实桌面窗口。"
+    )
+
+    assert "kind=research" in summary
+    assert "ResearchAnswerPack" in summary
+    assert "snippet、footer、captcha、过程日志不能当最终答案" in summary
+    assert "refresh_required/degraded evidence" in summary
+
+    assert "kind=creative_media" in summary
+    assert "brief、modality、assetRole、referenceAssetIds" in summary
+    assert "可编辑代码视频由 Engineering 主导" in summary
+    assert "artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus" in summary
+    assert "provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface" in summary
+
+    assert "kind=computer_use" in summary
+    assert "goal、app/window 线索、allowedActions" in summary
+    assert "observe -> plan -> act -> verify" in summary
+    assert "observedState/actionsTaken/verification/screenshotOrTraceRef" in summary
+
+    assert "Research 不写文件、不执行系统副作用" in summary
+
+
 def test_memory_runtime_card_mentions_memory_agent_maintenance():
     summary = capability_registry.build_supervisor_summary(user_query="记忆是怎么写入和维护的")
 

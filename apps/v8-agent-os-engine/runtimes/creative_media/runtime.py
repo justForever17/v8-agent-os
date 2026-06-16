@@ -309,8 +309,10 @@ class CreativeMediaRuntime:
             "supportsRepair": False,
             "visibility": "internal",
             "promptHints": [
-                "明确点名 Seedance、Sora、图生视频、文生视频、参考视频、首尾帧、参考音频/音乐或 provider 视频模型时，Creative Media 可作为主 runtime。",
-                "Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐或关键帧素材时，Creative Media 作为素材支持 runtime。",
+                "用法入口：通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，不要让 Supervisor 直接拼 provider raw request。",
+                "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；明确 Seedance、Sora、图生视频、参考视频、首尾帧或参考音频/音乐时可作为主 runtime。",
+                "支撑能力与边界：Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐或关键帧素材时，Creative Media 作为 CreativeAssetRequest 素材支持 runtime；科普、课程、讲解、产品介绍等可编辑代码视频由 Engineering 主导。",
+                "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
                 "科普、课程、讲解、产品介绍这类需要可编辑时间线的视频，默认由 Engineering 的代码视频链路主导，Creative Media 只提供素材和媒体 provider 子能力。",
             ],
             "metadata": {

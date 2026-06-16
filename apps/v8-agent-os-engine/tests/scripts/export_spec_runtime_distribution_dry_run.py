@@ -90,6 +90,25 @@ def _create_approved_demo_spec(workspace: Path) -> str:
     return spec_id
 
 
+def _agent_preview(item: dict[str, Any]) -> dict[str, Any]:
+    context = item.get("context") if isinstance(item.get("context"), dict) else {}
+    acceptance_tiers = item.get("acceptanceTiers") if isinstance(item.get("acceptanceTiers"), dict) else {}
+    execution_contract = context.get("engineeringExecutionContract") if isinstance(context.get("engineeringExecutionContract"), dict) else {}
+    handoff_contract = context.get("handoffContract") if isinstance(context.get("handoffContract"), dict) else {}
+    source_refs = execution_contract.get("sourceRefs") if isinstance(execution_contract.get("sourceRefs"), dict) else {}
+    return {
+        "taskBriefId": item.get("taskBriefId"),
+        "goal": item.get("goal"),
+        "specId": context.get("specId"),
+        "taskDetailRef": context.get("taskDetailRef"),
+        "must": acceptance_tiers.get("must"),
+        "allowedWorkset": execution_contract.get("allowedWorkset"),
+        "forbiddenScopes": execution_contract.get("forbiddenScopes"),
+        "detailRefs": source_refs.get("detailRefs"),
+        "handoffRequired": handoff_contract.get("requiredFields"),
+    }
+
+
 def build_export() -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="v8os-spec-distribution-") as tmp:
         workspace = Path(tmp).resolve()
@@ -135,17 +154,7 @@ def build_export() -> dict[str, Any]:
                 "taskBriefs": list(inputs.get("taskBriefs") or []),
                 "proofExpectations": list(inputs.get("proofExpectations") or []),
             },
-            "agentSurfacePreview": [
-                {
-                    "taskBriefId": item.get("taskBriefId"),
-                    "goal": item.get("goal"),
-                    "specId": ((item.get("context") or {}) if isinstance(item.get("context"), dict) else {}).get("specId"),
-                    "taskDetailRef": ((item.get("context") or {}) if isinstance(item.get("context"), dict) else {}).get("taskDetailRef"),
-                    "must": ((item.get("acceptanceTiers") or {}) if isinstance(item.get("acceptanceTiers"), dict) else {}).get("must"),
-                }
-                for item in worker_briefs
-                if isinstance(item, dict)
-            ],
+            "agentSurfacePreview": [_agent_preview(item) for item in worker_briefs if isinstance(item, dict)],
         }
 
 

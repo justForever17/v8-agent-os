@@ -379,8 +379,25 @@ def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
     assert "REQ-001" in task["context"]["stageContent"]["requirements"]
     assert "DES-001" in task["context"]["stageContent"]["design"]
     assert "SPEC_DRY_RUN" in task["context"]["taskExcerpt"]
+    execution_contract = task["context"]["engineeringExecutionContract"]
+    assert execution_contract["workspacePath"] == str(workspace)
+    assert execution_contract["taskId"] == "TASK-001"
+    assert "index.html" in execution_contract["allowedWorkset"]
+    assert "README.md" in execution_contract["allowedWorkset"]
+    assert execution_contract["sourceRefs"]["detailRefs"] == [
+        bundle["documents"]["requirements"]["detailRef"],
+        bundle["documents"]["design"]["detailRef"],
+        f"spec://{spec_id}/tasks#TASK-001",
+    ]
+    assert any("outside the Active Workspace Root" in item for item in execution_contract["forbiddenScopes"])
+    handoff_contract = task["context"]["handoffContract"]
+    assert handoff_contract["type"] == "engineering_typed_handoff"
+    assert "changedFiles" in handoff_contract["requiredFields"]
+    assert "testResults" in handoff_contract["requiredFields"]
     assert task["engineeringTaskCapsule"]["specId"] == spec_id
     assert task["engineeringTaskCapsule"]["taskId"] == "TASK-001"
+    assert task["engineeringTaskCapsule"]["allowedWorkset"] == ["index.html", "README.md"]
+    assert "changedFiles" in task["engineeringTaskCapsule"]["handoffRequired"]
     assert runtime_access_from_route_context(command.update["current_route_context"]) == ["delegation.recursive"]
 
 
@@ -490,6 +507,12 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
     assert by_id["TASK-RESEARCH"]["runtimeAccess"] == ["research.core"]
     assert by_id["TASK-RESEARCH"]["allowChildDelegation"] is False
     assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-003", "TASK-004"]
+    research_contract = by_id["TASK-RESEARCH"]["context"]["engineeringExecutionContract"]
+    assert research_contract["runtimeFamily"] == "research"
+    assert research_contract["writeRequired"] is False
+    assert research_contract["allowedWorkset"] == []
+    assert "Do not write project files." in research_contract["forbiddenScopes"]
+    assert "source refs" in by_id["TASK-RESEARCH"]["context"]["handoffContract"]["mustInclude"]
     research_brief = by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
     assert "TASK-003" in research_brief
     assert "著作与系统性设定" in research_brief

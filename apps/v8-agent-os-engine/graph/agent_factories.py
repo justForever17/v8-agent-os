@@ -312,6 +312,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
         "<delegated_task_plan>",
         "You are executing one bounded task from the supervisor's planner/delegation pipeline.",
         "Use this local task contract as the routing truth; do not reinterpret the original user request as your primary scope.",
+        "For code, file, command, test, or artifact work: treat taskBriefId, workspace, readSet/writeSet, acceptance, proofExpectations, and any Spec refs as your execution boundary. If required boundaries are missing, return a blocker instead of broadening the task.",
     ]
     if isinstance(planner_context, dict) and planner_context:
         if planner_context.get("planId"):
@@ -394,6 +395,47 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             if acceptance:
                 lines.append(f"- Writing Acceptance: {acceptance}")
             lines.append("- Missing facts must be labeled as assumptions or blockers; do not invent memory, sources, files, tests, or user preferences.")
+        execution_contract = context.get("engineeringExecutionContract") if isinstance(context.get("engineeringExecutionContract"), dict) else {}
+        handoff_contract = context.get("handoffContract") if isinstance(context.get("handoffContract"), dict) else {}
+        if execution_contract:
+            lines.append("")
+            lines.append("Engineering Execution Contract:")
+            for label, key in (
+                ("Task ID", "taskId"),
+                ("Workspace", "workspacePath"),
+                ("Runtime Family", "runtimeFamily"),
+                ("Write Required", "writeRequired"),
+                ("Allowed Workset", "allowedWorkset"),
+                ("Expected Artifacts", "expectedArtifacts"),
+                ("Must Read", "mustRead"),
+                ("Acceptance", "acceptance"),
+                ("Forbidden Scope", "forbiddenScopes"),
+            ):
+                rendered = _compact_prompt_value(execution_contract.get(key))
+                if rendered:
+                    lines.append(f"- {label}: {rendered}")
+            source_refs = execution_contract.get("sourceRefs") if isinstance(execution_contract.get("sourceRefs"), dict) else {}
+            detail_refs = _compact_prompt_value(source_refs.get("detailRefs"))
+            requirement_ids = _compact_prompt_value(source_refs.get("requirementIds") or source_refs.get("taskIds"))
+            design_ids = _compact_prompt_value(source_refs.get("designIds"))
+            if requirement_ids:
+                lines.append(f"- Requirement/Task Refs: {requirement_ids}")
+            if design_ids:
+                lines.append(f"- Design Refs: {design_ids}")
+            if detail_refs:
+                lines.append(f"- Detail Refs: {detail_refs}")
+        if handoff_contract:
+            lines.append("")
+            lines.append("Required Typed Handoff:")
+            for label, key in (
+                ("Type", "type"),
+                ("Required Fields", "requiredFields"),
+                ("Must Include", "mustInclude"),
+                ("Completion Rule", "completionRule"),
+            ):
+                rendered = _compact_prompt_value(handoff_contract.get(key))
+                if rendered:
+                    lines.append(f"- {label}: {rendered}")
         lines.extend(_artifact_write_discipline_lines(task_brief))
         capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
         capsule_lane = str(

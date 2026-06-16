@@ -13,3 +13,7 @@ def test_engineering_runtime_has_capability_baseline_without_desktop_live():
     assert "engineering" in _SNAPSHOT_RUNTIME_ORDER
     assert _KNOWN_RUNTIME_BASELINES["engineering"]["displayName"] == "EngineeringRuntime"
     assert "desktop_live" not in _KNOWN_RUNTIME_BASELINES
+    hints = "\n".join(_KNOWN_RUNTIME_BASELINES["engineering"].get("promptHints") or [])
+    assert "workspace" in hints
+    assert "allowed workset" in hints
+    assert "handoffRequired" in hints

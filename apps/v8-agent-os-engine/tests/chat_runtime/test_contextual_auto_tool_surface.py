@@ -180,6 +180,53 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Runtime Lane: research", content)
         self.assertNotIn("Engineering Role: verification", content)
 
+    def test_delegated_plan_context_renders_engineering_execution_and_handoff_contract(self):
+        content = _format_delegated_plan_context(
+            {
+                "taskBriefId": "TASK-001",
+                "goal": "实现已批准 Spec 的浏览器计数器。",
+                "writeSet": ["index.html", "README.md"],
+                "context": {
+                    "engineeringExecutionContract": {
+                        "workspacePath": "E:/Projects/test3",
+                        "taskId": "TASK-001",
+                        "runtimeFamily": "engineering",
+                        "writeRequired": True,
+                        "allowedWorkset": ["index.html", "README.md"],
+                        "expectedArtifacts": ["index.html", "README.md"],
+                        "mustRead": ["Read task excerpt.", "Read detailRefs if needed."],
+                        "acceptance": ["Button increments visible count."],
+                        "forbiddenScopes": ["Do not edit outside allowedWorkset."],
+                        "sourceRefs": {
+                            "requirementIds": ["REQ-001"],
+                            "designIds": ["DES-001"],
+                            "detailRefs": ["spec://spec_demo/tasks#TASK-001"],
+                        },
+                    },
+                    "handoffContract": {
+                        "type": "engineering_typed_handoff",
+                        "requiredFields": ["changedFiles", "commandsRun", "testResults", "artifacts", "proofRefs"],
+                        "mustInclude": ["specId=spec_demo", "taskId=TASK-001"],
+                        "completionRule": "A plain done message is not enough.",
+                    },
+                },
+                "engineeringTaskCapsule": {
+                    "runtimeLane": "engineering",
+                    "writeSet": ["index.html", "README.md"],
+                    "proofExpectations": ["Report touched files and tests."],
+                },
+            },
+            None,
+        )
+
+        self.assertIn("Engineering Execution Contract:", content)
+        self.assertIn("Allowed Workset: index.html, README.md", content)
+        self.assertIn("Forbidden Scope: Do not edit outside allowedWorkset.", content)
+        self.assertIn("Detail Refs: spec://spec_demo/tasks#TASK-001", content)
+        self.assertIn("Required Typed Handoff:", content)
+        self.assertIn("Required Fields: changedFiles, commandsRun, testResults, artifacts, proofRefs", content)
+        self.assertIn("A plain done message is not enough.", content)
+
     def test_agent_system_content_uses_same_delegated_plan_block(self):
         delegated_plan = _format_delegated_plan_context(
             {"taskBriefId": "task-1", "goal": "Build bounded output"},

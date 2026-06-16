@@ -501,8 +501,19 @@ def _approved_spec_execution_bundle(
         "distribution": {
             "strategy": "task_sliced_with_stage_context",
             "mainRuntimeReceives": ["SpecExecutionBundle", "all approved stage summaries/content", "task briefs"],
-            "subagentReceives": ["assigned task excerpt", "linked requirement/design refs", "detailRefs"],
-            "grandchildReceives": ["parent task slice", "required refs only"],
+            "subagentReceives": [
+                "assigned task excerpt",
+                "linked requirement/design refs",
+                "detailRefs",
+                "engineeringExecutionContract",
+                "handoffContract",
+            ],
+            "grandchildReceives": [
+                "parent task slice",
+                "required refs only",
+                "allowedWorkset/forbiddenScopes",
+                "handoffRequired",
+            ],
         },
     }
 
@@ -675,6 +686,125 @@ def _spec_task_validates_skill_artifact(task: dict[str, Any], family: str, *, wr
     return "skill" in text and any(marker in text for marker in validation_markers)
 
 
+_SPEC_OUTPUT_PATH_PATTERN = re.compile(
+    r"(?i)(?:`([^`]+)`|(?<![\w.-])([\w@.$~][\w@.$~\-/\\]*(?:\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg|mp3|wav|mp4|mov)|[\\/])))(?![\w.-])"
+)
+
+
+def _spec_task_expected_paths(*values: Any) -> list[str]:
+    """Extract likely artifact paths from a compact task section.
+
+    The result is intentionally conservative: it is a workset hint for
+    delegated agents, not a filesystem permission grant by itself.
+    """
+
+    paths: list[str] = []
+    for value in values:
+        text = str(value or "")
+        if not text:
+            continue
+        for match in _SPEC_OUTPUT_PATH_PATTERN.finditer(text):
+            candidate = str(match.group(1) or match.group(2) or "").strip()
+            if not candidate:
+                continue
+            candidate = candidate.strip("`'\"，,。.;；:：")
+            lowered = candidate.lower()
+            if lowered in {"http://", "https://"} or lowered.startswith(("http://", "https://")):
+                continue
+            if not re.search(r"(?i)([\\/]|(?:^|[\\/])?[\w@.$~-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg|mp3|wav|mp4|mov)$)", candidate):
+                continue
+            if candidate not in paths:
+                paths.append(candidate)
+    return paths[:16]
+
+
+def _spec_task_engineering_execution_contract(
+    *,
+    spec_id: str,
+    workspace_path: str,
+    task_id: str,
+    task: dict[str, Any],
+    family: str,
+    writes_artifact: bool,
+    requirement_doc: dict[str, Any],
+    design_doc: dict[str, Any],
+    task_doc: dict[str, Any],
+    spec_refs: list[str],
+    expected_paths: list[str],
+    acceptance: str,
+    proof: str,
+) -> dict[str, Any]:
+    detail_refs = [
+        ref
+        for ref in [
+            requirement_doc.get("detailRef"),
+            design_doc.get("detailRef"),
+            f"spec://{spec_id}/tasks#{task_id}",
+        ]
+        if ref
+    ]
+    allowed_workset = list(expected_paths or ([workspace_path] if workspace_path else []))
+    source_refs = {
+        "specId": spec_id,
+        "taskId": task_id,
+        "requirementIds": [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
+        "designIds": [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
+        "detailRefs": detail_refs,
+    }
+    return {
+        "workspacePath": workspace_path,
+        "taskId": task_id,
+        "runtimeFamily": family,
+        "writeRequired": bool(writes_artifact),
+        "allowedWorkset": allowed_workset,
+        "expectedArtifacts": list(expected_paths or []),
+        "sourceRefs": source_refs,
+        "mustRead": [
+            "Read the assigned task excerpt first.",
+            "Use detailRefs to read approved requirements/design/task sections when the compact brief is insufficient.",
+        ],
+        "acceptance": [item for item in [acceptance, proof] if item],
+        "forbiddenScopes": [
+            "Do not read/write outside the Active Workspace Root unless another root is explicitly granted.",
+            "Do not edit files outside allowedWorkset when concrete expected artifacts are listed.",
+            "Do not use older specs, memory, or chat history to override the approved current Spec.",
+            "Do not perform destructive commands or cross-project changes without approval.",
+        ],
+    }
+
+
+def _spec_task_handoff_contract(*, spec_id: str, task_id: str, writes_artifact: bool) -> dict[str, Any]:
+    required_fields = [
+        "status",
+        "specId",
+        "taskId",
+        "summary",
+        "changedFiles",
+        "commandsRun",
+        "testResults",
+        "artifacts",
+        "proofRefs",
+        "blockers",
+        "residualRisks",
+    ]
+    return {
+        "type": "engineering_typed_handoff",
+        "requiredFields": required_fields,
+        "completionRule": (
+            "Return a typed handoff with verifiable proof/artifact/test result. "
+            "A plain 'done' message is not enough."
+        ),
+        "mustInclude": [
+            f"specId={spec_id}",
+            f"taskId={task_id}",
+            "what changed and why",
+            "verification commands/results, including skipped or failed checks",
+            "artifact/proof/detail refs when available",
+        ],
+        "writeRequired": bool(writes_artifact),
+    }
+
+
 def _brief_family_hint(brief: dict[str, Any]) -> str:
     family = str(brief.get("familyHint") or "").strip().lower()
     if family:
@@ -740,6 +870,47 @@ def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spe
             lines.append(f"DetailRef: {detail.get('taskDetailRef')}")
         detail_lines.append("\n".join(lines))
     assigned_research_brief = "\n\n".join(detail_lines)
+    execution_contract = {
+        "workspacePath": workspace_path,
+        "taskId": "TASK-RESEARCH",
+        "runtimeFamily": "research",
+        "writeRequired": False,
+        "allowedWorkset": [],
+        "expectedArtifacts": [],
+        "sourceRefs": {
+            "specId": spec_id,
+            "taskIds": assigned_ids,
+            "detailRefs": detail_refs[:12],
+        },
+        "mustRead": [
+            "Use context.assignedResearchBrief / context.assignedTaskDetails as the concrete research brief.",
+            "Use taskDetailRefs to read exact approved research dimensions when the compact brief is insufficient.",
+        ],
+        "acceptance": ["Return source-backed claims, gaps, limitations, and source refs for downstream execution."],
+        "forbiddenScopes": [
+            "Do not write project files.",
+            "Do not treat search snippets, captcha pages, or footer/nav text as final evidence.",
+            "Do not fabricate missing canon or source claims.",
+        ],
+    }
+    handoff_contract = {
+        "type": "research_evidence_handoff",
+        "requiredFields": [
+            "status",
+            "specId",
+            "taskIds",
+            "answerOrFindings",
+            "sources",
+            "claimTable",
+            "limitations",
+            "rejectedEvidence",
+            "proofRefs",
+            "blockers",
+        ],
+        "completionRule": "Return reusable evidence or a degraded/missing-evidence handoff; a plain summary is not enough.",
+        "mustInclude": ["source refs", "assigned task IDs", "gaps/conflicts"],
+        "writeRequired": False,
+    }
     return normalize_task_brief(
         {
             "taskBriefId": "TASK-RESEARCH",
@@ -757,6 +928,8 @@ def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spe
                 "assignedResearchBrief": assigned_research_brief,
                 "taskDetailRefs": detail_refs[:12],
                 "workspacePath": workspace_path,
+                "engineeringExecutionContract": execution_contract,
+                "handoffContract": handoff_contract,
             },
             "writeSet": [workspace_path] if workspace_path else [],
             "behaviorScope": ["approved_spec_execution", "runtime_first", "research_lane"],
@@ -793,10 +966,13 @@ def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spe
                 "taskIds": assigned_ids,
                 "runtimeLane": "research",
                 "writeSet": [workspace_path] if workspace_path else [],
+                "allowedWorkset": [],
                 "proofExpectations": [
                     "Report selected sources and gaps.",
                     "Reference approved specId and assigned task IDs.",
+                    "Return reusable claim/source refs or a degraded evidence blocker.",
                 ],
+                "handoffRequired": handoff_contract["requiredFields"],
             },
         }
     )
@@ -863,6 +1039,32 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
         spec_refs = list(task.get("specRefs") or []) or list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
         writes_artifact = _spec_task_writes_artifact(task, family)
         validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)
+        expected_paths = _spec_task_expected_paths(
+            output,
+            task.get("excerpt"),
+            task.get("title"),
+        )
+        allowed_write_set = list(expected_paths or ([workspace_path] if workspace_path else []))
+        execution_contract = _spec_task_engineering_execution_contract(
+            spec_id=spec_id,
+            workspace_path=workspace_path,
+            task_id=task_id,
+            task=task,
+            family=family,
+            writes_artifact=writes_artifact,
+            requirement_doc=requirement_doc,
+            design_doc=design_doc,
+            task_doc=task_doc,
+            spec_refs=spec_refs,
+            expected_paths=expected_paths,
+            acceptance=acceptance,
+            proof=proof,
+        )
+        handoff_contract = _spec_task_handoff_contract(
+            spec_id=spec_id,
+            task_id=task_id,
+            writes_artifact=writes_artifact,
+        )
         child_signal = re.search(
             r"(?i)sub\s*agent|sub-agent|worker|parallel|fanout|子\s*agent|孙\s*agent|子agent|孙agent|并行",
             " ".join([lane, str(task.get("title") or ""), str(task.get("excerpt") or "")]),
@@ -880,6 +1082,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             "taskExcerpt": task.get("excerpt") or task.get("title") or task_id,
             "runtimeLane": lane,
             "specRefs": spec_refs,
+            "engineeringExecutionContract": execution_contract,
+            "handoffContract": handoff_contract,
             "stageRefs": {
                 "requirements": requirement_doc.get("detailRef"),
                 "design": design_doc.get("detailRef"),
@@ -902,7 +1106,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "title": task.get("title") or task_id,
                 "goal": f"{task_id}: {task.get('title') or 'Execute approved Spec task'}",
                 "context": context,
-                "writeSet": [workspace_path] if workspace_path else [],
+                "writeSet": allowed_write_set,
                 "behaviorScope": ["approved_spec_execution", "runtime_first", "verification"],
                 "requiredCapabilities": _spec_task_required_capabilities(family, writes_artifact=writes_artifact),
                 "acceptanceContract": {
@@ -951,12 +1155,17 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                     "specId": spec_id,
                     "taskId": task_id,
                     "runtimeLane": lane,
-                    "writeSet": [workspace_path] if workspace_path else [],
+                    "workspacePath": workspace_path,
+                    "writeSet": allowed_write_set,
+                    "allowedWorkset": list(execution_contract.get("allowedWorkset") or []),
+                    "expectedArtifacts": list(execution_contract.get("expectedArtifacts") or []),
+                    "forbiddenScopes": list(execution_contract.get("forbiddenScopes") or []),
                     "proofExpectations": [
                         "Report exact touched files/artifacts.",
                         "Reference approved specId and taskId.",
                         "Attach verification result or recoverable blocker.",
                     ],
+                    "handoffRequired": list(handoff_contract.get("requiredFields") or []),
                 },
                 "proofExpectations": [
                     "Typed runtime handoff",

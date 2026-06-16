@@ -93,6 +93,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "promptHints": [
             "用法入口：项目开发、修复、依赖安装、脚手架、验证闭环或已批准 Spec 执行，通过 runtime_broker(mode='route', need={'kind':'engineering', ...}) 创建 Engineering episode。",
             "Engineering Runtime 的价值是把需求/Spec 转成受控 writeSet、ContextPack、worker briefs、proof/validation 和 typed handoff；不要把它理解为一个普通聊天助手。",
+            "工程任务分发给 subagent/孙 agent 时，必须让它们读到 workspace、allowed workset、Spec/task refs、acceptance、forbidden scopes 与 handoffRequired；缺失时应返回 blocker。",
             "科普、课程、产品介绍、讲解类视频默认优先走可编辑代码视频链路，例如 Remotion、Hyperframes、Manim、HTML video 或 ffmpeg。",
             "Remotion、Manim、ffmpeg、Three.js、p5.js 等用代码生成媒体或项目资产的任务属于 Engineering 主路径；Creative Media 只提供素材、配音、音乐或 provider 生成。",
             "用户说打开终端安装、启动或运行命令时，默认解释为逻辑命令会话，优先使用 run_system_command / command_session_broker，而不是拉起真实 GUI 终端。",

@@ -739,12 +739,13 @@ class RuntimeEpisodeRunner:
                         "childHandoffs": child_handoffs,
                     },
                 )
+            visible_evidence_summary = self._delegation_handoff_visible_evidence_summary({"childHandoffs": child_handoffs})
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
                 compact_summary=(
                     f"Engineering handoff_ready after {ready_count} child delegation handoff(s).\n"
-                    f"{_preview('; '.join(str(item.get('compactSummary') or item.get('summary') or item.get('kind') or '') for item in child_handoffs), limit=900)}"
+                    f"{visible_evidence_summary or _preview('; '.join(str(item.get('compactSummary') or item.get('summary') or item.get('kind') or '') for item in child_handoffs), limit=900)}"
                 ),
                 status="ready",
                 confidence="medium",
@@ -753,6 +754,7 @@ class RuntimeEpisodeRunner:
                     "engineeringState": "skill_artifact_ready" if skill_validation and skill_validation.get("ok") else "handoff_ready",
                     "childHandoffs": child_handoffs,
                     "handoffRefs": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs if isinstance(item, dict)],
+                    "visibleEvidenceSummary": visible_evidence_summary,
                     **({"skillArtifactValidation": skill_validation} if skill_validation else {}),
                 },
             )
@@ -843,6 +845,7 @@ class RuntimeEpisodeRunner:
                 },
             }
             delegation_handoff = await self._execute_delegation(delegation_episode)
+            visible_evidence_summary = self._delegation_handoff_visible_evidence_summary(delegation_handoff)
             skill_validation = self._validate_skill_artifact_if_requested(episode, need=need, inputs=inputs)
             if skill_validation and not skill_validation.get("ok"):
                 return build_handoff_ref(
@@ -899,7 +902,7 @@ class RuntimeEpisodeRunner:
                 kind="engineering",
                 compact_summary=(
                     f"Engineering execution_started through {len(worker_briefs)} delegated worker(s).\n"
-                    f"{_preview(delegation_handoff.get('compactSummary') or delegation_handoff.get('summary') or context_summary, limit=700)}"
+                    f"{visible_evidence_summary or _preview(delegation_handoff.get('compactSummary') or delegation_handoff.get('summary') or context_summary, limit=700)}"
                 ),
                 status=status,
                 confidence=str(delegation_handoff.get("confidence") or "medium"),
@@ -910,6 +913,7 @@ class RuntimeEpisodeRunner:
                     "workspaceDigestRef": f"workspace_digest:{episode.get('episodeId')}",
                     "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
                     "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],
+                    "visibleEvidenceSummary": visible_evidence_summary,
                     **({"skillArtifactValidation": skill_validation} if skill_validation else {}),
                 },
             )
@@ -1021,6 +1025,169 @@ class RuntimeEpisodeRunner:
             if "workspace_mutation" in caps and "implementation" in scope:
                 return True
         return False
+
+    @staticmethod
+    def _handoff_value_items(value: Any, *, limit: int = 8) -> list[str]:
+        items: list[str] = []
+
+        def _add(text: Any) -> None:
+            rendered = _preview(text, limit=220).strip()
+            if rendered and rendered not in items:
+                items.append(rendered)
+
+        def _walk(candidate: Any) -> None:
+            if len(items) >= limit:
+                return
+            if isinstance(candidate, str):
+                _add(candidate)
+                return
+            if isinstance(candidate, (int, float, bool)):
+                _add(candidate)
+                return
+            if isinstance(candidate, dict):
+                preferred_parts: list[str] = []
+                for key in (
+                    "path",
+                    "file",
+                    "filePath",
+                    "relativePath",
+                    "ref",
+                    "id",
+                    "command",
+                    "status",
+                    "summary",
+                    "message",
+                    "name",
+                    "title",
+                ):
+                    item = candidate.get(key)
+                    if item is None or item == "":
+                        continue
+                    preferred_parts.append(str(item))
+                if preferred_parts:
+                    _add(" | ".join(preferred_parts))
+                elif len(candidate) <= 4 and all(not isinstance(item, (dict, list)) for item in candidate.values()):
+                    _add("; ".join(f"{key}={value}" for key, value in candidate.items()))
+                else:
+                    for item in candidate.values():
+                        _walk(item)
+                        if len(items) >= limit:
+                            break
+                return
+            if isinstance(candidate, list):
+                for item in candidate:
+                    _walk(item)
+                    if len(items) >= limit:
+                        break
+
+        _walk(value)
+        return items
+
+    @classmethod
+    def _collect_handoff_values(cls, value: Any, keys: set[str], *, limit: int = 8) -> list[str]:
+        found: list[str] = []
+
+        def _add_many(values: list[str]) -> None:
+            for item in values:
+                if item and item not in found:
+                    found.append(item)
+                if len(found) >= limit:
+                    break
+
+        def _walk(candidate: Any) -> None:
+            if len(found) >= limit:
+                return
+            if isinstance(candidate, dict):
+                for key, item in candidate.items():
+                    normalized = str(key or "").replace("_", "").lower()
+                    if normalized in keys:
+                        _add_many(cls._handoff_value_items(item, limit=max(1, limit - len(found))))
+                    _walk(item)
+                    if len(found) >= limit:
+                        break
+            elif isinstance(candidate, list):
+                for item in candidate:
+                    _walk(item)
+                    if len(found) >= limit:
+                        break
+
+        _walk(value)
+        return found
+
+    @classmethod
+    def _delegation_handoff_visible_evidence_summary(cls, handoff: dict[str, Any]) -> str:
+        if not isinstance(handoff, dict):
+            return ""
+        lines: list[str] = []
+        summary = _preview(handoff.get("compactSummary") or handoff.get("summary") or "", limit=360)
+        if summary:
+            lines.append(f"- Summary: {summary}")
+        changed = cls._collect_handoff_values(
+            handoff,
+            {
+                "touchedfiles",
+                "changedfiles",
+                "createdfiles",
+                "modifiedfiles",
+                "fileinventory",
+                "patches",
+                "patchrefs",
+            },
+            limit=8,
+        )
+        if changed:
+            lines.append(f"- Changed files / patches: {'; '.join(changed)}")
+        commands = cls._collect_handoff_values(
+            handoff,
+            {
+                "commandsrun",
+                "testresults",
+                "verification",
+                "validations",
+                "skillartifactvalidation",
+            },
+            limit=8,
+        )
+        if commands:
+            lines.append(f"- Commands / tests: {'; '.join(commands)}")
+        artifacts = cls._collect_handoff_values(
+            handoff,
+            {
+                "artifacts",
+                "artifactrefs",
+                "validatedroot",
+                "skillroot",
+            },
+            limit=8,
+        )
+        if artifacts:
+            lines.append(f"- Artifacts: {'; '.join(artifacts)}")
+        proof = cls._collect_handoff_values(
+            handoff,
+            {
+                "proofrefs",
+                "proof",
+                "evidence",
+                "sourcerefs",
+            },
+            limit=8,
+        )
+        if proof:
+            lines.append(f"- Proof / evidence refs: {'; '.join(proof)}")
+        blockers = cls._collect_handoff_values(
+            handoff,
+            {
+                "blockers",
+                "residualrisks",
+                "degradedreason",
+                "error",
+                "errors",
+            },
+            limit=6,
+        )
+        if blockers:
+            lines.append(f"- Blockers / risks: {'; '.join(blockers)}")
+        return _preview("\n".join(lines), limit=1200)
 
     @staticmethod
     def _delegation_handoff_has_write_evidence(handoff: dict[str, Any]) -> bool:

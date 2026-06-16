@@ -174,11 +174,48 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         )
 
         self.assertIn("Runtime Access: research.core", content)
-        self.assertIn("assignedResearchBrief", content)
+        self.assertIn("Assigned Research Brief", content)
         self.assertIn("官方设定与系统思考调研", content)
         self.assertIn("Runtime Task Capsule:", content)
         self.assertIn("Runtime Lane: research", content)
         self.assertNotIn("Engineering Role: verification", content)
+
+    def test_delegated_plan_context_does_not_dump_runtime_only_context(self):
+        content = _format_delegated_plan_context(
+            {
+                "taskBriefId": "TASK-001",
+                "goal": "执行已批准 Spec 任务。",
+                "context": {
+                    "specId": "spec_demo",
+                    "taskId": "TASK-001",
+                    "taskExcerpt": "只需要实现 index.html。",
+                    "stageContent": {
+                        "requirements": "SHOULD_NOT_DUMP_REQUIREMENTS_FULL_TEXT",
+                        "design": "SHOULD_NOT_DUMP_DESIGN_FULL_TEXT",
+                    },
+                    "specExecutionBundle": {
+                        "documents": {"requirements": {"content": "SHOULD_NOT_DUMP_BUNDLE"}}
+                    },
+                    "engineeringExecutionContract": {
+                        "workspacePath": "E:/Projects/test3",
+                        "taskId": "TASK-001",
+                        "allowedWorkset": ["index.html"],
+                    },
+                    "handoffContract": {
+                        "requiredFields": ["changedFiles", "testResults"],
+                    },
+                },
+            },
+            None,
+        )
+
+        self.assertIn("Agent-Visible Context:", content)
+        self.assertIn("Spec ID: spec_demo", content)
+        self.assertIn("Task Excerpt: 只需要实现 index.html。", content)
+        self.assertIn("Runtime-only context omitted from prompt", content)
+        self.assertNotIn("SHOULD_NOT_DUMP_REQUIREMENTS_FULL_TEXT", content)
+        self.assertNotIn("SHOULD_NOT_DUMP_DESIGN_FULL_TEXT", content)
+        self.assertNotIn("SHOULD_NOT_DUMP_BUNDLE", content)
 
     def test_delegated_plan_context_renders_engineering_execution_and_handoff_contract(self):
         content = _format_delegated_plan_context(

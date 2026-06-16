@@ -245,6 +245,64 @@ def _compact_prompt_value(value) -> str:
     return str(value or "").strip()
 
 
+def _compact_prompt_text(value, *, limit: int = 1600) -> str:
+    text = _compact_prompt_value(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()} ... [truncated; use detailRef/read_section if needed]"
+
+
+_AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
+    ("Source", "source", 320),
+    ("Spec ID", "specId", 120),
+    ("Task ID", "taskId", 120),
+    ("Task Detail Ref", "taskDetailRef", 240),
+    ("Task Excerpt", "taskExcerpt", 1800),
+    ("Assigned Task IDs", "assignedTaskIds", 500),
+    ("Assigned Research Brief", "assignedResearchBrief", 2600),
+    ("Task Detail Refs", "taskDetailRefs", 900),
+    ("Expected Output", "expectedOutput", 800),
+    ("Expected Outputs", "expectedOutputs", 900),
+    ("Workspace Path", "workspacePath", 260),
+    ("Artifact Write Discipline", "artifactWriteDiscipline", 800),
+    ("Artifact Acceptance Guard", "artifactAcceptanceGuard", 800),
+)
+
+_RUNTIME_ONLY_CONTEXT_KEYS = {
+    "stageContent",
+    "specExecutionBundle",
+    "engineeringExecutionContract",
+    "handoffContract",
+    "assignedTaskDetails",
+    "assignedTaskSummaries",
+    "parentContext",
+    "workerContext",
+}
+
+
+def _agent_visible_context_lines(context: dict | None) -> list[str]:
+    if not isinstance(context, dict) or not context:
+        return []
+    lines = ["", "Agent-Visible Context:"]
+    emitted = False
+    for label, key, limit in _AGENT_VISIBLE_CONTEXT_KEYS:
+        if key not in context:
+            continue
+        rendered = _compact_prompt_text(context.get(key), limit=limit)
+        if rendered:
+            lines.append(f"- {label}: {rendered}")
+            emitted = True
+    omitted = [key for key in _RUNTIME_ONLY_CONTEXT_KEYS if key in context]
+    if omitted:
+        lines.append(
+            "- Runtime-only context omitted from prompt: "
+            + ", ".join(sorted(omitted))
+            + ". Use the listed detail refs or dedicated broker/detail tools when exact content is needed."
+        )
+        emitted = True
+    return lines if emitted else []
+
+
 def _truthy_task_value(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -338,7 +396,6 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
         for label, key in (
             ("Task Brief ID", "taskBriefId"),
             ("Goal", "goal"),
-            ("Context", "context"),
             ("Write Set", "writeSet"),
             ("Expected Outputs", "expectedOutputs"),
             ("Behavior Scope", "behaviorScope"),
@@ -353,6 +410,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             if rendered:
                 lines.append(f"- {label}: {rendered}")
         context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        lines.extend(_agent_visible_context_lines(context))
         writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
         if writing_brief:
             skill = writing_brief.get("skill") if isinstance(writing_brief.get("skill"), dict) else {}

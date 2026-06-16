@@ -328,6 +328,10 @@ def test_engineering_write_episode_accepts_ready_handoff_with_created_files(monk
             "status": "ready",
             "compactSummary": "Delegation created project files.",
             "createdFiles": ["index.html", "src/main.js", "README.md"],
+            "commandsRun": ["npm test"],
+            "testResults": {"unit": {"status": "passed", "command": "npm test"}},
+            "artifactRefs": ["artifact://game-demo"],
+            "proofRefs": ["proof://unit-test"],
             "results": [
                 {
                     "targetLabel": "Implementation Engineer",
@@ -364,6 +368,37 @@ def test_engineering_write_episode_accepts_ready_handoff_with_created_files(monk
     assert handoff["status"] == "ready"
     assert handoff["engineeringState"] == "execution_started"
     assert handoff["delegationHandoff"]["createdFiles"] == ["index.html", "src/main.js", "README.md"]
+    assert "index.html" in handoff["compactSummary"]
+    assert "npm test" in handoff["compactSummary"]
+    assert "artifact://game-demo" in handoff["compactSummary"]
+    assert "proof://unit-test" in handoff["visibleEvidenceSummary"]
+
+
+def test_delegation_handoff_visible_evidence_summary_extracts_nested_evidence():
+    handoff = {
+        "compactSummary": "Delegation executed one worker.",
+        "results": [
+            {
+                "workerResult": {
+                    "summary": "Built the page.",
+                    "changedFiles": ["index.html", "src/main.js"],
+                    "testResults": {"unit": {"status": "passed", "command": "npm test"}},
+                    "artifactRefs": ["artifact://pixel-demo"],
+                    "proofRefs": ["proof://unit-test"],
+                },
+                "residualRisks": ["No browser smoke was run."],
+            }
+        ],
+    }
+
+    summary = RuntimeEpisodeRunner._delegation_handoff_visible_evidence_summary(handoff)
+
+    assert "index.html" in summary
+    assert "src/main.js" in summary
+    assert "npm test" in summary
+    assert "artifact://pixel-demo" in summary
+    assert "proof://unit-test" in summary
+    assert "No browser smoke was run." in summary
 
 
 def test_delegation_episode_without_tasks_returns_degraded_missing_tasks_handoff():

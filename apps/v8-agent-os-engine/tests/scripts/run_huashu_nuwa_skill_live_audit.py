@@ -45,6 +45,7 @@ from run_supervisor_runtime_skill_live_audit import (  # noqa: E402
 
 
 TARGET_SKILL_DIR_NAME = "sanyueqi-perspective"
+DEFAULT_MODEL_FALLBACKS = ["mimo2.5pro", "doubao-seed-2.0-pro", "deepseek-v4-flash"]
 REQUIRED_RESEARCH_FILES = [
     "01-writings.md",
     "02-conversations.md",
@@ -1179,6 +1180,11 @@ def main() -> int:
     parser.add_argument("--auto-approve-spec", action="store_true", help="Automatically approve generated Spec stages for this workspace during polling.")
     parser.add_argument("--clear-workspace-sessions", action="store_true", help="Delete existing Engine sessions bound to this workspace before live submission.")
     parser.add_argument("--model-profile", default=None)
+    parser.add_argument(
+        "--model-fallbacks",
+        default=",".join(DEFAULT_MODEL_FALLBACKS),
+        help="Comma-separated model profiles to try in order. --model-profile is prepended when provided.",
+    )
     parser.add_argument("--max-wait", type=float, default=3600.0)
     parser.add_argument("--repair-attempts", type=int, default=2)
     parser.add_argument("--write-report", action="store_true")
@@ -1198,7 +1204,13 @@ def main() -> int:
     else:
         skill_dir_name = TARGET_SKILL_DIR_NAME
         target_dir = _target_dir(workspace, skill_dir_name)
-    model_profile = args.model_profile or _default_model_profile_label()
+    configured_fallbacks = [item.strip() for item in str(args.model_fallbacks or "").split(",") if item.strip()]
+    if args.model_profile:
+        requested_profile = str(args.model_profile).strip()
+        model_fallbacks = [requested_profile, *[item for item in configured_fallbacks if item != requested_profile]]
+    else:
+        model_fallbacks = configured_fallbacks or [_default_model_profile_label()]
+    model_profile = model_fallbacks[0]
     result = HuashuAuditResult(
         timestamp=timestamp,
         target_dir=str(target_dir),
@@ -1266,73 +1278,21 @@ def main() -> int:
         print(f"clearedWorkspaceSessions={len(deleted_sessions)}")
     backup_dir = _backup_existing_target(target_dir, workspace, timestamp)
     result.backup_dir = str(backup_dir) if backup_dir else None
-    live = _submit_live_case(
-        args.engine_url,
-        workspace=workspace,
-        target=args.target,
-        game=args.game,
-        target_dir=target_dir,
-        skill_dir_name=skill_dir_name,
-        model_profile=model_profile,
-        timestamp=timestamp,
-        spec_mode=args.spec_mode,
-        user_prompt=args.user_prompt,
-    )
-    if live.status != "failed":
-        live = _poll_case_with_spec_auto_approve(
-            args.engine_url,
-            live,
-            max_wait=args.max_wait,
-            workspace=workspace,
-            auto_approve_spec=args.auto_approve_spec,
-        )
     final_candidate: HuashuAuditResult | None = None
     attempts_used = 0
-    for attempt in range(0, max(0, args.repair_attempts) + 1):
-        candidate = HuashuAuditResult(
-            timestamp=timestamp,
-            target_dir=str(target_dir),
-            backup_dir=result.backup_dir,
-            model_profile=model_profile,
-            target=args.target,
-            target_skill_dir_name=skill_dir_name,
-        )
-        _validate_live_result(
-            candidate,
-            live,
-            target_dir,
-            workspace,
-            target=args.target,
-            game=args.game,
-            skill_dir_name=skill_dir_name,
-        )
-        if candidate.has_blocking_failures and live.status == "timeout" and _live_run_still_active(live):
-            candidate.add(
-                "P0",
-                "live_run_still_active_no_repair_submitted",
-                "Live run 超时但 Engine run 仍处于 active 状态；harness 不再向同一会话插入 repair guidance，以免污染长任务事件链。",
-                {"runId": live.run_id, "sessionId": live.session_id, "failureReason": live.failure_reason},
-            )
-            final_candidate = candidate
-            attempts_used = attempt
-            break
-        if not candidate.has_blocking_failures or attempt >= max(0, args.repair_attempts):
-            final_candidate = candidate
-            attempts_used = attempt
-            break
-        attempts_used = attempt + 1
-        print(f"repairAttempt={attempts_used}")
-        live = _submit_repair_case(
+    for model_profile in model_fallbacks:
+        print(f"modelAttempt={model_profile}")
+        live = _submit_live_case(
             args.engine_url,
             workspace=workspace,
             target=args.target,
             game=args.game,
             target_dir=target_dir,
+            skill_dir_name=skill_dir_name,
             model_profile=model_profile,
-            session_id=candidate.session_id or live.session_id or f"huashu-nuwa-{skill_dir_name}-live-{timestamp}",
-            findings=candidate.findings,
-            attempt=attempts_used,
+            timestamp=f"{timestamp}-{re.sub(r'[^A-Za-z0-9]+', '-', model_profile).strip('-').lower()}",
             spec_mode=args.spec_mode,
+            user_prompt=args.user_prompt,
         )
         if live.status != "failed":
             live = _poll_case_with_spec_auto_approve(
@@ -1342,6 +1302,72 @@ def main() -> int:
                 workspace=workspace,
                 auto_approve_spec=args.auto_approve_spec,
             )
+        model_candidate: HuashuAuditResult | None = None
+        model_attempts_used = 0
+        for attempt in range(0, max(0, args.repair_attempts) + 1):
+            candidate = HuashuAuditResult(
+                timestamp=timestamp,
+                target_dir=str(target_dir),
+                backup_dir=result.backup_dir,
+                model_profile=model_profile,
+                target=args.target,
+                target_skill_dir_name=skill_dir_name,
+            )
+            _validate_live_result(
+                candidate,
+                live,
+                target_dir,
+                workspace,
+                target=args.target,
+                game=args.game,
+                skill_dir_name=skill_dir_name,
+            )
+            if candidate.has_blocking_failures and live.status == "timeout" and _live_run_still_active(live):
+                candidate.add(
+                    "P0",
+                    "live_run_still_active_no_repair_submitted",
+                    "Live run 超时但 Engine run 仍处于 active 状态；harness 不再向同一会话插入 repair guidance，以免污染长任务事件链。",
+                    {"runId": live.run_id, "sessionId": live.session_id, "failureReason": live.failure_reason},
+                )
+                model_candidate = candidate
+                model_attempts_used = attempt
+                break
+            if not candidate.has_blocking_failures or attempt >= max(0, args.repair_attempts):
+                model_candidate = candidate
+                model_attempts_used = attempt
+                break
+            model_attempts_used = attempt + 1
+            print(f"repairAttempt={model_attempts_used}")
+            live = _submit_repair_case(
+                args.engine_url,
+                workspace=workspace,
+                target=args.target,
+                game=args.game,
+                target_dir=target_dir,
+                model_profile=model_profile,
+                session_id=candidate.session_id or live.session_id or f"huashu-nuwa-{skill_dir_name}-live-{timestamp}",
+                findings=candidate.findings,
+                attempt=model_attempts_used,
+                spec_mode=args.spec_mode,
+            )
+            if live.status != "failed":
+                live = _poll_case_with_spec_auto_approve(
+                    args.engine_url,
+                    live,
+                    max_wait=args.max_wait,
+                    workspace=workspace,
+                    auto_approve_spec=args.auto_approve_spec,
+                )
+        if model_candidate is None:
+            continue
+        final_candidate = model_candidate
+        attempts_used = model_attempts_used
+        if not model_candidate.has_blocking_failures:
+            break
+        joined_findings = " ".join(f"{item.code} {item.summary} {item.evidence}" for item in model_candidate.findings).lower()
+        retryable = any(token in joined_findings for token in ("quota", "rate", "provider", "model", "timeout", "429", "too frequent"))
+        if not retryable:
+            break
     if final_candidate is not None:
         result.session_id = final_candidate.session_id
         result.run_id = final_candidate.run_id

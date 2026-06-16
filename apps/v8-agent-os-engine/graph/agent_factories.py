@@ -245,6 +245,65 @@ def _compact_prompt_value(value) -> str:
     return str(value or "").strip()
 
 
+def _truthy_task_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "y", "write", "required", "需要", "是", "有"}
+
+
+def _task_brief_requires_artifact_write(task_brief: dict | None) -> bool:
+    if not isinstance(task_brief, dict):
+        return False
+    if _truthy_task_value(task_brief.get("writeRequired") or task_brief.get("write_required")):
+        return True
+    deliverable_kind = str(task_brief.get("deliverableKind") or task_brief.get("deliverable_kind") or "").strip().lower()
+    if deliverable_kind in {"artifact", "patch", "implementation", "skill_artifact", "project_artifact"}:
+        return True
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    if _truthy_task_value(context.get("writeRequired") or context.get("write_required")):
+        return True
+    if str(context.get("artifactWriteDiscipline") or "").strip():
+        return True
+    blob = json.dumps(task_brief, ensure_ascii=False).lower()
+    return any(
+        marker in blob
+        for marker in (
+            "skill.md",
+            ".agents/skills",
+            "verification-report",
+            "delivery-summary",
+            "expectedoutputs",
+            "expected_outputs",
+            "预期输出",
+            "写入",
+            "创建文件",
+            "生成文件",
+        )
+    )
+
+
+def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
+    if not _task_brief_requires_artifact_write(task_brief):
+        return []
+    context = task_brief.get("context") if isinstance(task_brief, dict) and isinstance(task_brief.get("context"), dict) else {}
+    custom = str(context.get("artifactWriteDiscipline") or "").strip()
+    lines = [
+        "",
+        "Artifact Write Discipline:",
+        "- Use `write_native_file` for content-bearing project files, including Markdown, source code, Spec-derived artifacts, SKILL.md, and references/** documents.",
+        "- Do NOT use `run_system_command`, shell redirection, `echo`, `New-Item`, `Set-Content`, or `Out-File` to create or populate artifact content files.",
+        "- `run_system_command` is allowed for directory creation, listing, and verification commands only; it is not an artifact authoring tool.",
+        "- Empty placeholder files, one-line stubs, or files without required source markers do not satisfy the acceptance contract.",
+        "- If facts or source evidence are missing, return a blocker/degraded result or request the needed research; do not write blank or invented files.",
+    ]
+    if custom:
+        lines.append(f"- Task-specific note: {custom}")
+    return lines
+
+
 def _format_delegated_plan_context(task_brief: dict | None, planner_context: dict | None) -> str:
     if not isinstance(task_brief, dict) and not isinstance(planner_context, dict):
         return ""
@@ -280,6 +339,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             ("Goal", "goal"),
             ("Context", "context"),
             ("Write Set", "writeSet"),
+            ("Expected Outputs", "expectedOutputs"),
             ("Behavior Scope", "behaviorScope"),
             ("Required Capabilities", "requiredCapabilities"),
             ("Runtime Access", "runtimeAccess"),
@@ -334,11 +394,21 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             if acceptance:
                 lines.append(f"- Writing Acceptance: {acceptance}")
             lines.append("- Missing facts must be labeled as assumptions or blockers; do not invent memory, sources, files, tests, or user preferences.")
+        lines.extend(_artifact_write_discipline_lines(task_brief))
         capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
-        role = infer_engineering_task_role(task_brief)
+        capsule_lane = str(
+            (capsule or {}).get("runtimeLane")
+            or task_brief.get("familyHint")
+            or task_brief.get("executionLaneHint")
+            or ""
+        ).strip().lower()
+        engineering_like_capsule = not capsule_lane or "engineer" in capsule_lane or capsule_lane == "verification"
+        role = infer_engineering_task_role(task_brief) if engineering_like_capsule else ""
         if capsule or role:
             lines.append("")
-            lines.append("Engineering Task Capsule:")
+            lines.append("Engineering Task Capsule:" if engineering_like_capsule else "Runtime Task Capsule:")
+            if capsule_lane and not engineering_like_capsule:
+                lines.append(f"- Runtime Lane: {capsule_lane}")
             if role:
                 lines.append(f"- Engineering Role: {role}")
             for label, key in (

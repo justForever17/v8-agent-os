@@ -156,7 +156,59 @@ def _stringify_for_acceptance(value: Any, *, limit: int = 12000) -> str:
     return text[:limit]
 
 
+def _branch_requires_skill_artifact_validation(branch: dict[str, Any]) -> bool:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    if bool(task_brief.get("validateSkillArtifact") or task_brief.get("validate_skill_artifact")):
+        return True
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    if bool(context.get("validateSkillArtifact") or context.get("validate_skill_artifact")):
+        return True
+    task_id = str(
+        branch.get("taskBriefId")
+        or task_brief.get("taskBriefId")
+        or task_brief.get("taskId")
+        or context.get("taskId")
+        or ""
+    ).strip().upper()
+    deliverable = str(task_brief.get("deliverableKind") or task_brief.get("deliverable_kind") or "").strip().lower()
+    if deliverable == "skill_artifact":
+        return True
+    blob = "\n".join(
+        _stringify_for_acceptance(value)
+        for value in (
+            task_id,
+            branch.get("reason"),
+            branch.get("taskGoal"),
+            task_brief.get("title"),
+            task_brief.get("goal"),
+            task_brief.get("acceptanceContract"),
+            context.get("artifactAcceptanceGuard"),
+            context.get("expectedOutputs"),
+        )
+    ).lower()
+    if "skill.md" not in blob and "skill artifact" not in blob and "skill_artifact" not in blob:
+        return False
+    artifact_stage_markers = (
+        "组装",
+        "构建",
+        "生成",
+        "写入",
+        "创建完整",
+        "质量验证",
+        "交付前质量验证",
+        "build",
+        "assemble",
+        "write",
+        "validate",
+    )
+    if task_id in {"TASK-010", "TASK-011"}:
+        return True
+    return any(marker in blob for marker in artifact_stage_markers)
+
+
 def _infer_required_skill_artifacts(branch: dict[str, Any], state: dict[str, Any]) -> list[Path]:
+    if not _branch_requires_skill_artifact_validation(branch):
+        return []
     task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
     blob = "\n".join(
         part

@@ -613,7 +613,7 @@ def delegation_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Unified delegation broker for local subagents and external workers: reveal, dispatch, observe, resume, or interrupt delegated work."""
+    """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks; use only with concrete task briefs, not fake Agent Swarm."""
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:
         return Command(

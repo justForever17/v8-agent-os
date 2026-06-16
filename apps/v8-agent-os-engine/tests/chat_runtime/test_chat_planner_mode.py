@@ -877,6 +877,45 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("runtime_broker(mode='route'", guidance.content)
         self.assertNotIn("no specId exists yet", guidance.content)
 
+    def test_spec_mode_recovers_current_session_spec_id_from_prior_events(self):
+        runtime = ChatRuntime()
+        with (
+            patch(
+                "runtimes.chat.runtime.db.get_runtime_events",
+                return_value=[
+                    {
+                        "payload": {
+                            "tool": {
+                                "result": {
+                                    "kind": "spec_stage_written",
+                                    "specId": "spec-session-ready",
+                                }
+                            }
+                        },
+                        "source": {},
+                    }
+                ],
+            ),
+            patch("runtimes.chat.runtime.db.get_chat_canonical_messages", return_value=[]),
+        ):
+            spec_id = runtime._latest_session_spec_id("session-spec")
+
+        self.assertEqual(spec_id, "spec-session-ready")
+
+    def test_spec_mode_prepare_uses_current_session_spec_when_request_has_no_spec_id(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            session_id="session-spec-prepare",
+            messages=[ChatMessage(role="user", content="继续执行已审批的 Spec")],
+            data=ChatRequestData(specMode=True),
+        )
+
+        with patch.object(ChatRuntime, "_latest_session_spec_id", return_value="spec-from-session") as latest_spec:
+            prepared = runtime.prepare_request(request)
+
+        latest_spec.assert_called_once_with("session-spec-prepare")
+        self.assertEqual(prepared.spec_id, "spec-from-session")
+
     def test_approved_spec_runtime_stage_does_not_force_memory_first(self):
         tools = [SimpleNamespace(name="memory_broker"), SimpleNamespace(name="runtime_broker")]
         state = {
@@ -939,8 +978,29 @@ class ChatPlannerModeTests(unittest.TestCase):
         content = str(guidance.content)
         self.assertIn("mode='read'|'read_stage'", content)
         self.assertIn("mode='write_stage'|'rewrite_stage'|'edit'|'write'|'update'", content)
-        self.assertIn("mode='approve'", content)
+        self.assertIn("do not call `spec_broker(mode='approve')` yourself", content)
+        self.assertIn("Approval is a user/client governance event", content)
         self.assertIn("do not assume subagents can spawn grandchildren implicitly", content)
+
+    def test_direct_tool_registry_first_lines_explain_spec_and_runtime_actions(self):
+        from core.tools.native.delegation import delegation_broker
+        from core.tools.native.runtime import runtime_broker
+        from core.tools.native.spec import spec_broker
+        from runtimes.extensions.skills.loader import fetch_skill_instructions
+
+        spec_first_line = str(getattr(spec_broker, "description", "") or "").strip().split("\n")[0]
+        runtime_first_line = str(getattr(runtime_broker, "description", "") or "").strip().split("\n")[0]
+        delegation_first_line = str(getattr(delegation_broker, "description", "") or "").strip().split("\n")[0]
+        fetch_skill_first_line = str(getattr(fetch_skill_instructions, "description", "") or "").strip().split("\n")[0]
+
+        self.assertIn("Write/read/edit Spec Mode documents", spec_first_line)
+        self.assertIn("user/client approval gates", spec_first_line)
+        self.assertNotIn("approve, and advance", spec_first_line)
+        self.assertIn("route approved complex work", runtime_first_line)
+        self.assertIn("runtime episodes", runtime_first_line)
+        self.assertIn("concrete task briefs", delegation_first_line)
+        self.assertIn("complete SKILL.md", fetch_skill_first_line)
+        self.assertIn("relative_path", fetch_skill_first_line)
 
     def test_planner_dispatch_mode_accepts_auto_and_off(self):
         runtime = ChatRuntime()

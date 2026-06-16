@@ -122,6 +122,64 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Required Capabilities: skill_authoring", content)
         self.assertIn("Acceptance Contract: Supervisor verifies the final skill.", content)
 
+    def test_delegated_plan_context_warns_artifact_workers_to_use_write_tool(self):
+        content = _format_delegated_plan_context(
+            {
+                "taskBriefId": "TASK-010",
+                "goal": "写入 ling-perspective/SKILL.md 和 references/research/*.md",
+                "deliverableKind": "artifact",
+                "writeRequired": True,
+                "expectedOutputs": [
+                    ".agents/skills/ling-perspective/SKILL.md",
+                    ".agents/skills/ling-perspective/references/research/01-writings.md",
+                ],
+                "context": {
+                    "artifactWriteDiscipline": "Skill files must include source markers.",
+                },
+                "acceptanceContract": "All expected files must contain substantive, source-backed content.",
+            },
+            {"planId": "plan-artifact", "executionStrategy": "delegate"},
+        )
+
+        self.assertIn("Artifact Write Discipline:", content)
+        self.assertIn("Use `write_native_file` for content-bearing project files", content)
+        self.assertIn("Do NOT use `run_system_command`, shell redirection", content)
+        self.assertIn("New-Item", content)
+        self.assertIn("Empty placeholder files", content)
+        self.assertIn("Skill files must include source markers.", content)
+
+    def test_delegated_plan_context_keeps_research_runtime_contract_distinct(self):
+        content = _format_delegated_plan_context(
+            {
+                "taskBriefId": "TASK-RESEARCH",
+                "goal": "完成 Spec 中的六维调研任务。",
+                "familyHint": "research",
+                "runtimeAccess": ["research.core"],
+                "requiredCapabilities": ["source_backed_research", "evidence_pack"],
+                "context": {
+                    "assignedResearchBrief": (
+                        "### TASK-001: 官方设定与系统思考调研\n"
+                        "调研官方设定、角色故事、角色档案、版本设定。输出 references/research/01-writings.md。\n"
+                        "### TASK-002: 剧情对话与即兴表达调研\n"
+                        "调研主线剧情、短信、同行任务、活动剧情中的表达方式。"
+                    )
+                },
+                "engineeringTaskCapsule": {
+                    "deliverableKind": "evidence",
+                    "runtimeLane": "research",
+                    "proofExpectations": ["Report selected sources and gaps."],
+                },
+            },
+            None,
+        )
+
+        self.assertIn("Runtime Access: research.core", content)
+        self.assertIn("assignedResearchBrief", content)
+        self.assertIn("官方设定与系统思考调研", content)
+        self.assertIn("Runtime Task Capsule:", content)
+        self.assertIn("Runtime Lane: research", content)
+        self.assertNotIn("Engineering Role: verification", content)
+
     def test_agent_system_content_uses_same_delegated_plan_block(self):
         delegated_plan = _format_delegated_plan_context(
             {"taskBriefId": "task-1", "goal": "Build bounded output"},

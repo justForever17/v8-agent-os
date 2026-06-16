@@ -20,6 +20,7 @@ def test_spec_broker_description_lists_write_edit_read_modes():
     assert "read_stage" in description
     assert "It never writes final" in description
     assert "mode='brief'" in description
+    assert "`mode='approve'` is reserved for user/client approval continuations" in description
     assert "Approved stages are locked" in description
     assert "runtime lane" in description
     assert "runtime_broker" in description
@@ -66,6 +67,43 @@ def test_spec_broker_rewrite_approved_stage_returns_locked(tmp_path):
     assert "stage='design'" in locked["recommendedNextAction"]
     assert locked["transitionHint"]["nextStage"] == "design"
     assert "write stage design" in locked["transitionHint"]["whenReady"].lower()
+
+
+def test_spec_broker_rejects_supervisor_self_approval(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="需要用户审批的 Spec",
+            feature_name="approval-guard",
+            content="# Requirements\n\n- REQ-001: 只能由用户审批。\n",
+        )
+    )
+    spec_id = created["specId"]
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        session_id="session_self_approval_guard",
+        run_id="run_self_approval_guard",
+        workspace_path=str(workspace),
+    ):
+        blocked = _payload(
+            spec_broker.func(
+                mode="approve",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                stage="requirements",
+                comment="Supervisor tries to approve its own draft",
+            )
+        )
+
+    assert blocked["ok"] is False
+    assert blocked["kind"] == "spec_user_approval_required"
+    assert "cannot approve" in blocked["summary"]
+    brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)
+    assert "requirements" not in set(brief.get("approvedStages") or [])
 
 
 def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_path):
@@ -191,6 +229,93 @@ def test_spec_broker_list_and_missing_spec_id_use_latest_active_spec(tmp_path):
 
     assert approved["ok"] is True
     assert approved["specId"] == second_id
+
+
+def test_spec_broker_read_missing_next_stage_returns_write_guidance(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="生成玲的 skill",
+            feature_name="ling-skill",
+            content="# Requirements\n\n- REQ-001: deliver skill.\n",
+        )
+    )
+    spec_id = created["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content="# Design\n\n- DES-001: design.\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+
+    missing = _payload(
+        spec_broker.func(
+            mode="read_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="tasks",
+        )
+    )
+
+    assert missing["ok"] is False
+    assert missing["kind"] == "spec_stage_missing"
+    assert missing["stage"] == "tasks"
+    assert missing["nextStage"] == "tasks"
+    assert missing["pipelineControl"]["nextStage"] == "tasks"
+    assert missing["transitionHint"]["state"] == "stage_ready_to_write"
+    assert "mode='write_stage'" in missing["recommendedNextAction"]
+    assert "stage='tasks'" in missing["recommendedNextAction"]
+
+
+def test_spec_broker_read_existing_stage_includes_pipeline_transition_hint(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="生成玲的 skill",
+            feature_name="ling-skill",
+            content="# Requirements\n\n- REQ-001: deliver skill.\n",
+        )
+    )
+    spec_id = created["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content="# Design\n\n- DES-001: design.\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+
+    read = _payload(
+        spec_broker.func(
+            mode="read",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+        )
+    )
+
+    assert read["ok"] is True
+    assert read["kind"] == "spec_section"
+    assert read["pipelineControl"]["nextStage"] == "tasks"
+    assert read["transitionHint"]["state"] == "stage_ready_to_write"
+    assert "stage='tasks'" in read["recommendedNextAction"]
 
 
 def test_spec_broker_start_same_feature_creates_new_current_spec(tmp_path):
@@ -451,6 +576,8 @@ def test_spec_broker_continuation_rejects_wrong_stage_without_new_spec(tmp_path)
     listing = _payload(spec_broker.func(mode="list", workspace_path=str(workspace)))
     assert listing["count"] == 1
     assert listing["specs"][0]["specId"] == spec_id
+    assert "mode='approve'" not in listing["recommendedNextAction"]
+    assert "user/client approval event" in listing["recommendedNextAction"]
 
 
 def test_spec_broker_continuation_defaults_missing_stage_to_next_stage(tmp_path):

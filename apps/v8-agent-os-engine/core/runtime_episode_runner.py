@@ -212,7 +212,10 @@ class RuntimeEpisodeRunner:
                     run_id=run_id,
                 )
                 return
-            final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
+            if handoff_status == "degraded":
+                final_state = "degraded"
+            else:
+                final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
             recovery = self._build_recovery_bundle(episode, handoff, final_state=final_state)
             completed = db.complete_runtime_episode(
                 episode_id,
@@ -222,8 +225,13 @@ class RuntimeEpisodeRunner:
                 error_message=str(handoff.get("errorMessage") or "") or None,
                 metadata={"handoff": persisted_handoff, "recovery": recovery},
             )
+            event_type = "runtime.episode.completed"
+            if final_state == "failed":
+                event_type = "runtime.episode.failed"
+            elif final_state == "degraded":
+                event_type = "runtime.episode.degraded"
             self._emit(
-                "runtime.episode.completed" if final_state == "completed" else "runtime.episode.failed",
+                event_type,
                 episode=completed or {**episode, "state": final_state},
                 handoff=persisted_handoff,
                 recovery=recovery,
@@ -477,11 +485,11 @@ class RuntimeEpisodeRunner:
         children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=1000)
         if not children:
             return
-        terminal = {"completed", "failed", "cancelled", "merged"}
+        terminal = {"completed", "failed", "cancelled", "merged", "degraded"}
         if any(str(child.get("state") or "") not in terminal for child in children):
             return
         completed_children = [child for child in children if str(child.get("state") or "") in {"completed", "merged"}]
-        failed_children = [child for child in children if str(child.get("state") or "") in {"failed", "cancelled"}]
+        failed_children = [child for child in children if str(child.get("state") or "") in {"failed", "cancelled", "degraded"}]
         child_handoffs: list[dict[str, Any]] = []
         for child in [*completed_children, *failed_children]:
             for handoff in db.list_runtime_episode_handoffs(str(child.get("episodeId") or child.get("id") or "")):
@@ -1187,11 +1195,57 @@ class RuntimeEpisodeRunner:
             lane = str(item.get("executionLaneHint") or "").strip().lower()
             if lane == "engineering":
                 item["executionLaneHint"] = "subagent"
+            deliverable_kind = str(item.get("deliverableKind") or item.get("deliverable_kind") or "").strip().lower()
+            context = dict(item.get("context") or {}) if isinstance(item.get("context"), dict) else {}
+            expected_outputs = item.get("expectedOutputs") or item.get("expected_outputs") or context.get("expectedOutputs")
+            write_required = item.get("writeRequired") if "writeRequired" in item else item.get("write_required")
+            validate_skill_artifact = bool(item.get("validateSkillArtifact") or item.get("validate_skill_artifact"))
+            artifact_write_required = bool(write_required is True) or deliverable_kind in {
+                "artifact",
+                "patch",
+                "implementation",
+                "skill_artifact",
+                "project_artifact",
+            }
             if skill_artifact:
                 family = str(item.get("familyHint") or "").strip().lower()
                 if not family or family == "engineering":
                     item["familyHint"] = "writing"
                 item.setdefault("preferredAgentId", "skill-workflow-curator")
+                task_text = "\n".join(
+                    str(value or "")
+                    for value in (
+                        item.get("taskBriefId"),
+                        item.get("title"),
+                        item.get("goal"),
+                        expected_outputs,
+                        item.get("acceptanceContract"),
+                    )
+                ).lower()
+                validate_skill_artifact = validate_skill_artifact or (
+                    "skill.md" in task_text
+                    and any(marker in task_text for marker in ("构建", "组装", "写入", "质量验证", "build", "assemble", "validate"))
+                )
+                artifact_write_required = artifact_write_required or validate_skill_artifact
+            if expected_outputs:
+                context.setdefault("expectedOutputs", expected_outputs)
+                expected_text = json.dumps(expected_outputs, ensure_ascii=False, default=str).lower()
+                artifact_write_required = artifact_write_required or bool(
+                    re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", expected_text)
+                )
+            if artifact_write_required:
+                item["writeRequired"] = True
+                if validate_skill_artifact:
+                    item["validateSkillArtifact"] = True
+                context.setdefault(
+                    "artifactWriteDiscipline",
+                    "Use write_native_file for substantive artifact contents. Do not use run_system_command, shell redirection, echo, New-Item, Set-Content, or Out-File to create or populate Markdown/source/skill files; shell commands are only for directories, listing, and verification.",
+                )
+                context.setdefault(
+                    "artifactAcceptanceGuard",
+                    "Expected output files must contain complete, source-backed content. Empty placeholders or one-line stubs are invalid; return a blocker/degraded result if evidence is missing.",
+                )
+                item["context"] = context
             normalized.append(item)
         return normalized
 
@@ -1261,7 +1315,7 @@ class RuntimeEpisodeRunner:
         values: list[str] = []
 
         def extract_skill_path_candidates(text: str) -> list[str]:
-            stripped = text.strip().strip("\"'")
+            stripped = text.strip().strip("\"'`")
             candidates: list[str] = []
             if re.match(r"^(?:[A-Za-z]:[\\/]|\.agents[\\/])", stripped) or stripped.lower().endswith("skill.md"):
                 candidates.append(stripped)
@@ -1271,7 +1325,7 @@ class RuntimeEpisodeRunner:
             ]
             for pattern in patterns:
                 for match in re.finditer(pattern, text):
-                    raw = match.group(0).strip().strip("\"'()（）[]【】")
+                    raw = match.group(0).strip().strip("\"'`()（）[]【】")
                     if raw:
                         candidates.append(raw)
             return candidates
@@ -1304,7 +1358,7 @@ class RuntimeEpisodeRunner:
             return path
 
         for raw in values:
-            candidate = Path(str(raw).strip().strip("\"'"))
+            candidate = Path(str(raw).strip().strip("\"'`"))
             candidate = as_skill_root(candidate)
             if not candidate.is_absolute() and workspace_path:
                 candidate = Path(workspace_path) / candidate

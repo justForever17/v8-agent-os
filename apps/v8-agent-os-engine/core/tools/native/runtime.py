@@ -270,6 +270,17 @@ def _extract_task_field(excerpt: str, labels: tuple[str, ...]) -> str:
     return ""
 
 
+def _extract_task_block(excerpt: str, labels: tuple[str, ...], *, limit: int = 1200) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?ims)^\s*\*\*(?:{label_pattern})\*\*\s*[:：]?\s*\n(?P<body>.*?)(?=\n\s*\*\*[^*\n]+?\*\*\s*[:：]|\n---|\n###\s+|\Z)",
+        excerpt,
+    )
+    if not match:
+        return ""
+    return _safe_compact_text(match.group("body"), limit=limit)
+
+
 def _task_id_aliases(task_id: str) -> list[str]:
     normalized = str(task_id or "").strip().upper()
     aliases = [normalized] if normalized else []
@@ -371,12 +382,27 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
         first_line = excerpt.splitlines()[0] if excerpt else normalized_id
         title = re.sub(r"(?i)^.*\b(?:TASK|TSK|T)-\d{2,}\b\s*[:：.\-、]?\s*", "", first_line).strip()
         title = re.sub(r"^\[[ xX]\]\s*", "", title).strip("-:： ")
-        output_file = _extract_task_field(excerpt, ("expectedOutput", "expected output", "output", "输出", "产物"))
+        output_labels = ("expectedOutput", "expected output", "output", "输出", "产物", "预期输出", "预期输出路径")
+        output_file = _extract_task_block(
+            excerpt,
+            ("输出文件", "预期输出路径", "预期输出", "输出路径"),
+            limit=900,
+        )
         if not output_file:
-            output_match = re.search(r"(?ims)\*\*输出文件\*\*\s*[:：]?\s*\n(?P<body>.*?)(?:\n---|\n###\s+|\Z)", excerpt)
+            output_file = _extract_task_field(
+            excerpt,
+                output_labels,
+            )
+        if not output_file:
+            output_match = re.search(
+                r"(?ims)\*\*(?:输出文件|预期输出路径|预期输出|输出路径)\*\*\s*[:：]?\s*\n(?P<body>.*?)(?:\n---|\n###\s+|\Z)",
+                excerpt,
+            )
             if output_match:
                 output_file = _safe_compact_text(output_match.group("body"), limit=900)
-        acceptance = _extract_task_field(excerpt, ("acceptance", "验收"))
+        acceptance = _extract_task_block(excerpt, ("acceptance", "验收", "验收标准"), limit=1200)
+        if not acceptance:
+            acceptance = _extract_task_field(excerpt, ("acceptance", "验收"))
         if not acceptance:
             acceptance_match = re.search(r"(?ims)\*\*验收标准\*\*\s*[:：]?\s*\n(?P<body>.*?)(?:\n---|\n###\s+|\Z)", excerpt)
             if acceptance_match:
@@ -386,7 +412,21 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
                 "taskId": normalized_id,
                 "title": title or f"Execute approved {normalized_id}",
                 "excerpt": _safe_compact_text(excerpt, limit=5000),
-                "runtimeLane": _extract_task_field(excerpt, ("runtimeLane", "runtime lane", "Runtime", "Lane", "执行泳道", "执行通道", "执行方")),
+                "runtimeLane": _extract_task_field(
+                    excerpt,
+                    (
+                        "runtimeLane",
+                        "runtime lane",
+                        "Runtime",
+                        "Lane",
+                        "执行泳道",
+                        "执行通道",
+                        "执行频道",
+                        "执行方",
+                        "执行角色",
+                        "执行者",
+                    ),
+                ),
                 "dependsOn": _split_spec_refs(_extract_task_field(excerpt, ("dependsOn", "depends on", "Depends", "依赖"))),
                 "specRefs": _split_spec_refs(
                     " ".join(
@@ -487,16 +527,6 @@ def _required_runtime_access_from_spec_bundle(bundle: dict[str, Any], kind: str)
 
 def _spec_task_runtime_family(task: dict[str, Any], route_kind: str) -> str:
     lane = str(task.get("runtimeLane") or "").strip().lower()
-    if "research" in lane or "调研" in lane:
-        return "research"
-    if "supervisor" in lane or "governance" in lane or "主管" in lane:
-        return "governance"
-    if "engineering" in lane or "工程" in lane:
-        return "engineering"
-    if "creative" in lane or "media" in lane or "创意" in lane:
-        return "creative_media"
-    if "delegation" in lane or "subagent" in lane or "子agent" in lane or "孙agent" in lane:
-        return "delegation"
     probe = " ".join(
         [
             str(task.get("title") or ""),
@@ -504,6 +534,37 @@ def _spec_task_runtime_family(task: dict[str, Any], route_kind: str) -> str:
             str(task.get("expectedOutput") or ""),
         ]
     ).lower()
+    if "research" in lane or "调研" in lane:
+        return "research"
+    if "engineering" in lane or "工程" in lane:
+        return "engineering"
+    if "qa" in lane or "test" in lane or "验证" in lane:
+        return "engineering"
+    if "creative" in lane or "media" in lane or "创意" in lane:
+        return "creative_media"
+    if "delegation" in lane or "subagent" in lane or "子agent" in lane or "孙agent" in lane:
+        return "delegation"
+    strong_engineering_markers = (
+        "skill.md",
+        "verification-report",
+        "delivery-summary",
+        "quality_check.py",
+        "merge_research.py",
+        "目录初始化",
+        "脚本复制",
+        "创建目录",
+        "创建完整",
+        "skill构建",
+        "skill 构建",
+        "质量验证",
+        "最终交付",
+        "交付文档",
+        "构建与质量自检",
+    )
+    if any(token in probe for token in strong_engineering_markers):
+        return "engineering"
+    if "supervisor" in lane or "governance" in lane or "主管" in lane:
+        return "governance"
     if any(token in probe for token in ("research", "调研", "source", "evidence", "citation", "来源")):
         return "research"
     if any(token in probe for token in ("delegation", "subagent", "agent swarm", "子agent", "孙agent", "并行子")):
@@ -552,6 +613,225 @@ def _spec_task_deliverable_kind(family: str) -> str:
     return "artifact"
 
 
+def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
+    if family == "creative_media":
+        return True
+    if family != "engineering":
+        return False
+    lane = str(task.get("runtimeLane") or "").strip().lower()
+    text = " ".join(
+        str(task.get(key) or "")
+        for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
+    ).lower()
+    # Verification/checkpoint/final-summary tasks may inspect artifacts or produce
+    # user-visible summaries, but they should not be treated as content-writing
+    # workers unless a concrete artifact path is present.
+    if any(marker in lane for marker in ("verification", "governance", "supervisor")):
+        return bool(re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", text))
+    if re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", text):
+        return True
+    if any(marker in text for marker in ("目录初始化", "创建目录", "空目录", "最终交付摘要", "交付整理")):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "写入",
+            "创建完整",
+            "组装构建",
+            "skill构建",
+            "skill 构建",
+            "build skill",
+            "assemble skill",
+            "write artifact",
+        )
+    )
+
+
+def _spec_task_validates_skill_artifact(task: dict[str, Any], family: str, *, writes_artifact: bool) -> bool:
+    if family != "engineering":
+        return False
+    text = " ".join(
+        str(task.get(key) or "")
+        for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
+    ).lower()
+    validation_markers = ("质量验证", "交付前质量验证", "validate", "validation")
+    skill_build_markers = (
+        "skill.md",
+        "skill 构建",
+        "skill构建",
+        "生成 skill",
+        "生成skill",
+        "组装 skill",
+        "组装skill",
+        "build skill",
+        "assemble skill",
+        "write skill",
+        "skill artifact",
+    )
+    if "skill.md" in text:
+        return writes_artifact or any(marker in text for marker in validation_markers)
+    if any(marker in text for marker in skill_build_markers):
+        return True
+    return "skill" in text and any(marker in text for marker in validation_markers)
+
+
+def _brief_family_hint(brief: dict[str, Any]) -> str:
+    family = str(brief.get("familyHint") or "").strip().lower()
+    if family:
+        return family
+    capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), dict) else {}
+    lane = str(capsule.get("runtimeLane") or "").strip().lower()
+    if "research" in lane or "调研" in lane:
+        return "research"
+    if "delegation" in lane or "subagent" in lane or "子agent" in lane or "孙agent" in lane:
+        return "delegation"
+    if "creative" in lane or "media" in lane or "创意" in lane:
+        return "creative_media"
+    return "engineering"
+
+
+def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spec_id: str, workspace_path: str) -> dict[str, Any]:
+    assigned_ids = [str(item.get("taskBriefId") or item.get("taskId") or "").strip() for item in research_briefs]
+    assigned_ids = [item for item in assigned_ids if item]
+    summaries = []
+    details = []
+    detail_refs = []
+    for item in research_briefs:
+        context = item.get("context") if isinstance(item.get("context"), dict) else {}
+        task_id = str(item.get("taskBriefId") or context.get("taskId") or "").strip()
+        detail_ref = str(context.get("taskDetailRef") or "").strip()
+        if detail_ref:
+            detail_refs.append(detail_ref)
+        summaries.append(
+            {
+                "taskId": task_id,
+                "title": item.get("title"),
+                "goal": item.get("goal"),
+                "taskDetailRef": detail_ref,
+            }
+        )
+        acceptance_contract = item.get("acceptanceContract") if isinstance(item.get("acceptanceContract"), dict) else {}
+        details.append(
+            {
+                "taskId": task_id,
+                "title": item.get("title") or item.get("goal") or task_id,
+                "goal": item.get("goal"),
+                "taskExcerpt": context.get("taskExcerpt") or item.get("excerpt") or item.get("goal") or "",
+                "expectedOutput": item.get("expectedOutput") or context.get("expectedOutput") or "",
+                "acceptance": item.get("acceptance") or acceptance_contract.get("must") or "",
+                "taskDetailRef": detail_ref,
+            }
+        )
+    detail_lines = []
+    for detail in details[:12]:
+        task_id = str(detail.get("taskId") or "").strip()
+        title = str(detail.get("title") or "").strip()
+        excerpt = _safe_compact_text(detail.get("taskExcerpt"), limit=1800)
+        expected = _safe_compact_text(detail.get("expectedOutput"), limit=700)
+        acceptance = _safe_compact_text(detail.get("acceptance"), limit=900)
+        lines = [f"### {task_id}: {title}".strip()]
+        if excerpt:
+            lines.append(excerpt)
+        if expected:
+            lines.append(f"Expected output: {expected}")
+        if acceptance:
+            lines.append(f"Acceptance: {acceptance}")
+        if detail.get("taskDetailRef"):
+            lines.append(f"DetailRef: {detail.get('taskDetailRef')}")
+        detail_lines.append("\n".join(lines))
+    assigned_research_brief = "\n\n".join(detail_lines)
+    return normalize_task_brief(
+        {
+            "taskBriefId": "TASK-RESEARCH",
+            "title": "Execute approved Spec research lane",
+            "goal": (
+                "Complete the approved research task group as one coordinated lane; "
+                f"assigned task IDs: {', '.join(assigned_ids) or 'n/a'}."
+            ),
+            "context": {
+                "source": "approved_spec_research_lane_macro",
+                "specId": spec_id,
+                "assignedTaskIds": assigned_ids,
+                "assignedTaskSummaries": summaries[:12],
+                "assignedTaskDetails": details[:12],
+                "assignedResearchBrief": assigned_research_brief,
+                "taskDetailRefs": detail_refs[:12],
+                "workspacePath": workspace_path,
+            },
+            "writeSet": [workspace_path] if workspace_path else [],
+            "behaviorScope": ["approved_spec_execution", "runtime_first", "research_lane"],
+            "requiredCapabilities": ["source_backed_research", "evidence_pack", "research_handoff"],
+            "runtimeAccess": ["research.core"],
+            "acceptanceContract": {
+                "must": [
+                    "Return one source-backed evidence handoff covering all assigned research task IDs.",
+                    "Use context.assignedResearchBrief / context.assignedTaskDetails as the concrete research brief; do not rely on task IDs alone.",
+                    "Do not treat search snippets, captcha pages, or footer/nav text as final evidence.",
+                    "Include reusable claims, limitations, and source refs for downstream skill construction.",
+                ],
+                "should": [
+                    "Use taskDetailRefs to read exact approved research dimensions when the compact brief is insufficient.",
+                    "Preserve gaps or conflicts explicitly instead of fabricating missing canon.",
+                ],
+                "nice": [],
+            },
+            "parallelGroup": "research",
+            "executionLaneHint": "subagent",
+            "familyHint": "research",
+            "deliverableKind": "evidence",
+            "writeRequired": False,
+            "allowChildDelegation": False,
+            "specRefs": {
+                "specId": spec_id,
+                "taskIds": assigned_ids,
+                "detailRefs": detail_refs[:12],
+            },
+            "engineeringTaskCapsule": {
+                "deliverableKind": "evidence",
+                "writeRequired": False,
+                "specId": spec_id,
+                "taskIds": assigned_ids,
+                "runtimeLane": "research",
+                "writeSet": [workspace_path] if workspace_path else [],
+                "proofExpectations": [
+                    "Report selected sources and gaps.",
+                    "Reference approved specId and assigned task IDs.",
+                ],
+            },
+        }
+    )
+
+
+def _shape_spec_task_briefs_for_route(briefs: list[dict[str, Any]], *, kind: str, spec_id: str, workspace_path: str) -> list[dict[str, Any]]:
+    if not briefs:
+        return briefs
+    normalized_kind = _normalize_capability_kind(kind)
+    if normalized_kind == "delegation":
+        explicit = [item for item in briefs if _brief_family_hint(item) == "delegation"]
+        if explicit:
+            return explicit
+        research = [item for item in briefs if _brief_family_hint(item) == "research"]
+        if research:
+            return [_coalesced_spec_research_brief(research, spec_id=spec_id, workspace_path=workspace_path)]
+        return []
+    if normalized_kind != "engineering":
+        return briefs
+    shaped: list[dict[str, Any]] = []
+    research: list[dict[str, Any]] = []
+    for item in briefs:
+        family = _brief_family_hint(item)
+        if family == "research":
+            research.append(item)
+            continue
+        if family in {"delegation", "governance"}:
+            continue
+        shaped.append(item)
+    if research:
+        insert_at = 1 if shaped else 0
+        shaped.insert(insert_at, _coalesced_spec_research_brief(research, spec_id=spec_id, workspace_path=workspace_path))
+    return shaped
+
+
 def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dict[str, Any]]:
     spec_id = str(bundle.get("specId") or "").strip()
     workspace_path = str(bundle.get("workspacePath") or "").strip()
@@ -581,7 +861,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
         acceptance = str(task.get("acceptance") or "").strip()
         proof = str(task.get("proofRequired") or "").strip()
         spec_refs = list(task.get("specRefs") or []) or list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
-        writes_artifact = family in {"engineering", "creative_media"}
+        writes_artifact = _spec_task_writes_artifact(task, family)
+        validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)
         child_signal = re.search(
             r"(?i)sub\s*agent|sub-agent|worker|parallel|fanout|子\s*agent|孙\s*agent|子agent|孙agent|并行",
             " ".join([lane, str(task.get("title") or ""), str(task.get("excerpt") or "")]),
@@ -643,8 +924,9 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "parallelGroup": lane or kind,
                 "executionLaneHint": _spec_task_execution_lane(family),
                 "familyHint": "" if family == "governance" else family,
-                "deliverableKind": _spec_task_deliverable_kind(family),
-                "writeRequired": family in {"engineering", "creative_media"},
+                "deliverableKind": "skill_artifact" if validates_skill_artifact else _spec_task_deliverable_kind(family),
+                "writeRequired": writes_artifact,
+                **({"validateSkillArtifact": True} if validates_skill_artifact else {}),
                 "allowChildDelegation": allow_child,
                 "childDelegationBudget": {"maxDepth": 1, "inherits": ["taskId", "specId", "specRefs", "detailRefs"]} if allow_child else {},
                 "specRefs": {
@@ -663,8 +945,9 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                     ],
                 },
                 "engineeringTaskCapsule": {
-                    "deliverableKind": _spec_task_deliverable_kind(family),
-                    "writeRequired": family in {"engineering", "creative_media"},
+                    "deliverableKind": "skill_artifact" if validates_skill_artifact else _spec_task_deliverable_kind(family),
+                    "writeRequired": writes_artifact,
+                    **({"validateSkillArtifact": True} if validates_skill_artifact else {}),
                     "specId": spec_id,
                     "taskId": task_id,
                     "runtimeLane": lane,
@@ -683,7 +966,102 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             }
         )
         briefs.append(brief)
-    return briefs
+    return _shape_spec_task_briefs_for_route(briefs, kind=kind, spec_id=spec_id, workspace_path=workspace_path)
+
+
+_SPEC_TASK_REF_KEYS = (
+    "taskRef",
+    "taskRefs",
+    "taskId",
+    "taskIds",
+    "specTaskRef",
+    "specTaskRefs",
+    "specTaskId",
+    "specTaskIds",
+)
+
+
+def _normalize_spec_task_ref(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    match = re.search(r"\b(?:TASK|TSK|T)[\s_-]*(\d{1,6})\b", text)
+    if not match:
+        return ""
+    number = int(match.group(1))
+    width = max(3, len(match.group(1)))
+    return f"TASK-{number:0{width}d}"
+
+
+def _iter_spec_task_ref_values(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        values: list[Any] = []
+        for item in value:
+            values.extend(_iter_spec_task_ref_values(item))
+        return values
+    if isinstance(value, dict):
+        values = []
+        for key in _SPEC_TASK_REF_KEYS:
+            if key in value:
+                values.extend(_iter_spec_task_ref_values(value.get(key)))
+        return values
+    text = str(value or "").strip()
+    if not text:
+        return []
+    matches = re.findall(r"\b(?:TASK|TSK|T)[\s_-]*\d{1,6}\b", text, flags=re.IGNORECASE)
+    return matches or [text]
+
+
+def _requested_spec_task_refs(need: dict[str, Any], inputs: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for source in (need, inputs):
+        if not isinstance(source, dict):
+            continue
+        for key in _SPEC_TASK_REF_KEYS:
+            for value in _iter_spec_task_ref_values(source.get(key)):
+                ref = _normalize_spec_task_ref(value)
+                if ref and ref not in refs:
+                    refs.append(ref)
+    return refs
+
+
+def _spec_task_ref_from_brief(brief: dict[str, Any]) -> str:
+    candidates: list[Any] = [
+        brief.get("taskBriefId"),
+        brief.get("taskId"),
+        brief.get("id"),
+    ]
+    context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
+    candidates.extend([context.get("taskId"), context.get("taskRef")])
+    spec_refs = brief.get("specRefs") if isinstance(brief.get("specRefs"), dict) else {}
+    candidates.extend([spec_refs.get("taskId"), spec_refs.get("taskRef")])
+    capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), dict) else {}
+    candidates.extend([capsule.get("taskId"), capsule.get("taskRef")])
+    for candidate in candidates:
+        ref = _normalize_spec_task_ref(candidate)
+        if ref:
+            return ref
+    return ""
+
+
+def _filter_spec_task_briefs_by_refs(
+    briefs: list[dict[str, Any]],
+    requested_refs: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not requested_refs:
+        return list(briefs), []
+    requested = set(requested_refs)
+    selected: list[dict[str, Any]] = []
+    matched: list[str] = []
+    for brief in briefs:
+        ref = _spec_task_ref_from_brief(brief)
+        if ref in requested:
+            selected.append(brief)
+            if ref not in matched:
+                matched.append(ref)
+    return selected, matched
 
 
 def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> str:
@@ -790,6 +1168,7 @@ def _enrich_route_need_for_episode(
     inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
     planner_briefs = _planner_task_briefs_from_state(state)
     spec_bundle = _approved_spec_execution_bundle(enriched, inputs, state=state)
+    requested_spec_task_refs = _requested_spec_task_refs(enriched, inputs)
     if spec_bundle:
         inputs.setdefault("specExecutionBundle", spec_bundle)
         enriched.setdefault("specId", spec_bundle.get("specId"))
@@ -801,19 +1180,47 @@ def _enrich_route_need_for_episode(
 
     if kind in {"engineering", "delegation"}:
         route_tasks = planner_briefs or normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        task_filter_applied = False
         if (
             spec_bundle
             and str(spec_bundle.get("status") or "") == "ready"
             and (not route_tasks or all(str(task.get("taskBriefId") or "").startswith("route-") for task in route_tasks))
         ):
             route_tasks = _task_briefs_from_spec_bundle(spec_bundle, kind)
+        if requested_spec_task_refs:
+            original_task_count = len(route_tasks)
+            selected_tasks, matched_refs = _filter_spec_task_briefs_by_refs(route_tasks, requested_spec_task_refs)
+            if selected_tasks:
+                route_tasks = selected_tasks
+            else:
+                fallback = normalize_task_brief(_minimal_route_task_from_need(enriched, kind))
+                fallback["taskBriefId"] = requested_spec_task_refs[0]
+                fallback_context = dict(fallback.get("context") or {})
+                fallback_context.update(
+                    {
+                        "source": "requested_spec_task_ref",
+                        "requestedSpecTaskRefs": requested_spec_task_refs,
+                        "specTaskRefMissing": True,
+                    }
+                )
+                fallback["context"] = fallback_context
+                route_tasks = [fallback]
+            inputs["selectedSpecTaskIds"] = matched_refs or requested_spec_task_refs
+            inputs["specTaskFilter"] = {
+                "requested": requested_spec_task_refs,
+                "matched": matched_refs,
+                "omittedTaskCount": max(0, original_task_count - len(route_tasks)),
+                "reason": "explicit_task_ref",
+            }
+            inputs["targetCount"] = len(route_tasks)
+            task_filter_applied = True
         if not route_tasks:
             route_tasks = [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
-        if not inputs.get("workerBriefs"):
+        if task_filter_applied or not inputs.get("workerBriefs"):
             inputs["workerBriefs"] = route_tasks
-        if not inputs.get("tasks"):
+        if task_filter_applied or not inputs.get("tasks"):
             inputs["tasks"] = route_tasks
-        if not inputs.get("taskBriefs"):
+        if task_filter_applied or not inputs.get("taskBriefs"):
             inputs["taskBriefs"] = route_tasks
         if kind == "engineering":
             inputs.setdefault(
@@ -1013,7 +1420,7 @@ def runtime_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Supervisor-only broker for listing, granting, routing, checking, and revoking runtime tool groups for the current run."""
+    """Supervisor-only broker to route approved complex work into Research/Engineering/Delegation/etc runtime episodes and wait for typed handoff."""
     normalized_mode = str(mode or "list").strip().lower()
     route_context = dict((state or {}).get("current_route_context") or {})
     if normalized_mode == "list" and _runtime_list_request_should_route(
@@ -1047,6 +1454,69 @@ def runtime_broker(
                     )
                 ],
                 "current_route_context": route_context,
+            },
+        )
+
+    if normalized_mode == "wait_episode":
+        active_episode = next(
+            (
+                item
+                for item in list(route_context.get("capabilityEpisodes") or [])
+                if isinstance(item, dict)
+                and str(item.get("state") or "").strip().lower()
+                in {"queued", "active", "running", "leased"}
+            ),
+            None,
+        )
+        if not active_episode:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="No queued or active runtime episode is available to wait for.",
+                                error="no_active_episode",
+                                detail_level=detail_level,
+                                next_action="Call runtime_broker(mode='route', need={...}) first, or continue after an existing handoff.",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+        episode_id = str(active_episode.get("episodeId") or active_episode.get("needId") or "").strip()
+        episode_kind = str(active_episode.get("kind") or "").strip()
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Runtime episode wait requested; the graph will continue at runtime_episode_wait.",
+                            episode=active_episode,
+                            detail_level=detail_level,
+                            next_action="Runtime wait is a graph transition; do not keep calling runtime_broker(mode='wait_episode').",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": route_context,
+                "planner_dispatch_status": {
+                    "mode": "runtime_broker_wait_episode",
+                    "dispatched": True,
+                    "blocked": False,
+                    "reason": "runtime_episode_wait_requested",
+                    "episodeId": episode_id,
+                    "episodeKind": episode_kind,
+                    "episodeCount": 1,
+                    "nextAction": "wait_episode",
+                },
             },
         )
 
@@ -1128,7 +1598,7 @@ def runtime_broker(
                             detail_level=detail_level,
                             changed=grants,
                             episode=episode,
-                            next_action=next_action,
+                            next_action="Runtime episode queued; the graph will wait for the typed handoff automatically. Do not call runtime_broker(mode='wait_episode') unless a previous route result was not handed to the graph.",
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -1267,7 +1737,7 @@ def runtime_broker(
                         ok=False,
                         summary=f"Unsupported runtime_broker mode: {normalized_mode}",
                         error="unsupported_mode",
-                        next_action="Use one of: list, status, grant, revoke.",
+                        next_action="Use one of: list, route, wait_episode, status, grant, revoke.",
                     ),
                     tool_call_id=tool_call_id,
                 )

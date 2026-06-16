@@ -1041,7 +1041,7 @@ def test_delegation_episode_degrades_when_local_worker_fails(monkeypatch):
 
     stored = db.get_runtime_episode(episode["episodeId"])
     assert stored is not None
-    assert stored["state"] == "completed"
+    assert stored["state"] == "degraded"
     payload = db.list_runtime_episode_handoffs(episode["episodeId"])[-1]["payload"]
     assert payload["kind"] == "delegation_degraded"
     assert payload["status"] == "degraded"
@@ -1929,6 +1929,94 @@ def test_engineering_worker_briefs_for_skill_artifact_delegate_to_writing_family
     assert normalized[0]["executionLaneHint"] == "subagent"
     assert normalized[0]["familyHint"] == "writing"
     assert normalized[0]["preferredAgentId"] == "skill-workflow-curator"
+    assert normalized[0]["writeRequired"] is True
+    assert "write_native_file" in normalized[0]["context"]["artifactWriteDiscipline"]
+    assert "Empty placeholders" in normalized[0]["context"]["artifactAcceptanceGuard"]
+
+
+def test_engineering_worker_briefs_for_artifact_include_write_discipline(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    worker_briefs = [
+        {
+            "taskBriefId": "TASK-010",
+            "goal": "生成交付文档",
+            "executionLaneHint": "engineering",
+            "familyHint": "engineering",
+            "deliverableKind": "artifact",
+            "expectedOutputs": ["docs/delivery-summary.md"],
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"workspacePath": str(tmp_path)},
+        inputs={"workspacePath": str(tmp_path)},
+    )
+
+    assert normalized[0]["executionLaneHint"] == "subagent"
+    assert normalized[0]["writeRequired"] is True
+    assert normalized[0]["context"]["expectedOutputs"] == ["docs/delivery-summary.md"]
+    assert "write_native_file" in normalized[0]["context"]["artifactWriteDiscipline"]
+    assert "shell commands are only for directories" in normalized[0]["context"]["artifactWriteDiscipline"]
+
+
+def test_engineering_worker_briefs_do_not_treat_directory_setup_as_full_skill_artifact(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    skill_root = tmp_path / ".agents" / "skills" / "ling-perspective"
+    worker_briefs = [
+        {
+            "taskBriefId": "TASK-000",
+            "title": "目录初始化",
+            "goal": "创建 ling-perspective skill 目录结构。",
+            "executionLaneHint": "engineering",
+            "familyHint": "engineering",
+            "expectedOutputs": [
+                str(skill_root / "scripts"),
+                str(skill_root / "references" / "research"),
+                str(skill_root / "references" / "sources"),
+            ],
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"workspacePath": str(tmp_path), "validateSkillArtifact": True, "reason": "huashu-nuwa skill creation"},
+        inputs={"workspacePath": str(tmp_path), "validateSkillArtifact": True},
+    )
+
+    assert normalized[0]["executionLaneHint"] == "subagent"
+    assert normalized[0]["familyHint"] == "writing"
+    assert normalized[0].get("writeRequired") is not True
+    assert normalized[0].get("validateSkillArtifact") is not True
+    assert "artifactWriteDiscipline" not in dict(normalized[0].get("context") or {})
+
+
+def test_engineering_worker_briefs_mark_skill_md_build_as_validated_artifact(tmp_path):
+    from core.runtime_episode_runner import RuntimeEpisodeRunner
+
+    skill_root = tmp_path / ".agents" / "skills" / "ling-perspective"
+    worker_briefs = [
+        {
+            "taskBriefId": "TASK-010",
+            "title": "SKILL.md 组装构建",
+            "goal": "写入完整 SKILL.md。",
+            "executionLaneHint": "engineering",
+            "familyHint": "engineering",
+            "expectedOutputs": str(skill_root / "SKILL.md"),
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"workspacePath": str(tmp_path), "validateSkillArtifact": True, "reason": "huashu-nuwa skill creation"},
+        inputs={"workspacePath": str(tmp_path), "validateSkillArtifact": True},
+    )
+
+    assert normalized[0]["writeRequired"] is True
+    assert normalized[0]["validateSkillArtifact"] is True
+    assert "write_native_file" in normalized[0]["context"]["artifactWriteDiscipline"]
 
 
 def test_parallel_branch_fails_huashu_skill_artifact_when_sparse_or_not_discoverable(tmp_path):
@@ -1980,3 +2068,26 @@ def test_parallel_branch_fails_huashu_skill_artifact_when_sparse_or_not_discover
     assert any("missing_frontmatter" in item for item in summary["sparseArtifacts"])
     assert any("missing_sections" in item for item in summary["sparseArtifacts"])
     assert any("too_short" in item for item in summary["sparseArtifacts"])
+
+
+def test_parallel_branch_directory_setup_does_not_require_full_skill_artifact(tmp_path):
+    from graph.parallel_support import _infer_required_skill_artifacts
+
+    skill_root = tmp_path / ".agents" / "skills" / "ling-perspective"
+    branch = {
+        "taskBriefId": "TASK-000",
+        "reason": f"Create directories under {skill_root}.",
+        "taskBrief": {
+            "taskBriefId": "TASK-000",
+            "title": "目录初始化",
+            "goal": "创建目录结构，不写 SKILL.md 内容。",
+            "context": {
+                "expectedOutputs": [
+                    str(skill_root / "scripts"),
+                    str(skill_root / "references" / "research"),
+                ],
+            },
+        },
+    }
+
+    assert _infer_required_skill_artifacts(branch, {"workspace_path": str(tmp_path)}) == []

@@ -382,7 +382,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 f"Spec Mode is active for specId={spec_id}. Runtime execution is still blocked by the Spec pipeline. "
                 "Use `spec_broker(mode='read'|'read_stage')` to inspect the current stage; "
                 "use `spec_broker(mode='write_stage'|'rewrite_stage'|'edit'|'write'|'update', stage='requirements|bugfix|design|tasks', content='<markdown>')` to write or revise it; "
-                "use `spec_broker(mode='approve', stage='<stage>')` only when the user/client approval is available. "
+                "do not call `spec_broker(mode='approve')` yourself. Approval is a user/client governance event; wait for the resumed turn carrying the approved nextStage. "
                 "Spec documents are not final project deliverables; after approved tasks, use the execution surface such as runtime_broker or limited write_native_file for artifacts. "
                 "If a selected skill asks for parallel subagents, Agent Swarm, or many research shards, translate that into Research Runtime evidence or explicit top-level delegation after the relevant Spec stage is approved; do not assume subagents can spawn grandchildren implicitly. "
                 "Do not route Engineering/Research/Delegation runtime work until the Spec brief says runtimeExecutionAllowed=true."

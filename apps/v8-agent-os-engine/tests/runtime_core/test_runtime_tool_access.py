@@ -195,6 +195,34 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert command.update["planner_dispatch_status"]["nextAction"] == "wait_episode"
 
 
+def test_runtime_broker_wait_episode_is_supported_for_queued_episode():
+    command = runtime_broker.func(
+        mode="wait_episode",
+        state={
+            "current_route_context": {
+                "capabilityEpisodes": [
+                    {
+                        "episodeId": "episode-waitable",
+                        "kind": "engineering",
+                        "state": "queued",
+                        "reason": "approved_spec_runtime_execution",
+                    }
+                ]
+            }
+        },
+        tool_call_id="call-runtime-wait",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["mode"] == "wait_episode"
+    assert payload["ok"] is True
+    assert payload["episode"]["episodeId"] == "episode-waitable"
+    assert payload["nextAction"] == "wait_episode"
+    assert "unsupported" not in payload["summary"].lower()
+    assert command.update["planner_dispatch_status"]["nextAction"] == "wait_episode"
+    assert command.update["planner_dispatch_status"]["episodeId"] == "episode-waitable"
+
+
 def test_runtime_broker_route_fills_delegation_tasks_from_planner_plan():
     command = runtime_broker.func(
         mode="route",
@@ -454,17 +482,58 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
 
     assert [task["taskId"] for task in bundle["tasks"]] == ["TASK-002", "TASK-003", "TASK-004", "TASK-012", "TASK-013"]
     by_id = {item["taskBriefId"]: item for item in worker_briefs}
-    assert by_id["TASK-003"]["familyHint"] == "research"
-    assert by_id["TASK-003"]["deliverableKind"] == "evidence"
-    assert by_id["TASK-003"]["writeRequired"] is False
-    assert by_id["TASK-003"]["allowChildDelegation"] is False
-    assert by_id["TASK-004"]["familyHint"] == "research"
+    assert "TASK-003" not in by_id
+    assert "TASK-004" not in by_id
+    assert by_id["TASK-RESEARCH"]["familyHint"] == "research"
+    assert by_id["TASK-RESEARCH"]["deliverableKind"] == "evidence"
+    assert by_id["TASK-RESEARCH"]["writeRequired"] is False
+    assert by_id["TASK-RESEARCH"]["runtimeAccess"] == ["research.core"]
+    assert by_id["TASK-RESEARCH"]["allowChildDelegation"] is False
+    assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-003", "TASK-004"]
+    research_brief = by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
+    assert "TASK-003" in research_brief
+    assert "著作与系统性设定" in research_brief
+    assert "01-writings.md" in research_brief
+    assert "TASK-004" in research_brief
+    assert "剧情台词" in research_brief
     assert by_id["TASK-012"]["familyHint"] == "engineering"
-    assert by_id["TASK-012"]["deliverableKind"] == "artifact"
+    assert by_id["TASK-012"]["deliverableKind"] == "skill_artifact"
+    assert by_id["TASK-012"]["validateSkillArtifact"] is True
     assert by_id["TASK-012"]["writeRequired"] is True
     assert by_id["TASK-012"]["allowChildDelegation"] is False
     assert by_id["TASK-013"]["allowChildDelegation"] is True
-    assert "references/research/01-writings.md" in by_id["TASK-003"]["acceptanceTiers"]["must"][-2]
+    assert by_id["TASK-RESEARCH"]["context"]["taskDetailRefs"] == [
+        f"spec://{spec_id}/tasks#TASK-003",
+        f"spec://{spec_id}/tasks#TASK-004",
+    ]
+
+    with bind_runtime_context(
+        session_id="session-spec-tid-repair",
+        run_id="run-spec-tid-repair",
+        rootRunId="root-spec-tid-repair",
+        workspace_path=str(workspace),
+    ):
+        repair_command = runtime_broker.func(
+            mode="route",
+            runtime_kind="engineering",
+            need={
+                "kind": "engineering",
+                "reason": "repair_p0_skill_file_missing",
+                "specId": spec_id,
+                "taskRef": "T-12",
+            },
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-spec-tid-repair",
+        )
+
+    repair_episode = repair_command.update["current_route_context"]["capabilityEpisodes"][-1]
+    repair_inputs = repair_episode["inputs"]
+    repair_briefs = repair_inputs["workerBriefs"]
+    assert repair_inputs["targetCount"] == 1
+    assert repair_inputs["selectedSpecTaskIds"] == ["TASK-012"]
+    assert repair_inputs["specTaskFilter"]["omittedTaskCount"] == 3
+    assert [task["taskBriefId"] for task in repair_briefs] == ["TASK-012"]
+    assert repair_briefs[0]["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#TASK-012"
 
 
 def test_runtime_broker_parses_bold_markdown_task_fields_without_ref_noise(tmp_path):
@@ -545,12 +614,219 @@ def test_runtime_broker_parses_bold_markdown_task_fields_without_ref_noise(tmp_p
     by_id = {item["taskBriefId"]: item for item in episode["inputs"]["workerBriefs"]}
     assert by_id["TASK-001"]["dependency"] == []
     assert by_id["TASK-001"]["familyHint"] == "engineering"
-    assert by_id["TASK-002"]["dependency"] == ["TASK-001"]
-    assert by_id["TASK-002"]["familyHint"] == "research"
-    assert by_id["TASK-002"]["context"]["specRefs"] == ["REQ-001", "DES-001"]
-    assert "Design" not in by_id["TASK-002"]["context"]["specRefs"]
+    assert "TASK-002" not in by_id
+    assert by_id["TASK-RESEARCH"]["familyHint"] == "research"
+    assert by_id["TASK-RESEARCH"]["dependency"] == []
+    assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-002"]
+    assert by_id["TASK-RESEARCH"]["context"]["taskDetailRefs"] == [f"spec://{spec_id}/tasks#TASK-002"]
     assert by_id["TASK-003"]["dependency"] == ["TASK-002"]
     assert by_id["TASK-003"]["writeRequired"] is True
+
+
+def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        feature_name="ling-perspective-skill",
+        user_request="生成玲的 skill。",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: 生成工作区 skill。\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="design")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: 创建目录、调研并生成 SKILL.md。\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="tasks")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# 任务详情\n\n"
+            "### TASK-001: 目录初始化与脚本复制\n\n"
+            "| 字段 | 内容 |\n"
+            "|------|------|\n"
+            "| **任务ID** | TASK-001 |\n"
+            "| **任务名称** | 目录初始化与脚本复制 |\n"
+            "| **执行角色** | Engineering Agent |\n"
+            "| **依赖关系** | 无（首个任务） |\n"
+            "| **需求引用** | 需求文档 §2.1 输出规范 |\n"
+            "| **设计引用** | 设计文档 §2 目录结构设计 |\n\n"
+            "**任务描述**：\n"
+            "创建完整的自包含目录结构，并从huashu-nuwa skill复制必要的工具脚本。\n\n"
+            "**预期输出路径**：\n"
+            "- `.agents/skills/ling-perspective/`（根目录）\n"
+            "- `.agents/skills/ling-perspective/scripts/`（脚本目录）\n"
+            "- `.agents/skills/ling-perspective/references/research/`（调研结果目录）\n\n"
+            "**验收标准**：\n"
+            "1. 所有要求的目录都已创建\n"
+            "2. `scripts/merge_research.py` 已复制\n\n"
+            "---\n\n"
+            "### TASK-002: 官方设定与角色档案调研\n\n"
+            "| 字段 | 内容 |\n"
+            "|------|------|\n"
+            "| **任务ID** | TASK-002 |\n"
+            "| **任务名称** | 官方设定与角色档案调研 |\n"
+            "| **执行角色** | Research Agent 1 |\n"
+            "| **依赖关系** | TASK-001 |\n\n"
+            "**预期输出路径**：\n"
+            "- `.agents/skills/ling-perspective/references/research/01-writings.md`\n"
+        ),
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+
+    with bind_runtime_context(
+        session_id="session-live-style-spec",
+        run_id="run-live-style-spec",
+        rootRunId="root-live-style-spec",
+        workspace_path=str(workspace),
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            runtime_kind="engineering",
+            need={"kind": "engineering", "reason": "approved_spec_runtime_execution", "specId": spec_id},
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-live-style-spec",
+        )
+
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    by_id = {item["taskBriefId"]: item for item in episode["inputs"]["workerBriefs"]}
+
+    assert by_id["TASK-001"]["familyHint"] == "engineering"
+    assert by_id["TASK-001"]["deliverableKind"] == "artifact"
+    assert by_id["TASK-001"]["writeRequired"] is True
+    must_text = "\n".join(by_id["TASK-001"]["acceptanceTiers"]["must"])
+    assert ".agents/skills/ling-perspective/scripts/" in must_text
+    assert "TASK-002" not in by_id
+    assert by_id["TASK-RESEARCH"]["familyHint"] == "research"
+    assert by_id["TASK-RESEARCH"]["writeRequired"] is False
+    assert by_id["TASK-RESEARCH"]["runtimeAccess"] == ["research.core"]
+    assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-002"]
+    assert "官方设定与角色档案调研" in by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
+    assert "01-writings.md" in by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
+
+
+def test_runtime_broker_coalesces_spec_research_fanout_for_engineering_budget(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        feature_name="ling-perspective-skill",
+        user_request="生成玲的 skill。",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: 生成工作区 skill。\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="design")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: 创建目录、调研并生成 SKILL.md。\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="", spec_id=spec_id, stage="tasks")
+    research_tasks = "\n\n".join(
+        [
+            (
+                f"#### TASK-{index:03d}: Research Agent {index - 1}\n"
+                f"- **ID**: TASK-{index:03d}\n"
+                "- **执行层级**: Research Runtime / Web Research Architect\n"
+                "- **依赖**: TASK-001 完成\n"
+                f"- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\references\\research\\0{index - 1}-part.md`\n"
+                "- **验收标准**: 文件存在且满足质量要求\n"
+            )
+            for index in range(2, 8)
+        ]
+    )
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# 绝区零角色「玲」视角 Skill 执行任务清单\n\n"
+            "#### TASK-001: 创建 Skill 目录结构\n"
+            "- **ID**: TASK-001\n"
+            "- **执行层级**: Supervisor 直接执行\n"
+            "- **任务描述**: 创建完整的自包含目录结构\n"
+            "- **预期输出**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\scripts\\`\n\n"
+            f"{research_tasks}\n\n"
+            "#### TASK-009: 思维框架提炼\n"
+            "- **ID**: TASK-009\n"
+            "- **执行层级**: Engineering Runtime / 综合 Agent\n"
+            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\references\\framework.md`\n\n"
+            "#### TASK-010: SKILL.md 构建\n"
+            "- **ID**: TASK-010\n"
+            "- **执行层级**: Engineering Runtime / 构建 Agent\n"
+            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\SKILL.md`\n\n"
+            "#### TASK-011: 三项测试验证\n"
+            "- **ID**: TASK-011\n"
+            "- **执行层级**: Engineering Runtime / 验证 Agent\n"
+            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\verification-report.md`\n\n"
+            "#### TASK-012: 生成最终交付文档\n"
+            "- **ID**: TASK-012\n"
+            "- **执行层级**: Supervisor 执行\n"
+            "- **任务描述**: 生成最终交付文档\n"
+            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\delivery-summary.md`\n"
+        ),
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+
+    with bind_runtime_context(
+        session_id="session-spec-research-fanout",
+        run_id="run-spec-research-fanout",
+        rootRunId="root-spec-research-fanout",
+        workspace_path=str(workspace),
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            runtime_kind="engineering",
+            need={"kind": "engineering", "reason": "approved_spec_runtime_execution", "specId": spec_id},
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-spec-research-fanout",
+        )
+
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    briefs = episode["inputs"]["workerBriefs"]
+    ids = [item["taskBriefId"] for item in briefs]
+    assert len(briefs) <= 6
+    assert "TASK-001" in ids
+    assert "TASK-RESEARCH" in ids
+    assert "TASK-010" in ids
+    assert not any(task_id in ids for task_id in ["TASK-002", "TASK-003", "TASK-004", "TASK-005", "TASK-006", "TASK-007"])
+    research_brief = next(item for item in briefs if item["taskBriefId"] == "TASK-RESEARCH")
+    assert research_brief["familyHint"] == "research"
+    assert research_brief["writeRequired"] is False
+    assert research_brief["context"]["assignedTaskIds"] == [
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+    ]
 
 
 def test_delegation_broker_refuses_generic_dispatch_for_ready_spec_episode():

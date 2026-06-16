@@ -4133,7 +4133,7 @@ def fetch_skill_instructions(
     relative_path: str | None = None,
     offset: int = 0,
 ) -> str:
-    """Fetch workflow guidance for a listed Skill.
+    """Read complete SKILL.md workflow instructions by exact skill name/path, then continue skill-relative docs/scripts via relative_path.
 
     Default detail_level='full' returns the approved SKILL.md instructions so delegated agents can follow the workflow.
     Use detail_level='summary' only for browsing/discovery, or detail_level='section' with section='...' for a specific heading.

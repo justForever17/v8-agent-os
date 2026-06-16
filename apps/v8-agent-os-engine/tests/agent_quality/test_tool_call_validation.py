@@ -45,9 +45,9 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._native_tools_patch.stop()
 
-    async def test_direct_mutating_tool_is_forced_to_runtime_route(self) -> None:
+    async def test_direct_replace_tool_is_forced_to_runtime_route(self) -> None:
         request = _DummyRequest(
-            "write_native_file",
+            "replace_native_file",
             "tool_call_write",
             state={"current_route_context": {"engineeringRequired": True, "workspacePath": r"E:\Projects\test7"}},
             args={"path": "src/App.tsx", "content": "demo"},

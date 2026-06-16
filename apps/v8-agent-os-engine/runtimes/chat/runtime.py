@@ -1356,7 +1356,8 @@ class ChatRuntime:
                     "\n".join(
                         [
                             "[SPEC MODE]",
-                            "Spec Mode is enabled for this request. Use `spec_broker` as the controlled pipeline tool for requirements/bugfix, design, tasks, approvals, and section reads.",
+                            "Spec Mode is enabled for this request. Use `spec_broker` as the controlled pipeline tool for requirements/bugfix, design, tasks, revisions, and section reads.",
+                            "Spec approval is a blocking user/client governance event, not a Supervisor decision. Never self-approve a Spec stage.",
                             "When drafting a Spec stage, pass the actual Markdown document in `spec_broker(content=...)`; a scaffold without content is not enough for approval-quality delivery.",
                             "Spec documents MUST be written by a real `spec_broker` tool call. Do not use `write_native_file`, `run_system_command`, shell commands, or textual pseudo tool syntax such as DSML/XML blocks for Spec documents.",
                             "If a real `spec_broker` tool call is unavailable or fails, report `recoverable_failed` with the exact reason instead of pretending a file was written.",
@@ -3529,6 +3530,12 @@ class ChatRuntime:
         if compat_latest_human:
             latest_user_content = compat_latest_human
         spec_id = str(getattr(request.data, "spec_id", "") or "").strip() if request.data else ""
+        if spec_mode and not spec_id and isinstance(request.resume_value, dict):
+            spec_continuation = request.resume_value.get("specContinuation")
+            if isinstance(spec_continuation, dict):
+                spec_id = str(spec_continuation.get("specId") or spec_continuation.get("spec_id") or "").strip()
+        if spec_mode and not spec_id:
+            spec_id = self._latest_session_spec_id(session_id)
 
         return ChatPreparedRequest(
             request=request,
@@ -8776,6 +8783,46 @@ class ChatRuntime:
         return ""
 
     @staticmethod
+    def _latest_session_spec_id(session_id: str) -> str:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return ""
+        try:
+            events = db.get_runtime_events(normalized_session_id, after_seq=0)
+        except Exception:
+            events = []
+        for event in reversed(list(events or [])):
+            if not isinstance(event, dict):
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            source = event.get("source") if isinstance(event.get("source"), dict) else {}
+            candidates = (
+                payload.get("tool", {}).get("result") if isinstance(payload.get("tool"), dict) else {},
+                payload,
+                source,
+                event,
+            )
+            for candidate in candidates:
+                spec_id = ChatRuntime._extract_spec_id_from_value(candidate)
+                if spec_id:
+                    return spec_id
+        try:
+            rows = db.get_chat_canonical_messages(normalized_session_id)
+        except Exception:
+            rows = []
+        for row in reversed(list(rows or [])):
+            if not isinstance(row, dict):
+                continue
+            for key in ("metadata", "metadata_json", "nodes", "nodes_json", "content_text"):
+                value = row.get(key)
+                if not value:
+                    continue
+                spec_id = ChatRuntime._extract_spec_id_from_value(value)
+                if spec_id:
+                    return spec_id
+        return ""
+
+    @staticmethod
     def _completion_spec_brief(chat_run: ChatRunContext) -> dict[str, Any]:
         prepared_brief = dict(getattr(chat_run.prepared, "spec_brief", None) or {})
         prepared_spec_id = str(prepared_brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
@@ -8809,6 +8856,8 @@ class ChatRuntime:
             if match:
                 spec_id = match.group(1).strip()
                 break
+        if not spec_id:
+            spec_id = ChatRuntime._latest_session_spec_id(chat_run.session_id)
         if not spec_id:
             try:
                 listing = spec_service.list_specs(workspace_path=workspace_path, include_archived=False, limit=1)

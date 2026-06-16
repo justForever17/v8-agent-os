@@ -297,6 +297,23 @@ def _spec_context_next_stage() -> str:
     return ""
 
 
+def _spec_approve_blocked_for_supervisor() -> bool:
+    runtime_context = get_runtime_context() or {}
+    if not isinstance(runtime_context, dict):
+        return False
+    runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
+    if runtime_kind != "chat" or not run_id or not session_id:
+        return False
+    approval_actor = str(
+        runtime_context.get("spec_approval_actor")
+        or runtime_context.get("specApprovalActor")
+        or ""
+    ).strip().lower()
+    return approval_actor not in {"user", "client", "admin", "live_harness"}
+
+
 def _spec_stage_mismatch_payload(*, attempted_stage: str, expected_stage: str, spec_id: str) -> str:
     return _spec_broker_payload(
         ok=False,
@@ -442,6 +459,52 @@ def _spec_runtime_execution_active_payload(*, active_spec: dict[str, Any]) -> st
     )
 
 
+def _spec_missing_stage_payload(
+    *,
+    workspace: str,
+    spec_id: str,
+    stage: str,
+    error: str,
+) -> str:
+    """Return a state-machine style response when a stage document is absent."""
+
+    brief: dict[str, Any] = {}
+    try:
+        brief = spec_service.build_brief(workspace_path=workspace, spec_id=spec_id)
+    except Exception:
+        brief = {}
+    pipeline = dict(brief.get("pipelineControl") or {}) if isinstance(brief, dict) else {}
+    transition = _spec_transition_hint(spec_id=spec_id, stage=stage, pipeline=pipeline)
+    next_stage = str(pipeline.get("nextStage") or transition.get("nextStage") or "").strip().lower()
+    requested = str(stage or "").strip().lower()
+    if requested and next_stage and requested != next_stage:
+        summary = (
+            f"Spec stage '{requested}' does not exist yet. The current pipeline expects '{next_stage}' next."
+        )
+    elif requested:
+        summary = f"Spec stage '{requested}' does not exist yet and should be written next."
+    else:
+        summary = "The requested Spec stage does not exist yet; inspect pipelineControl.nextStage before writing."
+    return _spec_broker_payload(
+        ok=False,
+        kind="spec_stage_missing",
+        summary=summary,
+        error=error,
+        specId=spec_id,
+        stage=requested,
+        nextStage=next_stage or None,
+        pipelineControl=pipeline,
+        transitionHint=transition,
+        specBrief=brief,
+        recommendedNextAction=(
+            f"Call spec_broker(mode='write_stage', spec_id='{spec_id}', stage='{next_stage or requested}', "
+            "content='<complete markdown document>') for the pipeline next stage."
+            if (next_stage or requested) in _SPEC_STAGES
+            else "Call spec_broker(mode='brief') and follow specBrief.pipelineControl.nextStage."
+        ),
+    )
+
+
 @tool
 def spec_broker(
     mode: str = "start",
@@ -458,7 +521,7 @@ def spec_broker(
     max_chars: int = 4000,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str | Command:
-    """Controlled Spec Mode state-machine tool for `.v8/specs/<feature>/`.
+    """Write/read/edit Spec Mode documents under `.v8/specs/<feature>`; user/client approval gates advance stages.
 
     It writes and reads Spec contract documents only: `requirements.md` or
     `bugfix.md`, then `design.md`, then `tasks.md`. It never writes final
@@ -479,6 +542,9 @@ def spec_broker(
       current stage is still unapproved or after a real user revision gate.
     - Approved stages are locked. If you try to rewrite an approved stage, the
       tool returns `spec_stage_locked`; move to `nextStage` instead.
+    - `mode='approve'` is reserved for user/client approval continuations,
+      Admin/API flows, or test harnesses. A Supervisor tool call must not use it
+      to approve its own draft.
 
     In a Spec approval continuation, the active `specId` and `nextStage` are
     supplied by Engine. The only valid document write is for that exact
@@ -585,9 +651,32 @@ def spec_broker(
             return _spec_broker_payload(**result)
         if normalized_mode in {"list", "catalog"}:
             result = spec_service.list_specs(workspace_path=workspace, include_archived=False, limit=max(1, min(int(max_chars or 20), 50)))
-            result.setdefault("recommendedNextAction", "Use the desired specId with spec_broker(mode='brief'/'read_section'/'approve').")
+            result.setdefault(
+                "recommendedNextAction",
+                "Use the desired specId with spec_broker(mode='brief'/'read_section'). Stage approval is handled by the user/client approval event.",
+            )
             return _spec_broker_payload(**result)
         if normalized_mode in {"approve", "approve_stage"}:
+            if _spec_approve_blocked_for_supervisor():
+                return _spec_broker_payload(
+                    ok=False,
+                    kind="spec_user_approval_required",
+                    summary=(
+                        "Spec approval is a user/client governance gate. The Supervisor cannot approve "
+                        "its own Spec draft through spec_broker."
+                    ),
+                    recommendedNextAction=(
+                        "Wait for the Phone/Web/Admin approval event. If the user requested revisions, "
+                        "edit the current unapproved stage instead."
+                    ),
+                    transitionHint={
+                        "state": "waiting_user_approval",
+                        "doNot": [
+                            "Do not self-approve this stage.",
+                            "Do not move downstream before the user/client approval event.",
+                        ],
+                    },
+                )
             resolved_spec_id = _spec_resolve_active_spec_id(
                 workspace=workspace,
                 spec_id=spec_id,
@@ -693,12 +782,47 @@ def spec_broker(
             )
             if not resolved_spec_id:
                 return _spec_broker_payload(ok=False, kind="spec_id_required", summary="spec_broker read_section needs spec_id.")
-            result = spec_service.read_section(
-                workspace_path=workspace,
-                spec_id=str(resolved_spec_id),
-                stage=_spec_stage_from_inputs(stage, kind),
-                section_ref=section_ref,
-                max_chars=max(500, min(int(max_chars or 4000), 12000)),
+            requested_stage = _spec_stage_from_inputs(stage, kind)
+            try:
+                result = spec_service.read_section(
+                    workspace_path=workspace,
+                    spec_id=str(resolved_spec_id),
+                    stage=requested_stage,
+                    section_ref=section_ref,
+                    max_chars=max(500, min(int(max_chars or 4000), 12000)),
+                )
+            except ValueError as exc:
+                message = str(exc)
+                if message.startswith("spec_document_not_found:"):
+                    missing_stage = message.split(":", 1)[1] if ":" in message else requested_stage
+                    return _spec_missing_stage_payload(
+                        workspace=workspace,
+                        spec_id=str(resolved_spec_id),
+                        stage=missing_stage or requested_stage,
+                        error=message,
+                    )
+                raise
+            pipeline = (
+                dict((result.get("specBrief") or {}).get("pipelineControl") or {})
+                if isinstance(result.get("specBrief"), dict)
+                else {}
+            )
+            result.setdefault("pipelineControl", pipeline)
+            result.setdefault(
+                "transitionHint",
+                _spec_transition_hint(
+                    spec_id=str(result.get("specId") or resolved_spec_id or ""),
+                    stage=str(result.get("stage") or requested_stage or ""),
+                    pipeline=pipeline,
+                ),
+            )
+            result.setdefault(
+                "recommendedNextAction",
+                (
+                    result["transitionHint"].get("whenReady")
+                    if isinstance(result.get("transitionHint"), dict)
+                    else "Use spec_broker(mode='brief') and follow pipelineControl.nextStage."
+                ),
             )
             return _spec_broker_payload(**result)
         if normalized_mode in {"brief", "status"}:

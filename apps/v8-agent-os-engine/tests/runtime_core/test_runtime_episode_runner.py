@@ -250,9 +250,75 @@ def test_engineering_write_episode_rejects_ready_handoff_without_write_evidence(
 
     handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
 
-    assert handoff["status"] == "failed"
+    assert handoff["status"] == "degraded"
     assert handoff["engineeringState"] == "recoverable_failed"
     assert handoff["errorCode"] == "engineering_missing_write_evidence"
+    assert handoff["degraded"] is True
+    assert handoff["recoverable"] is True
+    assert handoff["degradedReason"] == "engineering_missing_write_evidence"
+
+
+def test_engineering_skill_artifact_validation_failure_returns_degraded_handoff(monkeypatch, tmp_path):
+    target_dir = tmp_path / ".agents" / "skills" / "ling-perspective"
+    target_dir.mkdir(parents=True)
+
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "delegation",
+            "status": "degraded",
+            "compactSummary": "Delegation degraded after research worker model errors.",
+            "delegationState": "delegation_degraded",
+            "degradedReason": "delegation_worker_failed",
+            "results": [
+                {
+                    "targetLabel": "Web Research Architect",
+                    "status": "failed",
+                    "error": "ModelGovernanceInterventionRequired",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={
+            "kind": "engineering",
+            "source": "test",
+            "reason": f"生成 skill 到 {target_dir}",
+            "workspacePath": str(tmp_path),
+            "targetSkillRoot": str(target_dir),
+            "validateSkillArtifact": True,
+            "requireHuashuResearch": True,
+        },
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workspacePath": str(tmp_path),
+                "targetSkillRoot": str(target_dir),
+                "validateSkillArtifact": True,
+                "requiredSkillContracts": ["huashu-nuwa", "skill-creator"],
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "TASK-009",
+                        "goal": "生成 ling-perspective/SKILL.md。",
+                        "deliverableKind": "artifact",
+                        "writeRequired": True,
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["engineeringState"] == "recoverable_failed"
+    assert handoff["errorCode"] == "skill_artifact_validation_failed"
+    assert handoff["degraded"] is True
+    assert handoff["recoverable"] is True
+    assert handoff["skillArtifactValidation"]["ok"] is False
+    assert handoff["delegationHandoff"]["delegationState"] == "delegation_degraded"
 
 
 def test_engineering_write_episode_accepts_ready_handoff_with_created_files(monkeypatch):

@@ -219,6 +219,27 @@ def test_completion_gate_blocks_research_plan_claimed_as_ready_evidence():
     assert decision.reason == "research_plan_only_claimed_evidence_ready"
 
 
+def test_completion_gate_accepts_failed_episode_with_degraded_handoff():
+    decision = evaluate_supervisor_completion(
+        episodes=[{"episodeId": "episode_engineering", "state": "failed", "kind": "engineering"}],
+        handoffs_by_episode={
+            "episode_engineering": [
+                {
+                    "handoffRefId": "handoff_engineering_degraded",
+                    "kind": "engineering",
+                    "status": "degraded",
+                    "engineeringState": "recoverable_failed",
+                    "errorCode": "skill_artifact_validation_failed",
+                }
+            ]
+        },
+        final_text="技能产物没有通过验证，需要继续修复。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
+
+
 def test_completion_gate_keeps_spec_stage_waiting_for_approval():
     decision = evaluate_supervisor_completion(
         spec_mode=True,

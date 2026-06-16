@@ -840,23 +840,26 @@ class RuntimeEpisodeRunner:
                 return build_handoff_ref(
                     producer_episode_id=str(episode.get("episodeId") or ""),
                     kind="engineering",
-                    compact_summary="Engineering recoverable_failed after delegated execution: skill artifact validation failed.",
-                    status="failed",
+                    compact_summary="Engineering degraded after delegated execution: skill artifact validation failed.",
+                    status="degraded",
                     confidence="low",
                     consumer_hint="Repair the generated skill artifact before marking the episode completed.",
                     extra={
                         "engineeringState": "recoverable_failed",
                         "errorCode": "skill_artifact_validation_failed",
+                        "recoverable": True,
+                        "degraded": True,
+                        "degradedReason": "skill_artifact_validation_failed",
                         "skillArtifactValidation": skill_validation,
                         "delegationHandoff": delegation_handoff,
                     },
                 )
             delegation_status = str(delegation_handoff.get("status") or "ready").strip().lower()
             status = "waiting" if delegation_status in {"waiting", "pending", "running"} else delegation_status
-            if status not in {"failed", "blocked", "waiting"}:
+            if status not in {"failed", "blocked", "waiting", "degraded"}:
                 status = "ready"
             if (
-                status == "ready"
+                status in {"ready", "degraded"}
                 and self._engineering_requires_write_evidence(need=need, inputs=inputs, worker_briefs=worker_briefs)
                 and not self._delegation_handoff_has_write_evidence(delegation_handoff)
             ):
@@ -864,10 +867,10 @@ class RuntimeEpisodeRunner:
                     producer_episode_id=str(episode.get("episodeId") or ""),
                     kind="engineering",
                     compact_summary=(
-                        "Engineering recoverable_failed after delegated execution: "
+                        "Engineering degraded after delegated execution: "
                         "delegation reported ready without concrete touched files, patch, artifact, or proof."
                     ),
-                    status="failed",
+                    status="degraded",
                     confidence="low",
                     consumer_hint=(
                         "Retry Engineering with a complete implementation brief or narrow the contract; "
@@ -876,6 +879,9 @@ class RuntimeEpisodeRunner:
                     extra={
                         "engineeringState": "recoverable_failed",
                         "errorCode": "engineering_missing_write_evidence",
+                        "recoverable": True,
+                        "degraded": True,
+                        "degradedReason": "engineering_missing_write_evidence",
                         "delegationHandoff": delegation_handoff,
                         "writeEvidenceRequired": True,
                     },

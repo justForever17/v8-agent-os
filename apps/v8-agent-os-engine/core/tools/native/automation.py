@@ -31,10 +31,13 @@ def wait(seconds: int, note: str = "") -> str:
     Good for:
     - Re-checking a just-submitted async task after a short delay
     - Giving installs, service startup, or file generation a short stabilization window
+    - Polling a command/session/result that is expected to finish soon
 
     Not for:
     - Unbounded waiting
     - Managing long-running background processes
+    - Scheduled or recurring work; use `manage_cron` only when the user asks for timed/recurring automation
+    - Lifecycle event automation; use `manage_hook` only when the user explicitly asks to change hooks
 
     Arguments:
         seconds (int): Number of seconds to wait. Must be between 1 and 120.
@@ -173,6 +176,11 @@ def manage_cron(
 ) -> str:
     """Manage scheduled cron tasks in the V8Chat Engine.
 
+    Use this only when the user explicitly asks for timed, delayed, recurring,
+    or scheduled automation. Do not use cron as a substitute for `wait` during a
+    normal chat turn, and do not create background jobs just because a task is
+    long-running.
+
     Arguments:
         action (str): "list", "add", or "remove".
         job_id (str, optional): The ID of the job to remove, or a new unique ID to add.
@@ -288,6 +296,10 @@ def manage_hook(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Manage lifecycle event hooks in the V8Chat Engine.
+
+    Use this only when the user explicitly asks to inspect or change lifecycle
+    event behavior such as on_chat_end/on_agent_start automation. Ordinary chat,
+    Spec, runtime, memory lookup, or task execution should not mutate hooks.
 
     Arguments:
         action (str): "list" or "add".

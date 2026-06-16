@@ -19,6 +19,7 @@
 | `export_native_tools_output_dry_run.py` | 导出 native tools dry-run output，检查工具输出脏数据。 | 默认写 `docs/tools/`；不执行真实副作用。 |
 | `export_prompt_cache_dry_run_matrix.py` | 导出 Prompt Cache provider patch / segment hash / cache decision 空运行矩阵。 | 写本地报告。 |
 | `export_runtime_deep_observation_matrix.py` | 导出 supervisor / subagent / registry / extensions / memory governance 深度观察矩阵。 | 写本地报告。 |
+| `export_supervisor_first_contract_dry_run.py` | 导出 Supervisor First / Runtime Grounded 系统提示词和关键工具说明空运行门禁。 | 写本地报告；不调用模型、不写 DB、不改工作区。 |
 | `explain_safety_command_dry_run.py` | 解释 SafetyRuntime 对命令的规范化、解码、路径面和 verdict；不执行命令。 | 无真实命令副作用。 |
 | `probe_memory_durable_thresholds.py` | 探测 durable memory 阈值与写入判定。 | 仅诊断；确认参数后再运行。 |
 | `replay_memory_session.py` | 按 fixture 回放 memory session。 | 依赖 fixture。 |

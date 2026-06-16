@@ -598,6 +598,52 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["lane"], "subagent")
         self.assertEqual(payload["items"][0]["targetId"], "engineering-impl")
 
+    def test_delegation_broker_parallel_expected_uses_expanded_worker_count(self):
+        agent = {
+            "id": "engineering-impl",
+            "name": "Engineering Implementer",
+            "isEnabled": True,
+            "description": "Implements bounded code changes.",
+            "capabilitySnapshot": {
+                "agentClass": "executor",
+                "specialistFamily": "engineering",
+                "domainTags": ["software_engineering"],
+                "operationCapabilities": ["implement", "workspace_changes"],
+                "artifactCapabilities": ["apps/v8-agent-os-engine"],
+                "plannerSuitability": "high",
+            },
+        }
+
+        with patch("core.native_tools.storage.get_all_agents", return_value=[agent]), patch(
+            "core.native_tools.storage.get_supervisor_config",
+            return_value={"delegation": {"externalWorkers": []}},
+        ):
+            command = delegation_broker.func(
+                mode="dispatch",
+                tasks=[
+                    {
+                        "taskBriefId": "task-impl",
+                        "goal": "Implement the requested patch",
+                        "requiredCapabilities": ["software_engineering", "implement"],
+                        "behaviorScope": ["workspace_changes"],
+                        "writeSet": ["apps/v8-agent-os-engine"],
+                        "executionLaneHint": "subagent",
+                    },
+                    {
+                        "taskBriefId": "task-worker-missing",
+                        "goal": "Run an unavailable external worker",
+                        "requiredCapabilities": ["nonexistent_external_worker"],
+                        "executionLaneHint": "external_worker",
+                    },
+                ],
+                state={"run_id": "run-supervisor-1", "workspace_path": "E:/Projects/v8chat"},
+            )
+
+        invocation = command.update["parallel_invocations"][0]
+        self.assertEqual(invocation["expected"], 2)
+        self.assertEqual(invocation["dispatchedSubagentCount"], 1)
+        self.assertEqual(invocation["immediateResultCount"], 1)
+
     def test_delegation_broker_observe_parses_worker_result_block(self):
         descriptor = {
             "id": "research-writer-worker",

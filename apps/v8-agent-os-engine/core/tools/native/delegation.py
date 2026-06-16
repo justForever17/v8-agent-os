@@ -1180,7 +1180,9 @@ def delegation_broker(
             update["parallel_invocations"] = [
                 {
                     "invocationId": invocation_id,
-                    "expected": len(sends),
+                    "expected": requested_count,
+                    "dispatchedSubagentCount": len(sends),
+                    "immediateResultCount": len(parallel_results),
                     "createdAt": utc_now_iso(),
                 }
             ]

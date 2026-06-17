@@ -206,9 +206,9 @@ export function RunControlBar({
             style={[
                 styles.wrap,
                 {
-                    width: stateMode === "idle" ? 38 : 81,
-                    minWidth: stateMode === "idle" ? 38 : 81,
-                    maxWidth: stateMode === "idle" ? 38 : 81,
+                    width: stateMode === "idle" ? 22 : 47,
+                    minWidth: stateMode === "idle" ? 22 : 47,
+                    maxWidth: stateMode === "idle" ? 22 : 47,
                     backgroundColor: "transparent",
                     borderColor: "transparent",
                 },
@@ -250,7 +250,7 @@ export function RunControlBar({
                 >
                     <MaterialCommunityIcons
                         name={actionIcon}
-                        size={21}
+                        size={12}
                         color={actionColor}
                     />
                 </Pressable>
@@ -277,20 +277,20 @@ export function RunControlBar({
 
 const styles = StyleSheet.create({
     wrap: {
-        height: 38,
+        height: 22,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 5,
-        width: 81,
-        minWidth: 81,
-        maxWidth: 81,
+        gap: 3,
+        width: 47,
+        minWidth: 47,
+        maxWidth: 47,
         flexShrink: 0,
     },
     iconSlot: {
-        width: 38,
-        height: 38,
-        borderRadius: 10,
+        width: 22,
+        height: 22,
+        borderRadius: 6,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -298,22 +298,22 @@ const styles = StyleSheet.create({
     },
     stateLightOuter: {
         position: "absolute",
-        width: 24,
-        height: 24,
+        width: 14,
+        height: 14,
         borderRadius: 999,
         borderWidth: 1,
         opacity: 0.52,
     },
     stateMotionRing: {
         position: "absolute",
-        width: 35,
-        height: 35,
+        width: 20,
+        height: 20,
         borderRadius: 999,
         borderWidth: 1,
     },
     stateLight: {
-        width: 10,
-        height: 10,
+        width: 6,
+        height: 6,
         borderRadius: 999,
     },
     slotActive: {
@@ -327,7 +327,7 @@ const styles = StyleSheet.create({
     },
     statePopover: {
         position: "absolute",
-        top: 44,
+        top: 28,
         left: -140,
         width: 190,
         borderWidth: 1,

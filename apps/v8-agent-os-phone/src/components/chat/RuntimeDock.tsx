@@ -1,5 +1,5 @@
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
+import { Animated, Easing, Pressable, StyleSheet, Text, View, Platform, type LayoutChangeEvent } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Blocks, Bot, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Search, Shield, Sparkles, TerminalSquare, Workflow } from "lucide-react-native";
 import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
@@ -172,7 +172,7 @@ function RuntimeDockItem({
                 inputRange: [-4, 4],
                 outputRange: ["-4deg", "4deg"],
             }) : "0deg" }] }}>
-                <Icon size={13} color={tone.icon} strokeWidth={2.2} />
+                <Icon size={22} color={tone.icon} strokeWidth={2.2} />
             </Animated.View>
             <View style={[styles.dot, { backgroundColor: tone.dot, borderColor: dark ? "rgba(24,24,27,0.92)" : "#FFFFFF" }]} />
             {item.eventCount > 0 ? (
@@ -215,7 +215,7 @@ export const RuntimeDock = memo(function RuntimeDock({
         }
         const selectedItem = items[selectedIndex];
         const measuredLayout = selectedItem ? itemLayoutsRef.current[selectedItem.id] : undefined;
-        const estimatedItemWidth = 22;
+        const estimatedItemWidth = 38;
         const estimatedOffset = Math.max(0, (selectedIndex * estimatedItemWidth) - 18);
         const nextOffset = measuredLayout && containerWidth > 0
             ? Math.max(0, measuredLayout.x - ((containerWidth - measuredLayout.width) / 2))
@@ -230,8 +230,11 @@ export const RuntimeDock = memo(function RuntimeDock({
             style={[
                 styles.wrap,
                 {
-                    backgroundColor: colors.surface,
+                    backgroundColor: themeMode === "dark" ? "rgba(24, 24, 27, 0.76)" : "rgba(255, 255, 255, 0.78)",
                     borderColor: panelOpen ? "rgba(245,158,11,0.36)" : colors.border,
+                    ...Platform.select({
+                        web: { backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" } as any,
+                    }),
                 },
             ]}
             onLayout={(event) => {
@@ -277,10 +280,10 @@ export const RuntimeDock = memo(function RuntimeDock({
 const styles = StyleSheet.create({
     wrap: {
         borderWidth: 1,
-        borderRadius: 6,
-        paddingHorizontal: 4,
+        borderRadius: 10,
+        paddingHorizontal: 7,
         paddingVertical: 0,
-        height: 22,
+        height: 38,
         alignSelf: "center",
         minWidth: 0,
         shadowColor: "#0F172A",
@@ -290,7 +293,7 @@ const styles = StyleSheet.create({
     scrollContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
+        gap: 10,
         paddingLeft: 1,
         paddingRight: 3,
     },
@@ -302,9 +305,9 @@ const styles = StyleSheet.create({
         flexShrink: 0,
     },
     item: {
-        width: 22,
-        height: 22,
-        borderRadius: 6,
+        width: 38,
+        height: 38,
+        borderRadius: 10,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -319,23 +322,23 @@ const styles = StyleSheet.create({
     },
     pulseFill: {
         ...StyleSheet.absoluteFillObject,
-        borderRadius: 6,
+        borderRadius: 10,
     },
     dot: {
         position: "absolute",
-        top: -2,
-        right: -2,
-        width: 4,
-        height: 4,
+        top: -3,
+        right: -3,
+        width: 7,
+        height: 7,
         borderRadius: 999,
         borderWidth: 1,
     },
     badge: {
         position: "absolute",
-        right: -3,
-        bottom: -3,
-        minWidth: 12,
-        height: 12,
+        right: -5,
+        bottom: -5,
+        minWidth: 21,
+        height: 21,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
@@ -346,8 +349,8 @@ const styles = StyleSheet.create({
     },
     badgeText: {
         color: "#FFFFFF",
-        fontSize: 7,
+        fontSize: 12,
         fontWeight: "800",
-        lineHeight: 9,
+        lineHeight: 15,
     },
 });

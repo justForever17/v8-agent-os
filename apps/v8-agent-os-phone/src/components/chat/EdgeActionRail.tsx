@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Animated, PanResponder, Pressable, StyleSheet, View } from "react-native";
+import { Animated, PanResponder, Pressable, StyleSheet, View, Platform } from "react-native";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -69,11 +69,14 @@ export const EdgeActionRail = memo(function EdgeActionRail({
                     side === "left" ? styles.leftEdgeHandle : styles.rightEdgeHandle,
                     {
                         top: top + 2,
-                        width: 22,
+                        width: 38,
                         borderColor: colors.border,
-                        backgroundColor: colors.surface,
+                        backgroundColor: themeMode === "dark" ? "rgba(24, 24, 27, 0.76)" : "rgba(255, 255, 255, 0.78)",
                         shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
                         opacity: collapsedHandleOpacity,
+                        ...Platform.select({
+                            web: { backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" } as any,
+                        }),
                     },
                 ]}
             >
@@ -117,7 +120,7 @@ const styles = StyleSheet.create({
     rail: {
         position: "absolute",
         zIndex: 30,
-        minHeight: 22,
+        minHeight: 38,
         borderWidth: 0,
         borderRadius: radii.pill,
         paddingHorizontal: 0,
@@ -142,9 +145,9 @@ const styles = StyleSheet.create({
     edgeHandle: {
         position: "absolute",
         zIndex: 31,
-        height: 22,
+        height: 38,
         borderWidth: 1,
-        borderRadius: 6,
+        borderRadius: 10,
         flexDirection: "row",
         alignItems: "center",
         shadowOpacity: 0.08,
@@ -154,17 +157,17 @@ const styles = StyleSheet.create({
     },
     leftEdgeHandle: {
         left: 5,
-        justifyContent: "flex-end",
-        paddingRight: 4,
+        justifyContent: "center",
+        alignItems: "center",
     },
     rightEdgeHandle: {
         right: 5,
-        justifyContent: "flex-start",
-        paddingLeft: 4,
+        justifyContent: "center",
+        alignItems: "center",
     },
     handleAccent: {
-        width: 1.8,
-        height: 11,
+        width: 3,
+        height: 19,
         borderRadius: 999,
     },
     leftHandleAccent: {},

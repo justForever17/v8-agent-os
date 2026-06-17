@@ -411,6 +411,14 @@ def _ensure_spec_contract(
             if isinstance(value, dict)
         },
     }
+    if isinstance(spec_brief.get("traceability"), dict):
+        traceability = dict(spec_brief.get("traceability") or {})
+        spec_context["traceability"] = {
+            "frameworkDigest": traceability.get("frameworkDigest"),
+            "tasks": list(traceability.get("tasks") or [])[:12],
+            "missingRefs": list(traceability.get("missingRefs") or [])[:12],
+            "distributionChecks": traceability.get("distributionChecks") if isinstance(traceability.get("distributionChecks"), dict) else {},
+        }
     tasks = [dict(item) for item in _as_list(repaired.get("taskBriefs")) if isinstance(item, dict)]
     changed = False
     for task in tasks:

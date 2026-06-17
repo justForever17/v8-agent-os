@@ -2009,6 +2009,7 @@ class ChatRuntime:
 
     def _approved_spec_execution_digest(self, *, spec_brief: dict[str, Any], workspace_path: str, user_request: str) -> dict[str, Any]:
         documents = dict(spec_brief.get("documents") or {})
+        traceability = dict(spec_brief.get("traceability") or {}) if isinstance(spec_brief.get("traceability"), dict) else {}
         excerpts: dict[str, str] = {}
         combined_parts = [str(user_request or "")]
         for stage in ("requirements", "design", "tasks"):
@@ -2040,12 +2041,54 @@ class ChatRuntime:
             behavior_hints.append("Include an interactive button/click handler that changes the visible count.")
         if re.search(r"Live marker|SPEC_LIVE_", combined, re.IGNORECASE):
             behavior_hints.append("Preserve the exact live marker in the delivered files.")
+        framework_digest = str(traceability.get("frameworkDigest") or "").strip()
+        task_slices = [
+            item
+            for item in list(traceability.get("tasks") or [])
+            if isinstance(item, dict)
+        ][:10]
+        if framework_digest:
+            combined_parts.append(framework_digest)
+        agent_summary_lines = [
+            "Approved Spec execution bundle:",
+            f"- Framework / architecture everyone must follow: {framework_digest[:900] if framework_digest else 'read design detailRef before choosing implementation stack.'}",
+        ]
+        if task_slices:
+            agent_summary_lines.append("- Task slices with requirement/design context:")
+            for item in task_slices[:6]:
+                reqs = ", ".join(str(ref) for ref in list(item.get("requirementRefs") or [])[:8]) or "(none)"
+                designs = ", ".join(str(ref) for ref in list(item.get("designRefs") or [])[:6]) or "(framework/design detailRef)"
+                title = str(item.get("title") or item.get("taskId") or "").strip()
+                agent_summary_lines.append(f"  - {item.get('taskId')}: {title} | requirements: {reqs} | design: {designs}")
+                excerpt = str(item.get("taskExcerpt") or "").strip()
+                if excerpt:
+                    agent_summary_lines.append(f"    task: {excerpt[:500]}")
+                req_snippets = [
+                    f"{snippet.get('id')}: {snippet.get('summary')}"
+                    for snippet in list(item.get("requirementSnippets") or [])[:3]
+                    if isinstance(snippet, dict) and snippet.get("summary")
+                ]
+                if req_snippets:
+                    agent_summary_lines.append("    requirements: " + " / ".join(req_snippets)[:700])
+                design_snippets = [
+                    f"{snippet.get('title') or snippet.get('id')}: {snippet.get('summary')}"
+                    for snippet in list(item.get("designSnippets") or [])[:2]
+                    if isinstance(snippet, dict) and snippet.get("summary")
+                ]
+                if design_snippets:
+                    agent_summary_lines.append("    design: " + " / ".join(design_snippets)[:700])
+        missing_refs = list(traceability.get("missingRefs") or []) if isinstance(traceability.get("missingRefs"), list) else []
         return {
             "summary": "Approved Spec concrete delivery digest generated from requirements/design/tasks.",
             "targetPaths": target_paths[:5],
             "requiredFiles": required_files,
             "behaviorHints": behavior_hints,
             "stageExcerpts": excerpts,
+            "frameworkDigest": framework_digest,
+            "taskSlices": task_slices,
+            "missingTraceRefs": missing_refs[:12],
+            "agentSummary": "\n".join(agent_summary_lines)[:4200],
+            "distributionChecks": traceability.get("distributionChecks") if isinstance(traceability.get("distributionChecks"), dict) else {},
         }
 
     def _fallback_spec_execution_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
@@ -2088,8 +2131,16 @@ class ChatRuntime:
                 "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
                 "linkedSections": linked_sections,
                 "documents": documents,
+                "traceability": dict(spec_brief.get("traceability") or {}),
             },
             "approvedSpecDigest": approved_spec_digest,
+            "specExecutionSummary": approved_spec_digest.get("agentSummary"),
+            "frameworkDigest": approved_spec_digest.get("frameworkDigest"),
+            "taskDetailRefs": [
+                str(item.get("detailRef") or "")
+                for item in list(approved_spec_digest.get("taskSlices") or [])
+                if isinstance(item, dict) and item.get("detailRef")
+            ][:10],
             "userRequest": latest_user_content,
         }
         brief = normalize_task_brief(
@@ -2108,6 +2159,8 @@ class ChatRuntime:
                     "must": [
                         "Read or consume the approved SpecBrief/detail refs before implementing.",
                         "Use approvedSpecDigest as the concrete delivery target; do not create an audit/report/provenance dashboard unless the approved Spec explicitly requests one.",
+                        "Follow approvedSpecDigest.frameworkDigest before choosing language/framework; do not let different workers pick conflicting stacks.",
+                        "For every assigned task, consume the task slice plus linked requirement/design snippets or call spec_broker(read_section) using the task detailRef.",
                         "If approvedSpecDigest describes a counter, the delivered index.html must show a counter title and a click button that increments the visible count.",
                         "Complete all approved tasks, not just the first blocked command.",
                         "Return engineering_patch_bundle or recoverable_failed typed handoff with touched files and proof.",
@@ -2137,6 +2190,7 @@ class ChatRuntime:
                     "specId": spec_id,
                     "requirementIds": requirement_ids,
                     "taskIds": task_ids,
+                    "frameworkDigest": approved_spec_digest.get("frameworkDigest"),
                     "proofExpectations": [
                         "Report exact touched files.",
                         "Reference approved spec/task ids.",

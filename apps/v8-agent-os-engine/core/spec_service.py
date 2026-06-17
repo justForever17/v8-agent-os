@@ -264,6 +264,221 @@ def _tasks_pipeline_diagnostics(markdown: str) -> dict[str, Any]:
     }
 
 
+_REQUIREMENT_REF_RE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})(?![\d.])")
+_REQUIREMENT_RANGE_RE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\s*[-~–—]\s*(?:(\d{1,2})\.)?(\d{1,2})(?![\d.])")
+_EXPLICIT_SPEC_REF_RE = re.compile(r"\b((?:REQ|FR|NFR|BFIX|DES|TASK|TSK|T|AC-REQ|AC-BFIX)-\d{2,})\b", re.IGNORECASE)
+
+
+def _compact_snippet(value: str, *, limit: int = 520) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").replace("|", " ").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _add_unique(items: list[str], value: str) -> None:
+    item = str(value or "").strip()
+    if item and item not in items:
+        items.append(item)
+
+
+def _extract_requirement_ref_ids(text: str) -> list[str]:
+    """Extract requirement refs from V8-style IDs and Kiro-style `6.1` refs."""
+
+    source = str(text or "")
+    refs: list[str] = []
+    for match in _EXPLICIT_SPEC_REF_RE.finditer(source):
+        _add_unique(refs, _canonical_id(match.group(1), "TASK") if match.group(1).upper().startswith(("TASK-", "TSK-", "T-")) else match.group(1).upper())
+    consumed_spans: list[tuple[int, int]] = []
+    for match in _REQUIREMENT_RANGE_RE.finditer(source):
+        major = int(match.group(1))
+        start = int(match.group(2))
+        end_major = int(match.group(3) or major)
+        end = int(match.group(4))
+        consumed_spans.append(match.span())
+        if end_major != major or start < 1 or end < start or end - start > 40:
+            continue
+        for item in range(start, end + 1):
+            _add_unique(refs, f"{major}.{item}")
+    for match in _REQUIREMENT_REF_RE.finditer(source):
+        span = match.span()
+        if any(start <= span[0] and span[1] <= end for start, end in consumed_spans):
+            continue
+        major = int(match.group(1))
+        minor = int(match.group(2))
+        if minor < 1:
+            continue
+        _add_unique(refs, f"{major}.{minor}")
+    return refs
+
+
+def _heading_sections(markdown: str) -> list[dict[str, Any]]:
+    text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n")
+    matches = list(re.finditer(r"(?m)^(#{2,5})\s+(.+?)\s*$", text))
+    sections: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        title = match.group(2).strip()
+        sections.append(
+            {
+                "title": title,
+                "level": len(match.group(1)),
+                "content": text[start:end].strip(),
+                "anchor": re.sub(r"[^a-z0-9\u4e00-\u9fff.-]+", "-", title.lower()).strip("-")[:80] or f"section-{index + 1}",
+            }
+        )
+    return sections
+
+
+def _requirement_fragments(markdown: str) -> dict[str, dict[str, Any]]:
+    text = str(markdown or "")
+    fragments: dict[str, dict[str, Any]] = {}
+    for line in text.splitlines():
+        ids = [item for item in _extract_ids(line, "REQ") + _extract_ids(line, "BFIX") if item]
+        ids.extend(item for item in _extract_requirement_ref_ids(line) if re.match(r"^(?:REQ|FR|NFR|BFIX|AC-REQ|AC-BFIX)-", item))
+        for item in ids:
+            fragments.setdefault(
+                item,
+                {
+                    "id": item,
+                    "summary": _compact_snippet(line),
+                    "detailRef": f"#{item}",
+                    "source": "explicit_id",
+                },
+            )
+
+    req_heading_re = re.compile(r"(?im)^###\s+(?:需求|Requirement)\s+(\d{1,2})\s*[:：-]?\s*(.*?)\s*$")
+    matches = list(req_heading_re.finditer(text))
+    for index, match in enumerate(matches):
+        major = int(match.group(1))
+        title = match.group(2).strip()
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        section = text[start:end]
+        for criterion in re.finditer(r"(?m)^\s*(\d{1,2})\.\s+(.+?)\s*$", section):
+            req_id = f"{major}.{int(criterion.group(1))}"
+            fragments[req_id] = {
+                "id": req_id,
+                "requirement": f"需求 {major}" + (f"：{title}" if title else ""),
+                "summary": _compact_snippet(criterion.group(2)),
+                "detailRef": f"spec://requirements#{req_id}",
+                "source": "kiro_acceptance",
+            }
+    return fragments
+
+
+_FRAMEWORK_TERMS = (
+    "framework",
+    "architecture",
+    "runtime",
+    "技术栈",
+    "框架",
+    "架构",
+    "语言",
+    "平台",
+    "小程序",
+    "uni-app",
+    "react",
+    "vue",
+    "typescript",
+    "javascript",
+    "python",
+    "node",
+    "canvas",
+)
+
+
+def _design_fragments(markdown: str) -> tuple[list[dict[str, Any]], str]:
+    sections = _heading_sections(markdown)
+    fragments: list[dict[str, Any]] = []
+    framework_lines: list[str] = []
+    for index, section in enumerate(sections):
+        content = str(section.get("content") or "")
+        title = str(section.get("title") or "")
+        refs = _extract_requirement_ref_ids(content)
+        explicit_design_ids = _extract_ids(content, "DES")
+        lower_blob = f"{title}\n{content}".lower()
+        is_framework = any(term.lower() in lower_blob for term in _FRAMEWORK_TERMS)
+        if is_framework:
+            for line in content.splitlines()[:18]:
+                stripped = line.strip()
+                if stripped and (any(term.lower() in stripped.lower() for term in _FRAMEWORK_TERMS) or len(framework_lines) < 4):
+                    framework_lines.append(stripped)
+        if refs or explicit_design_ids or is_framework:
+            section_id = explicit_design_ids[0] if explicit_design_ids else f"DES-SECTION-{index + 1:02d}"
+            fragments.append(
+                {
+                    "id": section_id,
+                    "title": title,
+                    "requirementRefs": refs[:24],
+                    "detailRef": f"spec://design#{section.get('anchor')}",
+                    "summary": _compact_snippet(content, limit=700),
+                    "framework": bool(is_framework),
+                }
+            )
+    framework_digest = "\n".join(dict.fromkeys(framework_lines))[:1400]
+    if not framework_digest and markdown:
+        framework_digest = _compact_snippet(markdown, limit=900)
+    return fragments[:18], framework_digest
+
+
+def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], design_fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n")
+    task_re = re.compile(r"(?m)^(\s*)-\s+\[[ xX]\]\s+((?:TASK|TSK|T)-\d{2,}|\d+(?:\.\d+)*)\.?\s*(.*)$", re.IGNORECASE)
+    matches = list(task_re.finditer(text))
+    slices: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        raw_id = match.group(2).strip()
+        title = match.group(3).strip()
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        body_for_refs = "\n".join(block.splitlines()[1:]).strip()
+        if re.match(r"^(?:TASK|TSK|T)-", raw_id, re.IGNORECASE):
+            task_id = _canonical_id(raw_id, "TASK")
+        else:
+            task_id = f"TASK-{raw_id}"
+        req_refs = [
+            item
+            for item in _extract_requirement_ref_ids(body_for_refs)
+            if item in requirement_index or re.match(r"^(?:REQ|FR|NFR|BFIX|AC-REQ|AC-BFIX)-", item)
+        ]
+        design_matches = [
+            item
+            for item in design_fragments
+            if set(req_refs).intersection(set(item.get("requirementRefs") or [])) or (item.get("framework") and req_refs)
+        ]
+        slices.append(
+            {
+                "taskId": task_id,
+                "title": _compact_snippet(title, limit=220),
+                "requirementRefs": req_refs[:18],
+                "requirementSnippets": [
+                    {
+                        "id": ref,
+                        "summary": requirement_index.get(ref, {}).get("summary", ""),
+                        "detailRef": requirement_index.get(ref, {}).get("detailRef", f"spec://requirements#{ref}"),
+                    }
+                    for ref in req_refs[:8]
+                ],
+                "designRefs": [str(item.get("id") or "") for item in design_matches[:6] if item.get("id")],
+                "designSnippets": [
+                    {
+                        "id": item.get("id"),
+                        "title": item.get("title"),
+                        "summary": item.get("summary"),
+                        "detailRef": item.get("detailRef"),
+                    }
+                    for item in design_matches[:3]
+                ],
+                "taskExcerpt": _compact_snippet(block, limit=900),
+                "detailRef": f"spec://tasks#{task_id}",
+            }
+        )
+    return slices[:30]
+
+
 @dataclass(slots=True)
 class SpecPaths:
     workspace: Path
@@ -678,12 +893,87 @@ class SpecService:
 
     def _document_ids(self, stage: str, content: str) -> list[str]:
         if stage == "tasks":
-            return _extract_ids(content, "TASK")
+            ids = _extract_ids(content, "TASK")
+            for item in _task_slices(content, {}, []):
+                _add_unique(ids, str(item.get("taskId") or ""))
+            return ids
         if stage == "design":
             return _extract_ids(content, "DES")
         if stage == "bugfix":
             return _extract_ids(content, "BFIX")
-        return _extract_ids(content, "REQ")
+        ids = _extract_ids(content, "REQ")
+        for item in _requirement_fragments(content):
+            _add_unique(ids, item)
+        return ids
+
+    def _read_stage_content(self, paths: SpecPaths, manifest: dict[str, Any], stage: str) -> str:
+        doc_meta = dict((manifest.get("documents") or {}).get(stage) or {})
+        rel = str(doc_meta.get("relativePath") or "").strip()
+        filename = SPEC_DOCS.get(stage)
+        candidates: list[Path] = []
+        if rel:
+            candidates.append(paths.workspace / rel)
+        if filename:
+            candidates.append(paths.spec_dir / filename)
+        for candidate in candidates:
+            try:
+                path = candidate.resolve()
+                path.relative_to(paths.workspace)
+                if path.exists() and path.is_file():
+                    return path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+        return ""
+
+    def _traceability_index(self, paths: SpecPaths, manifest: dict[str, Any]) -> dict[str, Any]:
+        requirements_text = self._read_stage_content(paths, manifest, "requirements")
+        if not requirements_text:
+            requirements_text = self._read_stage_content(paths, manifest, "bugfix")
+        design_text = self._read_stage_content(paths, manifest, "design")
+        tasks_text = self._read_stage_content(paths, manifest, "tasks")
+        requirement_index = _requirement_fragments(requirements_text)
+        design_index, framework_digest = _design_fragments(design_text)
+        task_slices = _task_slices(tasks_text, requirement_index, design_index)
+        known_req_ids = set(requirement_index.keys())
+        missing_refs: list[dict[str, Any]] = []
+        for task in task_slices:
+            for ref in list(task.get("requirementRefs") or []):
+                if ref not in known_req_ids and not re.match(r"^(?:REQ|FR|NFR|BFIX|AC-REQ|AC-BFIX)-", ref):
+                    missing_refs.append({"taskId": task.get("taskId"), "requirementRef": ref, "reason": "requirement_fragment_missing"})
+        tasks_with_requirements = sum(1 for task in task_slices if task.get("requirementRefs"))
+        tasks_with_design = sum(1 for task in task_slices if task.get("designRefs") or task.get("designSnippets"))
+        return {
+            "kind": "SpecTraceabilityIndex",
+            "frameworkDigest": _safe_text(framework_digest, limit=1400),
+            "requirements": {
+                "count": len(requirement_index),
+                "samples": list(requirement_index.values())[:12],
+            },
+            "design": {
+                "count": len(design_index),
+                "frameworkSections": [
+                    item
+                    for item in design_index
+                    if item.get("framework")
+                ][:6],
+            },
+            "tasks": task_slices[:16],
+            "missingRefs": missing_refs[:20],
+            "distributionChecks": {
+                "taskCount": len(task_slices),
+                "tasksWithRequirementRefs": tasks_with_requirements,
+                "tasksWithDesignRefs": tasks_with_design,
+                "hasFrameworkDigest": bool(framework_digest.strip()),
+                "allTasksHaveRequirementRefs": bool(task_slices) and tasks_with_requirements == len(task_slices),
+                "allTasksHaveDesignRefs": bool(task_slices) and tasks_with_design == len(task_slices),
+                "missingRefCount": len(missing_refs),
+            },
+            "recommendedExecutionRule": (
+                "For approved Spec execution, each runtime/subagent/child-agent task must receive the task slice, "
+                "its requirement snippets, relevant design/framework snippets, task detailRef, and specId. "
+                "If a referenced slice is missing, read it with spec_broker(read_section) before execution."
+            ),
+        }
 
     def _linked_sections(self, manifest: dict[str, Any]) -> list[dict[str, Any]]:
         spec_id = str(manifest.get("specId") or "")
@@ -1081,6 +1371,7 @@ class SpecService:
                 for item in list(manifest.get("comments") or [])
                 if isinstance(item, dict) and str(item.get("status") or "open") == "open"
             ][:8],
+            "traceability": self._traceability_index(paths, manifest),
         }
 
 

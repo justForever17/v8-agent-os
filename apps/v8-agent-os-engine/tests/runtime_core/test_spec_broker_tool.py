@@ -26,6 +26,113 @@ def test_spec_broker_description_lists_write_edit_read_modes():
     assert "runtime_broker" in description
 
 
+def test_spec_brief_traceability_links_kiro_style_requirements_design_and_tasks(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    requirements = """# 需求文档
+
+## 需求
+
+### 需求 1：PDF文件上传功能
+
+#### 验收标准
+
+1. WHEN 用户点击上传按钮 THEN 系统 SHALL 打开文件选择器，仅允许选择PDF格式文件
+2. WHEN 用户选择的文件大小超过20MB THEN 系统 SHALL 显示错误提示
+
+### 需求 6：配置管理
+
+#### 验收标准
+
+1. WHEN 项目初始化 THEN 系统 SHALL 提供.env.template模板文件
+2. WHEN 应用启动 THEN 系统 SHALL 从.env文件读取MinerU API和腾讯云COS配置
+5. IF .env文件不存在 THEN 系统 SHALL 提示开发者复制.env.template并填写配置
+
+### 需求 8：性能与兼容性
+
+#### 验收标准
+
+3. WHEN 应用运行 THEN 系统 SHALL 兼容微信小程序基础库版本2.0.0及以上
+"""
+    design = """# 设计文档
+
+## 概述
+
+本文档描述基于uni-app框架的微信小程序PDF转DOCX转换器。全员必须使用uni-app/Vue/JavaScript小程序工程，不得改成Python脚本或普通Node CLI。
+
+## 架构
+
+### 整体架构
+
+微信小程序前端采用uni-app框架，服务层包含cosService.js和mineruService.js。
+
+## 配置管理设计
+
+- 需求: 6.1, 6.2, 6.5
+- 使用utils/config.js读取.env文件并做启动期校验。
+"""
+    tasks = """# 实施计划
+
+- [x] 1. 初始化uni-app项目结构
+  - 创建uni-app微信小程序项目基础结构
+  - _需求: 6.1, 6.2, 8.3_
+
+- [ ] 2. 配置环境变量和配置管理
+  - [x] 2.1 创建环境变量模板文件
+    - 创建.env.template文件，包含所有必需配置项的说明
+    - _需求: 6.1, 6.5_
+
+  - [x] 2.2 实现配置加载工具
+    - 编写utils/config.js实现loadConfig函数
+    - _需求: 6.2, 6.3, 6.4_
+"""
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="创建PDF转DOCX小程序",
+            feature_name="pdf-to-docx-converter",
+            content=requirements,
+        )
+    )
+    spec_id = created["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content=design,
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="tasks",
+            content=tasks,
+        )
+    )["ok"]
+
+    brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)
+    traceability = brief["traceability"]
+    assert "uni-app" in traceability["frameworkDigest"]
+    assert "Python" in traceability["frameworkDigest"]
+    assert traceability["distributionChecks"]["taskCount"] >= 3
+    assert traceability["distributionChecks"]["tasksWithRequirementRefs"] >= 3
+    assert traceability["distributionChecks"]["tasksWithDesignRefs"] >= 3
+    first_task = traceability["tasks"][0]
+    assert first_task["taskId"] == "TASK-1"
+    assert {"6.1", "6.2", "8.3"}.issubset(set(first_task["requirementRefs"]))
+    config_template_task = next(item for item in traceability["tasks"] if item["taskId"] == "TASK-2.1")
+    assert "2.1" not in config_template_task["requirementRefs"]
+    assert any("env.template" in (item.get("summary") or "") for item in config_template_task["requirementSnippets"])
+    assert any("uni-app" in (item.get("summary") or "") for item in first_task["designSnippets"])
+
+
 def test_spec_broker_rewrite_approved_stage_returns_locked(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

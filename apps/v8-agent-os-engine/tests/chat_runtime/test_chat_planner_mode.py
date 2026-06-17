@@ -461,6 +461,78 @@ class ChatPlannerModeTests(unittest.TestCase):
         engineering_capsule = task.get("engineeringTaskCapsule") if isinstance(task.get("engineeringTaskCapsule"), dict) else {}
         self.assertEqual(engineering_capsule.get("specId"), "spec-approved")
 
+    def test_approved_spec_execution_plan_carries_traceability_slices_to_task_context(self):
+        runtime = ChatRuntime()
+        spec_brief = {
+            "specId": "spec-traceable",
+            "featureName": "Traceable PDF Converter",
+            "workspacePath": r"E:\Projects\test3",
+            "approvedStages": ["requirements", "design", "tasks"],
+            "pipelineControl": {
+                "currentStage": "tasks",
+                "nextStage": "runtime_execution",
+                "runtimeExecutionAllowed": True,
+            },
+            "documents": {
+                "requirements": {"detailRef": "spec://spec-traceable/requirements", "ids": ["6.1", "6.2"], "relativePath": ".v8/specs/pdf/requirements.md", "status": "approved"},
+                "design": {"detailRef": "spec://spec-traceable/design", "ids": ["DES-SECTION-01"], "relativePath": ".v8/specs/pdf/design.md", "status": "approved"},
+                "tasks": {"detailRef": "spec://spec-traceable/tasks", "ids": ["TASK-2.1"], "relativePath": ".v8/specs/pdf/tasks.md", "status": "approved"},
+            },
+            "linkedSections": [
+                {"stage": "requirements", "detailRef": "spec://spec-traceable/requirements", "ids": ["6.1", "6.2"]},
+                {"stage": "design", "detailRef": "spec://spec-traceable/design", "ids": ["DES-SECTION-01"]},
+                {"stage": "tasks", "detailRef": "spec://spec-traceable/tasks", "ids": ["TASK-2.1"]},
+            ],
+            "traceability": {
+                "frameworkDigest": "全员必须使用uni-app/Vue/JavaScript微信小程序工程，不得改成Python脚本。",
+                "tasks": [
+                    {
+                        "taskId": "TASK-2.1",
+                        "title": "创建环境变量模板文件",
+                        "requirementRefs": ["6.1", "6.5"],
+                        "requirementSnippets": [
+                            {"id": "6.1", "summary": "系统 SHALL 提供.env.template模板文件", "detailRef": "spec://requirements#6.1"}
+                        ],
+                        "designRefs": ["DES-SECTION-01"],
+                        "designSnippets": [
+                            {"id": "DES-SECTION-01", "title": "配置管理设计", "summary": "使用utils/config.js读取.env文件并做启动期校验。", "detailRef": "spec://design#配置管理设计"}
+                        ],
+                        "taskExcerpt": "- [x] 2.1 创建环境变量模板文件\n  - _需求: 6.1, 6.5_",
+                        "detailRef": "spec://tasks#TASK-2.1",
+                    }
+                ],
+                "distributionChecks": {"taskCount": 1, "hasFrameworkDigest": True, "allTasksHaveDesignRefs": True},
+            },
+        }
+        chat_run = SimpleNamespace(
+            prepared=SimpleNamespace(
+                latest_user_content="[Spec Approval Continuation] nextStage: runtime_execution",
+                spec_brief=spec_brief,
+                spec_id="spec-traceable",
+            ),
+            scope_result=SimpleNamespace(
+                binding=SimpleNamespace(
+                    project_id="project-test",
+                    workspace_id="workspace-test",
+                    workspace_path=r"E:\Projects\test3",
+                    resolved_scope="project",
+                )
+            ),
+        )
+
+        plan = runtime._fallback_spec_execution_planner_plan(chat_run=chat_run, reason="approved_spec_runtime_execution_allowed")
+
+        task = plan["taskBriefs"][0]
+        context = task["context"]
+        digest = context["approvedSpecDigest"]
+        self.assertIn("uni-app/Vue/JavaScript", context["frameworkDigest"])
+        self.assertIn("TASK-2.1", context["specExecutionSummary"])
+        self.assertIn("6.1: 系统 SHALL 提供.env.template", context["specExecutionSummary"])
+        self.assertIn("使用utils/config.js", context["specExecutionSummary"])
+        self.assertEqual(context["taskDetailRefs"], ["spec://tasks#TASK-2.1"])
+        self.assertEqual(digest["taskSlices"][0]["requirementRefs"], ["6.1", "6.5"])
+        self.assertIn("frameworkDigest", task["engineeringTaskCapsule"])
+
     def test_planner_structured_failure_repairs_with_plain_json_before_fallback(self):
         class BrokenStructuredPlanner:
             def with_structured_output(self, _schema):
@@ -996,9 +1068,9 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("Write/read/edit Spec Mode documents", spec_first_line)
         self.assertIn("user/client approval gates", spec_first_line)
         self.assertNotIn("approve, and advance", spec_first_line)
-        self.assertIn("route approved complex work", runtime_first_line)
-        self.assertIn("runtime episodes", runtime_first_line)
-        self.assertIn("concrete task briefs", delegation_first_line)
+        self.assertIn("active execution runtimes", runtime_first_line)
+        self.assertIn("Supervisor route broker", runtime_first_line)
+        self.assertIn("real local subagent", delegation_first_line)
         self.assertIn("complete SKILL.md", fetch_skill_first_line)
         self.assertIn("relative_path", fetch_skill_first_line)
 

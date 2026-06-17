@@ -486,7 +486,14 @@ def _approved_spec_execution_bundle(
             "truncated": bool(payload.get("truncated")),
         }
     task_doc = dict(docs.get("tasks") or {})
-    task_sections = _task_sections_from_markdown(str(task_doc.get("content") or ""), list(task_doc.get("ids") or []))
+    traceability = dict(spec_brief.get("traceability") or {}) if isinstance(spec_brief.get("traceability"), dict) else {}
+    task_sections = [
+        dict(item)
+        for item in list(traceability.get("tasks") or [])
+        if isinstance(item, dict)
+    ]
+    if not task_sections:
+        task_sections = _task_sections_from_markdown(str(task_doc.get("content") or ""), list(task_doc.get("ids") or []))
     return {
         "kind": "SpecExecutionBundle",
         "status": "ready",
@@ -498,6 +505,11 @@ def _approved_spec_execution_bundle(
         "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
         "documents": docs,
         "tasks": task_sections,
+        "traceability": {
+            "frameworkDigest": traceability.get("frameworkDigest"),
+            "missingRefs": list(traceability.get("missingRefs") or [])[:20],
+            "distributionChecks": traceability.get("distributionChecks") if isinstance(traceability.get("distributionChecks"), dict) else {},
+        },
         "distribution": {
             "strategy": "task_sliced_with_stage_context",
             "mainRuntimeReceives": ["SpecExecutionBundle", "all approved stage summaries/content", "task briefs"],
@@ -747,7 +759,12 @@ def _spec_task_engineering_execution_contract(
     source_refs = {
         "specId": spec_id,
         "taskId": task_id,
-        "requirementIds": [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
+        "requirementIds": [
+            ref
+            for ref in spec_refs
+            if str(ref).upper().startswith(("REQ-", "BFIX-"))
+            or re.match(r"^\d{1,2}\.\d{1,2}$", str(ref))
+        ],
         "designIds": [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
         "detailRefs": detail_refs,
     }
@@ -1012,6 +1029,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
     spec_id = str(bundle.get("specId") or "").strip()
     workspace_path = str(bundle.get("workspacePath") or "").strip()
     docs = dict(bundle.get("documents") or {})
+    traceability = dict(bundle.get("traceability") or {}) if isinstance(bundle.get("traceability"), dict) else {}
+    framework_digest = str(traceability.get("frameworkDigest") or "").strip()
     requirement_doc = dict(docs.get("requirements") or docs.get("bugfix") or {})
     design_doc = dict(docs.get("design") or {})
     task_doc = dict(docs.get("tasks") or {})
@@ -1033,15 +1052,23 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
         family = _spec_task_runtime_family(task, kind)
         if family == "governance" and kind != "governance":
             continue
-        output = str(task.get("expectedOutput") or "").strip()
-        acceptance = str(task.get("acceptance") or "").strip()
-        proof = str(task.get("proofRequired") or "").strip()
-        spec_refs = list(task.get("specRefs") or []) or list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
+        output = str(task.get("expectedOutput") or task.get("expectedOutputs") or "").strip()
+        acceptance = str(task.get("acceptance") or task.get("acceptanceProof") or "").strip()
+        proof = str(task.get("proofRequired") or task.get("proof") or "").strip()
+        requirement_refs = list(task.get("requirementRefs") or [])
+        design_refs = list(task.get("designRefs") or [])
+        explicit_spec_refs = list(task.get("specRefs") or [])
+        if explicit_spec_refs:
+            spec_refs = explicit_spec_refs
+        elif requirement_refs or design_refs:
+            spec_refs = requirement_refs + design_refs
+        else:
+            spec_refs = list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
         writes_artifact = _spec_task_writes_artifact(task, family)
         validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)
         expected_paths = _spec_task_expected_paths(
             output,
-            task.get("excerpt"),
+            task.get("taskExcerpt") or task.get("excerpt"),
             task.get("title"),
         )
         allowed_write_set = list(expected_paths or ([workspace_path] if workspace_path else []))
@@ -1067,19 +1094,45 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
         )
         child_signal = re.search(
             r"(?i)sub\s*agent|sub-agent|worker|parallel|fanout|子\s*agent|孙\s*agent|子agent|孙agent|并行",
-            " ".join([lane, str(task.get("title") or ""), str(task.get("excerpt") or "")]),
+            " ".join([lane, str(task.get("title") or ""), str(task.get("taskExcerpt") or task.get("excerpt") or "")]),
         )
         allow_child = bool(
             child_signal
             and family in {"delegation", "engineering", "research"}
             and not (family == "research" and re.search(r"(?i)调研 Agent|research agent", str(task.get("title") or "")))
         )
+        requirement_snippet_text = " / ".join(
+            f"{snippet.get('id')}: {snippet.get('summary')}"
+            for snippet in list(task.get("requirementSnippets") or [])[:6]
+            if isinstance(snippet, dict) and snippet.get("summary")
+        )
+        design_snippet_text = " / ".join(
+            f"{snippet.get('title') or snippet.get('id')}: {snippet.get('summary')}"
+            for snippet in list(task.get("designSnippets") or [])[:4]
+            if isinstance(snippet, dict) and snippet.get("summary")
+        )
+        task_detail_ref = str(task.get("detailRef") or f"spec://{spec_id}/tasks#{task_id}")
+        spec_execution_summary = _safe_compact_text(
+            "\n".join(
+                item
+                for item in [
+                    f"Framework / architecture everyone must follow: {framework_digest}" if framework_digest else "",
+                    f"Task: {task.get('taskExcerpt') or task.get('excerpt') or task.get('title') or task_id}",
+                    f"Requirements: {requirement_snippet_text}" if requirement_snippet_text else "",
+                    f"Design: {design_snippet_text}" if design_snippet_text else "",
+                ]
+                if item
+            ),
+            limit=4200,
+        )
         context = {
             "source": "approved_spec_execution_bundle",
             "specId": spec_id,
             "taskId": task_id,
-            "taskDetailRef": f"spec://{spec_id}/tasks#{task_id}",
-            "taskExcerpt": task.get("excerpt") or task.get("title") or task_id,
+            "taskDetailRef": task_detail_ref,
+            "taskExcerpt": task.get("taskExcerpt") or task.get("excerpt") or task.get("title") or task_id,
+            "specExecutionSummary": spec_execution_summary,
+            "frameworkDigest": framework_digest,
             "runtimeLane": lane,
             "specRefs": spec_refs,
             "engineeringExecutionContract": execution_contract,
@@ -1136,14 +1189,15 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "specRefs": {
                     "specId": spec_id,
                     "taskId": task_id,
-                    "requirementIds": [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
-                    "designIds": [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
+                    "requirementIds": requirement_refs
+                    or [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
+                    "designIds": design_refs or [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
                     "detailRefs": [
                         ref
                         for ref in [
                             requirement_doc.get("detailRef"),
                             design_doc.get("detailRef"),
-                            f"spec://{spec_id}/tasks#{task_id}",
+                            task_detail_ref,
                         ]
                         if ref
                     ],
@@ -1154,6 +1208,10 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                     **({"validateSkillArtifact": True} if validates_skill_artifact else {}),
                     "specId": spec_id,
                     "taskId": task_id,
+                    "requirementIds": requirement_refs
+                    or [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
+                    "designIds": design_refs or [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
+                    "frameworkDigest": framework_digest,
                     "runtimeLane": lane,
                     "workspacePath": workspace_path,
                     "writeSet": allowed_write_set,

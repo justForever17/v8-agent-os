@@ -17,6 +17,7 @@ from erc.runtime_context import get_runtime_context
 
 
 _SPEC_STAGES = {"requirements", "bugfix", "design", "tasks"}
+_SPEC_RUNTIME_EXECUTION = "runtime_execution"
 _SPEC_KINDS = {"feature", "bugfix"}
 _DOWNSTREAM_STAGE_SUFFIXES = ("-requirements", "-bugfix", "-design", "-tasks")
 
@@ -101,9 +102,9 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
             "requirements": "design",
             "bugfix": "design",
             "design": "tasks",
-            "tasks": "runtime_execution",
+            "tasks": _SPEC_RUNTIME_EXECUTION,
         }.get(blocked, next_stage)
-        if downstream == "runtime_execution":
+        if downstream == _SPEC_RUNTIME_EXECUTION:
             approved_action = (
                 "If the user approves tasks, route the approved Spec to runtime execution with runtime_broker(mode='route')."
             )
@@ -127,12 +128,12 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
             ],
             **({"requiredNextStageContract": _spec_tasks_stage_contract_hint()} if downstream == "tasks" else {}),
         }
-    if bool(control.get("runtimeExecutionAllowed")) or next_stage == "runtime_execution":
+    if bool(control.get("runtimeExecutionAllowed")) or next_stage == _SPEC_RUNTIME_EXECUTION:
         return {
             "state": "runtime_execution_ready",
             "specId": spec_id,
             "currentStage": current,
-            "nextStage": "runtime_execution",
+            "nextStage": _SPEC_RUNTIME_EXECUTION,
             "requiredNextTool": "runtime_broker",
             "whenReady": (
                 "Call runtime_broker(mode='route', runtime_kind='engineering', "
@@ -141,6 +142,7 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
             ),
             "doNot": [
                 "Do not rewrite requirements/design/tasks.",
+                "Do not call spec_broker with stage='runtime_execution'; runtime_execution is not a Spec document stage.",
                 "Do not implement final deliverables through spec_broker.",
                 "Do not treat this as Supervisor self-approval.",
             ],
@@ -341,16 +343,41 @@ def _spec_context_next_stage() -> str:
     continuation = _spec_context_continuation()
     if continuation:
         next_stage = str(continuation.get("nextStage") or "").strip().lower()
-        if next_stage in _SPEC_STAGES:
+        if next_stage in _SPEC_STAGES or next_stage == _SPEC_RUNTIME_EXECUTION:
             return next_stage
     runtime_context = get_runtime_context() or {}
     if not isinstance(runtime_context, dict):
         return ""
     for key in ("spec_next_stage", "specNextStage"):
         value = str(runtime_context.get(key) or "").strip().lower()
-        if value in _SPEC_STAGES:
+        if value in _SPEC_STAGES or value == _SPEC_RUNTIME_EXECUTION:
             return value
     return ""
+
+
+def _spec_runtime_execution_not_stage_payload(*, spec_id: str = "", attempted_mode: str = "") -> str:
+    return _spec_broker_payload(
+        ok=False,
+        kind="spec_runtime_execution_not_stage",
+        summary=(
+            "Spec requirements/design/tasks are already complete enough for execution. "
+            "runtime_execution is not a writable Spec stage."
+        ),
+        specId=spec_id,
+        attemptedMode=attempted_mode,
+        state="runtime_execution_ready",
+        requiredNextTool="runtime_broker",
+        recommendedNextAction=(
+            "Call runtime_broker(mode='route', runtime_kind='engineering', "
+            "need={'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'<current specId>'}) "
+            "and wait for the runtime episode handoff."
+        ),
+        doNot=[
+            "Do not call spec_broker(stage='runtime_execution').",
+            "Do not rewrite requirements/design/tasks unless the user requests a revision.",
+            "Do not implement final deliverables through spec_broker.",
+        ],
+    )
 
 
 def _spec_approve_blocked_for_supervisor() -> bool:
@@ -371,6 +398,8 @@ def _spec_approve_blocked_for_supervisor() -> bool:
 
 
 def _spec_stage_mismatch_payload(*, attempted_stage: str, expected_stage: str, spec_id: str) -> str:
+    if expected_stage == _SPEC_RUNTIME_EXECUTION:
+        return _spec_runtime_execution_not_stage_payload(spec_id=spec_id, attempted_mode="stage_mismatch")
     return _spec_broker_payload(
         ok=False,
         kind="spec_stage_mismatch",
@@ -681,9 +710,19 @@ def spec_broker(
                 normalized_mode = "rewrite_stage"
         if normalized_mode in {"start", "create", "create_stage", "write_stage", "stage"}:
             requested_stage = _spec_stage_from_inputs(stage, kind)
+            if requested_stage == _SPEC_RUNTIME_EXECUTION:
+                return _spec_runtime_execution_not_stage_payload(
+                    spec_id=str(spec_id or _spec_context_spec_id() or "").strip(),
+                    attempted_mode=normalized_mode,
+                )
             continuation_next_stage = _spec_context_next_stage()
             continuation_spec_id = _spec_context_spec_id()
             if continuation_next_stage and continuation_spec_id:
+                if continuation_next_stage == _SPEC_RUNTIME_EXECUTION:
+                    return _spec_runtime_execution_not_stage_payload(
+                        spec_id=continuation_spec_id,
+                        attempted_mode=normalized_mode,
+                    )
                 if spec_id and str(spec_id).strip() != continuation_spec_id:
                     return _spec_id_mismatch_payload(
                         attempted_spec_id=str(spec_id).strip(),
@@ -840,6 +879,11 @@ def spec_broker(
                     recommendedNextAction="Call spec_broker(mode='brief', spec_id='<id>') or retry with the specId returned by the current Spec stage.",
                 )
             resolved_stage = _spec_stage_from_inputs(stage, kind)
+            if resolved_stage == _SPEC_RUNTIME_EXECUTION:
+                return _spec_runtime_execution_not_stage_payload(
+                    spec_id=str(resolved_spec_id or ""),
+                    attempted_mode=normalized_mode,
+                )
             edit_content = content or user_request or comment
             if normalized_mode == "rewrite_stage" and resolved_stage:
                 created = spec_service.create_stage(
@@ -886,6 +930,11 @@ def spec_broker(
             if not resolved_spec_id:
                 return _spec_broker_payload(ok=False, kind="spec_id_required", summary="spec_broker read_section needs spec_id.")
             requested_stage = _spec_stage_from_inputs(stage, kind)
+            if requested_stage == _SPEC_RUNTIME_EXECUTION:
+                return _spec_runtime_execution_not_stage_payload(
+                    spec_id=str(resolved_spec_id or ""),
+                    attempted_mode=normalized_mode,
+                )
             try:
                 result = spec_service.read_section(
                     workspace_path=workspace,

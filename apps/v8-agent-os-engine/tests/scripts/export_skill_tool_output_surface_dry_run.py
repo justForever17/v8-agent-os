@@ -112,6 +112,11 @@ def build_matrix() -> dict[str, Any]:
         "Examples Dir:",
         '"skillRoot"',
         "按当前 skill 的要求去做。",
+        "Relative Resources:",
+        "Verdict:",
+        "Governance Target:",
+        "Posture:",
+        "Audit ID:",
     ]
     validations = {
         "raw_output_keeps_full_skill_md": all(
@@ -127,22 +132,15 @@ def build_matrix() -> dict[str, Any]:
         "raw_output_keeps_skill_root": "Skill Root:" in raw_output,
         "raw_output_omits_redundant_skill_name": "Skill Name:" not in raw_output
         and "Skill instructions: surface-demo-skill" not in agent_visible_output,
-        "raw_output_uses_relative_resource_tree": all(
-            item in raw_output
-            for item in (
-                "Relative Resources:",
-                "- references/",
-                "  - research/",
-                "    - 01-writings.md",
-                "- scripts/",
-                "  - check-quality.py",
-            )
-        )
-        and "\n- references\n" not in raw_output
-        and "\n- scripts\n" not in raw_output,
+        "raw_output_omits_redundant_resource_tree": "Relative Resources:" not in raw_output
+        and "\n- references/\n" not in raw_output
+        and "\n- scripts/\n" not in raw_output,
         "manifest_is_markdown_not_raw_json": "Continue reading skill-relative files with:" in raw_output
         and '"readContract"' not in raw_output
         and '"references"' not in raw_output
+        and "Required reads for artifact work:" not in raw_output
+        and "Recommended next reads:" not in raw_output
+        and "Examples:" not in raw_output
         and "\n- references/\n" not in manifest_text
         and "\n- scripts/ —" not in manifest_text,
         "agent_surface_keeps_method_contract": all(
@@ -154,7 +152,7 @@ def build_matrix() -> dict[str, Any]:
                 "Relative path continuation:",
             )
         ),
-        "agent_surface_hides_loader_noise": _contains_none(agent_visible_output, forbidden + ["Relative Resources:"]),
+        "agent_surface_hides_loader_noise": _contains_none(agent_visible_output, forbidden),
     }
     return {
         "description": "Dry-run export for fetch_skill_instructions output surfaces. No model call, no DB write, no repo mutation.",

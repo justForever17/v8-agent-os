@@ -156,6 +156,8 @@ def test_spec_continuation_prompt_routes_runtime_execution_with_current_spec():
     assert "'specId':'spec_ready'" in content
     assert "wait for the runtime episode handoff" in content
     assert "Do not rewrite requirements/design/tasks" in content
+    assert "do not call spec_broker(stage='runtime_execution')" in content
+    assert "not approve anything yourself" in content
     assert "do not call memory_broker/web_broker/research_broker" in content
     assert "no drafting detour is needed" in content
 

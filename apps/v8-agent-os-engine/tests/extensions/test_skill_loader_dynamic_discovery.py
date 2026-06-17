@@ -120,12 +120,12 @@ Read references/skill-template.md when creating artifacts.
                 "skill_name": skill_name,
                 "detail_level": "full",
             }
-        )
+    )
     assert "=== CONTINUATION MANIFEST ===" in full
     assert "references/skill-template.md" in full
-    assert "Relative Resources:" in full
-    assert "- references/" in full
-    assert "  - skill-template.md" in full
+    assert "Relative Resources:" not in full
+    assert "- references/" not in full
+    assert "  - skill-template.md" not in full
     assert "\n- references\n" not in full
     assert "Skill Root:" in full
     assert "Skill Name:" not in full

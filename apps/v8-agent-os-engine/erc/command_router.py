@@ -379,14 +379,16 @@ class RuntimeCommandRouter:
         if bool(payload.get("runtimeExecutionAllowed")):
             next_instruction = (
                 "Spec tasks have been approved by the user. Continue by routing the approved Spec "
-                "to the appropriate runtime execution path. Do not approve anything yourself."
+                "to the appropriate runtime execution path. Do not approve anything yourself, and do not "
+                "treat runtime_execution as a Spec document stage."
             )
             required_action = (
                 "Required current tool call shape: "
                 f"runtime_broker(mode='route', runtime_kind='engineering', "
                 f"need={{'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'{spec_id}'}}). "
                 "Then wait for the runtime episode handoff. Do not rewrite requirements/design/tasks, "
-                "do not call memory_broker/web_broker/research_broker for a new task, and do not implement final files directly."
+                "do not call spec_broker(stage='runtime_execution'), do not call memory_broker/web_broker/research_broker "
+                "for a new task, and do not implement final files directly."
             )
         else:
             next_instruction = (

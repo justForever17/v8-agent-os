@@ -579,6 +579,72 @@ def test_spec_broker_blocks_bugfix_restart_when_current_spec_ready_for_execution
     assert blocked["specId"] == spec_id
 
 
+def test_spec_broker_runtime_execution_is_not_writable_stage(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="生成一个可加载 skill",
+            feature_name="runtime-execution-not-stage",
+            content="# Requirements\n\n- REQ-001: deliver a loadable skill.\n",
+        )
+    )
+    spec_id = created["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content="# Design\n\n- DES-001: Use the skill template and write files through Engineering Runtime.\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="tasks",
+            content=(
+                "# Tasks\n\n"
+                "| Task ID | runtimeLane | dependsOn | specRefs | expectedOutput | acceptance | proofRequired |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+                "| TASK-001 | Engineering | - | REQ-001, DES-001 | SKILL.md | Skill loads | file proof |\n\n"
+                "### TASK-001: Deliver skill\n\n"
+                "- runtimeLane: Engineering\n"
+                "- dependsOn: []\n"
+                "- specRefs: REQ-001, DES-001\n"
+                "- expectedOutput: SKILL.md\n"
+                "- acceptance: SkillLoader can load the generated skill\n"
+                "- proofRequired: file proof\n"
+            ),
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="tasks"))["ok"]
+
+    correction = _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="runtime_execution",
+            content="# Runtime Execution\n\nDo the work.",
+        )
+    )
+
+    assert correction["ok"] is False
+    assert correction["kind"] == "spec_runtime_execution_not_stage"
+    assert correction["state"] == "runtime_execution_ready"
+    assert correction["requiredNextTool"] == "runtime_broker"
+    assert "runtime_broker(mode='route'" in correction["recommendedNextAction"]
+    assert "stage='runtime_execution'" in "\n".join(correction["doNot"])
+
+
 def test_spec_broker_default_resolution_ignores_delivered_specs(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

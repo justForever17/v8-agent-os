@@ -1392,10 +1392,11 @@ description: 三月七视角 skill。
                 {"skill_name": str(skill_file), "detail_level": "summary"}
             )
 
-        self.assertIn("Skill Name: sanyueqi-perspective", result_from_dir)
+        self.assertIn("Skill ID:", result_from_dir)
         self.assertIn("Skill Root:", result_from_dir)
         self.assertIn("三月七视角", result_from_dir)
-        self.assertIn("Skill Name: sanyueqi-perspective", result_from_file)
+        self.assertIn("Skill ID:", result_from_file)
+        self.assertNotIn("Skill Name:", result_from_file)
         self.assertNotIn("find-skills", result_from_dir)
 
     def test_path_like_missing_skill_does_not_fuzzy_match_unrelated_skills(self):

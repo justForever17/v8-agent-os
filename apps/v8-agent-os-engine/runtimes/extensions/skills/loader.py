@@ -4165,41 +4165,11 @@ def _format_skill_resource_tree(available_files: list[str], *, limit: int = 96) 
 def _format_skill_continuation_manifest(manifest: dict[str, Any]) -> str:
     lines = ["=== CONTINUATION MANIFEST ==="]
     skill_name = str(manifest.get("skillName") or "").strip()
-    lines.append("SKILL.md above is the primary method contract. Do not replace it with this resource list.")
+    lines.append("SKILL.md above is the primary method contract. Follow its relative links and scripts as written.")
     if skill_name:
         lines.append(f"Continue reading skill-relative files with: fetch_skill_instructions(skill_name={skill_name!r}, relative_path='<path>')")
     else:
         lines.append("Continue reading skill-relative files with: fetch_skill_instructions(skill_name='<skill>', relative_path='<path>')")
-    required_reads = [str(item) for item in list(manifest.get("requiredReadsForArtifact") or []) if str(item).strip()]
-    recommended_reads = [str(item) for item in list(manifest.get("recommendedReads") or []) if str(item).strip()]
-    references = [str(item) for item in list(manifest.get("references") or []) if str(item).strip()]
-    templates = [str(item) for item in list(manifest.get("templates") or []) if str(item).strip()]
-    frameworks = [str(item) for item in list(manifest.get("frameworks") or []) if str(item).strip()]
-    examples = [str(item) for item in list(manifest.get("examples") or []) if str(item).strip()]
-    scripts = [item for item in list(manifest.get("scripts") or []) if isinstance(item, dict)]
-
-    def _append_list(title: str, values: list[str], *, cap: int = 12) -> None:
-        if not values:
-            return
-        lines.append(f"{title}:")
-        for value in values[:cap]:
-            lines.append(f"- {value}")
-        if len(values) > cap:
-            lines.append(f"- ...[{len(values) - cap} more]")
-
-    _append_list("Required reads for artifact work", required_reads, cap=10)
-    _append_list("Recommended next reads", recommended_reads, cap=10)
-    _append_list("References", references, cap=16)
-    _append_list("Templates", templates, cap=10)
-    _append_list("Frameworks / methods", frameworks, cap=10)
-    _append_list("Examples", examples, cap=10)
-    if scripts:
-        lines.append("Scripts:")
-        for item in scripts[:12]:
-            path = str(item.get("path") or "").strip()
-            purpose = str(item.get("purpose") or "").strip()
-            if path:
-                lines.append(f"- {path}" + (f" — {purpose}" if purpose else ""))
     boundary = str(manifest.get("scriptExecutionBoundary") or "").strip()
     if boundary:
         lines.append(f"Script boundary: {boundary}")
@@ -4413,12 +4383,7 @@ def fetch_skill_instructions(
         safety_banner = (
             f"{banner_title}\n"
             f"Skill ID: {skill.get('skillId') or ''}\n"
-            f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
-            f"Verdict: {verdict}\n"
             f"Mode: {banner_mode}\n"
-            f"Governance Target: {scan_payload.get('governanceTarget') or 'skill_supply_chain'}\n"
-            f"Posture: {scan_payload.get('posture') or ''}\n"
-            f"Audit ID: {scan_payload.get('auditId')}\n"
             f"Reasons:\n{reasons}\n\n"
         )
 
@@ -4463,7 +4428,6 @@ def fetch_skill_instructions(
             )
             return (
                 "=== SKILL FILE ===\n"
-                f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
                 f"Relative Path: {normalized_relative_path}\n"
                 f"Read Offset: {read_offset}\n"
                 f"Returned Chars: {len(content)}\n"
@@ -4477,13 +4441,11 @@ def fetch_skill_instructions(
         except Exception as exc:
             return (
                 "=== SKILL FILE ERROR ===\n"
-                f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
                 f"Requested Path: {relative_path}\n"
                 f"Error: {exc}\n"
                 "Visible continuation manifest:\n"
-                f"{json.dumps(manifest, ensure_ascii=False, indent=2)}"
+                f"{_format_skill_continuation_manifest(manifest)}"
             )
-    structure = _format_skill_resource_tree(available_files)
     normalized_detail = str(detail_level or "summary").strip().lower()
     if normalized_detail not in {"summary", "section", "full"}:
         normalized_detail = "summary"
@@ -4528,7 +4490,7 @@ def fetch_skill_instructions(
         f"Skill ID: {skill.get('skillId') or ''}\n"
         f"Source Type: {skill.get('sourceType') or ''}\n"
         f"Skill Root: {skill.get('skillRoot') or skill.get('path') or ''}\n"
-        f"Relative Resources:\n{structure}\n\n"
+        "\n"
         f"{_format_skill_continuation_manifest(manifest)}\n\n"
         f"{instructions_block}"
     )

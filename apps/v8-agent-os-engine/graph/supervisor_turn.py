@@ -414,6 +414,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 "The next durable action MUST route the approved Spec into execution with `runtime_broker(mode='route', need=...)` unless you must ask the user for a missing permission/scope. "
                 "The `need` payload should cite `specId`, task/detail refs, required runtime lanes, expected artifacts, and proof expectations from the approved tasks. "
                 "Use Engineering/Research/Delegation/Creative runtimes as appropriate; if the Spec or selected skill calls for broad research or subagent swarms, express that as Research Runtime and/or top-level Delegation episodes, not hidden Supervisor-only work. "
+                "`runtime_execution` is not a Spec document stage; do not call `spec_broker(stage='runtime_execution')` or try to write another Spec stage. "
                 "Do not call memory_broker, fetch_skill_instructions, research_broker, web_broker, delegation_broker, or write_native_file directly in this stage; route those needs through runtime_broker. "
                 "If a runtime episode fails or returns degraded handoff, repair or reroute the same approved specId; do not start a new bugfix/requirements Spec unless the user explicitly asks for a new Spec. "
                 "Supervisor todo tools are hidden in Spec Mode; use approved Spec tasks as the execution contract and runtime episode ledgers/proofs as execution truth. "

@@ -451,7 +451,7 @@ def test_fetch_skill_instructions_keeps_method_and_hides_loader_paths():
     )
 
     assert visible.startswith("Skill instructions")
-    assert "huashu-nuwa" in visible
+    assert "huashu-nuwa" not in visible
     assert "extract the mental model" in visible
     assert "Never invent citations" in visible
     assert "Skill Root:" not in visible
@@ -507,7 +507,7 @@ def test_fetch_skill_instructions_truncates_main_contract_with_same_document_off
         ).content
     )
 
-    assert "Skill instructions: too-large-skill" in visible
+    assert visible.startswith("Skill instructions")
     assert "Do not start from a partial skill contract." in visible
     assert "main SKILL.md truncated at offset" in visible
     assert "fetch_skill_instructions(skill_name='too-large-skill', detail_level='full', offset=" in visible

@@ -4060,24 +4060,39 @@ def _read_skill_text_file(path: Path, *, max_chars: int = 220_000, offset: int =
     return chunk.rstrip(), safe_offset, total_chars, truncated
 
 
+def _filter_parent_resource_paths(paths: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in list(paths or []):
+        path = str(item or "").strip().replace("\\", "/").strip("/")
+        if path and path not in normalized:
+            normalized.append(path)
+    filtered: list[str] = []
+    for path in normalized:
+        directory_prefix = f"{path}/"
+        if any(other != path and other.startswith(directory_prefix) for other in normalized):
+            continue
+        filtered.append(path)
+    return filtered
+
+
 def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[str]) -> dict[str, Any]:
     def _norm(item: Any) -> str:
         return str(item or "").strip().replace("\\", "/").lstrip("/")
 
     files = [_norm(item) for item in list(available_files or []) if _norm(item)]
-    references = [item for item in files if item.startswith("references/")]
-    scripts = [item for item in files if item.startswith("scripts/")]
-    templates = [
+    references = _filter_parent_resource_paths([item for item in files if item.startswith("references/")])
+    scripts = _filter_parent_resource_paths([item for item in files if item.startswith("scripts/")])
+    templates = _filter_parent_resource_paths([
         item
         for item in files
         if item.startswith("templates/") or "template" in Path(item).name.lower()
-    ]
-    frameworks = [
+    ])
+    frameworks = _filter_parent_resource_paths([
         item
         for item in files
         if "framework" in Path(item).name.lower() or "method" in Path(item).name.lower()
-    ]
-    examples = [item for item in files if item.startswith("examples/") and item.endswith("SKILL.md")]
+    ])
+    examples = _filter_parent_resource_paths([item for item in files if item.startswith("examples/") and item.endswith("SKILL.md")])
     priority: list[str] = []
     for bucket in (templates, frameworks, references):
         for item in bucket:
@@ -4119,11 +4134,7 @@ def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[st
 
 
 def _format_skill_resource_tree(available_files: list[str], *, limit: int = 96) -> str:
-    normalized: list[str] = []
-    for item in list(available_files or []):
-        path = str(item or "").strip().replace("\\", "/").strip("/")
-        if path and path not in normalized:
-            normalized.append(path)
+    normalized = _filter_parent_resource_paths([str(item or "") for item in list(available_files or [])])
     if not normalized:
         return "- (no extra references/scripts/assets/templates/examples found)"
 
@@ -4515,9 +4526,8 @@ def fetch_skill_instructions(
         f"{safety_banner}"
         f"=== SKILL ENTRYPOINTS ===\n"
         f"Skill ID: {skill.get('skillId') or ''}\n"
-        f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
         f"Source Type: {skill.get('sourceType') or ''}\n"
-        f"Workspace Path: {skill.get('workspacePath') or ''}\n"
+        f"Skill Root: {skill.get('skillRoot') or skill.get('path') or ''}\n"
         f"Relative Resources:\n{structure}\n\n"
         f"{_format_skill_continuation_manifest(manifest)}\n\n"
         f"{instructions_block}"

@@ -96,12 +96,14 @@ def build_matrix() -> dict[str, Any]:
             tool_name="fetch_skill_instructions",
         )
         agent_visible_output = str(agent_message.content)
+        manifest_text = str(raw_output).split("=== CONTINUATION MANIFEST ===", 1)[1].split("=== INSTRUCTIONS", 1)[0]
 
     forbidden = [
         "Visibility:",
         "Workspace ID:",
         "Project ID:",
-        "Skill Root:",
+        "Skill Name:",
+        "Workspace Path:",
         "Instruction Path:",
         "References Dir:",
         "Scripts Dir:",
@@ -122,6 +124,9 @@ def build_matrix() -> dict[str, Any]:
             )
         ),
         "raw_output_hides_loader_noise": _contains_none(str(raw_output), forbidden),
+        "raw_output_keeps_skill_root": "Skill Root:" in raw_output,
+        "raw_output_omits_redundant_skill_name": "Skill Name:" not in raw_output
+        and "Skill instructions: surface-demo-skill" not in agent_visible_output,
         "raw_output_uses_relative_resource_tree": all(
             item in raw_output
             for item in (
@@ -132,14 +137,18 @@ def build_matrix() -> dict[str, Any]:
                 "- scripts/",
                 "  - check-quality.py",
             )
-        ),
+        )
+        and "\n- references\n" not in raw_output
+        and "\n- scripts\n" not in raw_output,
         "manifest_is_markdown_not_raw_json": "Continue reading skill-relative files with:" in raw_output
         and '"readContract"' not in raw_output
-        and '"references"' not in raw_output,
+        and '"references"' not in raw_output
+        and "\n- references/\n" not in manifest_text
+        and "\n- scripts/ —" not in manifest_text,
         "agent_surface_keeps_method_contract": all(
             item in agent_visible_output
             for item in (
-                "Skill instructions: surface-demo-skill",
+                "Skill instructions",
                 "Use the main SKILL.md instructions below as the method contract",
                 "Read this SKILL.md from top to bottom",
                 "Relative path continuation:",

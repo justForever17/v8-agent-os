@@ -126,10 +126,13 @@ Read references/skill-template.md when creating artifacts.
     assert "Relative Resources:" in full
     assert "- references/" in full
     assert "  - skill-template.md" in full
+    assert "\n- references\n" not in full
+    assert "Skill Root:" in full
+    assert "Skill Name:" not in full
+    assert "Workspace Path:" not in full
     assert "Visibility:" not in full
     assert "Workspace ID:" not in full
     assert "Project ID:" not in full
-    assert "Skill Root:" not in full
     assert "Instruction Path:" not in full
     assert "References Dir:" not in full
     assert "Scripts Dir:" not in full

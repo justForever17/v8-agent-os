@@ -1575,7 +1575,6 @@ def _render_skill_relative_file_surface(text: str, raw_ref: str, *, budget: int)
     title = "Skill file" + (f": {relative_path}" if relative_path else "")
     prefix_lines = [
         title,
-        f"Skill: {skill_name}" if skill_name else "",
         "Status: loaded via fetch_skill_instructions relative_path.",
         "Contract: preserve this file's original order; it is a continuation of the skill method, not a summary.",
     ]
@@ -1630,12 +1629,14 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
     skill_name = ""
     for pattern in (
         r"(?im)^\s*Skill Name\s*:\s*(.+)$",
+        r"(?im)^\s*name\s*:\s*(.+)$",
+        r"fetch_skill_instructions\(skill_name=(['\"])(.+?)\1",
         r"(?im)^\s*Skill ID\s*:\s*(.+)$",
         r"(?im)^\s*Skill\s*:\s*(.+)$",
     ):
         match = re.search(pattern, text)
         if match:
-            skill_name = _short_text(match.group(1), 120)
+            skill_name = _short_text(match.group(2) if len(match.groups()) >= 2 and match.group(2) else match.group(1), 120)
             break
 
     def _section(*headings: str) -> str:
@@ -1679,7 +1680,7 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
         cleaned_lines.append(line)
     cleaned = "\n".join(cleaned_lines).strip()
 
-    lines = ["Skill instructions" + (f": {skill_name}" if skill_name else "")]
+    lines = ["Skill instructions"]
     lines.append("Use the main SKILL.md instructions below as the method contract; relative paths remain resolved through fetch_skill_instructions.")
     if cleaned:
         lines.append("Instructions:")

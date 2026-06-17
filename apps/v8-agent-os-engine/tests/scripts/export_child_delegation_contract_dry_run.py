@@ -34,7 +34,7 @@ if "chromadb" not in sys.modules:
 
 from core.runtime_episode_runner import RuntimeEpisodeRunner  # noqa: E402
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode  # noqa: E402
-from graph.agent_factories import _format_delegated_plan_context  # noqa: E402
+from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context  # noqa: E402
 from graph.parallel_support import _child_request_from_send_state  # noqa: E402
 
 
@@ -150,7 +150,22 @@ def build_matrix() -> dict[str, Any]:
         "planSummary": "父 subagent 委派孙 agent 做资料核查，再回流证据给父 subagent 继续写 skill。",
         "globalAcceptanceContract": "父子孙链路必须传递可读任务目标和可读 handoff，不允许只传 ID。",
     }
-    grandchild_prompt = _format_delegated_plan_context(worker_brief, planner_context)
+    grandchild_plan_context = _format_delegated_plan_context(worker_brief, planner_context)
+    grandchild_prompt = _build_agent_system_content(
+        agent_name=str(worker_brief.get("agentName") or "Web Research Architect"),
+        agent_system_prompt=(
+            "You are a source-backed research worker. Follow the delegated task brief, "
+            "return a typed evidence handoff, and do not broaden the task."
+        ),
+        env_context=(
+            "<environment>\n"
+            "OS: Windows\n"
+            "Active Workspace Root: E:/Projects/test3\n"
+            "Main V8 Workspace Store: E:/Projects/test3\n"
+            "</environment>\n"
+        ),
+        delegated_plan_context=grandchild_plan_context,
+    )
     child_handoff = build_handoff_ref(
         producer_episode_id=child_episode["episodeId"],
         kind="delegation",
@@ -194,6 +209,15 @@ def build_matrix() -> dict[str, Any]:
         "grandchild_prompt_contains_executable_context": _contains_all(
             grandchild_prompt,
             ["Assigned Task Brief", "绝区零角色“玲”", "Acceptance Contract", "Global Acceptance Contract"],
+        ),
+        "grandchild_prompt_contains_stable_operating_charter": _contains_all(
+            grandchild_prompt,
+            [
+                "delegated_agent_operating_charter",
+                "You are a delegated V8OS worker",
+                "Child tasks must contain a real goal",
+                "Approval/ask-user events are handled by the user-facing layer",
+            ],
         ),
         "parent_resume_surface_is_human_readable": _contains_all(
             parent_resume_surface["parentVisibleSummary"],

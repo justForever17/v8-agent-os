@@ -279,6 +279,11 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         )
 
         self.assertIn("<delegated_task_plan>", content)
+        self.assertIn("<delegated_agent_operating_charter>", content)
+        self.assertIn("You are a delegated V8OS worker", content)
+        self.assertIn("use its approved requirement/design/task refs", content)
+        self.assertIn("Child tasks must contain a real goal", content)
+        self.assertIn("Approval/ask-user events are handled by the user-facing layer", content)
         self.assertIn("Plan ID: plan-123", content)
         self.assertIn("Task Brief ID: task-1", content)
         self.assertIn("[Extensions Runtime]", content)

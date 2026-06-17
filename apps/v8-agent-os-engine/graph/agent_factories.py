@@ -12,6 +12,7 @@ from core.background_context_guard import prepare_background_model_messages
 from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
+from core.delegated_agent_charter import DELEGATED_AGENT_OPERATING_CHARTER
 from core.host_load import render_host_load_line
 from core.safety_active_defense import render_host_alerts_line
 from core.prompt_cache_segments import build_prompt_segments_from_parts
@@ -601,6 +602,12 @@ def _build_agent_system_bundle(
             "stable_static",
             f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n",
             scope="persona",
+        ),
+        _agent_prompt_part(
+            "subagent.delegated_agent_operating_charter",
+            "stable_static",
+            DELEGATED_AGENT_OPERATING_CHARTER,
+            scope="delegation_charter",
         ),
         *_split_agent_env_context_parts(env_context),
         _agent_prompt_part("subagent.active_plan", "dynamic", active_plan_context, scope="planner"),

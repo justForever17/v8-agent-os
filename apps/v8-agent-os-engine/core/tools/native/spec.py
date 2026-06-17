@@ -332,6 +332,23 @@ def _spec_stage_mismatch_payload(*, attempted_stage: str, expected_stage: str, s
     )
 
 
+def _spec_id_mismatch_payload(*, attempted_spec_id: str, expected_spec_id: str) -> str:
+    return _spec_broker_payload(
+        ok=False,
+        kind="spec_id_mismatch",
+        summary=(
+            f"Current Spec continuation is bound to specId '{expected_spec_id}', "
+            f"but the tool call attempted specId '{attempted_spec_id}'."
+        ),
+        attemptedSpecId=attempted_spec_id,
+        expectedSpecId=expected_spec_id,
+        recommendedNextAction=(
+            "Retry with the current continuation specId, or call spec_broker(mode='brief') "
+            "without spec_id to inspect the active Spec."
+        ),
+    )
+
+
 def _spec_resolve_active_spec_id(
     *,
     workspace: str,
@@ -569,6 +586,27 @@ def spec_broker(
             recommendedNextAction="Call spec_broker again with workspace_path, or bind the current chat to a workspace.",
         )
     try:
+        context_spec_id = _spec_context_spec_id()
+        mutating_modes = {
+            "start",
+            "create",
+            "create_stage",
+            "write_stage",
+            "stage",
+            "approve",
+            "approve_stage",
+            "revise",
+            "request_revision",
+            "comment",
+            "replace_section",
+            "append_section",
+            "rewrite_stage",
+        }
+        if context_spec_id and spec_id and str(spec_id).strip() != context_spec_id and normalized_mode in mutating_modes:
+            return _spec_id_mismatch_payload(
+                attempted_spec_id=str(spec_id).strip(),
+                expected_spec_id=context_spec_id,
+            )
         if normalized_mode == "stage":
             inferred_spec_id = _spec_resolve_active_spec_id(
                 workspace=workspace,
@@ -586,6 +624,11 @@ def spec_broker(
             continuation_next_stage = _spec_context_next_stage()
             continuation_spec_id = _spec_context_spec_id()
             if continuation_next_stage and continuation_spec_id:
+                if spec_id and str(spec_id).strip() != continuation_spec_id:
+                    return _spec_id_mismatch_payload(
+                        attempted_spec_id=str(spec_id).strip(),
+                        expected_spec_id=continuation_spec_id,
+                    )
                 if not requested_stage:
                     requested_stage = continuation_next_stage
                     stage = continuation_next_stage

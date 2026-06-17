@@ -176,6 +176,64 @@ def test_spec_broker_rewrite_approved_stage_returns_locked(tmp_path):
     assert "write stage design" in locked["transitionHint"]["whenReady"].lower()
 
 
+def test_spec_broker_normalizes_short_ids_and_reports_format_diagnostics(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Normalize short ids",
+            feature_name="normalize-short-ids",
+            content="# Requirements\n\n- REQ-1: Show a counter.\n\n## Acceptance Criteria\n\n- AC-REQ-1: WHEN done THEN counter works.\n",
+        )
+    )
+
+    assert started["ok"] is True
+    assert "REQ-001" in started["document"]["ids"]
+    assert "AC-REQ-001" in _payload(
+        spec_broker.func(
+            mode="read",
+            workspace_path=str(workspace),
+            spec_id=started["specId"],
+            stage="requirements",
+        )
+    )["content"]
+    assert started["formatDiagnostics"]["valid"] is True
+
+
+def test_spec_broker_approval_blocks_untraceable_requirements(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Bad requirements format",
+            feature_name="bad-requirements-format",
+            content="# Requirements\n\nThis is prose without stable requirement ids.\n",
+        )
+    )
+    blocked = _payload(
+        spec_broker.func(
+            mode="approve",
+            workspace_path=str(workspace),
+            spec_id=started["specId"],
+            stage="requirements",
+            comment="try approve",
+        )
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["kind"] == "spec_stage_format_invalid"
+    assert "requirementIds" in blocked["formatDiagnostics"]["approvalBlocking"]
+    assert "requirements" not in set(
+        spec_service.build_brief(workspace_path=str(workspace), spec_id=started["specId"]).get("approvedStages") or []
+    )
+
+
 def test_spec_broker_rejects_supervisor_self_approval(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -685,6 +743,54 @@ def test_spec_broker_continuation_rejects_wrong_stage_without_new_spec(tmp_path)
     assert listing["specs"][0]["specId"] == spec_id
     assert "mode='approve'" not in listing["recommendedNextAction"]
     assert "user/client approval event" in listing["recommendedNextAction"]
+
+
+def test_spec_broker_continuation_rejects_wrong_spec_id(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    current = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Current spec",
+            feature_name="current-spec",
+            content="# Requirements\n\n- REQ-001: current.\n",
+        )
+    )
+    other = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Other spec",
+            feature_name="other-spec",
+            content="# Requirements\n\n- REQ-001: other.\n",
+        )
+    )
+
+    with bind_runtime_context(
+        workspace_path=str(workspace),
+        specContinuation={
+            "kind": "spec_approval_continuation",
+            "specId": current["specId"],
+            "nextStage": "design",
+            "approvedStages": ["requirements"],
+        },
+    ):
+        rejected = _payload(
+            spec_broker.func(
+                mode="write_stage",
+                workspace_path=str(workspace),
+                spec_id=other["specId"],
+                stage="design",
+                content="# Design\n\n- DES-001: wrong spec.\n",
+            )
+        )
+
+    assert rejected["ok"] is False
+    assert rejected["kind"] == "spec_id_mismatch"
+    assert rejected["expectedSpecId"] == current["specId"]
+    assert rejected["attemptedSpecId"] == other["specId"]
 
 
 def test_spec_broker_continuation_defaults_missing_stage_to_next_stage(tmp_path):

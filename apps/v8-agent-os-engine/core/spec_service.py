@@ -58,18 +58,24 @@ _ID_PREFIX_ALIASES = {
 
 def _canonical_id(raw_id: str, prefix: str) -> str:
     item = str(raw_id or "").upper()
+    canonical_prefix = prefix.upper()
     if prefix == "TASK":
         match = re.match(r"^(?:TASK|TSK|T)-(\d+)$", item)
         if match:
             return f"TASK-{int(match.group(1)):03d}"
+    if canonical_prefix in {"REQ", "DES", "BFIX"}:
+        aliases = _ID_PREFIX_ALIASES.get(canonical_prefix, (canonical_prefix,))
+        prefix_pattern = "|".join(re.escape(alias) for alias in aliases)
+        match = re.match(rf"^(?:{prefix_pattern})-(\d+)$", item, re.IGNORECASE)
+        if match:
+            return f"{canonical_prefix}-{int(match.group(1)):03d}"
     return item
 
 
 def _extract_ids(markdown: str, prefix: str) -> list[str]:
     aliases = _ID_PREFIX_ALIASES.get(prefix.upper(), (prefix.upper(),))
     prefix_pattern = "|".join(re.escape(item) for item in aliases)
-    digit_pattern = r"[0-9]{2,}" if prefix.upper() == "TASK" else r"[0-9]{3,}"
-    pattern = re.compile(rf"\b(({prefix_pattern})-{digit_pattern})\b", re.IGNORECASE)
+    pattern = re.compile(rf"\b(({prefix_pattern})-[0-9]+)\b", re.IGNORECASE)
     seen: set[str] = set()
     ids: list[str] = []
     for match in pattern.finditer(markdown or ""):
@@ -78,6 +84,37 @@ def _extract_ids(markdown: str, prefix: str) -> list[str]:
             seen.add(item)
             ids.append(item)
     return ids
+
+
+def _normalize_stage_markdown(stage: str, content: str) -> str:
+    """Normalize common loose Spec IDs while preserving document wording."""
+
+    normalized_stage = str(stage or "").strip().lower()
+    prefixes: tuple[str, ...]
+    if normalized_stage == "tasks":
+        prefixes = ("TASK", "TSK", "T", "REQ", "FR", "NFR", "BFIX", "DES")
+    elif normalized_stage == "design":
+        prefixes = ("DES", "REQ", "FR", "NFR", "BFIX")
+    elif normalized_stage == "bugfix":
+        prefixes = ("BFIX", "AC-BFIX")
+    else:
+        prefixes = ("REQ", "FR", "NFR", "AC-REQ")
+    prefix_pattern = "|".join(re.escape(item) for item in prefixes)
+
+    def replace(match: re.Match[str]) -> str:
+        raw_prefix = match.group(1).upper()
+        raw_number = int(match.group(2))
+        canonical_prefix = {
+            "TSK": "TASK",
+            "T": "TASK",
+            "FR": "REQ",
+            "NFR": "REQ",
+            "AC-REQ": "AC-REQ",
+            "AC-BFIX": "AC-BFIX",
+        }.get(raw_prefix, raw_prefix)
+        return f"{canonical_prefix}-{raw_number:03d}"
+
+    return re.sub(rf"\b({prefix_pattern})-(\d+)\b", replace, str(content or ""), flags=re.IGNORECASE)
 
 
 def _stage_dependency(stage: str, kind: str) -> str | None:
@@ -479,6 +516,90 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
     return slices[:30]
 
 
+def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
+    normalized_stage = str(stage or "").strip().lower()
+    text = str(content or "")
+    missing: list[str] = []
+    warnings: list[str] = []
+    approval_blocking: list[str] = []
+    if normalized_stage in {"requirements", "bugfix"}:
+        fragments = _requirement_fragments(text)
+        has_acceptance = bool(
+            re.search(r"(?i)\bWHEN\b.+\bTHEN\b|\bSHALL\b|验收标准|Acceptance Criteria|AC-REQ-|AC-BFIX-", text)
+        )
+        if not fragments:
+            missing.append("requirementIds")
+            approval_blocking.append("requirementIds")
+        if not has_acceptance:
+            missing.append("acceptanceCriteria")
+            warnings.append("acceptanceCriteria")
+        return {
+            "stage": normalized_stage,
+            "valid": not approval_blocking,
+            "ids": list(fragments.keys())[:80],
+            "idCount": len(fragments),
+            "missingFields": missing,
+            "warnings": warnings,
+            "approvalBlocking": approval_blocking,
+            "recommendedFormat": (
+                "Use stable REQ-001/BFIX-001 or Kiro-style numbered requirements with acceptance criteria. "
+                "Each requirement must be traceable from tasks.md."
+            ),
+        }
+    if normalized_stage == "design":
+        design_fragments, framework_digest = _design_fragments(text)
+        design_ids = _extract_ids(text, "DES")
+        if not design_fragments and not design_ids:
+            missing.append("designSections")
+            approval_blocking.append("designSections")
+        if not framework_digest.strip():
+            missing.append("frameworkDigest")
+            warnings.append("frameworkDigest")
+        return {
+            "stage": normalized_stage,
+            "valid": not approval_blocking,
+            "ids": design_ids or [str(item.get("id") or "") for item in design_fragments if item.get("id")],
+            "idCount": len(design_ids or design_fragments),
+            "frameworkDigestPresent": bool(framework_digest.strip()),
+            "missingFields": missing,
+            "warnings": warnings,
+            "approvalBlocking": approval_blocking,
+            "recommendedFormat": (
+                "Use DES-001 style design sections or clear architecture/framework headings. "
+                "Design must state the shared implementation stack/framework so every runtime/subagent follows the same path."
+            ),
+        }
+    if normalized_stage == "tasks":
+        pipeline = _tasks_pipeline_diagnostics(text)
+        requirement_index = _requirement_fragments("")
+        task_slices = _task_slices(text, requirement_index, [])
+        if not pipeline.get("taskIds") and not task_slices:
+            missing.append("taskIds")
+            approval_blocking.append("taskIds")
+        if pipeline.get("missingFields"):
+            warnings.extend(str(item) for item in pipeline.get("missingFields") or [])
+        return {
+            "stage": normalized_stage,
+            "valid": not approval_blocking and bool(pipeline.get("valid")),
+            "ids": list(pipeline.get("taskIds") or [item.get("taskId") for item in task_slices if item.get("taskId")]),
+            "idCount": int(pipeline.get("taskCount") or len(task_slices)),
+            "missingFields": missing + list(pipeline.get("missingFields") or []),
+            "warnings": warnings,
+            "approvalBlocking": approval_blocking,
+            "pipelineDiagnostics": pipeline,
+            "recommendedFormat": pipeline.get("recommendedFormat"),
+        }
+    return {
+        "stage": normalized_stage,
+        "valid": True,
+        "ids": [],
+        "idCount": 0,
+        "missingFields": [],
+        "warnings": [],
+        "approvalBlocking": [],
+    }
+
+
 @dataclass(slots=True)
 class SpecPaths:
     workspace: Path
@@ -804,6 +925,8 @@ class SpecService:
             paths = self._new_spec_paths(workspace_path, feature_name=title)
         else:
             paths = self.resolve_paths(workspace_path, feature_name=title, spec_id=spec_id)
+            if spec_id and str(spec_id).startswith("spec_") and not paths.manifest.exists():
+                raise ValueError(f"spec_not_found:{spec_id}")
         manifest = self._ensure_manifest(paths, feature_name=title, kind=inferred_kind, user_request=request_text)
         kind_value = str(manifest.get("kind") or inferred_kind)
         dependency = _stage_dependency(normalized_stage, kind_value)
@@ -838,6 +961,7 @@ class SpecService:
                 content = _template_design(title, kind_value, dependency or initial_stage)
             else:
                 content = _template_tasks(title)
+            content = _normalize_stage_markdown(normalized_stage, content)
             paths.spec_dir.mkdir(parents=True, exist_ok=True)
             if previous_content:
                 self._record_version(
@@ -858,6 +982,7 @@ class SpecService:
                 )
         self._clear_stage_stale(manifest, normalized_stage)
         manifest["currentStage"] = normalized_stage
+        format_diagnostics = _stage_format_diagnostics(normalized_stage, content)
         doc_version = int((manifest.get("documents") or {}).get(normalized_stage, {}).get("version") or 0) + (
             1 if previous_content and previous_content != content else 0
         )
@@ -868,6 +993,7 @@ class SpecService:
             "ids": self._document_ids(normalized_stage, content),
             "version": max(1, doc_version),
             "status": "draft",
+            "formatDiagnostics": format_diagnostics,
         }
         if normalized_stage == "tasks":
             manifest["documents"][normalized_stage]["pipelineDiagnostics"] = _tasks_pipeline_diagnostics(content)
@@ -887,6 +1013,7 @@ class SpecService:
             "pipelineControl": self._pipeline_control(manifest),
             "linkedSections": self._linked_sections(manifest),
             "summary": f"Spec stage '{normalized_stage}' is ready for review.",
+            "formatDiagnostics": format_diagnostics,
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=str(manifest.get("specId") or "")),
             **({"tasksPipeline": tasks_pipeline} if tasks_pipeline is not None else {}),
         }
@@ -1039,6 +1166,27 @@ class SpecService:
             raise ValueError(f"unsupported_spec_stage:{normalized_stage}")
         if normalized_stage not in dict(manifest.get("documents") or {}):
             raise ValueError(f"spec_document_not_found:{normalized_stage}")
+        doc_meta = dict((manifest.get("documents") or {}).get(normalized_stage) or {})
+        doc_path = paths.spec_dir / SPEC_DOCS[normalized_stage]
+        content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
+        diagnostics = _stage_format_diagnostics(normalized_stage, content)
+        if diagnostics.get("approvalBlocking"):
+            doc_meta["formatDiagnostics"] = diagnostics
+            manifest.setdefault("documents", {})[normalized_stage] = doc_meta
+            self._write_manifest(paths, manifest)
+            return {
+                "ok": False,
+                "kind": "spec_stage_format_invalid",
+                "stage": normalized_stage,
+                "specId": spec_id,
+                "summary": f"Spec stage '{normalized_stage}' cannot be approved because required traceability fields are missing.",
+                "formatDiagnostics": diagnostics,
+                "pipelineControl": self._pipeline_control(manifest),
+                "recommendedNextAction": (
+                    "Rewrite or edit this stage with stable requirement/design/task IDs before requesting approval again."
+                ),
+                "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
+            }
         manifest.setdefault("approvals", {})[normalized_stage] = {
             "approved": True,
             "approver": _safe_text(approver, limit=80) or "user",
@@ -1165,6 +1313,7 @@ class SpecService:
         new_text = _safe_text(content, limit=20000)
         if not new_text:
             raise ValueError("spec_edit_content_required")
+        new_text = _normalize_stage_markdown(normalized_stage, new_text)
         if edit_action == "rewrite_stage":
             next_content = new_text
         elif edit_action == "append_section":
@@ -1176,6 +1325,7 @@ class SpecService:
             start, end = span
             replacement = new_text.strip()
             next_content = previous_content[:start].rstrip() + "\n" + replacement + "\n" + previous_content[end:].lstrip("\n")
+        next_content = _normalize_stage_markdown(normalized_stage, next_content)
         self._record_version(
             paths,
             manifest,
@@ -1194,6 +1344,7 @@ class SpecService:
         )
         self._clear_stage_stale(manifest, normalized_stage)
         manifest["currentStage"] = normalized_stage
+        format_diagnostics = _stage_format_diagnostics(normalized_stage, next_content)
         doc_meta = dict((manifest.get("documents") or {}).get(normalized_stage) or {})
         doc_meta.update(
             {
@@ -1204,6 +1355,7 @@ class SpecService:
                 "version": int(doc_meta.get("version") or 1) + 1,
                 "status": "draft",
                 "lastEditAction": edit_action,
+                "formatDiagnostics": format_diagnostics,
             }
         )
         if normalized_stage == "tasks":
@@ -1221,6 +1373,7 @@ class SpecService:
             "pipelineControl": self._pipeline_control(manifest),
             "linkedSections": self._linked_sections(manifest),
             "summary": f"Spec stage '{normalized_stage}' edited with {edit_action}; approval is required again.",
+            "formatDiagnostics": format_diagnostics,
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
             **({"tasksPipeline": tasks_pipeline} if tasks_pipeline is not None else {}),
         }

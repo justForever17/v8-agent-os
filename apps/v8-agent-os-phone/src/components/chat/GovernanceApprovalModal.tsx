@@ -95,6 +95,30 @@ function extractApprovalDetails(approval: PendingApproval) {
     };
 }
 
+function readApprovalKind(approval: PendingApproval | null) {
+    const request = approval?.request || {};
+    return String(
+        approval?.approval_kind
+        || request.approvalKind
+        || request.approval_kind
+        || "",
+    ).trim().toLowerCase();
+}
+
+function extractSpecApprovalDetails(approval: PendingApproval | null) {
+    const request = approval?.request || {};
+    return {
+        isSpecApproval: readApprovalKind(approval) === "spec_stage_approval",
+        specId: readFirstString(request.specId, request.spec_id),
+        stage: readFirstString(request.stage, request.specStage, request.spec_stage),
+        summary: readFirstString(request.summary, request.question, request.prompt),
+        detailRef: readFirstString(request.detailRef, request.detail_ref),
+        workspacePath: readFirstString(request.workspacePath, request.workspace_path),
+        nextStage: readFirstString((request.pipelineControl as Record<string, unknown> | undefined)?.nextStage),
+        blockedByApproval: readFirstString((request.pipelineControl as Record<string, unknown> | undefined)?.blockedByApproval),
+    };
+}
+
 export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
     visible,
     approval,
@@ -115,14 +139,19 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
     const { colors, t, themeMode } = useUiPrefs();
     const [answer, setAnswer] = useState("");
     const details = useMemo(() => approval ? extractApprovalDetails(approval) : null, [approval]);
+    const specDetails = useMemo(() => extractSpecApprovalDetails(approval), [approval]);
     const summaryRows = useMemo(() => details ? eventSummaryRows(details.eventSummary) : [], [details]);
 
     if (!visible) {
         return null;
     }
 
-    const resolvedPrompt = details?.prompt || t("src.components.chat.governanceapprovalmodal.syncing_governance_approval_details_please_wait");
-    const resolvedReason = details?.riskSummary || t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_while_approval_details_are_being_synchronized");
+    const resolvedPrompt = specDetails.isSpecApproval
+        ? specDetails.summary || t("src.components.chat.governanceapprovalmodal.syncing_governance_approval_details_please_wait")
+        : details?.prompt || t("src.components.chat.governanceapprovalmodal.syncing_governance_approval_details_please_wait");
+    const resolvedReason = specDetails.isSpecApproval
+        ? t("src.components.chat.governanceapprovalmodal.spec_stage_approval_detail")
+        : details?.riskSummary || t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_while_approval_details_are_being_synchronized");
     const resolvedCommand = details?.command || "";
     const actionsDisabled = busy || !approval;
 
@@ -140,18 +169,24 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                         style={StyleSheet.absoluteFill}
                     />
                     <View style={[styles.header, { borderBottomColor: colors.border }]}>
-                        <View style={[styles.headerIcon, { backgroundColor: "rgba(245,158,11,0.14)" }]}>
-                            <MaterialCommunityIcons name="shield-alert-outline" size={18} color={colors.warning} />
+                        <View style={[styles.headerIcon, { backgroundColor: specDetails.isSpecApproval ? "rgba(139,92,246,0.14)" : "rgba(245,158,11,0.14)" }]}>
+                            <MaterialCommunityIcons name={specDetails.isSpecApproval ? "file-document-check-outline" : "shield-alert-outline"} size={18} color={specDetails.isSpecApproval ? colors.primary : colors.warning} />
                         </View>
                         <View style={styles.headerText}>
-                            <Text style={[styles.eyebrow, { color: colors.warning }]}>
-                                {t("src.components.chat.governanceapprovalmodal.governance_approval")}
+                            <Text style={[styles.eyebrow, { color: specDetails.isSpecApproval ? colors.primary : colors.warning }]}>
+                                {specDetails.isSpecApproval
+                                    ? t("src.components.chat.governanceapprovalmodal.spec_approval")
+                                    : t("src.components.chat.governanceapprovalmodal.governance_approval")}
                             </Text>
                             <Text style={[styles.title, { color: colors.text }]}>
-                                {t("src.components.chat.governanceapprovalmodal.safety_guardian_needs_your_approval")}
+                                {specDetails.isSpecApproval
+                                    ? t("src.components.chat.governanceapprovalmodal.spec_stage_needs_your_review")
+                                    : t("src.components.chat.governanceapprovalmodal.safety_guardian_needs_your_approval")}
                             </Text>
                             <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-                                {approval
+                                {specDetails.isSpecApproval
+                                    ? t("src.components.chat.governanceapprovalmodal.spec_run_paused_until_review")
+                                    : approval
                                     ? t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_and_will_resume_the_original_command_after_approval")
                                     : t("src.components.chat.governanceapprovalmodal.the_current_run_is_paused_while_approval_details_are_loading")}
                             </Text>
@@ -159,9 +194,40 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                     </View>
 
                     <CardContent style={styles.content}>
+                        {specDetails.isSpecApproval ? (
+                            <View style={[styles.detailCard, styles.summaryCard, { borderColor: "rgba(139,92,246,0.26)", backgroundColor: themeMode === "dark" ? "rgba(139,92,246,0.10)" : "rgba(245,243,255,0.92)" }]}>
+                                <Text style={[styles.sectionLabel, { color: colors.primary }]}>
+                                    {t("src.components.chat.governanceapprovalmodal.spec_stage")}
+                                </Text>
+                                <View style={styles.summaryRows}>
+                                    <View style={styles.summaryRow}>
+                                        <Text style={[styles.summaryKey, { color: colors.textSoft }]}>stage</Text>
+                                        <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.stage || "-"}</Text>
+                                    </View>
+                                    <View style={styles.summaryRow}>
+                                        <Text style={[styles.summaryKey, { color: colors.textSoft }]}>specId</Text>
+                                        <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.specId || "-"}</Text>
+                                    </View>
+                                    {specDetails.nextStage ? (
+                                        <View style={styles.summaryRow}>
+                                            <Text style={[styles.summaryKey, { color: colors.textSoft }]}>next</Text>
+                                            <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.nextStage}</Text>
+                                        </View>
+                                    ) : null}
+                                    {specDetails.detailRef ? (
+                                        <View style={styles.summaryRow}>
+                                            <Text style={[styles.summaryKey, { color: colors.textSoft }]}>detail</Text>
+                                            <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.detailRef}</Text>
+                                        </View>
+                                    ) : null}
+                                </View>
+                            </View>
+                        ) : null}
                         <View style={[styles.detailCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
-                                {t("src.components.chat.governanceapprovalmodal.approval_reason")}
+                                {specDetails.isSpecApproval
+                                    ? t("src.components.chat.governanceapprovalmodal.spec_summary")
+                                    : t("src.components.chat.governanceapprovalmodal.approval_reason")}
                             </Text>
                             <MarkdownRenderer content={resolvedPrompt} />
                         </View>
@@ -219,7 +285,9 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                             {t("src.components.chat.governanceapprovalmodal.dismiss")}
                         </Button>
                         <Button variant="outline" onPress={onViewDetails} disabled={busy}>
-                            {t("src.components.chat.governanceapprovalmodal.view_details")}
+                            {specDetails.isSpecApproval
+                                ? t("src.components.chat.governanceapprovalmodal.open_spec_review")
+                                : t("src.components.chat.governanceapprovalmodal.view_details")}
                         </Button>
                         <Button variant="outline" onPress={() => void onReject(answer.trim())} disabled={actionsDisabled}>
                             {busy ? t("src.components.chat.askusermodal.processing") : t("src.components.chat.approvalpromptcard.reject")}

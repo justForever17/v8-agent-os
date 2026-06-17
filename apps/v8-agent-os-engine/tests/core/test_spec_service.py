@@ -109,7 +109,7 @@ def test_spec_service_normalizes_tsk_task_ids(tmp_path: Path):
         stage="tasks",
         section_ref="TASK-001",
     )
-    assert "TSK-001" in section["content"]
+    assert "TASK-001" in section["content"]
 
 
 def test_spec_service_tasks_template_is_pipeline_ready(tmp_path: Path):
@@ -234,6 +234,15 @@ def test_spec_service_tasks_pipeline_diagnostics_flags_weak_tasks(tmp_path: Path
     assert edited["tasksPipeline"]["valid"] is False
     assert edited["tasksPipeline"]["taskIds"] == ["TASK-001"]
     assert set(edited["tasksPipeline"]["missingFields"]) >= {"runtimeLane", "dependsOn", "specRefs", "expectedOutput", "acceptanceProof"}
+    brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)
+    assert brief["pipelineControl"]["blockedReason"] == "stage_format_invalid"
+    assert not brief["pipelineControl"]["blockedByApproval"]
+
+    approval = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approval["ok"] is False
+    assert approval["kind"] == "spec_stage_format_invalid"
+    assert approval["pipelineControl"]["blockedReason"] == "stage_format_invalid"
+    assert not approval["pipelineControl"]["blockedByApproval"]
 
 
 def test_spec_service_tasks_pipeline_accepts_chinese_runtime_channel(tmp_path: Path):

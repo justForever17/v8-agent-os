@@ -9,7 +9,7 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { Redirect, router, type Href } from "expo-router";
+import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -37,11 +37,15 @@ export default function SpecApprovalScreen() {
     const { status, user, adminBaseUrl, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
+    const params = useLocalSearchParams<{ workspace?: string; workspacePath?: string; specId?: string; stage?: string }>();
     const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
-    const [workspacePath, setWorkspacePath] = useState("");
+    const initialWorkspacePath = String(params.workspace || params.workspacePath || "").trim();
+    const initialSpecId = String(params.specId || "").trim();
+    const initialStage = String(params.stage || "").trim().toLowerCase();
+    const [workspacePath, setWorkspacePath] = useState(initialWorkspacePath);
     const [specs, setSpecs] = useState<SpecSummary[]>([]);
-    const [selectedSpecId, setSelectedSpecId] = useState("");
-    const [selectedStage, setSelectedStage] = useState("requirements");
+    const [selectedSpecId, setSelectedSpecId] = useState(initialSpecId);
+    const [selectedStage, setSelectedStage] = useState(STAGES.includes(initialStage) ? initialStage : "requirements");
     const [detail, setDetail] = useState<SpecDetailResponse | null>(null);
     const [sectionRef, setSectionRef] = useState("");
     const [comment, setComment] = useState("");
@@ -110,6 +114,14 @@ export default function SpecApprovalScreen() {
             void loadDetail(selectedSpecId);
         }
     }, [loadDetail, selectedSpecId]);
+
+    useEffect(() => {
+        if (status === "authenticated" && workspacePath.trim()) {
+            void loadSpecs();
+        }
+        // Run once after auth is available for deep links from chat approvals.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [status]);
 
     const runStageAction = async (action: "approve" | "revise" | "edit") => {
         if (!selectedSpecId) {

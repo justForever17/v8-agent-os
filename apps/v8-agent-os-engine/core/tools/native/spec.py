@@ -41,6 +41,36 @@ def _spec_broker_payload(**payload: Any) -> str:
     return json.dumps(_spec_compact_dict(payload), ensure_ascii=False, indent=2)
 
 
+def _spec_tasks_stage_contract_hint() -> dict[str, Any]:
+    return {
+        "purpose": "tasks.md is the runtime dispatch contract. Requirements/design may be loose, but tasks must be assignable and traceable.",
+        "mustInclude": [
+            "TASK ids, e.g. TASK-001",
+            "runtimeLane for each task, e.g. Research, Engineering, Delegation/Subagent, Creative Media, Governance",
+            "dependsOn for ordering, use [] or '-' when independent",
+            "specRefs that cite requirement/design ids or explicit requirement/design sections",
+            "expectedOutput paths or handoff/artifact names",
+            "acceptance/proof checks",
+        ],
+        "minimalMarkdown": (
+            "## Task Pipeline\n\n"
+            "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            "| TASK-001 | Research | Gather evidence for the required topic. | - | REQ-001, DES-001 | references/research/*.md + evidence pack | Sources and limits are recorded. |\n"
+            "| TASK-002 | Engineering | Create or update the requested artifact. | TASK-001 | REQ-001, DES-002 | target files/artifact paths | Files exist and match acceptance criteria. |\n\n"
+            "## Task Details\n\n"
+            "### TASK-001: <task title>\n\n"
+            "- runtimeLane: Research\n"
+            "- dependsOn: []\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- inputRefs: approved requirements/design sections\n"
+            "- expectedOutput: <paths or handoff names>\n"
+            "- acceptance: <how to verify>\n"
+            "- proofRequired: <proof/handoff/artifact refs>\n"
+        ),
+    }
+
+
 def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return compact next-step guidance for the Spec state machine."""
 
@@ -48,6 +78,24 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
     current = str(stage or control.get("currentStage") or "").strip().lower()
     next_stage = str(control.get("nextStage") or "").strip().lower()
     blocked = str(control.get("blockedByApproval") or "").strip().lower()
+    blocked_reason = str(control.get("blockedReason") or "").strip().lower()
+    if blocked_reason == "stage_format_invalid":
+        return {
+            "state": "stage_needs_revision",
+            "specId": spec_id,
+            "currentStage": current,
+            "nextStage": current or next_stage,
+            "requiredNextTool": "spec_broker",
+            "whenReady": (
+                f"Rewrite or edit stage {current or next_stage} with spec_broker(mode='rewrite_stage', "
+                f"spec_id='<current specId>', stage='{current or next_stage}', content='<corrected markdown>')."
+            ),
+            "doNot": [
+                "Do not wait for user approval; no approval gate is open until this stage passes format checks.",
+                "Do not move downstream before this stage is valid and then approved by the user/client.",
+            ],
+            **({"requiredStageContract": _spec_tasks_stage_contract_hint()} if (current or next_stage) == "tasks" else {}),
+        }
     if blocked:
         downstream = {
             "requirements": "design",
@@ -77,6 +125,7 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
                 "Do not move downstream before the user/client approval event.",
                 "Do not self-approve this stage.",
             ],
+            **({"requiredNextStageContract": _spec_tasks_stage_contract_hint()} if downstream == "tasks" else {}),
         }
     if bool(control.get("runtimeExecutionAllowed")) or next_stage == "runtime_execution":
         return {
@@ -97,7 +146,7 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
             ],
         }
     if next_stage in _SPEC_STAGES:
-        return {
+        result = {
             "state": "stage_ready_to_write",
             "specId": spec_id,
             "currentStage": current,
@@ -108,6 +157,9 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
                 f"stage='{next_stage}', content='<complete markdown>')."
             ),
         }
+        if next_stage == "tasks":
+            result["requiredStageContract"] = _spec_tasks_stage_contract_hint()
+        return result
     return {
         "state": "inspect_spec_brief",
         "specId": spec_id,
@@ -125,6 +177,7 @@ def _request_spec_stage_approval(
     stage: str,
     summary: str,
     pipeline: dict[str, Any],
+    workspace_path: str = "",
 ) -> dict[str, Any]:
     fingerprint = f"spec_stage_approval:{spec_id}:{stage}"
     return command_service.request_approval(
@@ -139,6 +192,7 @@ def _request_spec_stage_approval(
                 "stage": stage,
                 "summary": summary,
                 "detailRef": f"spec://{spec_id}/{stage}" if spec_id and stage else "",
+                "workspacePath": workspace_path,
                 "pipelineControl": pipeline,
                 "operationFingerprint": fingerprint,
                 "operationTargetFingerprint": fingerprint,
@@ -169,6 +223,7 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
     runtime_context = get_runtime_context() or {}
     run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
     session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
+    workspace_path = str(runtime_context.get("workspace_path") or runtime_context.get("workspacePath") or "").strip()
     if not run_id or not session_id:
         return None
     spec_id = str(result.get("specId") or "").strip()
@@ -180,6 +235,7 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
         stage=stage,
         summary=summary,
         pipeline=pipeline,
+        workspace_path=workspace_path,
     )
     payload = _spec_broker_payload(
         ok=True,
@@ -567,8 +623,12 @@ def spec_broker(
     supplied by Engine. The only valid document write is for that exact
     `nextStage`. Do not restart requirements/design/tasks from older chat text.
 
-    `tasks.md` must be pipeline-ready: TASK IDs, runtime lane, dependencies,
-    requirement/design refs, expected output paths, and acceptance/proof checks.
+    `tasks.md` must be pipeline-ready. Requirements/design can be loose, but
+    tasks must be assignable and traceable: include `TASK-001` style IDs,
+    runtime lane / `runtimeLane`, `dependsOn`, `specRefs` that cite
+    requirement/design ids or sections, expected output paths/handoffs, and acceptance/proof checks. A
+    natural-language task list without refs is only a draft and will not open
+    the approval gate.
     After tasks are approved, route execution with `runtime_broker`; do not
     implement through Spec tools or Supervisor direct file writes.
     """

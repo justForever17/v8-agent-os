@@ -291,6 +291,54 @@ def _spec_runtime_execution_allowed(state) -> bool:
     return False
 
 
+def _spec_next_stage_from_state(state) -> str:
+    if not isinstance(state, dict):
+        return ""
+    route_context = dict(state.get("current_route_context") or {})
+    for container in (state, route_context):
+        continuation = container.get("specContinuation") if isinstance(container, dict) else None
+        if isinstance(continuation, dict):
+            value = str(continuation.get("nextStage") or continuation.get("next_stage") or "").strip().lower()
+            if value:
+                return value
+    candidates = (
+        state.get("spec_brief"),
+        state.get("specBrief"),
+        route_context.get("specBrief"),
+        route_context.get("spec_brief"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        pipeline = candidate.get("pipelineControl") if isinstance(candidate.get("pipelineControl"), dict) else {}
+        value = str(pipeline.get("nextStage") or "").strip().lower()
+        if value:
+            return value
+    return ""
+
+
+def _spec_tasks_authoring_guidance() -> str:
+    return (
+        "Tasks stage rule: requirements/design may be loose, but tasks.md must be strict enough for runtime/subagent dispatch.\n"
+        "Use this minimum format inside spec_broker(content=...):\n"
+        "## Task Pipeline\n"
+        "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| TASK-001 | Research | Gather evidence for the topic. | - | REQ-001, DES-001 | references/research/*.md + evidence pack | Sources and limits are recorded. |\n"
+        "| TASK-002 | Engineering | Create/update the requested artifact. | TASK-001 | REQ-001, DES-002 | target files/artifact paths | Files exist and pass checks. |\n\n"
+        "## Task Details\n"
+        "### TASK-001: <task title>\n"
+        "- runtimeLane: Research\n"
+        "- dependsOn: []\n"
+        "- specRefs: REQ-001, DES-001\n"
+        "- inputRefs: approved requirements/design sections\n"
+        "- expectedOutput: <paths or handoff names>\n"
+        "- acceptance: <how to verify>\n"
+        "- proofRequired: <proof/handoff/artifact refs>\n"
+        "If the approved requirements/design do not have formal REQ/DES IDs, cite their explicit section titles or numbered clauses in specRefs."
+    )
+
+
 def _filter_spec_tools_for_mode(tools, state):
     if _spec_mode_active(state):
         allowed = _SPEC_MODE_ALLOWED_TOOL_NAMES
@@ -376,6 +424,12 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
         return None
     spec_id = _spec_id_from_state(state)
     if spec_id:
+        next_stage = _spec_next_stage_from_state(state)
+        tasks_guidance = (
+            "\n" + _spec_tasks_authoring_guidance()
+            if next_stage == "tasks"
+            else ""
+        )
         return SystemMessage(
             content=(
                 "[Spec Pipeline Gate]\n"
@@ -386,6 +440,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 "Spec documents are not final project deliverables; after approved tasks, use the execution surface such as runtime_broker or limited write_native_file for artifacts. "
                 "If a selected skill asks for parallel subagents, Agent Swarm, or many research shards, translate that into Research Runtime evidence or explicit top-level delegation after the relevant Spec stage is approved; do not assume subagents can spawn grandchildren implicitly. "
                 "Do not route Engineering/Research/Delegation runtime work until the Spec brief says runtimeExecutionAllowed=true."
+                f"{tasks_guidance}"
             )
         )
     skill_names = _selected_skill_names_from_state(state, messages=messages)

@@ -20,9 +20,11 @@ export default async function SpecsPage({
     const nextPath = `/specs${query.toString() ? `?${query.toString()}` : ""}`;
     await requireAdminConnection(nextPath);
     const workspacePath = typeof params.workspace === "string" ? params.workspace : "";
+    const specId = typeof params.specId === "string" ? params.specId : "";
+    const stage = typeof params.stage === "string" ? params.stage : "";
     return (
         <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">正在读取 Spec 审批台…</div>}>
-            <SpecApprovalClient initialWorkspacePath={workspacePath} />
+            <SpecApprovalClient initialWorkspacePath={workspacePath} initialSpecId={specId} initialStage={stage} />
         </Suspense>
     );
 }

@@ -203,7 +203,7 @@ def test_spec_broker_normalizes_short_ids_and_reports_format_diagnostics(tmp_pat
     assert started["formatDiagnostics"]["valid"] is True
 
 
-def test_spec_broker_approval_blocks_untraceable_requirements(tmp_path):
+def test_spec_broker_approval_allows_loose_requirements_with_diagnostics(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -216,7 +216,7 @@ def test_spec_broker_approval_blocks_untraceable_requirements(tmp_path):
             content="# Requirements\n\nThis is prose without stable requirement ids.\n",
         )
     )
-    blocked = _payload(
+    approved = _payload(
         spec_broker.func(
             mode="approve",
             workspace_path=str(workspace),
@@ -226,10 +226,11 @@ def test_spec_broker_approval_blocks_untraceable_requirements(tmp_path):
         )
     )
 
-    assert blocked["ok"] is False
-    assert blocked["kind"] == "spec_stage_format_invalid"
-    assert "requirementIds" in blocked["formatDiagnostics"]["approvalBlocking"]
-    assert "requirements" not in set(
+    assert approved["ok"] is True
+    diagnostics = approved["specBrief"]["documents"]["requirements"].get("formatDiagnostics") or {}
+    assert "requirementIds" in diagnostics.get("missingFields", [])
+    assert diagnostics.get("approvalBlocking") == []
+    assert "requirements" in set(
         spec_service.build_brief(workspace_path=str(workspace), spec_id=started["specId"]).get("approvedStages") or []
     )
 
@@ -540,14 +541,26 @@ def test_spec_broker_blocks_bugfix_restart_when_current_spec_ready_for_execution
     )["ok"]
     assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
     assert _payload(
-        spec_broker.func(
-            mode="start",
-            workspace_path=str(workspace),
-            spec_id=spec_id,
-            kind="tasks",
-            content="# Tasks\n\n- [ ] TASK-001: deliver. runtimeLane: Engineering; specRefs: REQ-001, DES-001\n",
-        )
-    )["ok"]
+            spec_broker.func(
+                mode="start",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                kind="tasks",
+                content=(
+                    "# Tasks\n\n"
+                    "| Task ID | runtimeLane | dependsOn | specRefs | expectedOutput | acceptance | proofRequired |\n"
+                    "| --- | --- | --- | --- | --- | --- | --- |\n"
+                    "| TASK-001 | Engineering | - | REQ-001, DES-001 | Skill files written | SkillLoader can load skill | file manifest + validation |\n\n"
+                    "### TASK-001: Deliver skill\n\n"
+                    "- runtimeLane: Engineering\n"
+                    "- dependsOn: -\n"
+                    "- specRefs: REQ-001, DES-001\n"
+                    "- expectedOutput: SKILL.md and research references\n"
+                    "- acceptance: SkillLoader can load the generated skill\n"
+                    "- proofRequired: generated file manifest and validation result\n"
+                ),
+            )
+        )["ok"]
     assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="tasks"))["pipelineControl"]["runtimeExecutionAllowed"] is True
 
     blocked = _payload(
@@ -1015,7 +1028,22 @@ def test_spec_broker_start_kind_tasks_edits_active_tasks_stage(tmp_path):
             spec_id=feature_slug,
             feature_name=feature_slug,
             kind="tasks",
-            content="# Tasks\n\n- [ ] TASK-001: 生成 SKILL.md。 Links: REQ-001, DES-001\n",
+            content=(
+                "# Tasks\n\n"
+                "## Task Pipeline\n\n"
+                "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+                "| TASK-001 | Engineering | 生成 SKILL.md。 | - | REQ-001, DES-001 | SKILL.md | 文件存在且可加载。 |\n\n"
+                "## Task Details\n\n"
+                "### TASK-001: 生成 SKILL.md\n\n"
+                "- runtimeLane: Engineering\n"
+                "- dependsOn: []\n"
+                "- specRefs: REQ-001, DES-001\n"
+                "- inputRefs: approved requirements/design\n"
+                "- expectedOutput: SKILL.md\n"
+                "- acceptance: 文件存在且可加载\n"
+                "- proofRequired: file manifest + validation\n"
+            ),
         )
     )
 
@@ -1025,8 +1053,7 @@ def test_spec_broker_start_kind_tasks_edits_active_tasks_stage(tmp_path):
     assert tasks["stage"] == "tasks"
     assert tasks["pipelineControl"]["blockedByApproval"] == "tasks"
     assert tasks["pipelineControl"]["runtimeExecutionAllowed"] is False
-    assert tasks["tasksPipeline"]["valid"] is False
-    assert "runtimeLane" in tasks["tasksPipeline"]["missingFields"]
+    assert tasks["tasksPipeline"]["valid"] is True
 
 
 def test_spec_broker_read_stage_alias_reads_current_stage(tmp_path):
@@ -1161,7 +1188,22 @@ def test_spec_broker_tasks_stage_stops_live_turn_for_user_approval(monkeypatch, 
             workspace_path=str(workspace),
             spec_id=spec_id,
             kind="tasks",
-            content="# Tasks\n\n- [ ] TASK-001: 生成 SKILL.md。 Links: REQ-001, DES-001\n",
+            content=(
+                "# Tasks\n\n"
+                "## Task Pipeline\n\n"
+                "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+                "| TASK-001 | Engineering | 生成 SKILL.md。 | - | REQ-001, DES-001 | SKILL.md | 文件存在且可加载。 |\n\n"
+                "## Task Details\n\n"
+                "### TASK-001: 生成 SKILL.md\n\n"
+                "- runtimeLane: Engineering\n"
+                "- dependsOn: []\n"
+                "- specRefs: REQ-001, DES-001\n"
+                "- inputRefs: approved requirements/design\n"
+                "- expectedOutput: SKILL.md\n"
+                "- acceptance: 文件存在且可加载\n"
+                "- proofRequired: file manifest + validation\n"
+            ),
             tool_call_id="call_spec_tasks",
         )
 

@@ -279,6 +279,26 @@ def test_completion_gate_allows_fast_approval_continuation_window():
     assert decision.reason == "eligible"
 
 
+def test_completion_gate_does_not_wait_for_invalid_spec_stage():
+    decision = evaluate_supervisor_completion(
+        spec_mode=True,
+        spec_brief={
+            "specId": "spec_demo",
+            "currentStage": "tasks",
+            "pipelineControl": {
+                "runtimeExecutionAllowed": False,
+                "blockedByApproval": "",
+                "blockedReason": "stage_format_invalid",
+                "nextStage": "runtime_execution",
+            },
+        },
+        final_text="任务清单已生成，请审批。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "spec_stage_format_invalid"
+
+
 def test_completion_gate_blocks_spec_mode_without_created_stage():
     decision = evaluate_supervisor_completion(
         spec_mode=True,

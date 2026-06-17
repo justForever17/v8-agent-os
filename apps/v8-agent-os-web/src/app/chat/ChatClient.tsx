@@ -351,6 +351,46 @@ function filterConversationProcesses(
     });
 }
 
+function approvalRequestRecord(approval: Record<string, unknown> | null | undefined) {
+    const request = approval?.request;
+    return request && typeof request === "object" && !Array.isArray(request)
+        ? request as Record<string, unknown>
+        : {};
+}
+
+function readApprovalString(record: Record<string, unknown>, ...keys: string[]) {
+    for (const key of keys) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) {
+            return value.trim();
+        }
+    }
+    return "";
+}
+
+function isSpecStageApproval(approval: Record<string, unknown> | null | undefined) {
+    const request = approvalRequestRecord(approval);
+    const kind = String(
+        approval?.approval_kind
+        || request.approvalKind
+        || request.approval_kind
+        || "",
+    ).trim().toLowerCase();
+    return kind === "spec_stage_approval";
+}
+
+function buildSpecReviewHref(approval: Record<string, unknown>, fallbackWorkspacePath = "") {
+    const request = approvalRequestRecord(approval);
+    const params = new URLSearchParams();
+    const workspacePath = readApprovalString(request, "workspacePath", "workspace_path") || fallbackWorkspacePath;
+    const specId = readApprovalString(request, "specId", "spec_id");
+    const stage = readApprovalString(request, "stage", "specStage", "spec_stage");
+    if (workspacePath) params.set("workspace", workspacePath);
+    if (specId) params.set("specId", specId);
+    if (stage) params.set("stage", stage);
+    return `/specs${params.toString() ? `?${params.toString()}` : ""}`;
+}
+
 
 
 export default function ChatClient() {
@@ -834,9 +874,14 @@ export default function ChatClient() {
             setDismissedGovernanceApprovalId(governancePendingApprovalId);
         }
         setGovernanceApprovalOpen(false);
+        if (governancePendingApproval && isSpecStageApproval(governancePendingApproval as Record<string, unknown>)) {
+            const fallbackWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || "";
+            router.push(buildSpecReviewHref(governancePendingApproval as Record<string, unknown>, fallbackWorkspacePath));
+            return;
+        }
         setSelectedRuntimeId("automation");
         setIsTimelineOpen(true);
-    }, [governancePendingApprovalId]);
+    }, [governancePendingApproval, governancePendingApprovalId, mainWorkspacePath, router, scopeBinding?.workspacePath]);
 
     const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean) => {
         if (!governancePendingApprovalId) {

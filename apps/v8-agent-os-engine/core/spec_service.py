@@ -68,6 +68,9 @@ def _canonical_id(raw_id: str, prefix: str) -> str:
         prefix_pattern = "|".join(re.escape(alias) for alias in aliases)
         match = re.match(rf"^(?:{prefix_pattern})-(\d+)$", item, re.IGNORECASE)
         if match:
+            raw_prefix = item.split("-", 1)[0].upper()
+            if canonical_prefix == "REQ" and raw_prefix in {"FR", "NFR"}:
+                return f"{raw_prefix}-{int(match.group(1)):03d}"
             return f"{canonical_prefix}-{int(match.group(1)):03d}"
     return item
 
@@ -107,8 +110,8 @@ def _normalize_stage_markdown(stage: str, content: str) -> str:
         canonical_prefix = {
             "TSK": "TASK",
             "T": "TASK",
-            "FR": "REQ",
-            "NFR": "REQ",
+            "FR": "FR",
+            "NFR": "NFR",
             "AC-REQ": "AC-REQ",
             "AC-BFIX": "AC-BFIX",
         }.get(raw_prefix, raw_prefix)
@@ -284,20 +287,57 @@ def _tasks_pipeline_diagnostics(markdown: str) -> dict[str, Any]:
     text = str(markdown or "")
     normalized = re.sub(r"\s+", " ", text).strip().lower()
     task_ids = _extract_ids(text, "TASK")
+    inline_requirement_refs = [
+        ref
+        for ref in _extract_requirement_ref_ids(text)
+        if not str(ref).upper().startswith(("TASK-", "TSK-", "T-"))
+    ]
+    diagnostic_requirement_index = {
+        ref: {"id": ref, "summary": "", "detailRef": f"spec://requirements#{ref}"}
+        for ref in inline_requirement_refs
+    }
+    kiro_task_slices = _task_slices(text, diagnostic_requirement_index, [])
+    detailed_kiro_task_slices = [
+        item
+        for item in kiro_task_slices
+        if list(item.get("requirementRefs") or [])
+        and len(str(item.get("taskExcerpt") or "")) > max(48, len(str(item.get("title") or "")) + 24)
+    ]
+    if not task_ids and kiro_task_slices:
+        task_ids = [str(item.get("taskId") or "") for item in kiro_task_slices if item.get("taskId")]
     missing: list[str] = []
+    approval_blocking: list[str] = []
     for field, markers in _TASKS_PIPELINE_REQUIREMENTS.items():
         if not any(str(marker).lower() in normalized for marker in markers):
             missing.append(field)
     has_pipeline_table = bool(re.search(r"(?im)^\|\s*task id\s*\|", text)) or "## task pipeline" in normalized
-    has_task_details = bool(re.search(r"(?im)^###\s+(?:TASK|TSK|T)-\d{2,}\b", text))
+    has_task_details = bool(re.search(r"(?im)^#{2,6}\s+(?:TASK|TSK|T)-\d{2,}\b", text))
+    has_assignable_tasks = bool(
+        (task_ids and (has_pipeline_table or has_task_details))
+        or detailed_kiro_task_slices
+    )
+    has_task_refs = bool(
+        re.search(r"(?im)_?\s*(?:需求|requirements?|specRefs?|refs?)\s*[:：]", text)
+        or inline_requirement_refs
+        or _extract_ids(text, "REQ")
+        or _extract_ids(text, "BFIX")
+    )
+    if not has_assignable_tasks:
+        approval_blocking.append("taskIds")
+    if has_assignable_tasks and not has_task_refs:
+        approval_blocking.append("specRefs")
     return {
-        "valid": bool(task_ids) and not missing,
+        "valid": has_assignable_tasks and has_task_refs and not approval_blocking,
         "taskCount": len(task_ids),
         "taskIds": task_ids,
         "missingFields": missing,
+        "approvalBlocking": approval_blocking,
         "hasPipelineTable": has_pipeline_table,
         "hasTaskDetails": has_task_details,
-        "recommendedFormat": "Task Pipeline table plus TASK detail cards with runtimeLane/dependsOn/specRefs/expectedOutput/acceptance/proofRequired.",
+        "hasKiroTaskList": bool(kiro_task_slices),
+        "assignableKiroTaskCount": len(detailed_kiro_task_slices),
+        "hasTaskRefs": has_task_refs,
+        "recommendedFormat": "Task Pipeline table plus TASK detail cards is preferred. Kiro-style checkbox tasks are accepted when they are assignable and carry requirement/spec refs.",
     }
 
 
@@ -529,7 +569,6 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
         )
         if not fragments:
             missing.append("requirementIds")
-            approval_blocking.append("requirementIds")
         if not has_acceptance:
             missing.append("acceptanceCriteria")
             warnings.append("acceptanceCriteria")
@@ -542,8 +581,8 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
             "warnings": warnings,
             "approvalBlocking": approval_blocking,
             "recommendedFormat": (
-                "Use stable REQ-001/BFIX-001 or Kiro-style numbered requirements with acceptance criteria. "
-                "Each requirement must be traceable from tasks.md."
+                "Prefer stable REQ-001/BFIX-001 or Kiro-style numbered requirements with acceptance criteria. "
+                "Loose requirements may still be approved, but tasks.md must later provide traceable task IDs and refs."
             ),
         }
     if normalized_stage == "design":
@@ -551,7 +590,6 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
         design_ids = _extract_ids(text, "DES")
         if not design_fragments and not design_ids:
             missing.append("designSections")
-            approval_blocking.append("designSections")
         if not framework_digest.strip():
             missing.append("frameworkDigest")
             warnings.append("frameworkDigest")
@@ -565,8 +603,8 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
             "warnings": warnings,
             "approvalBlocking": approval_blocking,
             "recommendedFormat": (
-                "Use DES-001 style design sections or clear architecture/framework headings. "
-                "Design must state the shared implementation stack/framework so every runtime/subagent follows the same path."
+                "Prefer DES-001 style design sections or clear architecture/framework headings. "
+                "Loose design may still be approved, but tasks.md must later bind executable work to requirement/design refs."
             ),
         }
     if normalized_stage == "tasks":
@@ -577,15 +615,17 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
             missing.append("taskIds")
             approval_blocking.append("taskIds")
         if pipeline.get("missingFields"):
-            warnings.extend(str(item) for item in pipeline.get("missingFields") or [])
+            missing.extend(str(item) for item in pipeline.get("missingFields") or [])
+        if pipeline.get("approvalBlocking"):
+            approval_blocking.extend(str(item) for item in pipeline.get("approvalBlocking") or [])
         return {
             "stage": normalized_stage,
             "valid": not approval_blocking and bool(pipeline.get("valid")),
             "ids": list(pipeline.get("taskIds") or [item.get("taskId") for item in task_slices if item.get("taskId")]),
             "idCount": int(pipeline.get("taskCount") or len(task_slices)),
-            "missingFields": missing + list(pipeline.get("missingFields") or []),
+            "missingFields": missing,
             "warnings": warnings,
-            "approvalBlocking": approval_blocking,
+            "approvalBlocking": list(dict.fromkeys(approval_blocking)),
             "pipelineDiagnostics": pipeline,
             "recommendedFormat": pipeline.get("recommendedFormat"),
         }
@@ -690,6 +730,11 @@ class SpecService:
                     **(
                         {"pipelineDiagnostics": value.get("pipelineDiagnostics")}
                         if stage == "tasks" and isinstance(value.get("pipelineDiagnostics"), dict)
+                        else {}
+                    ),
+                    **(
+                        {"formatDiagnostics": value.get("formatDiagnostics")}
+                        if isinstance(value.get("formatDiagnostics"), dict)
                         else {}
                     ),
                 }
@@ -1139,9 +1184,19 @@ class SpecService:
         runtime_allowed = next_stage == "runtime_execution" and approvals.get("tasks") is True and not stale_stages
         blocked_by = None
         blocked_reason = ""
+        current_doc = docs.get(current) if current else None
+        current_diagnostics = (
+            current_doc.get("formatDiagnostics")
+            if isinstance(current_doc, dict) and isinstance(current_doc.get("formatDiagnostics"), dict)
+            else {}
+        )
+        current_format_blocking = bool(current_diagnostics.get("approvalBlocking"))
         if current and current in docs and approvals.get(current) is not True:
-            blocked_by = current
-            blocked_reason = "approval_required"
+            if current_format_blocking:
+                blocked_reason = "stage_format_invalid"
+            else:
+                blocked_by = current
+                blocked_reason = "approval_required"
         elif next_stage and next_stage != "runtime_execution":
             blocked_by = current if approvals.get(current) is not True else None
             blocked_reason = "approval_required" if blocked_by else ""
@@ -1170,9 +1225,9 @@ class SpecService:
         doc_path = paths.spec_dir / SPEC_DOCS[normalized_stage]
         content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
         diagnostics = _stage_format_diagnostics(normalized_stage, content)
+        doc_meta["formatDiagnostics"] = diagnostics
+        manifest.setdefault("documents", {})[normalized_stage] = doc_meta
         if diagnostics.get("approvalBlocking"):
-            doc_meta["formatDiagnostics"] = diagnostics
-            manifest.setdefault("documents", {})[normalized_stage] = doc_meta
             self._write_manifest(paths, manifest)
             return {
                 "ok": False,
@@ -1507,6 +1562,11 @@ class SpecService:
                     **(
                         {"pipelineDiagnostics": value.get("pipelineDiagnostics")}
                         if stage == "tasks" and isinstance(value.get("pipelineDiagnostics"), dict)
+                        else {}
+                    ),
+                    **(
+                        {"formatDiagnostics": value.get("formatDiagnostics")}
+                        if isinstance(value.get("formatDiagnostics"), dict)
                         else {}
                     ),
                 }

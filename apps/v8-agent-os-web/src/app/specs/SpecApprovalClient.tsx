@@ -53,11 +53,22 @@ async function readJson<T>(response: Response, fallback: string): Promise<T> {
     return payload as T;
 }
 
-export default function SpecApprovalClient({ initialWorkspacePath }: { initialWorkspacePath: string }) {
+export default function SpecApprovalClient({
+    initialWorkspacePath,
+    initialSpecId = "",
+    initialStage = "",
+}: {
+    initialWorkspacePath: string;
+    initialSpecId?: string;
+    initialStage?: string;
+}) {
+    const normalizedInitialStage = STAGES.includes(initialStage.trim().toLowerCase())
+        ? initialStage.trim().toLowerCase()
+        : "requirements";
     const [workspacePath, setWorkspacePath] = useState(initialWorkspacePath);
     const [specs, setSpecs] = useState<SpecSummary[]>([]);
-    const [selectedSpecId, setSelectedSpecId] = useState("");
-    const [selectedStage, setSelectedStage] = useState("requirements");
+    const [selectedSpecId, setSelectedSpecId] = useState(initialSpecId);
+    const [selectedStage, setSelectedStage] = useState(normalizedInitialStage);
     const [detail, setDetail] = useState<SpecDetail | null>(null);
     const [sectionRef, setSectionRef] = useState("");
     const [comment, setComment] = useState("");
@@ -89,14 +100,14 @@ export default function SpecApprovalClient({ initialWorkspacePath }: { initialWo
             const payload = await readJson<{ specs?: SpecSummary[] }>(await fetch(`/api/specs?${query.toString()}`, { cache: "no-store" }), "无法读取 Spec 列表");
             const nextSpecs = Array.isArray(payload.specs) ? payload.specs : [];
             setSpecs(nextSpecs);
-            const nextSelected = selectedSpecId || nextSpecs[0]?.specId || "";
+            const nextSelected = selectedSpecId || initialSpecId || nextSpecs[0]?.specId || "";
             setSelectedSpecId(nextSelected);
         } catch (err) {
             setError(err instanceof Error ? err.message : "无法读取 Spec 列表");
         } finally {
             setBusy(false);
         }
-    }, [selectedSpecId, workspacePath]);
+    }, [initialSpecId, selectedSpecId, workspacePath]);
 
     const loadSpecDetail = useCallback(async (specId: string) => {
         if (!workspacePath.trim() || !specId) {
@@ -109,8 +120,13 @@ export default function SpecApprovalClient({ initialWorkspacePath }: { initialWo
             const query = new URLSearchParams({ workspace_path: workspacePath.trim(), max_chars: "160000" });
             const payload = await readJson<SpecDetail>(await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, { cache: "no-store" }), "无法读取 Spec 文档");
             setDetail(payload);
+            const preferredStage = STAGES.includes(initialStage.trim().toLowerCase())
+                ? initialStage.trim().toLowerCase()
+                : selectedStage;
             const firstStage = STAGES.find((stage) => payload.stages?.[stage]);
-            if (firstStage && !payload.stages?.[selectedStage]) {
+            if (payload.stages?.[preferredStage]) {
+                setSelectedStage(preferredStage);
+            } else if (firstStage && !payload.stages?.[selectedStage]) {
                 setSelectedStage(firstStage);
             }
         } catch (err) {
@@ -118,7 +134,7 @@ export default function SpecApprovalClient({ initialWorkspacePath }: { initialWo
         } finally {
             setBusy(false);
         }
-    }, [selectedStage, workspacePath]);
+    }, [initialStage, selectedStage, workspacePath]);
 
     useEffect(() => {
         if (initialWorkspacePath) {

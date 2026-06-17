@@ -1054,6 +1054,29 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("Approval is a user/client governance event", content)
         self.assertIn("do not assume subagents can spawn grandchildren implicitly", content)
 
+    def test_spec_mode_tasks_stage_guidance_includes_pipeline_template(self):
+        tools = [SimpleNamespace(name="spec_broker")]
+        state = {
+            "current_route_context": {
+                "specMode": True,
+                "specId": "spec-1",
+                "specBrief": {"pipelineControl": {"nextStage": "tasks", "runtimeExecutionAllowed": False}},
+            }
+        }
+
+        guidance = _spec_mode_stage_guidance(
+            state=state,
+            user_query="继续",
+            selected_tools=tools,
+            messages=[],
+        )
+
+        self.assertIsNotNone(guidance)
+        content = str(guidance.content)
+        self.assertIn("Tasks stage rule", content)
+        self.assertIn("| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |", content)
+        self.assertIn("If the approved requirements/design do not have formal REQ/DES IDs", content)
+
     def test_direct_tool_registry_first_lines_explain_spec_and_runtime_actions(self):
         from core.tools.native.delegation import delegation_broker
         from core.tools.native.runtime import runtime_broker

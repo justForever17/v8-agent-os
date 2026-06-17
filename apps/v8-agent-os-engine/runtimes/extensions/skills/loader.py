@@ -4099,7 +4099,6 @@ def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[st
     return {
         "schema": "v8.skill_continuation_manifest.v1",
         "skillName": skill.get("skillName") or skill.get("name") or "",
-        "skillRoot": skill.get("skillRoot") or skill.get("path") or "",
         "readContract": {
             "primary": "SKILL.md has already been loaded by this tool call.",
             "nextStep": "Use fetch_skill_instructions(skill_name, relative_path='<path>') to continue into references/templates/scripts when the task needs implementation detail.",
@@ -4119,9 +4118,80 @@ def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[st
     }
 
 
+def _format_skill_resource_tree(available_files: list[str], *, limit: int = 96) -> str:
+    normalized: list[str] = []
+    for item in list(available_files or []):
+        path = str(item or "").strip().replace("\\", "/").strip("/")
+        if path and path not in normalized:
+            normalized.append(path)
+    if not normalized:
+        return "- (no extra references/scripts/assets/templates/examples found)"
+
+    root: dict[str, Any] = {}
+    for path in sorted(normalized):
+        node = root
+        parts = [part for part in path.split("/") if part]
+        for index, part in enumerate(parts):
+            key = part + "/" if index < len(parts) - 1 else part
+            node = node.setdefault(key, {})
+
+    lines: list[str] = []
+
+    def _walk(node: dict[str, Any], depth: int = 0) -> None:
+        for name, child in sorted(node.items(), key=lambda item: (not item[0].endswith("/"), item[0].lower())):
+            if len(lines) >= limit:
+                return
+            lines.append(f"{'  ' * depth}- {name}")
+            if isinstance(child, dict) and child:
+                _walk(child, depth + 1)
+
+    _walk(root)
+    if len(normalized) > limit:
+        lines.append(f"...[{len(normalized) - limit} more relative resource paths omitted]")
+    return "\n".join(lines)
+
+
 def _format_skill_continuation_manifest(manifest: dict[str, Any]) -> str:
     lines = ["=== CONTINUATION MANIFEST ==="]
-    lines.append(json.dumps(manifest, ensure_ascii=False, indent=2))
+    skill_name = str(manifest.get("skillName") or "").strip()
+    lines.append("SKILL.md above is the primary method contract. Do not replace it with this resource list.")
+    if skill_name:
+        lines.append(f"Continue reading skill-relative files with: fetch_skill_instructions(skill_name={skill_name!r}, relative_path='<path>')")
+    else:
+        lines.append("Continue reading skill-relative files with: fetch_skill_instructions(skill_name='<skill>', relative_path='<path>')")
+    required_reads = [str(item) for item in list(manifest.get("requiredReadsForArtifact") or []) if str(item).strip()]
+    recommended_reads = [str(item) for item in list(manifest.get("recommendedReads") or []) if str(item).strip()]
+    references = [str(item) for item in list(manifest.get("references") or []) if str(item).strip()]
+    templates = [str(item) for item in list(manifest.get("templates") or []) if str(item).strip()]
+    frameworks = [str(item) for item in list(manifest.get("frameworks") or []) if str(item).strip()]
+    examples = [str(item) for item in list(manifest.get("examples") or []) if str(item).strip()]
+    scripts = [item for item in list(manifest.get("scripts") or []) if isinstance(item, dict)]
+
+    def _append_list(title: str, values: list[str], *, cap: int = 12) -> None:
+        if not values:
+            return
+        lines.append(f"{title}:")
+        for value in values[:cap]:
+            lines.append(f"- {value}")
+        if len(values) > cap:
+            lines.append(f"- ...[{len(values) - cap} more]")
+
+    _append_list("Required reads for artifact work", required_reads, cap=10)
+    _append_list("Recommended next reads", recommended_reads, cap=10)
+    _append_list("References", references, cap=16)
+    _append_list("Templates", templates, cap=10)
+    _append_list("Frameworks / methods", frameworks, cap=10)
+    _append_list("Examples", examples, cap=10)
+    if scripts:
+        lines.append("Scripts:")
+        for item in scripts[:12]:
+            path = str(item.get("path") or "").strip()
+            purpose = str(item.get("purpose") or "").strip()
+            if path:
+                lines.append(f"- {path}" + (f" — {purpose}" if purpose else ""))
+    boundary = str(manifest.get("scriptExecutionBoundary") or "").strip()
+    if boundary:
+        lines.append(f"Script boundary: {boundary}")
     return "\n".join(lines)
 
 
@@ -4402,7 +4472,7 @@ def fetch_skill_instructions(
                 "Visible continuation manifest:\n"
                 f"{json.dumps(manifest, ensure_ascii=False, indent=2)}"
             )
-    structure = "\n".join(f"- {item}" for item in available_files[:64]) if available_files else "- (no extra references/scripts/assets/templates/examples found)"
+    structure = _format_skill_resource_tree(available_files)
     normalized_detail = str(detail_level or "summary").strip().lower()
     if normalized_detail not in {"summary", "section", "full"}:
         normalized_detail = "summary"
@@ -4447,19 +4517,8 @@ def fetch_skill_instructions(
         f"Skill ID: {skill.get('skillId') or ''}\n"
         f"Skill Name: {skill.get('skillName') or skill.get('name') or skill_name}\n"
         f"Source Type: {skill.get('sourceType') or ''}\n"
-        f"Visibility: {skill.get('visibility') or ''}\n"
         f"Workspace Path: {skill.get('workspacePath') or ''}\n"
-        f"Workspace ID: {skill.get('workspaceId') or ''}\n"
-        f"Project ID: {skill.get('projectId') or ''}\n"
-        f"Skill Root: {skill.get('skillRoot') or skill.get('path') or ''}\n"
-        f"Instruction Path: {skill.get('instructionPath') or ''}\n"
-        f"References Dir: {skill.get('referencesDir') or ''}\n"
-        f"Scripts Dir: {skill.get('scriptsDir') or ''}\n"
-        f"Assets Dir: {skill.get('assetsDir') or ''}\n"
-        f"Templates Dir: {skill.get('templatesDir') or ''}\n"
-        f"Examples Dir: {skill.get('examplesDir') or ''}\n"
-        f"Directory Structure:\n{structure}\n\n"
+        f"Relative Resources:\n{structure}\n\n"
         f"{_format_skill_continuation_manifest(manifest)}\n\n"
-        f"按当前 skill 的要求去做。\n\n"
         f"{instructions_block}"
     )

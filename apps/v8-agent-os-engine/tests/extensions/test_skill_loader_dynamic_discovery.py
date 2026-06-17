@@ -123,6 +123,21 @@ Read references/skill-template.md when creating artifacts.
         )
     assert "=== CONTINUATION MANIFEST ===" in full
     assert "references/skill-template.md" in full
+    assert "Relative Resources:" in full
+    assert "- references/" in full
+    assert "  - skill-template.md" in full
+    assert "Visibility:" not in full
+    assert "Workspace ID:" not in full
+    assert "Project ID:" not in full
+    assert "Skill Root:" not in full
+    assert "Instruction Path:" not in full
+    assert "References Dir:" not in full
+    assert "Scripts Dir:" not in full
+    assert "Assets Dir:" not in full
+    assert "Templates Dir:" not in full
+    assert "Examples Dir:" not in full
+    assert '"skillRoot"' not in full
+    assert "按当前 skill 的要求去做。" not in full
 
     with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
         continuation = fetch_skill_instructions.invoke(

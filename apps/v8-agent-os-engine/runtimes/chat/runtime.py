@@ -1239,9 +1239,6 @@ class ChatRuntime:
                 "signals": list(dict.fromkeys([*list(planner_diagnostics.get("signals") or []), "explicit_engineering_runtime"])),
                 "reason": "explicit_engineering_runtime_requested",
             }
-            task_planning_mode = True
-            planner_mode = "force"
-            planner_dispatch_mode = "auto"
             engineering_mode = "force"
         if spec_mode:
             planner_diagnostics = {
@@ -1251,7 +1248,12 @@ class ChatRuntime:
                 "reason": "spec_mode_requested",
             }
         if planner_mode == "auto":
-            task_planning_mode = bool(planner_diagnostics.get("matched"))
+            planner_diagnostics = {
+                **planner_diagnostics,
+                "advisoryOnly": True,
+                "reason": planner_diagnostics.get("reason") or "planner_auto_advisory_only",
+            }
+            task_planning_mode = False
         elif planner_mode == "force":
             task_planning_mode = True
         elif planner_mode == "off":
@@ -4030,16 +4032,22 @@ class ChatRuntime:
                 and bool(writing_route_current.get("requiresResearch"))
                 and primary_shape == "writing"
             )
-            if skill_subagent_required or source_backed_writing_required:
-                prepared.task_planning_mode = True
-                prepared.planner_mode = "force"
-                prepared.planner_dispatch_mode = "auto"
-            elif prepared.explicit_engineering_requested or primary_shape == "project_coding" or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"}):
-                prepared.task_planning_mode = True
-                prepared.planner_mode = "force"
-                prepared.planner_dispatch_mode = "auto"
-                if prepared.explicit_engineering_requested or engineering_required:
-                    prepared.engineering_mode = "force"
+            if prepared.explicit_engineering_requested or engineering_required:
+                prepared.engineering_mode = "force"
+            explicit_planner_force_requested = (
+                prepared.task_planning_mode
+                and str(prepared.planner_mode or "").strip() == "force"
+            )
+            if (
+                skill_subagent_required
+                or source_backed_writing_required
+                or prepared.explicit_engineering_requested
+                or primary_shape == "project_coding"
+                or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"})
+            ) and not explicit_planner_force_requested:
+                prepared.task_planning_mode = False
+                prepared.planner_mode = "off"
+                prepared.planner_dispatch_mode = "suggest"
             if prepared.spec_mode:
                 if self._runtime_execution_allowed_by_spec(prepared.spec_brief):
                     prepared.task_planning_mode = True

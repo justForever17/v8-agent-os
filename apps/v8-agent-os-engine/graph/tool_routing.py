@@ -68,8 +68,8 @@ _ENGINEERING_ROUTE_TOOLS = {
 _RESEARCH_ROUTE_TOOLS = {"web_broker"}
 _PLANNING_WEB_TOOL_LIMIT = _int_env("V8_AGENT_OS_PLANNING_WEB_TOOL_LIMIT", 8, minimum=1)
 _SPEC_PLANNING_WEB_TOOL_LIMIT = _int_env("V8_AGENT_OS_SPEC_PLANNING_WEB_TOOL_LIMIT", 12, minimum=1)
-_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT", 8, minimum=0)
-_SUPERVISOR_DIRECT_PRESSURE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_PRESSURE_LIMIT", 40, minimum=1)
+_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT", 0, minimum=0)
+_SUPERVISOR_DIRECT_PRESSURE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_PRESSURE_LIMIT", 0, minimum=0)
 _SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS = {
     "ask_user",
     "fetch_skill_instructions",
@@ -242,6 +242,8 @@ def _planning_fact_gathering_allowed(
     if tool_name == "web_broker":
         web_calls = len([name for name in tool_names if name == "web_broker"])
         limit = _SPEC_PLANNING_WEB_TOOL_LIMIT if _spec_mode_active(state_mapping) else _PLANNING_WEB_TOOL_LIMIT
+        if limit <= 0:
+            return True
         return web_calls <= limit
     if tool_name == "run_system_command":
         args = _safe_tool_args(tool_call.get("args"))
@@ -273,11 +275,17 @@ def _supervisor_limited_write_native_file_allowed(
     direct_pressure_count: int,
     project_write_count: int,
 ) -> bool:
-    return (
-        str(tool_name or "").strip() == "write_native_file"
-        and project_write_count <= _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT
-        and direct_pressure_count <= _SUPERVISOR_DIRECT_PRESSURE_LIMIT
+    if str(tool_name or "").strip() != "write_native_file":
+        return False
+    write_limit_ok = (
+        _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT <= 0
+        or project_write_count <= _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT
     )
+    pressure_limit_ok = (
+        _SUPERVISOR_DIRECT_PRESSURE_LIMIT <= 0
+        or direct_pressure_count <= _SUPERVISOR_DIRECT_PRESSURE_LIMIT
+    )
+    return write_limit_ok and pressure_limit_ok
 
 
 def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
@@ -952,18 +960,27 @@ def _supervisor_direct_scope_hard_block_message(
         hard_reasons.append("task_boundary_route_correction")
     if _spec_mode_active(state_mapping) and _spec_runtime_execution_allowed(state_mapping):
         hard_reasons.append("spec_runtime_execution_requires_runtime_episode")
-    if bool(planner_dispatch_status.get("blocked")):
+    planner_mode = str(
+        state_mapping.get("planner_mode")
+        or state_mapping.get("plannerMode")
+        or dict(state_mapping.get("current_route_context") or {}).get("plannerMode")
+        or ""
+    ).strip().lower()
+    if bool(planner_dispatch_status.get("blocked")) and (
+        _spec_mode_active(state_mapping) or planner_mode == "force"
+    ):
         hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
     limited_write_allowed = _supervisor_limited_write_native_file_allowed(
         tool_name,
         direct_pressure_count=direct_pressure_count,
         project_write_count=project_write_count,
     )
-    if route_required and not limited_write_allowed:
+    ordinary_supervisor_tool = tool_name in _ENGINEERING_ROUTE_TOOLS or tool_name in _RESEARCH_ROUTE_TOOLS
+    if route_required and not limited_write_allowed and not ordinary_supervisor_tool:
         hard_reasons.append("capability_route_required")
-    if direct_pressure_count > _SUPERVISOR_DIRECT_PRESSURE_LIMIT:
+    if _SUPERVISOR_DIRECT_PRESSURE_LIMIT > 0 and direct_pressure_count > _SUPERVISOR_DIRECT_PRESSURE_LIMIT:
         hard_reasons.append("supervisor_direct_pressure_gt_budget")
-    if project_write_count > _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT:
+    if _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT > 0 and project_write_count > _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT:
         hard_reasons.append("supervisor_project_file_writes_gt_budget")
     if not hard_reasons:
         return None

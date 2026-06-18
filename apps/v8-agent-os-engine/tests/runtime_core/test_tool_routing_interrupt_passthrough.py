@@ -121,28 +121,24 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await async_tool_call_wrapper(request, execute)
 
-    async def test_complex_direct_write_returns_route_required_not_approval(self):
+    async def test_ordinary_engineering_direct_write_not_blocked_by_route_hint(self):
         request = _DummyRequest(
             "write_native_file",
             "tool_call_write",
             state={
-                "messages": _previous_write_messages(8),
+                "messages": _previous_write_messages(20),
                 "current_route_context": {"engineeringRequired": True},
             },
         )
 
         async def execute(_request):
-            raise AssertionError("direct write should have been blocked before execution")
+            return ToolMessage(content="wrote after supervisor judgment", name="write_native_file", tool_call_id="tool_call_write")
 
         result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
         self.assertIsInstance(result, ToolMessage)
-        self.assertEqual(getattr(result, "status", None), "error")
-        self.assertIn("[route required]", str(result.content))
-        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "runtime_broker(mode='route')")
-        self.assertEqual(result.additional_kwargs["allowedNextTools"], ["runtime_broker"])
-        self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "engineering")
-        self.assertIn("inputs", result.additional_kwargs["routeIntent"])
+        self.assertNotIn("[route required]", str(result.content))
+        self.assertIn("wrote after supervisor judgment", str(result.content))
 
     async def test_limited_write_native_file_executes_before_route_gate_limit(self):
         request = _DummyRequest(
@@ -241,7 +237,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(route_intent["inputs"]["specId"], "spec_ready")
         self.assertEqual(route_intent["inputs"]["taskBriefs"][0]["taskBriefId"], "approved-spec-runtime-execution")
 
-    async def test_engineering_route_intent_preserves_original_user_request(self):
+    async def test_ordinary_engineering_command_not_forced_into_route_intent(self):
         request = _DummyRequest(
             "run_system_command",
             "tool_call_command",
@@ -259,18 +255,13 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         }
 
         async def execute(_request):
-            raise AssertionError("direct command should have been routed before execution")
+            return ToolMessage(content="command chosen by supervisor", name="run_system_command", tool_call_id="tool_call_command")
 
         result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
         self.assertIsInstance(result, ToolMessage)
-        route_intent = result.additional_kwargs["routeIntent"]
-        self.assertEqual(route_intent["kind"], "engineering")
-        inputs = route_intent["inputs"]
-        self.assertEqual(inputs["userRequest"], "创建一个全屏 Canvas 像素风网页游戏项目，包含 index.html、main.js 和 README。")
-        brief = inputs["taskBriefs"][0]
-        self.assertEqual(brief["goal"], inputs["userRequest"])
-        self.assertEqual(brief["context"]["blockedCommand"], 'mkdir -p ".v8/live-audit/pixel-run-gun/demo"')
+        self.assertNotIn("[route required]", str(result.content))
+        self.assertIn("command chosen by supervisor", str(result.content))
 
     async def test_spec_mode_blocks_execution_tools_before_runtime_approval(self):
         request = _DummyRequest(
@@ -331,7 +322,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(route_intent["inputs"]["mode"], "run")
         self.assertEqual(route_intent["inputs"]["query"], "核查最新技术文档并返回来源")
 
-    async def test_complex_direct_write_enqueues_episode_when_runtime_context_exists(self):
+    async def test_ordinary_direct_write_does_not_enqueue_episode_when_runtime_context_exists(self):
         request = _DummyRequest(
             "write_native_file",
             "tool_call_write",
@@ -342,7 +333,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         )
 
         async def execute(_request):
-            raise AssertionError("direct write should have been blocked before execution")
+            return ToolMessage(content="ordinary write continued", name="write_native_file", tool_call_id="tool_call_write")
 
         with bind_runtime_context(run_id="run_gate_test", session_id="session_gate_test"):
             with patch("graph.tool_routing._enqueue_route_intent_episode") as enqueue_episode:
@@ -350,15 +341,11 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
                 result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
         self.assertIsInstance(result, ToolMessage)
-        self.assertEqual(getattr(result, "status", None), "error")
-        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "wait_episode")
-        self.assertEqual(result.additional_kwargs["queuedEpisodeId"], "episode_gate_test")
-        self.assertTrue(result.additional_kwargs["hasActiveRuntimeEpisode"])
-        enqueue_episode.assert_called_once()
-        self.assertEqual(enqueue_episode.call_args.kwargs["run_id"], "run_gate_test")
-        self.assertEqual(enqueue_episode.call_args.kwargs["session_id"], "session_gate_test")
+        self.assertNotIn("[route required]", str(result.content))
+        self.assertIn("ordinary write continued", str(result.content))
+        enqueue_episode.assert_not_called()
 
-    async def test_complex_direct_write_waits_when_episode_already_queued(self):
+    async def test_ordinary_direct_write_not_forced_to_wait_when_episode_already_queued(self):
         request = _DummyRequest(
             "write_native_file",
             "tool_call_write",
@@ -374,15 +361,13 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         )
 
         async def execute(_request):
-            raise AssertionError("direct write should have been blocked before execution")
+            return ToolMessage(content="supervisor continued despite queued episode", name="write_native_file", tool_call_id="tool_call_write")
 
         result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
         self.assertIsInstance(result, ToolMessage)
-        self.assertEqual(getattr(result, "status", None), "error")
-        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "wait_episode")
-        self.assertTrue(result.additional_kwargs["hasActiveRuntimeEpisode"])
-        self.assertIn("wait for the active Runtime episode", str(result.content))
+        self.assertNotIn("[route required]", str(result.content))
+        self.assertIn("supervisor continued despite queued episode", str(result.content))
 
 
 if __name__ == "__main__":

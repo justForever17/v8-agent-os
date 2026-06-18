@@ -794,7 +794,7 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(planner_dispatch_mode, "suggest")
         self.assertTrue(diagnostics.get("matched"))
 
-    def test_auto_planner_mode_uses_intent_detection(self):
+    def test_auto_planner_mode_is_advisory_without_llm_planning(self):
         runtime = ChatRuntime()
         request = ChatRequest(
             messages=[ChatMessage(role="user", content="Break down this refactor into tasks with tests.")],
@@ -805,8 +805,24 @@ class ChatPlannerModeTests(unittest.TestCase):
 
         self.assertEqual(planner_mode, "auto")
         self.assertEqual(planner_dispatch_mode, "suggest")
-        self.assertTrue(task_planning_mode)
+        self.assertFalse(task_planning_mode)
         self.assertIn("explicit_planning", diagnostics.get("signals") or [])
+        self.assertTrue(diagnostics.get("advisoryOnly"))
+
+    def test_explicit_engineering_request_does_not_force_planner_by_itself(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="请使用 Engineering Runtime 开发这个项目。")],
+        )
+
+        _, task_planning_mode, planner_mode, planner_dispatch_mode, diagnostics, engineering_mode, explicit_engineering_requested, *_ = runtime._resolve_request_context(request)
+
+        self.assertFalse(task_planning_mode)
+        self.assertEqual(planner_mode, "off")
+        self.assertEqual(planner_dispatch_mode, "suggest")
+        self.assertEqual(engineering_mode, "force")
+        self.assertTrue(explicit_engineering_requested)
+        self.assertIn("explicit_engineering_runtime", diagnostics.get("signals") or [])
 
     def test_off_planner_mode_disables_legacy_task_planning_flag(self):
         runtime = ChatRuntime()

@@ -329,9 +329,7 @@ def _agent_visible_context_lines(context: dict | None) -> list[str]:
     omitted = [key for key in _RUNTIME_ONLY_CONTEXT_KEYS if key in context]
     if omitted:
         lines.append(
-            "- Runtime-only context omitted from prompt: "
-            + ", ".join(sorted(omitted))
-            + ". The approved task-specific slices above are authoritative. Traceability refs are not URLs; use listed workspace document paths when a broader approved section is needed."
+            "- Runtime-only metadata was omitted from this prompt. The approved task-specific slices above are authoritative. Traceability refs are not URLs; use listed workspace document paths when a broader approved section is needed."
         )
         emitted = True
     return lines if emitted else []
@@ -402,7 +400,7 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
     lines: list[str] = [
         "",
         "<delegated_task_plan>",
-        "You are executing one bounded task from the supervisor's planner/delegation pipeline.",
+        "You are executing one bounded task from the supervisor's delegation/runtime pipeline.",
         "Use this local task contract as the routing truth; do not reinterpret the original user request as your primary scope.",
         "For code, file, command, test, or artifact work: treat taskBriefId, workspace, readSet/writeSet, acceptance, proofExpectations, and any Spec refs as your execution boundary. If required boundaries are missing, return a blocker instead of broadening the task.",
     ]

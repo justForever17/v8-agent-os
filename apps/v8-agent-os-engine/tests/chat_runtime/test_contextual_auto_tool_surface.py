@@ -122,6 +122,34 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Required Capabilities: skill_authoring", content)
         self.assertIn("Acceptance Contract: Supervisor verifies the final skill.", content)
 
+    def test_delegated_plan_context_without_planner_does_not_claim_planner_origin(self):
+        content = _format_delegated_plan_context(
+            {
+                "taskBriefId": "TASK-SUPERVISOR-FIRST",
+                "goal": "根据已批准 Spec 片段实现浏览器计数器。",
+                "context": {
+                    "specId": "spec_counter_latest",
+                    "taskId": "TASK-001",
+                    "specDocumentPaths": {
+                        "requirements": ".v8/specs/counter/requirements.md",
+                        "design": ".v8/specs/counter/design.md",
+                        "tasks": ".v8/specs/counter/tasks.md",
+                    },
+                    "approvedRequirementSlice": "REQ-001: 页面必须包含 SPEC_DRY_RUN_COUNTER 标记。",
+                    "approvedDesignSlice": "DES-001: 使用单文件 index.html 与内联 JavaScript。",
+                    "specExecutionSummary": "TASK-001 绑定 REQ-001 与 DES-001；输出 index.html。",
+                },
+            },
+            None,
+        )
+
+        self.assertIn("supervisor's delegation/runtime pipeline", content)
+        self.assertNotIn("supervisor's planner/delegation pipeline", content)
+        self.assertIn("Spec ID: spec_counter_latest", content)
+        self.assertIn(".v8/specs/counter/requirements.md", content)
+        self.assertIn("REQ-001: 页面必须包含 SPEC_DRY_RUN_COUNTER 标记。", content)
+        self.assertIn("DES-001: 使用单文件 index.html 与内联 JavaScript。", content)
+
     def test_delegated_plan_context_warns_artifact_workers_to_use_write_tool(self):
         content = _format_delegated_plan_context(
             {
@@ -212,7 +240,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Agent-Visible Context:", content)
         self.assertIn("Spec ID: spec_demo", content)
         self.assertIn("Task Excerpt: 只需要实现 index.html。", content)
-        self.assertIn("Runtime-only context omitted from prompt", content)
+        self.assertIn("Runtime-only metadata was omitted from this prompt", content)
         self.assertNotIn("SHOULD_NOT_DUMP_REQUIREMENTS_FULL_TEXT", content)
         self.assertNotIn("SHOULD_NOT_DUMP_DESIGN_FULL_TEXT", content)
         self.assertNotIn("SHOULD_NOT_DUMP_BUNDLE", content)
@@ -296,6 +324,28 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn('command_session_broker(mode="input"', content)
         self.assertNotIn("render_stalled", content)
 
+    def test_contextual_auto_real_native_tools_keep_actionable_descriptions(self):
+        from core.native_tools import NATIVE_TOOLS
+        from core.system_tools.baseline import select_baseline_system_tools
+        from runtimes.extensions.skills.loader import fetch_skill_instructions
+
+        real_baseline_tools = select_baseline_system_tools(NATIVE_TOOLS)
+        agent_nodes = self._build_components_with_tools(
+            tool_mode="contextual_auto",
+            filtered_native_tools=real_baseline_tools,
+            fetch_skill_instructions=fetch_skill_instructions,
+        )
+
+        tools_by_name = {getattr(tool, "name", ""): tool for tool in agent_nodes["agent-one"]["tools"]}
+        for name in ("read_native_file", "write_native_file", "run_system_command", "command_session_broker", "fetch_skill_instructions"):
+            self.assertIn(name, tools_by_name)
+            description = str(getattr(tools_by_name[name], "description", "") or "").strip()
+            self.assertGreater(len(description), 60, f"{name} should expose an actionable tool description to subagents")
+        skill_description = str(getattr(tools_by_name["fetch_skill_instructions"], "description", "") or "")
+        self.assertIn("exact skill name/path", skill_description)
+        self.assertIn("complete SKILL.md", skill_description)
+        self.assertIn("relative_path", skill_description)
+
     def test_task_brief_route_query_omits_acceptance_write_set_and_broad_noise(self):
         route_query = task_brief_route_query_text(
             {
@@ -316,6 +366,33 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertNotIn("Acceptance contract", route_query)
         self.assertNotIn("documentation", route_query)
         self.assertNotIn("verification_contract", route_query)
+
+    def _build_components_with_tools(self, *, tool_mode: str, filtered_native_tools: list, fetch_skill_instructions):
+        with patch("graph.agent_factories.create_routed_tool_node", return_value=lambda state: state):
+            return build_specialist_agent_components(
+                loaded_agents=[
+                    {
+                        "id": "agent-one",
+                        "name": "Agent One",
+                        "description": "Test agent",
+                        "system_prompt": "You are a test agent.",
+                        "tool_mode": tool_mode,
+                        "tools": [],
+                    }
+                ],
+                all_mcp_tools=[],
+                all_plugin_host_tools=[],
+                filtered_native_tools=filtered_native_tools,
+                default_agent_llm=object(),
+                supervisor_model_id="supervisor",
+                robust_invoke=lambda *args, **kwargs: None,
+                build_failure_command=lambda *args, **kwargs: None,
+                extract_task_context=lambda *args, **kwargs: None,
+                resolve_todos=lambda *args, **kwargs: [],
+                sanitize_message_chain=lambda messages, **kwargs: messages,
+                sanitize_response_tool_calls=lambda message, **kwargs: message,
+                fetch_skill_instructions=fetch_skill_instructions,
+            )
 
 
 if __name__ == "__main__":

@@ -13,8 +13,13 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from core.native_tools import runtime_broker
+from core.native_tools import NATIVE_TOOLS
+from core.system_tools.baseline import select_baseline_system_tools
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
+from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context
+from graph.parallel_support import _child_request_from_send_state
+from runtimes.extensions.skills.loader import fetch_skill_instructions
 
 REPO_ROOT = ENGINE_ROOT.parents[1]
 OUTPUT_ROOT = REPO_ROOT / "docs" / "chatruntime" / "runtime_deep_observation_reports"
@@ -177,6 +182,93 @@ def _contains(blob: Any, needle: str) -> bool:
     return needle.lower() in json.dumps(blob, ensure_ascii=False).lower()
 
 
+def _tool_description_preview() -> dict[str, Any]:
+    tools = {
+        str(getattr(tool, "name", "") or ""): tool
+        for tool in [*select_baseline_system_tools(NATIVE_TOOLS), fetch_skill_instructions]
+    }
+    required = ["read_native_file", "write_native_file", "run_system_command", "command_session_broker", "fetch_skill_instructions"]
+    previews: dict[str, str] = {}
+    checks: dict[str, bool] = {}
+    for name in required:
+        description = str(getattr(tools.get(name), "description", "") or "").strip()
+        previews[name] = description[:500]
+        checks[f"{name}_has_actionable_description"] = len(description) >= 60
+    skill_description = previews.get("fetch_skill_instructions", "")
+    checks["fetch_skill_description_mentions_complete_skill_md"] = "complete SKILL.md" in skill_description
+    checks["fetch_skill_description_mentions_relative_path"] = "relative_path" in skill_description
+    return {"checks": checks, "previews": previews}
+
+
+def _build_planner_disabled_surfaces(worker_briefs: list[dict[str, Any]]) -> dict[str, Any]:
+    parent_brief = dict(worker_briefs[0]) if worker_briefs else {}
+    delegated_plan = _format_delegated_plan_context(parent_brief, None)
+    subagent_system = _build_agent_system_content(
+        agent_name="Dry Run Engineering Worker",
+        agent_system_prompt="Follow the delegated task contract and return typed handoff evidence.",
+        env_context="<environment>\nActive Workspace Root: <dry-run-workspace>\n</environment>\n",
+        delegated_plan_context=delegated_plan,
+        route_prompt_addition="",
+    )
+    parent_context = parent_brief.get("context") if isinstance(parent_brief.get("context"), dict) else {}
+    child_brief = {
+        "taskBriefId": "grandchild-verification-task",
+        "goal": "Verify the assigned Spec task evidence and report concrete gaps, not only IDs.",
+        "brief": "Read the inherited requirement/design/task refs before returning verification.",
+        "runtimeAccess": ["delegation.recursive"],
+        "acceptanceContract": "Parent subagent can use this handoff without guessing missing Spec context.",
+        "context": {
+            "specId": parent_context.get("specId"),
+            "taskId": parent_context.get("taskId"),
+            "specDocumentPaths": parent_context.get("specDocumentPaths"),
+            "specExecutionSummary": parent_context.get("specExecutionSummary"),
+            "frameworkDigest": parent_context.get("frameworkDigest"),
+            "approvedRequirementSlice": parent_context.get("approvedRequirementSlice"),
+            "approvedDesignSlice": parent_context.get("approvedDesignSlice"),
+        },
+    }
+    child_request = _child_request_from_send_state(
+        {
+            "parallel_branch": {
+                "agentId": "verification-worker",
+                "agentName": "Verification Worker",
+                "delegationId": "delegation-grandchild-dry-run",
+                "invocationId": "invoke-grandchild-dry-run",
+                "taskBriefId": "grandchild-verification-task",
+                "reason": "grandchild-verification-task",
+                "taskBrief": child_brief,
+                "delegationDepth": 2,
+            }
+        },
+        source_branch={
+            "agentId": "engineering-worker",
+            "agentName": "Engineering Worker",
+            "delegationId": "delegation-parent-dry-run",
+            "invocationId": "invoke-parent-dry-run",
+            "allowChildDelegation": True,
+        },
+        source_agent_id="engineering-worker",
+    )
+    checks = {
+        "planner_disabled_subagent_prompt_no_planner_origin": "supervisor's planner/delegation pipeline" not in delegated_plan,
+        "planner_disabled_subagent_prompt_has_supervisor_runtime_origin": "supervisor's delegation/runtime pipeline" in delegated_plan,
+        "subagent_prompt_has_spec_id": _contains(subagent_system, str(parent_context.get("specId") or "")),
+        "subagent_prompt_has_task_goal": _contains(subagent_system, str(parent_brief.get("goal") or "")),
+        "subagent_prompt_has_requirement_slice": _contains(subagent_system, "REQ-") or _contains(subagent_system, "需求"),
+        "subagent_prompt_has_design_slice": _contains(subagent_system, "DES-") or _contains(subagent_system, "设计") or _contains(subagent_system, "index.html"),
+        "subagent_prompt_omits_runtime_only_bundle": "specExecutionBundle" not in subagent_system,
+        "grandchild_request_preserves_real_goal": bool(child_request and child_request.get("childTaskGoal") and child_request.get("childTaskGoal") != child_request.get("childTaskBriefId")),
+        "grandchild_request_preserves_spec_context": _contains(child_request, str(parent_context.get("specId") or "")),
+        "grandchild_request_not_id_only": _contains(child_request, "Verify the assigned Spec task evidence"),
+    }
+    return {
+        "checks": checks,
+        "delegatedPlanPreview": delegated_plan[:5000],
+        "subagentSystemPreview": subagent_system[:8000],
+        "grandchildRequestPreview": child_request,
+    }
+
+
 def build_export(*, sample_spec_dir: Path | None = None) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="v8os-spec-distribution-") as tmp:
         workspace = Path(tmp).resolve()
@@ -227,6 +319,10 @@ def build_export(*, sample_spec_dir: Path | None = None) -> dict[str, Any]:
             or _contains(agent_preview, "index.html"),
             "tool_surface_is_compact": not str(_tool_payload(command)).lstrip().startswith("["),
         }
+        planner_disabled_surfaces = _build_planner_disabled_surfaces(worker_briefs)
+        tool_description_surface = _tool_description_preview()
+        validations.update(planner_disabled_surfaces["checks"])
+        validations.update(tool_description_surface["checks"])
         return {
             "ok": True,
             "kind": "spec_runtime_distribution_dry_run",
@@ -248,6 +344,8 @@ def build_export(*, sample_spec_dir: Path | None = None) -> dict[str, Any]:
                 "proofExpectations": list(inputs.get("proofExpectations") or []),
             },
             "agentSurfacePreview": agent_preview,
+            "plannerDisabledAgentContent": planner_disabled_surfaces,
+            "subagentToolDescriptions": tool_description_surface,
         }
 
 
@@ -279,6 +377,12 @@ Sample source: `{payload.get('sampleSource')}`
 
 ```json
 {preview}
+```
+
+## Planner Disabled Content Checks
+
+```json
+{json.dumps(payload.get('plannerDisabledAgentContent') or {}, ensure_ascii=False, indent=2)[:12000]}
 ```
 """,
         encoding="utf-8",

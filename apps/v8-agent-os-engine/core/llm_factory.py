@@ -1296,10 +1296,46 @@ class LLMFactory:
         meta = cls._resolve_model_metadata(model_id)
         if not meta.get("is_found"):
             return None
+
+        def _positive_int(value: Any) -> Optional[int]:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed > 0 else None
+
+        model_record = dict(meta.get("model_record") or {})
+        configured = (
+            _positive_int(meta.get("global_max_tokens"))
+            or _positive_int(model_record.get("maxTokens"))
+            or _positive_int(model_record.get("maxOutputTokens"))
+        )
+        if configured:
+            return configured
+
+        provider_id = str(meta.get("provider_id") or meta.get("provider_name") or "").strip()
+        wire_model_id = str(meta.get("model_id") or model_id or "").strip()
         try:
-            value = meta.get("global_max_tokens")
-            return int(value) if value else None
-        except (TypeError, ValueError):
+            from core.model_provider_catalog import model_provider_catalog
+
+            provider = model_provider_catalog.get_provider(provider_id) if provider_id else None
+            if provider and wire_model_id:
+                catalog_model = model_provider_catalog.normalize_model(provider, wire_model_id)
+                catalog_limit = (
+                    _positive_int(catalog_model.get("maxTokens"))
+                    or _positive_int(catalog_model.get("maxOutputTokens"))
+                )
+                if catalog_limit:
+                    return catalog_limit
+        except Exception:
+            pass
+
+        try:
+            from core.model_capability_registry import model_capability_registry
+
+            registry_model = model_capability_registry.find(wire_model_id)
+            return _positive_int((registry_model or {}).get("maxOutputTokens"))
+        except Exception:
             return None
 
     @classmethod

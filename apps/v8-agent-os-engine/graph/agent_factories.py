@@ -2,7 +2,7 @@ import json
 import logging
 import platform
 import uuid
-from typing import Callable
+from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import Command
@@ -28,12 +28,31 @@ from .tool_routing import create_routed_tool_node
 from .route_context import merge_route_context
 
 
-DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS = 32768
-
-
 def subagent_model_kwargs(model_id: str | None) -> dict[str, int]:
-    configured = llm_factory.get_model_max_output_tokens(str(model_id or "").strip())
-    return {"max_tokens": int(configured or DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS)}
+    normalized_model_id = str(model_id or "").strip()
+    if not normalized_model_id:
+        return {}
+    max_output_tokens = llm_factory.get_model_max_output_tokens(normalized_model_id)
+    return {"max_tokens": int(max_output_tokens)} if max_output_tokens else {}
+
+
+def create_subagent_chat_model(
+    model_id: str,
+    *,
+    role: str,
+    **kwargs: Any,
+):
+    normalized_model_id = str(model_id or "").strip()
+    if not normalized_model_id:
+        raise ValueError("Subagent model_id must be provided")
+    model_kwargs = dict(kwargs)
+    model_kwargs.pop("max_tokens", None)
+    model_kwargs.update(subagent_model_kwargs(normalized_model_id))
+    return llm_factory.create_chat_model(
+        normalized_model_id,
+        _role=role,
+        **model_kwargs,
+    )
 
 
 def _canonical_tool_name(tool_ref) -> str:
@@ -739,11 +758,11 @@ def build_agent_node(
     sanitize_response_tool_calls: Callable,
 ):
     agent_specific_llm = (
-        llm_factory.create_chat_model(
+        create_subagent_chat_model(
             agent_model_id,
+            role=f"agent:{agent_id}",
             streaming=False,
             timeout=180,
-            **subagent_model_kwargs(agent_model_id),
         )
         if agent_model_id
         else default_agent_llm
@@ -969,12 +988,11 @@ def build_agent_node(
                     combined_tools,
                     role=f"agent:{agent_id}",
                     preferred_model_id=agent_model_id or supervisor_model_id,
-                    build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                    build_model=lambda candidate_model_id: create_subagent_chat_model(
                         candidate_model_id,
+                        role=f"agent:{agent_id}",
                         streaming=False,
                         timeout=180,
-                        _role=f"agent:{agent_id}",
-                        **subagent_model_kwargs(candidate_model_id),
                     ),
                 )
                 extensions_runtime_service.emit_response_tool_calls(response)
@@ -1079,11 +1097,11 @@ def build_reviewer_node(
     sanitize_message_chain: Callable,
 ):
     agent_specific_llm = (
-        llm_factory.create_chat_model(
+        create_subagent_chat_model(
             agent_model_id,
+            role=f"reviewer:{agent_id}",
             streaming=False,
             timeout=180,
-            **subagent_model_kwargs(agent_model_id),
         )
         if agent_model_id
         else default_agent_llm
@@ -1145,12 +1163,11 @@ def build_reviewer_node(
                 None,
                 role=f"reviewer:{agent_id}",
                 preferred_model_id=agent_model_id or supervisor_model_id,
-                build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                build_model=lambda candidate_model_id: create_subagent_chat_model(
                     candidate_model_id,
+                    role=f"reviewer:{agent_id}",
                     streaming=False,
                     timeout=180,
-                    _role=f"reviewer:{agent_id}",
-                    **subagent_model_kwargs(candidate_model_id),
                 ),
             )
             hooks_manager.execute_hook("on_reviewer_end", agent_name=agent_name, agent_id=agent_id)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from erc.runtime_context import bind_runtime_context
 from core.database import db
 from core.runtime_episode_runner import RuntimeEpisodeRunner
@@ -142,6 +144,85 @@ def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):
     assert handoff["engineeringState"] == "work_plan_ready"
     assert handoff["deliverableKind"] == "plan_only"
     assert handoff["writeRequired"] is False
+
+
+def test_engineering_mixed_spec_tasks_do_not_become_plan_only():
+    runner = RuntimeEpisodeRunner()
+    worker_briefs = [
+        {
+            "taskBriefId": "TASK-001",
+            "goal": "Create target output directory.",
+            "writeRequired": False,
+            "deliverableKind": "proof",
+        },
+        {
+            "taskBriefId": "TASK-002",
+            "goal": "Write index.html into the approved Spec target directory.",
+            "writeRequired": True,
+            "deliverableKind": "artifact",
+            "engineeringTaskCapsule": {
+                "writeRequired": True,
+                "deliverableKind": "artifact",
+                "writeSet": [".v8/live-audit/spec-mode-v2/demo/index.html"],
+            },
+        },
+    ]
+
+    assert runner._is_engineering_plan_only_request(
+        need={"kind": "engineering", "reason": "approved_spec_runtime_execution"},
+        inputs={"workspacePath": "E:/Projects/test3"},
+        worker_briefs=worker_briefs,
+    ) is False
+    assert runner._engineering_requires_write_evidence(
+        need={"kind": "engineering", "reason": "approved_spec_runtime_execution"},
+        inputs={"workspacePath": "E:/Projects/test3"},
+        worker_briefs=worker_briefs,
+    ) is True
+
+
+def test_top_level_episode_completion_schedules_chat_handoff_resume(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    scheduled = []
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "core.runtime_episode_runner._schedule_runtime_episode_handoff_resume",
+        lambda episode: scheduled.append(dict(episode)) or {"resume_mode": "chat", "resume_scheduled": True},
+    )
+
+    runner._maybe_schedule_chat_handoff_resume(
+        {
+            "episodeId": "episode_done",
+            "kind": "engineering",
+            "state": "completed",
+            "sessionId": "session_done",
+            "runId": "run_done",
+        }
+    )
+
+    assert scheduled and scheduled[0]["episodeId"] == "episode_done"
+
+
+def test_child_episode_completion_does_not_schedule_chat_handoff_resume(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    scheduled = []
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "core.runtime_episode_runner._schedule_runtime_episode_handoff_resume",
+        lambda episode: scheduled.append(dict(episode)) or {"resume_mode": "chat", "resume_scheduled": True},
+    )
+
+    runner._maybe_schedule_chat_handoff_resume(
+        {
+            "episodeId": "episode_child",
+            "parentEpisodeId": "episode_parent",
+            "kind": "delegation",
+            "state": "completed",
+            "sessionId": "session_done",
+            "runId": "run_done",
+        }
+    )
+
+    assert scheduled == []
 
 
 def test_task_brief_normalization_preserves_engineering_write_contract():
@@ -1847,6 +1928,111 @@ def test_parallel_branch_blocks_child_delegation_without_explicit_budget():
     assert summary["status"] == "blocked"
     assert summary["error"] == "child_delegation_not_allowed"
     assert summary["blockedChildDelegationCount"] == 1
+
+
+def test_parallel_branch_can_continue_beyond_legacy_fixed_step_limit():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import HumanMessage
+    from langgraph.types import Command
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "implementation_worker",
+            "agentName": "Implementation Worker",
+            "delegationId": "delegation-long-flow",
+            "invocationId": "invoke-long-flow",
+            "taskBriefId": "TASK-LONG",
+            "reason": "Complete a long engineering flow with many observable steps.",
+        },
+    }
+    call_count = 0
+
+    def _node_func(_state):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 45:
+            return Command(goto="supervisor", update={"messages": [HumanMessage(content="long flow complete")]})
+        return Command(
+            goto="implementation_worker",
+            update={"messages": [HumanMessage(content=f"progress step {call_count}")]},
+        )
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert call_count == 45
+    assert child_requests == []
+    assert summary["status"] == "ok"
+    assert summary["messageCount"] == 45
+
+
+def test_parallel_branch_stops_repeated_no_progress_loop():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langgraph.types import Command
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "stalled_worker",
+            "agentName": "Stalled Worker",
+            "delegationId": "delegation-stalled",
+            "invocationId": "invoke-stalled",
+            "taskBriefId": "TASK-STALLED",
+            "reason": "Detect a repeated no-progress loop.",
+        },
+    }
+
+    def _node_func(_state):
+        return Command(goto="stalled_worker", update={})
+
+    with pytest.raises(RuntimeError, match="连续重复同一执行状态"):
+        asyncio.run(_run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"}))
+
+
+def test_parallel_branch_stops_semantic_artifact_stall_even_with_varied_messages(tmp_path):
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import HumanMessage
+    from langgraph.types import Command
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "workspace_path": str(tmp_path),
+        "parallel_branch": {
+            "agentId": "artifact_worker",
+            "agentName": "Artifact Worker",
+            "delegationId": "delegation-artifact-stall",
+            "invocationId": "invoke-artifact-stall",
+            "taskBriefId": "TASK-ARTIFACT",
+            "reason": "Write the expected artifact.",
+            "taskBrief": {
+                "goal": "Create the expected file.",
+                "writeRequired": True,
+                "engineeringTaskCapsule": {
+                    "writeRequired": True,
+                    "expectedArtifacts": [".v8/demo/README.md"],
+                },
+            },
+        },
+    }
+    counter = 0
+
+    def _node_func(_state):
+        nonlocal counter
+        counter += 1
+        return Command(
+            goto="artifact_worker",
+            update={"messages": [HumanMessage(content=f"still inspecting route {counter}")]},
+        )
+
+    with pytest.raises(RuntimeError, match="语义无进展循环"):
+        asyncio.run(_run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"}))
+
+    assert counter > 20
 
 
 def test_parallel_branch_fails_skill_artifact_acceptance_when_skill_md_missing(tmp_path):

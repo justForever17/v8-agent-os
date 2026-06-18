@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 from typing import Annotated, Any, Optional
 
@@ -492,8 +493,25 @@ def _approved_spec_execution_bundle(
         for item in list(traceability.get("tasks") or [])
         if isinstance(item, dict)
     ]
-    if not task_sections:
-        task_sections = _task_sections_from_markdown(str(task_doc.get("content") or ""), list(task_doc.get("ids") or []))
+    parsed_task_sections = _task_sections_from_markdown(
+        str(task_doc.get("content") or ""),
+        list(task_doc.get("ids") or []),
+    )
+    if task_sections:
+        parsed_by_id = {
+            str(item.get("taskId") or "").strip(): item
+            for item in parsed_task_sections
+            if str(item.get("taskId") or "").strip()
+        }
+        task_sections = [
+            {
+                **dict(parsed_by_id.get(str(item.get("taskId") or "").strip()) or {}),
+                **item,
+            }
+            for item in task_sections
+        ]
+    else:
+        task_sections = parsed_task_sections
     return {
         "kind": "SpecExecutionBundle",
         "status": "ready",
@@ -642,10 +660,17 @@ def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
     if family != "engineering":
         return False
     lane = str(task.get("runtimeLane") or "").strip().lower()
+    expected_output = str(task.get("expectedOutput") or "")
     text = " ".join(
         str(task.get(key) or "")
         for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
     ).lower()
+    verification_markers = ("验收", "验证", "测试", "检查", "verify", "verification", "test", "validate")
+    if (
+        any(marker in text for marker in verification_markers)
+        and not _spec_task_expected_paths(expected_output)
+    ):
+        return False
     # Verification/checkpoint/final-summary tasks may inspect artifacts or produce
     # user-visible summaries, but they should not be treated as content-writing
     # workers unless a concrete artifact path is present.
@@ -719,15 +744,83 @@ def _spec_task_expected_paths(*values: Any) -> list[str]:
             candidate = str(match.group(1) or match.group(2) or "").strip()
             if not candidate:
                 continue
-            candidate = candidate.strip("`'\"，,。.;；:：")
+            candidate = candidate.strip("`'\"，,。;；:：")
             lowered = candidate.lower()
-            if lowered in {"http://", "https://"} or lowered.startswith(("http://", "https://")):
+            if (
+                lowered in {"http://", "https://"}
+                or lowered.startswith(("http://", "https://", "spec://"))
+                or any(marker in candidate for marker in ("<", ">", "\r", "\n"))
+            ):
                 continue
             if not re.search(r"(?i)([\\/]|(?:^|[\\/])?[\w@.$~-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg|mp3|wav|mp4|mov)$)", candidate):
                 continue
             if candidate not in paths:
                 paths.append(candidate)
     return paths[:16]
+
+
+def _spec_stage_slice(markdown: Any, refs: list[str], *, stage: str, limit: int = 5200) -> str:
+    text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized_refs = [str(ref or "").strip().upper() for ref in refs if str(ref or "").strip()]
+    if not text or not normalized_refs:
+        return ""
+    headings = list(re.finditer(r"(?m)^#{2,6}\s+(.+?)\s*$", text))
+    selected: list[str] = []
+    for index, match in enumerate(headings):
+        start = match.start()
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        block = text[start:end].strip()
+        upper_block = block.upper()
+        title = str(match.group(1) or "").strip()
+        include = any(ref in upper_block for ref in normalized_refs)
+        if not include and stage == "design":
+            heading_number = re.match(r"^\s*(\d+)(?:\.\d+)*[.、:\s]", title)
+            if heading_number:
+                section_number = int(heading_number.group(1))
+                include = any(
+                    (ref_number := re.search(r"(\d+)$", ref)) is not None
+                    and int(ref_number.group(1)) == section_number
+                    for ref in normalized_refs
+                )
+        if include and block not in selected:
+            selected.append(block)
+    if not selected:
+        return ""
+    return _safe_compact_text("\n\n".join(selected), limit=limit)
+
+
+def _preferred_agent_for_spec_task(
+    task: dict[str, Any],
+    *,
+    family: str,
+    writes_artifact: bool,
+    validates_skill_artifact: bool,
+    expected_paths: list[str],
+) -> str:
+    if validates_skill_artifact:
+        return "skill-workflow-curator"
+    if family != "engineering":
+        return ""
+    text = " ".join(
+        str(task.get(key) or "")
+        for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
+    ).lower()
+    suffixes = {Path(path.rstrip("/\\")).suffix.lower() for path in expected_paths if path.rstrip("/\\")}
+    verification_markers = ("验收", "验证", "测试", "检查", "verify", "verification", "test", "validate")
+    if not writes_artifact and any(marker in text for marker in verification_markers):
+        return "verification-engineer"
+    if suffixes.intersection({".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte"}):
+        return "frontend-product-engineer"
+    if suffixes and suffixes.issubset({".md", ".mdx", ".txt", ".rst"}):
+        return "docs-delivery-writer"
+    if writes_artifact or expected_paths or any(
+        marker in text
+        for marker in ("创建目录", "目录初始化", "mkdir", "implement", "write", "create", "实现", "写入", "编写")
+    ):
+        return "implementation-engineer"
+    if any(marker in text for marker in ("规划", "拆解", "方案", "plan", "decompose")):
+        return "project-planner"
+    return "implementation-engineer"
 
 
 def _spec_task_engineering_execution_contract(
@@ -837,6 +930,20 @@ def _brief_family_hint(brief: dict[str, Any]) -> str:
     return "engineering"
 
 
+def _canonical_spec_detail_ref(spec_id: str, detail_ref: Any, *, fallback_stage: str = "", fallback_id: str = "") -> str:
+    ref = str(detail_ref or "").strip()
+    spec = str(spec_id or "").strip()
+    if not ref and fallback_stage and fallback_id:
+        ref = f"spec://{spec}/{fallback_stage}#{fallback_id}" if spec else f"spec://{fallback_stage}#{fallback_id}"
+    if spec and ref.startswith("spec://") and not ref.startswith(f"spec://{spec}/"):
+        suffix = ref[len("spec://") :]
+        if suffix.startswith("/"):
+            suffix = suffix[1:]
+        if suffix and "/" not in suffix.split("#", 1)[0]:
+            return f"spec://{spec}/{suffix}"
+    return ref
+
+
 def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spec_id: str, workspace_path: str) -> dict[str, Any]:
     assigned_ids = [str(item.get("taskBriefId") or item.get("taskId") or "").strip() for item in research_briefs]
     assigned_ids = [item for item in assigned_ids if item]
@@ -846,7 +953,12 @@ def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spe
     for item in research_briefs:
         context = item.get("context") if isinstance(item.get("context"), dict) else {}
         task_id = str(item.get("taskBriefId") or context.get("taskId") or "").strip()
-        detail_ref = str(context.get("taskDetailRef") or "").strip()
+        detail_ref = _canonical_spec_detail_ref(
+            spec_id,
+            context.get("taskDetailRef"),
+            fallback_stage="tasks",
+            fallback_id=task_id,
+        )
         if detail_ref:
             detail_refs.append(detail_ref)
         summaries.append(
@@ -1066,11 +1178,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             spec_refs = list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
         writes_artifact = _spec_task_writes_artifact(task, family)
         validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)
-        expected_paths = _spec_task_expected_paths(
-            output,
-            task.get("taskExcerpt") or task.get("excerpt"),
-            task.get("title"),
-        )
+        expected_paths = _spec_task_expected_paths(output)
         allowed_write_set = list(expected_paths or ([workspace_path] if workspace_path else []))
         execution_contract = _spec_task_engineering_execution_contract(
             spec_id=spec_id,
@@ -1111,7 +1219,42 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             for snippet in list(task.get("designSnippets") or [])[:4]
             if isinstance(snippet, dict) and snippet.get("summary")
         )
-        task_detail_ref = str(task.get("detailRef") or f"spec://{spec_id}/tasks#{task_id}")
+        task_detail_ref = _canonical_spec_detail_ref(
+            spec_id,
+            task.get("detailRef"),
+            fallback_stage="tasks",
+            fallback_id=task_id,
+        )
+        requirement_ids = requirement_refs or [
+            ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))
+        ]
+        design_ids = design_refs or [ref for ref in spec_refs if str(ref).upper().startswith("DES-")]
+        approved_requirement_slice = _spec_stage_slice(
+            requirement_doc.get("content"),
+            requirement_ids,
+            stage="requirements",
+        )
+        approved_design_slice = _spec_stage_slice(
+            design_doc.get("content"),
+            design_ids,
+            stage="design",
+        )
+        spec_document_paths = {
+            key: value
+            for key, value in {
+                "requirements": requirement_doc.get("relativePath"),
+                "design": design_doc.get("relativePath"),
+                "tasks": task_doc.get("relativePath"),
+            }.items()
+            if value
+        }
+        preferred_agent_id = _preferred_agent_for_spec_task(
+            task,
+            family=family,
+            writes_artifact=writes_artifact,
+            validates_skill_artifact=validates_skill_artifact,
+            expected_paths=expected_paths,
+        )
         spec_execution_summary = _safe_compact_text(
             "\n".join(
                 item
@@ -1133,6 +1276,13 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             "taskExcerpt": task.get("taskExcerpt") or task.get("excerpt") or task.get("title") or task_id,
             "specExecutionSummary": spec_execution_summary,
             "frameworkDigest": framework_digest,
+            "approvedRequirementSlice": approved_requirement_slice,
+            "approvedDesignSlice": approved_design_slice,
+            "specDocumentPaths": spec_document_paths,
+            "specRefUsage": (
+                "spec:// refs are traceability identifiers, not URLs. Never pass them to curl, web tools, or shell commands. "
+                "Use the approved slices attached here; if more context is needed, read the listed workspace-relative Spec document path."
+            ),
             "runtimeLane": lane,
             "specRefs": spec_refs,
             "engineeringExecutionContract": execution_contract,
@@ -1181,6 +1331,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "parallelGroup": lane or kind,
                 "executionLaneHint": _spec_task_execution_lane(family),
                 "familyHint": "" if family == "governance" else family,
+                **({"preferredAgentId": preferred_agent_id} if preferred_agent_id else {}),
                 "deliverableKind": "skill_artifact" if validates_skill_artifact else _spec_task_deliverable_kind(family),
                 "writeRequired": writes_artifact,
                 **({"validateSkillArtifact": True} if validates_skill_artifact else {}),
@@ -1190,8 +1341,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                     "specId": spec_id,
                     "taskId": task_id,
                     "requirementIds": requirement_refs
-                    or [ref for ref in spec_refs if str(ref).upper().startswith(("REQ-", "BFIX-"))],
-                    "designIds": design_refs or [ref for ref in spec_refs if str(ref).upper().startswith("DES-")],
+                    or requirement_ids,
+                    "designIds": design_refs or design_ids,
                     "detailRefs": [
                         ref
                         for ref in [

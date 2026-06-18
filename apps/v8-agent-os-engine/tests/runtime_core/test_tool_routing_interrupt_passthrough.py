@@ -145,6 +145,45 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("[route required]", str(result.content))
         self.assertIn("wrote one lightweight file", str(result.content))
 
+    async def test_spec_runtime_execution_blocks_limited_direct_write(self):
+        request = _DummyRequest(
+            "write_native_file",
+            "tool_call_write",
+            state={
+                "specMode": True,
+                "current_route_context": {
+                    "specMode": True,
+                    "engineeringRequired": True,
+                    "specBrief": {
+                        "specId": "spec_ready",
+                        "pipelineControl": {"runtimeExecutionAllowed": True},
+                    },
+                    "specExecutionGate": {"runtimeExecutionAllowed": True},
+                },
+            },
+        )
+
+        async def execute(_request):
+            raise AssertionError("spec runtime execution must route before direct writes")
+
+        with bind_runtime_context(run_id="run_spec_exec", session_id="session_spec_exec"):
+            with patch("graph.tool_routing._enqueue_route_intent_episode") as enqueue_episode:
+                enqueue_episode.return_value = {"episodeId": "episode_spec_exec", "state": "queued"}
+                result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(getattr(result, "status", None), "error")
+        self.assertIn("[route required]", str(result.content))
+        self.assertIn("spec_runtime_execution_requires_runtime_episode", result.additional_kwargs["reasons"])
+        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "wait_episode")
+        self.assertEqual(result.additional_kwargs["queuedEpisodeId"], "episode_spec_exec")
+        enqueue_episode.assert_called_once()
+        route_intent = enqueue_episode.call_args.args[0]
+        self.assertEqual(route_intent["reason"], "approved_spec_runtime_execution")
+        self.assertEqual(route_intent["specId"], "spec_ready")
+        self.assertEqual(route_intent["inputs"]["specId"], "spec_ready")
+        self.assertEqual(route_intent["inputs"]["taskBriefs"][0]["taskBriefId"], "approved-spec-runtime-execution")
+
     async def test_engineering_route_intent_preserves_original_user_request(self):
         request = _DummyRequest(
             "run_system_command",

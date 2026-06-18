@@ -1292,6 +1292,17 @@ class LLMFactory:
             return None
 
     @classmethod
+    def get_model_max_output_tokens(cls, model_id: str) -> Optional[int]:
+        meta = cls._resolve_model_metadata(model_id)
+        if not meta.get("is_found"):
+            return None
+        try:
+            value = meta.get("global_max_tokens")
+            return int(value) if value else None
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
     def create_embedding_for_role(cls, **kwargs) -> BaseEmbedding:
         """Create an embedding model using the 'embedding' role from models.json."""
         resolution = model_control_plane.resolve_model_for_role("embedding")

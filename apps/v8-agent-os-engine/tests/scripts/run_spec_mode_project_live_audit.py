@@ -20,6 +20,17 @@ DEFAULT_WORKSPACE = Path("E:/Projects/test3")
 DEFAULT_REPORT_ROOT = Path(os.environ.get("V8_AGENT_OS_REPORTS_ROOT") or (Path.home() / ".v8-agent-os" / "reports"))
 TERMINAL_RUN_STATES = {"completed", "failed", "cancelled", "canceled"}
 ACTIVE_QUEUE_STATES = ["pending", "promoted", "queued"]
+ACTIVE_RUNTIME_EPISODE_STATES = {
+    "detected",
+    "routed",
+    "queued",
+    "leased",
+    "active",
+    "waiting",
+    "waiting_child",
+    "waiting_external",
+    "waiting_approval",
+}
 
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
@@ -138,7 +149,22 @@ def _session_idle_state(session_id: str) -> tuple[bool, dict[str, Any]]:
         ]
         queue_items = db.list_chat_user_message_queue(session_id=session_id, states=ACTIVE_QUEUE_STATES, limit=20)
         active_queue = [{"id": item.get("id"), "state": item.get("state")} for item in queue_items]
-        return not active_runs and not active_queue, {"activeRuns": active_runs, "activeQueue": active_queue}
+        episode_items = db.list_runtime_episodes(session_id=session_id, active_only=True, limit=50)
+        active_episodes = [
+            {
+                "id": item.get("episodeId") or item.get("id"),
+                "kind": item.get("kind"),
+                "state": item.get("state"),
+                "runId": item.get("runId") or item.get("run_id"),
+            }
+            for item in episode_items
+            if str(item.get("state") or "").strip().lower() in ACTIVE_RUNTIME_EPISODE_STATES
+        ]
+        return not active_runs and not active_queue and not active_episodes, {
+            "activeRuns": active_runs,
+            "activeQueue": active_queue,
+            "activeRuntimeEpisodes": active_episodes,
+        }
     except Exception as exc:  # noqa: BLE001
         return False, {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -483,7 +509,18 @@ def _run(args: argparse.Namespace) -> SpecLiveResult:
             result.status = "failed"
             return result
 
-    _wait_for_idle(session_id, timeout_s=args.max_wait)
+    _collect_durable(result)
+    idle, idle_state = _wait_for_idle(session_id, timeout_s=args.max_wait)
+    result.key_events.append({"executionIdle": {"ok": idle, "state": idle_state}})
+    _collect_durable(result)
+    if not idle:
+        result.findings.append({
+            "severity": "P0",
+            "code": "execution_not_idle",
+            "summary": "等待窗口结束时仍有 chat run、队列消息或 runtime episode 未收敛；不提前验收产物。",
+        })
+        result.status = "failed"
+        return result
     time.sleep(2)
     _collect_durable(result)
     _validate_outputs(result)

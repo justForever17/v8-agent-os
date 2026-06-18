@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 import re
 import uuid
@@ -204,6 +206,131 @@ def _branch_requires_skill_artifact_validation(branch: dict[str, Any]) -> bool:
     if task_id in {"TASK-010", "TASK-011"}:
         return True
     return any(marker in blob for marker in artifact_stage_markers)
+
+
+def _parallel_branch_progress_fingerprint(
+    *,
+    current_node: str,
+    state: dict[str, Any],
+    initial_message_count: int,
+    initial_todo_count: int,
+) -> str:
+    messages = list(state.get("messages") or [])[initial_message_count:]
+    todos = list(state.get("todos") or [])[initial_todo_count:]
+    recent_messages: list[dict[str, Any]] = []
+    for message in messages[-4:]:
+        recent_messages.append(
+            {
+                "role": str(getattr(message, "type", None) or getattr(message, "role", None) or message.__class__.__name__),
+                "name": str(getattr(message, "name", None) or ""),
+                "content": _compact_message_text(message, limit=1200),
+                "tools": _extract_tool_names_from_message(message),
+            }
+        )
+    payload = {
+        "node": current_node,
+        "recentMessages": recent_messages,
+        "recentTodos": todos[-4:],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_ARTIFACT_PATH_PATTERN = re.compile(
+    r"(?i)(?:`([^`]+)`|(?<![\w.-])([\w@.$~][\w@.$~\-/\\]*(?:\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg)|[\\/])))(?![\w.-])"
+)
+
+
+def _workspace_path_from_state(state: dict[str, Any]) -> Path | None:
+    workspace = str(
+        state.get("workspace_path")
+        or state.get("workspacePath")
+        or (state.get("current_route_context") or {}).get("workspace_path")
+        or (state.get("current_route_context") or {}).get("workspacePath")
+        or ""
+    ).strip()
+    if not workspace:
+        return None
+    try:
+        return Path(workspace).expanduser().resolve()
+    except Exception:
+        return None
+
+
+def _collect_expected_artifact_values(branch: dict[str, Any]) -> list[Any]:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    contract = context.get("engineeringExecutionContract") if isinstance(context.get("engineeringExecutionContract"), dict) else {}
+    values: list[Any] = []
+    for source in (task_brief, capsule, contract):
+        for key in ("expectedArtifacts", "expected_artifacts"):
+            raw = source.get(key)
+            if isinstance(raw, str):
+                values.append(raw)
+            else:
+                values.extend(list(raw or []))
+    return values
+
+
+def _infer_expected_artifact_paths(branch: dict[str, Any], state: dict[str, Any]) -> list[Path]:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    contract = context.get("engineeringExecutionContract") if isinstance(context.get("engineeringExecutionContract"), dict) else {}
+    write_required = any(
+        bool(source.get("writeRequired") or source.get("write_required"))
+        for source in (task_brief, capsule, contract)
+        if isinstance(source, dict)
+    )
+    if not write_required:
+        return []
+    workspace = _workspace_path_from_state(state)
+    if not workspace:
+        return []
+    paths: list[Path] = []
+    for raw_value in _collect_expected_artifact_values(branch):
+        for match in _ARTIFACT_PATH_PATTERN.finditer(str(raw_value or "")):
+            candidate = str(match.group(1) or match.group(2) or "").strip().strip("`'\"，,。;；:：")
+            if (
+                not candidate
+                or candidate.startswith(("spec://", "http://", "https://"))
+                or any(marker in candidate for marker in ("<", ">", "\r", "\n"))
+            ):
+                continue
+            path = Path(candidate)
+            resolved = path if path.is_absolute() else workspace / path
+            try:
+                resolved = resolved.expanduser().resolve()
+                resolved.relative_to(workspace)
+            except Exception:
+                continue
+            if resolved not in paths:
+                paths.append(resolved)
+    return paths[:16]
+
+
+def _artifact_progress_snapshot(paths: list[Path]) -> tuple[tuple[str, bool, bool, int, int], ...]:
+    snapshot: list[tuple[str, bool, bool, int, int]] = []
+    for path in paths:
+        try:
+            exists = path.exists()
+            is_dir = path.is_dir() if exists else False
+            if exists and is_dir:
+                try:
+                    child_count = sum(1 for _ in path.rglob("*"))
+                except Exception:
+                    child_count = 0
+                stat = path.stat()
+                snapshot.append((str(path), True, True, child_count, int(stat.st_mtime_ns)))
+            elif exists:
+                stat = path.stat()
+                snapshot.append((str(path), True, False, int(stat.st_size), int(stat.st_mtime_ns)))
+            else:
+                snapshot.append((str(path), False, False, 0, 0))
+        except Exception:
+            snapshot.append((str(path), False, False, 0, 0))
+    return tuple(snapshot)
 
 
 def _infer_required_skill_artifacts(branch: dict[str, Any], state: dict[str, Any]) -> list[Path]:
@@ -623,8 +750,24 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
     initial_message_count = int(branch.get("initialMessageCount") or len(local_state["messages"]))
     initial_todo_count = int(branch.get("initialTodoCount") or len(local_state["todos"]))
 
-    max_steps = 72 if _infer_required_skill_artifacts(branch, local_state) else 36
-    for _ in range(max_steps):
+    repeated_state_limit = 8
+    seen_progress_states: dict[str, int] = {}
+    expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
+    artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+    artifact_stall_rounds = 0
+    artifact_stall_limit = 80
+    while True:
+        progress_fingerprint = _parallel_branch_progress_fingerprint(
+            current_node=current_node,
+            state=local_state,
+            initial_message_count=initial_message_count,
+            initial_todo_count=initial_todo_count,
+        )
+        seen_progress_states[progress_fingerprint] = seen_progress_states.get(progress_fingerprint, 0) + 1
+        if seen_progress_states[progress_fingerprint] > repeated_state_limit:
+            raise RuntimeError(
+                f"{agent_id} 并发分支连续重复同一执行状态，已停止无进展循环。"
+            )
         if current_node == agent_id:
             runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
 
@@ -703,6 +846,19 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
             raise RuntimeError(f"{agent_id} 并发分支返回了非 Command 结果。")
 
         local_state = _merge_state_update(local_state, getattr(result, "update", None) or {})
+        if expected_artifact_paths:
+            next_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+            if next_snapshot != artifact_snapshot:
+                artifact_snapshot = next_snapshot
+                artifact_stall_rounds = 0
+            else:
+                artifact_stall_rounds += 1
+                if artifact_stall_rounds > artifact_stall_limit:
+                    missing = [str(path) for path in expected_artifact_paths if not path.exists()]
+                    raise RuntimeError(
+                        f"{agent_id} 并发分支声明了产物但长期没有文件进展，已停止语义无进展循环。"
+                        f" missingArtifacts={missing[:6]}"
+                    )
         goto = getattr(result, "goto", None)
         if isinstance(goto, str):
             if goto == "supervisor":
@@ -756,8 +912,6 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                     "acceptanceHint": "Wait for the child delegation completion event before merging or judging this branch.",
                 }, child_requests
         raise RuntimeError(f"{agent_id} 并发分支返回了不支持的 goto 类型。")
-    else:
-        raise RuntimeError(f"{agent_id} 并发分支超过最大步数限制。")
 
     delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
     delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]

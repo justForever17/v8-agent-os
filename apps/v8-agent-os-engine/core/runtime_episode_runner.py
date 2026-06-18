@@ -34,6 +34,19 @@ def _first_tool_message_content(command: Any) -> str:
     return ""
 
 
+def _schedule_runtime_episode_handoff_resume(episode: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from erc.command_router import runtime_command_router
+
+        return runtime_command_router.schedule_runtime_episode_handoff_resume(episode)
+    except Exception as exc:
+        return {
+            "resume_mode": "chat",
+            "resume_scheduled": False,
+            "resume_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 class RuntimeEpisodeRunner:
     """Durable SQLite-backed runner for RuntimeEpisode queue items.
 
@@ -238,6 +251,7 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._maybe_schedule_chat_handoff_resume(completed or {**episode, "state": final_state})
             self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
@@ -269,6 +283,7 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
             self._maybe_resume_parent_episode(failed or {**episode, "state": "failed"}, session_id=session_id, run_id=run_id)
 
     def _heartbeat(self, episode_id: str, progress: str) -> None:
@@ -576,6 +591,29 @@ class RuntimeEpisodeRunner:
             run_id=run_id,
             handoffBundle=child_handoffs,
             resumeToken=resume_token,
+        )
+
+    def _maybe_schedule_chat_handoff_resume(self, episode: dict[str, Any]) -> None:
+        parent_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+        if parent_id:
+            return
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+        session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip()
+        state = str(episode.get("state") or "").strip()
+        if not episode_id or not run_id or not session_id:
+            return
+        if state not in {"completed", "degraded", "failed", "cancelled"}:
+            return
+        result = _schedule_runtime_episode_handoff_resume(episode)
+        self._emit(
+            "runtime.episode.handoff_resume_scheduled"
+            if bool(result.get("resume_scheduled"))
+            else "runtime.episode.handoff_resume_not_scheduled",
+            episode=episode,
+            session_id=session_id,
+            run_id=run_id,
+            resume=result,
         )
 
     def _load_child_handoffs_from_resume_token(self, resume_token: dict[str, Any]) -> list[dict[str, Any]]:
@@ -897,6 +935,34 @@ class RuntimeEpisodeRunner:
                         "writeEvidenceRequired": True,
                     },
                 )
+            missing_expected_artifacts = self._engineering_missing_expected_artifacts(
+                workspace_path=str(workspace_path or ""),
+                worker_briefs=worker_briefs,
+            )
+            if status in {"ready", "degraded"} and missing_expected_artifacts:
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="engineering",
+                    compact_summary=(
+                        "Engineering degraded after delegated execution: "
+                        f"{len(missing_expected_artifacts)} expected artifact(s) are still missing."
+                    ),
+                    status="degraded",
+                    confidence="low",
+                    consumer_hint=(
+                        "Retry only the missing Spec tasks or repair the expected outputs; "
+                        "do not accept the project as complete while required artifacts are absent."
+                    ),
+                    extra={
+                        "engineeringState": "recoverable_failed",
+                        "errorCode": "engineering_expected_artifacts_missing",
+                        "recoverable": True,
+                        "degraded": True,
+                        "degradedReason": "engineering_expected_artifacts_missing",
+                        "missingExpectedArtifacts": missing_expected_artifacts,
+                        "delegationHandoff": delegation_handoff,
+                    },
+                )
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
@@ -964,6 +1030,8 @@ class RuntimeEpisodeRunner:
             worker_briefs=worker_briefs,
             key="writeRequired",
         )
+        if explicit is False and RuntimeEpisodeRunner._any_engineering_worker_brief_requires_write(worker_briefs):
+            return True
         if explicit is False:
             return False
         if explicit is True:
@@ -1024,6 +1092,34 @@ class RuntimeEpisodeRunner:
             scope = " ".join(str(item or "") for item in list(brief.get("behaviorScope") or []))
             if "workspace_mutation" in caps and "implementation" in scope:
                 return True
+        return False
+
+    @staticmethod
+    def _any_engineering_worker_brief_requires_write(worker_briefs: list[dict[str, Any]] | None) -> bool:
+        write_deliverables = {"artifact", "patch", "implementation", "skill_artifact", "project_artifact"}
+        for brief in list(worker_briefs or []):
+            if not isinstance(brief, dict):
+                continue
+            sources = [brief]
+            capsule = brief.get("engineeringTaskCapsule") or brief.get("engineering_task_capsule")
+            if isinstance(capsule, dict):
+                sources.append(capsule)
+            context = brief.get("context")
+            if isinstance(context, dict):
+                sources.append(context)
+                contract = context.get("engineeringExecutionContract") or context.get("engineering_execution_contract")
+                if isinstance(contract, dict):
+                    sources.append(contract)
+                handoff = context.get("handoffContract") or context.get("handoff_contract")
+                if isinstance(handoff, dict):
+                    sources.append(handoff)
+            for source in sources:
+                write_required = source.get("writeRequired") if "writeRequired" in source else source.get("write_required")
+                if write_required is True:
+                    return True
+                deliverable = str(source.get("deliverableKind") or source.get("deliverable_kind") or "").strip().lower()
+                if deliverable in write_deliverables:
+                    return True
         return False
 
     @staticmethod
@@ -1247,6 +1343,59 @@ class RuntimeEpisodeRunner:
         return any(verb in text for verb in write_verbs) and any(marker in text for marker in file_markers)
 
     @staticmethod
+    def _engineering_missing_expected_artifacts(
+        *,
+        workspace_path: str,
+        worker_briefs: list[dict[str, Any]] | None,
+    ) -> list[str]:
+        workspace = Path(str(workspace_path or "")).expanduser()
+        if not str(workspace_path or "").strip():
+            return []
+        try:
+            workspace = workspace.resolve()
+        except Exception:
+            return []
+        expected: list[str] = []
+        for brief in list(worker_briefs or []):
+            if not isinstance(brief, dict):
+                continue
+            sources: list[dict[str, Any]] = [brief]
+            capsule = brief.get("engineeringTaskCapsule") or brief.get("engineering_task_capsule")
+            if isinstance(capsule, dict):
+                sources.append(capsule)
+            context = brief.get("context")
+            if isinstance(context, dict):
+                contract = context.get("engineeringExecutionContract") or context.get("engineering_execution_contract")
+                if isinstance(contract, dict):
+                    sources.append(contract)
+            for source in sources:
+                values = source.get("expectedArtifacts") or source.get("expected_artifacts")
+                if isinstance(values, str):
+                    values = [values]
+                for value in list(values or []):
+                    normalized = str(value or "").strip().strip("`'\"")
+                    if (
+                        not normalized
+                        or normalized.startswith(("spec://", "http://", "https://"))
+                        or any(marker in normalized for marker in ("<", ">", "\r", "\n"))
+                    ):
+                        continue
+                    if normalized not in expected:
+                        expected.append(normalized)
+        missing: list[str] = []
+        for value in expected:
+            candidate = Path(value)
+            resolved = candidate if candidate.is_absolute() else workspace / candidate
+            try:
+                resolved = resolved.resolve()
+                resolved.relative_to(workspace)
+            except Exception:
+                continue
+            if not resolved.exists():
+                missing.append(value)
+        return missing
+
+    @staticmethod
     def _engineering_contract_value(
         *,
         need: dict[str, Any],
@@ -1294,6 +1443,8 @@ class RuntimeEpisodeRunner:
             worker_briefs=worker_briefs,
             key="writeRequired",
         )
+        if explicit_write is False and RuntimeEpisodeRunner._any_engineering_worker_brief_requires_write(worker_briefs):
+            return False
         if explicit_write is False:
             return True
         if explicit_write is True:
@@ -2012,7 +2163,7 @@ class RuntimeEpisodeRunner:
             elif results and not ready_results and (hard_failed or budget_blocked):
                 status = "failed"
             elif hard_failed:
-                status = "failed" if len(hard_failed) == len(results) else "ready"
+                status = "failed" if len(hard_failed) == len(results) else "degraded"
             else:
                 status = "ready"
             try:
@@ -2030,7 +2181,7 @@ class RuntimeEpisodeRunner:
             should_degrade = (
                 budget_boundary_only
                 or (
-                    status == "failed"
+                    status in {"failed", "degraded"}
                     and bool(results)
                     and not waiting_child
                 )
@@ -2100,9 +2251,9 @@ class RuntimeEpisodeRunner:
                         if isinstance(item, dict)
                     ],
                     "acceptanceCheck": {
-                        "must": {"passed": bool(ready_results), "items": list(dict.fromkeys(acceptance_tiers["must"]))},
+                        "must": {"passed": bool(ready_results) and not hard_failed and not budget_blocked, "items": list(dict.fromkeys(acceptance_tiers["must"]))},
                         "should": {"passed": bool(ready_results) and not hard_failed, "items": list(dict.fromkeys(acceptance_tiers["should"]))},
-                        "nice": {"passed": bool(ready_results), "items": list(dict.fromkeys(acceptance_tiers["nice"]))},
+                        "nice": {"passed": bool(ready_results) and not hard_failed, "items": list(dict.fromkeys(acceptance_tiers["nice"]))},
                     },
                     "recoveryHints": (
                         [

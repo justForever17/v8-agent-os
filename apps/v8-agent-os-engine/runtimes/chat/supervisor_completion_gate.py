@@ -17,6 +17,9 @@ ACTIVE_EPISODE_STATES = {
 }
 
 
+RUNTIME_EXECUTION_HANDOFF_STATUSES = {"ready", "degraded"}
+
+
 @dataclass(frozen=True, slots=True)
 class SupervisorCompletionDecision:
     action: str = "complete"
@@ -75,6 +78,23 @@ def _looks_forward_only(text: str) -> bool:
     )
 
 
+def _has_ready_runtime_handoff(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> bool:
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not episode_id:
+            continue
+        for handoff in list(handoffs_by_episode.get(episode_id, []) or []):
+            status = str(handoff.get("status") or "").strip().lower()
+            if status in RUNTIME_EXECUTION_HANDOFF_STATUSES:
+                return True
+    return False
+
+
 def evaluate_supervisor_completion(
     *,
     episodes: Iterable[Mapping[str, Any]] = (),
@@ -96,7 +116,7 @@ def evaluate_supervisor_completion(
     ]
     if active:
         return SupervisorCompletionDecision(
-            action="fail",
+            action="waiting_runtime",
             reason="runtime_episode_active_at_stream_end",
             details={"episodeIds": active[:12]},
         )
@@ -164,6 +184,29 @@ def evaluate_supervisor_completion(
                     "specId": brief.get("specId"),
                     "currentStage": brief.get("currentStage"),
                     "blockedByApproval": blocked_stage,
+                },
+            )
+        if bool(pipeline.get("runtimeExecutionAllowed")) and not _has_ready_runtime_handoff(
+            normalized_episodes,
+            normalized_handoffs,
+        ):
+            if not normalized_episodes:
+                return SupervisorCompletionDecision(
+                    action="fail",
+                    reason="spec_runtime_execution_episode_missing",
+                    details={
+                        "specId": brief.get("specId"),
+                        "currentStage": brief.get("currentStage"),
+                        "episodeCount": 0,
+                    },
+                )
+            return SupervisorCompletionDecision(
+                action="waiting_runtime",
+                reason="spec_runtime_execution_handoff_pending",
+                details={
+                    "specId": brief.get("specId"),
+                    "currentStage": brief.get("currentStage"),
+                    "episodeCount": len(normalized_episodes),
                 },
             )
         # A fast client-side approval can be applied before the turn that wrote

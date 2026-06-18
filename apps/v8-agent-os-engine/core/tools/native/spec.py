@@ -746,7 +746,7 @@ def spec_broker(
                 if active_spec and (
                     requested_kind == "bugfix"
                     or requested_stage == "bugfix"
-                    or re.search(r"(?i)fail|failed|failure|repair|recover|empty|validation|修复|失败|报错|为空|验证", " ".join([user_request, feature_name or "", comment, content[:1200]]))
+                    or re.search(r"(?i)fail|failed|failure|repair|recover|empty|bugfix|修复|失败|报错|为空|异常|补救", " ".join([user_request, feature_name or "", comment, content[:1200]]))
                 ):
                     return _spec_runtime_execution_active_payload(active_spec=active_spec)
             if requested_stage in {"design", "tasks"}:

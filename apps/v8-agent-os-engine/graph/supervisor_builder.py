@@ -15,7 +15,7 @@ from runtimes.network_supervisor.openai_compat import build_external_langchain_t
 from core.storage import storage
 from erc.capability_registry import capability_registry
 
-from .agent_factories import build_specialist_agent_components
+from .agent_factories import build_specialist_agent_components, subagent_model_kwargs
 from .supervisor_execution import route_supervisor_response
 from .supervisor_routing import build_supervisor_toolset, create_robust_invoke
 from .supervisor_turn import execute_supervisor_turn
@@ -74,11 +74,20 @@ def build_supervisor_runtime_bundle(
 
     supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=False, **caller_kwargs)
     default_agent_model_id = sup_model_name if request_model_override else (storage.get_default_agent_model_id() or sup_model_name)
-    default_agent_llm = (
-        supervisor_base_llm
-        if not default_agent_model_id or default_agent_model_id == sup_model_name
-        else llm_factory.create_chat_model(default_agent_model_id, streaming=False, **caller_kwargs)
-    )
+    if not default_agent_model_id:
+        default_agent_llm = supervisor_base_llm
+    elif (
+        default_agent_model_id == sup_model_name
+        and llm_factory.get_model_max_output_tokens(default_agent_model_id)
+    ):
+        default_agent_llm = supervisor_base_llm
+    else:
+        default_agent_llm = llm_factory.create_chat_model(
+            default_agent_model_id,
+            streaming=False,
+            **caller_kwargs,
+            **subagent_model_kwargs(default_agent_model_id),
+        )
 
     all_mcp_tools = extensions_runtime_service.get_mcp_tools()
     plugin_host_tools = plugin_host_tool_registry.build_supervisor_tools()

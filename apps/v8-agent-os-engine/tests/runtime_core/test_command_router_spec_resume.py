@@ -238,6 +238,58 @@ def test_spec_approval_resume_schedules_same_run(monkeypatch):
     assert approved_stages[0]["stage"] == "requirements"
 
 
+def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+
+    def fake_schedule(request, *, transport, run_id=None):
+        scheduled.append({"request": request, "transport": transport, "run_id": run_id})
+        return run_id or request.resume_run_id
+
+    router.configure(schedule_chat_run=fake_schedule)
+    run_record = {
+        "id": "run_runtime",
+        "session_id": "session_runtime",
+        "conversation_id": "session_runtime",
+        "user_id": "user_demo",
+        "run_type": "chat",
+        "status": "running",
+        "metadata": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+    }
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: run_record)
+    monkeypatch.setattr(
+        router,
+        "_scope_payload_for_session",
+        lambda _session_id: {
+            "workspace_path": "E:/Projects/test3",
+            "scope_hint": "workspace",
+            "scope_mode": "explicit",
+        },
+    )
+
+    result = router.schedule_runtime_episode_handoff_resume(
+        {
+            "episodeId": "episode_runtime",
+            "kind": "engineering",
+            "state": "completed",
+            "sessionId": "session_runtime",
+            "runId": "run_runtime",
+            "inputs": {"specId": "spec_runtime"},
+        }
+    )
+
+    assert result["resume_scheduled"] is True
+    assert result["resumed_run_id"] == "run_runtime"
+    assert scheduled and scheduled[0]["transport"] == "system_resume"
+    assert scheduled[0]["run_id"] == "run_runtime"
+    request = scheduled[0]["request"]
+    assert request.resume_run_id == "run_runtime"
+    assert request.data.spec_mode is True
+    assert request.data.spec_id == "spec_runtime"
+    assert request.resume_value["runtimeEpisodeHandoff"]["episodeId"] == "episode_runtime"
+    assert "Runtime Episode Handoff Ready" in request.messages[0].content
+
+
 def test_spec_approval_resume_failure_restores_waiting_approval(monkeypatch):
     router = RuntimeCommandRouter()
     approval = {

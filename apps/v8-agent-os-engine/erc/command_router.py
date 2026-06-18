@@ -280,6 +280,67 @@ class RuntimeCommandRouter:
             data=request_data,
         )
 
+    def _build_runtime_handoff_resume_chat_request(
+        self,
+        run_record: Dict[str, Any],
+        *,
+        episode: Dict[str, Any],
+    ) -> ChatRequest:
+        scope_payload = self._scope_payload_for_session(run_record["session_id"])
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        episode_kind = str(episode.get("kind") or "runtime").strip() or "runtime"
+        episode_state = str(episode.get("state") or "").strip()
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        need = episode.get("need") if isinstance(episode.get("need"), dict) else {}
+        spec_id = str(
+            inputs.get("specId")
+            or inputs.get("spec_id")
+            or need.get("specId")
+            or need.get("spec_id")
+            or ""
+        ).strip()
+        resume_value = {
+            "runtimeEpisodeHandoff": {
+                "kind": "runtime_episode_handoff_ready",
+                "episodeId": episode_id,
+                "episodeKind": episode_kind,
+                "episodeState": episode_state,
+                "runId": run_record.get("id"),
+                "sessionId": run_record.get("session_id"),
+                **({"specId": spec_id} if spec_id else {}),
+            }
+        }
+        request_data = ChatRequestData(specMode=True, specId=spec_id) if spec_id else None
+        return ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "[Runtime Episode Handoff Ready]\n"
+                        "A previously routed runtime episode has now reached a terminal state and its typed handoff is ready. "
+                        "Continue by merging the runtime handoff into the user-facing answer. Do not route a new runtime episode, "
+                        "do not rewrite Spec documents, and do not perform direct file or command work.\n"
+                        f"episodeId: {episode_id}\n"
+                        f"episodeKind: {episode_kind}\n"
+                        f"episodeState: {episode_state}\n"
+                        f"specId: {spec_id or '(none)'}"
+                    ),
+                )
+            ],
+            config=self._engine_config_from_run(run_record),
+            session_id=run_record["session_id"],
+            conversation_id=run_record.get("conversation_id") or run_record["session_id"],
+            user_id=run_record.get("user_id") or "anonymous",
+            project_id=scope_payload.get("project_id"),
+            workspace_id=scope_payload.get("workspace_id"),
+            workspace_path=scope_payload.get("workspace_path"),
+            scope_hint=scope_payload.get("scope_hint"),
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
+            resume_run_id=run_record["id"],
+            resume_value=resume_value,
+            data=request_data,
+        )
+
     def _build_spec_continuation_payload(
         self,
         *,
@@ -502,6 +563,61 @@ class RuntimeCommandRouter:
 
         result["resume_mode"] = resume_mode
         result["resume_scheduled"] = resume_scheduled
+
+    def schedule_runtime_episode_handoff_resume(self, episode: Dict[str, Any]) -> Dict[str, Any]:
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+        if not run_id:
+            return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_id_missing"}
+        run_record = db.get_run_record(run_id)
+        if not run_record:
+            return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_not_found"}
+        if self._resume_mode_for_run(run_record) != "chat":
+            return {"resume_mode": self._resume_mode_for_run(run_record), "resume_scheduled": False, "resume_error": "not_chat_run"}
+        status = str(run_record.get("status") or "").strip()
+        if status not in {"running"}:
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": f"run_not_running:{status or 'unknown'}",
+            }
+        if self._schedule_chat_run is None:
+            self._emit_resume_event(
+                run_record,
+                "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "transport": "system_resume",
+                    "reason": "chat_scheduler_unavailable",
+                    "runtimeEpisodeId": episode.get("episodeId") or episode.get("id"),
+                },
+            )
+            return {"resume_mode": "chat", "resume_scheduled": False, "resume_error": "chat_scheduler_unavailable"}
+        resume_request = self._build_runtime_handoff_resume_chat_request(run_record, episode=episode)
+        scheduled_run_id = self._schedule_chat_run(
+            resume_request,
+            transport="system_resume",
+            run_id=str(run_record["id"]),
+        )
+        scheduled = bool(scheduled_run_id)
+        self._emit_resume_event(
+            run_record,
+            "run.resume.scheduled" if scheduled else "run.resume.not_scheduled",
+            {
+                "resumeMode": "chat",
+                "transport": "system_resume",
+                "resumeReason": "runtime_episode_handoff_ready",
+                "scheduledRunId": scheduled_run_id or run_record.get("id"),
+                "runtimeEpisodeId": episode.get("episodeId") or episode.get("id"),
+                "runtimeEpisodeKind": episode.get("kind"),
+                **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
+            },
+        )
+        return {
+            "resume_mode": "chat",
+            "resume_scheduled": scheduled,
+            "resumed_run_id": scheduled_run_id or run_record["id"],
+            **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
+        }
 
     def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any] | None:
         approval_kind = self._approval_kind(approval)

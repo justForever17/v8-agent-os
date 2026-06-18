@@ -504,10 +504,18 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
     text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n")
     task_re = re.compile(r"(?m)^(\s*)-\s+\[[ xX]\]\s+((?:TASK|TSK|T)-\d{2,}|\d+(?:\.\d+)*)\.?\s*(.*)$", re.IGNORECASE)
     matches = list(task_re.finditer(text))
+    task_style = "checkbox"
+    if not matches:
+        task_re = re.compile(
+            r"(?m)^#{2,6}\s+((?:TASK|TSK|T)-\d{2,})\s*[:：.-]?\s*(.*?)\s*$",
+            re.IGNORECASE,
+        )
+        matches = list(task_re.finditer(text))
+        task_style = "heading"
     slices: list[dict[str, Any]] = []
     for index, match in enumerate(matches):
-        raw_id = match.group(2).strip()
-        title = match.group(3).strip()
+        raw_id = match.group(2 if task_style == "checkbox" else 1).strip()
+        title = match.group(3 if task_style == "checkbox" else 2).strip()
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         block = text[start:end].strip()
@@ -521,10 +529,29 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
             for item in _extract_requirement_ref_ids(body_for_refs)
             if item in requirement_index or re.match(r"^(?:REQ|FR|NFR|BFIX|AC-REQ|AC-BFIX)-", item)
         ]
+        direct_design_refs = _extract_ids(body_for_refs, "DES")
+
+        def _matches_design_ref(fragment: dict[str, Any]) -> bool:
+            fragment_id = str(fragment.get("id") or "").strip().upper()
+            if not fragment_id:
+                return False
+            if fragment_id in direct_design_refs:
+                return True
+            fragment_number = re.search(r"(\d+)$", fragment_id)
+            if not fragment_number:
+                return False
+            return any(
+                (match := re.search(r"(\d+)$", ref)) is not None
+                and int(match.group(1)) == int(fragment_number.group(1))
+                for ref in direct_design_refs
+            )
+
         design_matches = [
             item
             for item in design_fragments
-            if set(req_refs).intersection(set(item.get("requirementRefs") or [])) or (item.get("framework") and req_refs)
+            if _matches_design_ref(item)
+            or set(req_refs).intersection(set(item.get("requirementRefs") or []))
+            or (item.get("framework") and req_refs)
         ]
         slices.append(
             {

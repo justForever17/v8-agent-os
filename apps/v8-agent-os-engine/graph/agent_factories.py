@@ -28,6 +28,14 @@ from .tool_routing import create_routed_tool_node
 from .route_context import merge_route_context
 
 
+DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS = 32768
+
+
+def subagent_model_kwargs(model_id: str | None) -> dict[str, int]:
+    configured = llm_factory.get_model_max_output_tokens(str(model_id or "").strip())
+    return {"max_tokens": int(configured or DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS)}
+
+
 def _canonical_tool_name(tool_ref) -> str:
     metadata = dict(getattr(tool_ref, "metadata", None) or {})
     return str(metadata.get("canonicalName") or getattr(tool_ref, "name", "")).strip()
@@ -264,6 +272,10 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Task Detail Refs", "taskDetailRefs", 900),
     ("Spec Execution Summary", "specExecutionSummary", 3600),
     ("Framework Digest", "frameworkDigest", 1400),
+    ("Approved Requirement Slice", "approvedRequirementSlice", 5200),
+    ("Approved Design Slice", "approvedDesignSlice", 5200),
+    ("Spec Document Paths", "specDocumentPaths", 900),
+    ("Spec Ref Usage", "specRefUsage", 900),
     ("Expected Output", "expectedOutput", 800),
     ("Expected Outputs", "expectedOutputs", 900),
     ("Workspace Path", "workspacePath", 260),
@@ -300,7 +312,7 @@ def _agent_visible_context_lines(context: dict | None) -> list[str]:
         lines.append(
             "- Runtime-only context omitted from prompt: "
             + ", ".join(sorted(omitted))
-            + ". Use the listed detail refs or dedicated broker/detail tools when exact content is needed."
+            + ". The approved task-specific slices above are authoritative. Traceability refs are not URLs; use listed workspace document paths when a broader approved section is needed."
         )
         emitted = True
     return lines if emitted else []
@@ -727,7 +739,12 @@ def build_agent_node(
     sanitize_response_tool_calls: Callable,
 ):
     agent_specific_llm = (
-        llm_factory.create_chat_model(agent_model_id, streaming=False, timeout=180)
+        llm_factory.create_chat_model(
+            agent_model_id,
+            streaming=False,
+            timeout=180,
+            **subagent_model_kwargs(agent_model_id),
+        )
         if agent_model_id
         else default_agent_llm
     )
@@ -957,6 +974,7 @@ def build_agent_node(
                         streaming=False,
                         timeout=180,
                         _role=f"agent:{agent_id}",
+                        **subagent_model_kwargs(candidate_model_id),
                     ),
                 )
                 extensions_runtime_service.emit_response_tool_calls(response)
@@ -1061,7 +1079,12 @@ def build_reviewer_node(
     sanitize_message_chain: Callable,
 ):
     agent_specific_llm = (
-        llm_factory.create_chat_model(agent_model_id, streaming=False, timeout=180)
+        llm_factory.create_chat_model(
+            agent_model_id,
+            streaming=False,
+            timeout=180,
+            **subagent_model_kwargs(agent_model_id),
+        )
         if agent_model_id
         else default_agent_llm
     )
@@ -1127,6 +1150,7 @@ def build_reviewer_node(
                     streaming=False,
                     timeout=180,
                     _role=f"reviewer:{agent_id}",
+                    **subagent_model_kwargs(candidate_model_id),
                 ),
             )
             hooks_manager.execute_hook("on_reviewer_end", agent_name=agent_name, agent_id=agent_id)

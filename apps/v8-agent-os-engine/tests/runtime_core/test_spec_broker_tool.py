@@ -133,6 +133,87 @@ def test_spec_brief_traceability_links_kiro_style_requirements_design_and_tasks(
     assert any("uni-app" in (item.get("summary") or "") for item in first_task["designSnippets"])
 
 
+def test_spec_brief_traceability_links_heading_style_tasks(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    requirements = """# Requirements
+
+## REQ-001 Counter
+
+The page SHALL show a counter.
+
+## REQ-002 Documentation
+
+The delivery SHALL include a README.
+"""
+    design = """# Design
+
+## DES-001 Browser implementation
+
+Use one HTML file with inline CSS and JavaScript. REQ-001
+
+## DES-002 Documentation
+
+Document how to open the page. REQ-002
+"""
+    tasks = """# Tasks
+
+### TASK-001: Build the counter
+
+- **runtimeLane**: Engineering
+- **specRefs**: REQ-001, DES-001
+- **expectedOutput**: `.v8/demo/index.html`
+
+### TASK-002: Write documentation
+
+- **runtimeLane**: Engineering
+- **specRefs**: REQ-002, DES-002
+- **expectedOutput**: `.v8/demo/README.md`
+"""
+    created = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Create a counter.",
+            feature_name="heading-task-contract",
+            content=requirements,
+        )
+    )
+    spec_id = created["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content=design,
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="tasks",
+            content=tasks,
+        )
+    )["ok"]
+
+    traceability = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)["traceability"]
+
+    assert traceability["distributionChecks"]["taskCount"] == 2
+    assert traceability["distributionChecks"]["tasksWithRequirementRefs"] == 2
+    assert traceability["distributionChecks"]["tasksWithDesignRefs"] == 2
+    by_id = {item["taskId"]: item for item in traceability["tasks"]}
+    assert by_id["TASK-001"]["requirementRefs"] == ["REQ-001"]
+    assert by_id["TASK-001"]["designRefs"] == ["DES-001"]
+    assert by_id["TASK-002"]["requirementRefs"] == ["REQ-002"]
+    assert "DES-002" in by_id["TASK-002"]["designRefs"]
+    assert "DES-001" in by_id["TASK-002"]["designRefs"]  # Framework/design baseline is shared across tasks.
+
+
 def test_spec_broker_rewrite_approved_stage_returns_locked(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -689,6 +770,74 @@ def test_spec_broker_default_resolution_ignores_delivered_specs(tmp_path):
 
     assert approved["ok"] is True
     assert approved["specId"] == second_id
+
+
+def test_spec_broker_allows_new_requirements_with_validation_words_when_old_spec_ready(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    old_req = _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            user_request="旧的 live counter",
+            feature_name="spec-mode-v2",
+            stage="requirements",
+            content="# Requirements\n\n- REQ-001: old counter.\n",
+        )
+    )
+    old_id = old_req["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=old_id, stage="requirements"))["ok"]
+    old_design = _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=old_id,
+            stage="design",
+            content="# Design\n\n## DES-001\n\nUse plain HTML.\n",
+        )
+    )
+    assert old_design["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=old_id, stage="design"))["ok"]
+    old_tasks = _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=old_id,
+            stage="tasks",
+            content=(
+                "# Tasks\n\n"
+                "## Task Pipeline\n\n"
+                "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+                "| TASK-001 | Engineering | Build old counter. | - | REQ-001, DES-001 | index.html | file exists |\n\n"
+                "### TASK-001: Build old counter\n\n"
+                "- runtimeLane: Engineering\n"
+                "- dependsOn: []\n"
+                "- specRefs: REQ-001, DES-001\n"
+                "- expectedOutput: index.html\n"
+                "- acceptance: file exists\n"
+                "- proofRequired: file proof\n"
+            ),
+        )
+    )
+    assert old_tasks["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=old_id, stage="tasks"))["ok"]
+
+    new_req = _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            user_request="新建一个带验收与验证步骤的计数器 Spec",
+            feature_name="spec-mode-v2",
+            stage="requirements",
+            content="# Requirements\n\n- REQ-001: new counter with 验收 and 验证 wording.\n",
+        )
+    )
+
+    assert new_req["ok"] is True
+    assert new_req["kind"] in {"spec_stage_ready", "spec_stage_edited"}
+    assert new_req["specId"] != old_id
 
 
 def test_spec_broker_runtime_context_spec_id_wins_over_feature_match(tmp_path):

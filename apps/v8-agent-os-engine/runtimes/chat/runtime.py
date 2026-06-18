@@ -4567,6 +4567,69 @@ class ChatRuntime:
                 "specContinuation": spec_continuation,
                 **({"specNextStage": next_stage, "spec_next_stage": next_stage} if next_stage else {}),
             }
+        runtime_handoff_resume = (
+            dict(resume_value.get("runtimeEpisodeHandoff") or {})
+            if isinstance(resume_value.get("runtimeEpisodeHandoff"), dict)
+            else {}
+        )
+        runtime_handoff_planner_plan: dict[str, Any] | None = None
+        runtime_handoff_dispatch_status: dict[str, Any] | None = None
+        if runtime_handoff_resume:
+            resume_episode_id = str(runtime_handoff_resume.get("episodeId") or "").strip()
+            resume_episode_kind = str(runtime_handoff_resume.get("episodeKind") or "runtime").strip() or "runtime"
+            if resume_episode_id:
+                resume_episode = {
+                    "episodeId": resume_episode_id,
+                    "needId": resume_episode_id,
+                    "kind": resume_episode_kind,
+                    "state": "active",
+                    "sessionId": chat_run.session_id,
+                    "session_id": chat_run.session_id,
+                    "runId": chat_run.active_run_id,
+                    "run_id": chat_run.active_run_id,
+                    "source": "runtime_episode_handoff_resume",
+                    "reason": "runtime_episode_handoff_ready",
+                }
+                current_route_context = {
+                    **current_route_context,
+                    "runtimeEpisodeHandoffResume": runtime_handoff_resume,
+                    "capabilityEpisodes": [
+                        *[
+                            item
+                            for item in list(current_route_context.get("capabilityEpisodes") or [])
+                            if not isinstance(item, dict)
+                            or str(item.get("episodeId") or item.get("needId") or "") != resume_episode_id
+                        ],
+                        resume_episode,
+                    ],
+                }
+                runtime_handoff_planner_plan = {
+                    "planId": f"runtime-handoff-resume:{resume_episode_id}",
+                    "strategy": "runtime_episode_resume",
+                    "taskBriefs": [],
+                    "capabilityPlan": [
+                        {
+                            "kind": resume_episode_kind,
+                            "episodeId": resume_episode_id,
+                            "needId": resume_episode_id,
+                            "state": "active",
+                            "reason": "runtime_episode_handoff_ready",
+                            "source": "runtime_episode_handoff_resume",
+                        }
+                    ],
+                    "autoDispatchDecision": {
+                        "willDispatch": True,
+                        "mode": "auto",
+                        "reason": "runtime_episode_handoff_ready",
+                    },
+                }
+                runtime_handoff_dispatch_status = {
+                    "mode": "runtime_episode",
+                    "nextAction": "wait_episode",
+                    "state": "handoff_resume_requested",
+                    "episodeCount": 1,
+                    "episodeIds": [resume_episode_id],
+                }
         if compat_diagnostics:
             current_route_context = {
                 **current_route_context,
@@ -4619,8 +4682,10 @@ class ChatRuntime:
                 "plannerDeferredFirstTurn": True,
                 "planner_deferred_first_turn": True,
             }
-        planner_dispatch_status: dict[str, Any] | None = None
+        planner_dispatch_status: dict[str, Any] | None = runtime_handoff_dispatch_status
         planner_plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
+        if not planner_plan and runtime_handoff_planner_plan:
+            planner_plan = runtime_handoff_planner_plan
         planner_decision = dict((planner_plan or {}).get("autoDispatchDecision") or {})
         planner_auto_dispatch_suppressed = bool(getattr(chat_run.prepared, "planner_deferred", False))
         if planner_auto_dispatch_suppressed and planner_plan and bool(planner_decision.get("willDispatch")):
@@ -4667,6 +4732,7 @@ class ChatRuntime:
                             "workspacePath": chat_run.scope_result.binding.workspace_path,
                             "current_route_context": current_route_context,
                             "planner_plan": planner_plan,
+                            "planner_dispatch_status": planner_dispatch_status or {},
                         }
                     )
                 dispatch_update = dict(getattr(dispatch_command, "update", None) or {})
@@ -8970,6 +9036,20 @@ class ChatRuntime:
                 "reason": decision.reason,
                 "run_id": chat_run.active_run_id,
             }
+        if decision.action == "waiting_runtime":
+            chat_run.emit_runtime_event(
+                "run.completion.waiting_for_runtime",
+                {"reason": decision.reason, **dict(decision.details or {})},
+                agent_id=None,
+                node="completion_gate",
+            )
+            chat_run.run_handle.transition("running", reason=decision.reason, node="completion_gate")
+            return {
+                "type": "done",
+                "status": "running",
+                "reason": decision.reason,
+                "run_id": chat_run.active_run_id,
+            }
         if decision.action == "fail":
             chat_run.emit_runtime_event(
                 "run.completion.blocked",
@@ -8988,7 +9068,11 @@ class ChatRuntime:
             brief = dict(completion_spec_brief or {})
             pipeline = brief.get("pipelineControl") if isinstance(brief.get("pipelineControl"), dict) else {}
             spec_id = str(brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
-            workspace_path = str(getattr(chat_run.scope_result.binding, "workspace_path", "") or "").strip()
+            workspace_path = str(
+                brief.get("workspacePath")
+                or getattr(chat_run.scope_result.binding, "workspace_path", "")
+                or ""
+            ).strip()
             if spec_id and workspace_path and bool(pipeline.get("runtimeExecutionAllowed")):
                 try:
                     delivered = spec_service.mark_delivered(

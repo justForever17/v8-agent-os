@@ -228,6 +228,8 @@ def _planning_fact_gathering_allowed(
 ) -> bool:
     if has_active_episode or not _planning_fact_gathering_active(state_mapping):
         return False
+    if _spec_runtime_execution_allowed(state_mapping):
+        return False
     if tool_name == "web_broker":
         web_calls = len([name for name in tool_names if name == "web_broker"])
         limit = _SPEC_PLANNING_WEB_TOOL_LIMIT if _spec_mode_active(state_mapping) else _PLANNING_WEB_TOOL_LIMIT
@@ -358,6 +360,27 @@ def _workspace_from_state(state_mapping: dict[str, Any], args: dict[str, Any]) -
     return ""
 
 
+def _spec_id_from_state(state_mapping: dict[str, Any]) -> str:
+    route_context = dict(state_mapping.get("current_route_context") or {})
+    for key in ("specId", "spec_id", "currentSpecId", "current_spec_id"):
+        value = state_mapping.get(key) or route_context.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for raw in (
+        state_mapping.get("specBrief"),
+        state_mapping.get("spec_brief"),
+        route_context.get("specBrief"),
+        route_context.get("spec_brief"),
+    ):
+        if not isinstance(raw, dict):
+            continue
+        for key in ("specId", "spec_id", "currentSpecId", "current_spec_id"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _user_request_from_state(state_mapping: dict[str, Any]) -> str:
     for key in ("latest_user_content", "latestUserContent", "user_request", "userRequest"):
         value = state_mapping.get(key)
@@ -405,6 +428,54 @@ def _route_intent_for_blocked_tool(
         inputs["userRequest"] = user_request
     if workspace:
         inputs["workspacePath"] = workspace
+    spec_id = _spec_id_from_state(state_mapping)
+    if (
+        route_kind == "engineering"
+        and _spec_mode_active(state_mapping)
+        and _spec_runtime_execution_allowed(state_mapping)
+    ):
+        if spec_id:
+            inputs["specId"] = spec_id
+        inputs.update(
+            {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "approved-spec-runtime-execution",
+                        "goal": user_request or "Execute the approved Spec through Engineering Runtime.",
+                        "context": {
+                            "source": "spec_runtime_execution_gate",
+                            "blockedTool": tool_name,
+                            "blockedToolArgs": args,
+                            "userRequest": user_request,
+                            **({"workspacePath": workspace} if workspace else {}),
+                            **({"specId": spec_id} if spec_id else {}),
+                        },
+                        "writeSet": [workspace or "<project-workspace>/"],
+                        "behaviorScope": ["implementation", "verification"],
+                        "requiredCapabilities": ["workspace_mutation", "command_execution", "verification"],
+                        "acceptanceContract": (
+                            "Execute only the approved Spec tasks for the current specId. "
+                            "Return touched files, commands, proof, artifacts, and residual risks."
+                        ),
+                        "executionLaneHint": "auto",
+                        "familyHint": "engineering",
+                    }
+                ],
+                "proofExpectations": [
+                    "Execute approved Spec tasks through Engineering Runtime.",
+                    "Return a typed handoff with spec/task refs before Supervisor finalizes.",
+                ],
+            }
+        )
+        return {
+            "kind": route_kind,
+            "source": "supervisor_direct_gate",
+            "reason": "approved_spec_runtime_execution",
+            "tool": tool_name,
+            "specId": spec_id,
+            "requiredRuntimeAccess": [],
+            "inputs": inputs,
+        }
     if route_kind == "engineering":
         command = str(args.get("command") or args.get("_raw") or "").strip()
         target_path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "").strip()
@@ -536,14 +607,27 @@ def _enqueue_route_intent_episode(
         if workspace_path:
             inputs.setdefault("workspacePath", workspace_path)
             inputs.setdefault("workspace_path", workspace_path)
-        raw_key = json.dumps(
-            {
+        spec_id = str(route_intent.get("specId") or inputs.get("specId") or "").strip()
+        if spec_id:
+            inputs.setdefault("specId", spec_id)
+        if str(route_intent.get("reason") or "") == "approved_spec_runtime_execution" and spec_id:
+            raw_key_payload = {
+                "runId": run_id,
+                "sessionId": session_id,
+                "kind": kind,
+                "specId": spec_id,
+                "reason": "approved_spec_runtime_execution",
+            }
+        else:
+            raw_key_payload = {
                 "runId": run_id,
                 "sessionId": session_id,
                 "kind": kind,
                 "tool": route_intent.get("tool"),
                 "inputs": inputs,
-            },
+            }
+        raw_key = json.dumps(
+            raw_key_payload,
             ensure_ascii=False,
             sort_keys=True,
             default=str,
@@ -562,6 +646,31 @@ def _enqueue_route_intent_episode(
             "inputs": inputs,
             "idempotencyKey": f"direct_gate:{digest}",
         }
+        try:
+            from core.tools.native.runtime import _enrich_route_need_for_episode
+
+            enrich_state = {
+                "current_route_context": {
+                    "specMode": bool(spec_id) or str(route_intent.get("reason") or "") == "approved_spec_runtime_execution",
+                    "specId": spec_id,
+                    "specBrief": {"specId": spec_id, "pipelineControl": {"runtimeExecutionAllowed": True}}
+                    if spec_id
+                    else {},
+                    "specExecutionGate": {"runtimeExecutionAllowed": True}
+                    if str(route_intent.get("reason") or "") == "approved_spec_runtime_execution"
+                    else {},
+                    "workspacePath": workspace_path,
+                    "latestUserContent": inputs.get("userRequest") or "",
+                },
+                "specMode": bool(spec_id),
+                "specId": spec_id,
+                "workspacePath": workspace_path,
+                "latestUserContent": inputs.get("userRequest") or "",
+            }
+            need = _enrich_route_need_for_episode(need, kind=kind, state=enrich_state)
+            inputs = dict(need.get("inputs") or inputs)
+        except Exception:
+            need["inputs"] = inputs
         episode = build_runtime_episode(
             need=need,
             kind=kind,
@@ -794,6 +903,8 @@ def _supervisor_direct_scope_hard_block_message(
         and "creative_media_as_primary_unless_provider_named" in forbidden_routes
     ):
         hard_reasons.append("task_boundary_route_correction")
+    if _spec_mode_active(state_mapping) and _spec_runtime_execution_allowed(state_mapping):
+        hard_reasons.append("spec_runtime_execution_requires_runtime_episode")
     if bool(planner_dispatch_status.get("blocked")):
         hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
     limited_write_allowed = _supervisor_limited_write_native_file_allowed(

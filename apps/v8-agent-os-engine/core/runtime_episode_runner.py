@@ -227,6 +227,8 @@ class RuntimeEpisodeRunner:
                 return
             if handoff_status == "degraded":
                 final_state = "degraded"
+            elif handoff_status in {"cancelled", "canceled"}:
+                final_state = "cancelled"
             else:
                 final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
             recovery = self._build_recovery_bundle(episode, handoff, final_state=final_state)
@@ -243,6 +245,8 @@ class RuntimeEpisodeRunner:
                 event_type = "runtime.episode.failed"
             elif final_state == "degraded":
                 event_type = "runtime.episode.degraded"
+            elif final_state == "cancelled":
+                event_type = "runtime.episode.cancelled"
             self._emit(
                 event_type,
                 episode=completed or {**episode, "state": final_state},
@@ -377,6 +381,8 @@ class RuntimeEpisodeRunner:
 
     def _build_recovery_bundle(self, episode: dict[str, Any], handoff: dict[str, Any], *, final_state: str) -> dict[str, Any]:
         failed = final_state == "failed"
+        cancelled = final_state == "cancelled"
+        incomplete = failed or cancelled
         compensation = episode.get("compensationPlan") if isinstance(episode.get("compensationPlan"), dict) else {}
         refs = list(handoff.get("refs") or [])
         return {
@@ -384,13 +390,13 @@ class RuntimeEpisodeRunner:
             "kind": episode.get("kind"),
             "state": final_state,
             "done": refs if refs else ([handoff.get("artifactId")] if handoff.get("artifactId") else []),
-            "notDone": [episode.get("reason") or (episode.get("need") or {}).get("reason") or "episode work"] if failed else [],
+            "notDone": [episode.get("reason") or (episode.get("need") or {}).get("reason") or "episode work"] if incomplete else [],
             "canRetry": failed and self._can_retry(episode),
             "canReplaceTarget": failed and bool(episode.get("targetKind") or episode.get("targetId")),
-            "canContinueParent": not failed,
+            "canContinueParent": not incomplete,
             "compensationPlan": compensation,
             "nextAction": (
-                "retry_or_replace_target" if failed else "merge_handoff_into_parent"
+                "report_cancelled" if cancelled else ("retry_or_replace_target" if failed else "merge_handoff_into_parent")
             ),
         }
 

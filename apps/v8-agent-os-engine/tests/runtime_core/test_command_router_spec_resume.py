@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from erc.command_router import RuntimeCommandRouter
 from erc.models import RuntimeCommand
 
@@ -238,7 +240,8 @@ def test_spec_approval_resume_schedules_same_run(monkeypatch):
     assert approved_stages[0]["stage"] == "requirements"
 
 
-def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch):
+@pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])
+def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch, terminal_state):
     router = RuntimeCommandRouter()
     scheduled = []
 
@@ -254,9 +257,30 @@ def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch):
         "user_id": "user_demo",
         "run_type": "chat",
         "status": "running",
-        "metadata": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+        "metadata": {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "runtimeEpisodeResume": {"state": "waiting", "reason": "runtime_episode_active_at_stream_end"},
+        },
     }
     monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: run_record)
+    monkeypatch.setattr(
+        "erc.command_router.db.list_runtime_episodes",
+        lambda **_kwargs: [
+            {
+                "episodeId": "episode_runtime",
+                "kind": "engineering",
+                "state": terminal_state,
+                "sessionId": "session_runtime",
+                "runId": "run_runtime",
+            }
+        ],
+    )
+    metadata_updates = []
+    monkeypatch.setattr(
+        "erc.command_router.run_service.update_metadata",
+        lambda run_id, updates: metadata_updates.append({"run_id": run_id, "updates": updates}),
+    )
     monkeypatch.setattr(
         router,
         "_scope_payload_for_session",
@@ -271,7 +295,7 @@ def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch):
         {
             "episodeId": "episode_runtime",
             "kind": "engineering",
-            "state": "completed",
+            "state": terminal_state,
             "sessionId": "session_runtime",
             "runId": "run_runtime",
             "inputs": {"specId": "spec_runtime"},
@@ -287,7 +311,111 @@ def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch):
     assert request.data.spec_mode is True
     assert request.data.spec_id == "spec_runtime"
     assert request.resume_value["runtimeEpisodeHandoff"]["episodeId"] == "episode_runtime"
-    assert "Runtime Episode Handoff Ready" in request.messages[0].content
+    assert request.resume_value["runtimeEpisodeHandoff"]["episodeState"] == terminal_state
+    assert "Runtime Episode Terminal" in request.messages[0].content
+    assert metadata_updates[0]["updates"]["runtimeEpisodeResume"]["state"] == "scheduled"
+
+
+def test_runtime_episode_handoff_resume_requires_completion_gate_wait_marker(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router.configure(schedule_chat_run=lambda *args, **kwargs: scheduled.append((args, kwargs)) or "run_runtime")
+    monkeypatch.setattr(
+        "erc.command_router.db.get_run_record",
+        lambda _run_id: {
+            "id": "run_runtime",
+            "session_id": "session_runtime",
+            "run_type": "chat",
+            "status": "running",
+            "metadata": {},
+        },
+    )
+
+    result = router.schedule_runtime_episode_handoff_resume(
+        {
+            "episodeId": "episode_runtime",
+            "kind": "engineering",
+            "state": "completed",
+            "sessionId": "session_runtime",
+            "runId": "run_runtime",
+        }
+    )
+
+    assert result["resume_scheduled"] is False
+    assert result["resume_error"] == "run_not_waiting_for_runtime_resume"
+    assert scheduled == []
+
+
+def test_runtime_episode_handoff_resume_waits_for_other_top_level_episode(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router.configure(schedule_chat_run=lambda *args, **kwargs: scheduled.append((args, kwargs)) or "run_runtime")
+    monkeypatch.setattr(
+        "erc.command_router.db.get_run_record",
+        lambda _run_id: {
+            "id": "run_runtime",
+            "session_id": "session_runtime",
+            "run_type": "chat",
+            "status": "running",
+            "metadata": {"runtimeEpisodeResume": {"state": "waiting"}},
+        },
+    )
+    monkeypatch.setattr(
+        "erc.command_router.db.list_runtime_episodes",
+        lambda **_kwargs: [
+            {"episodeId": "episode_done", "state": "completed", "runId": "run_runtime"},
+            {"episodeId": "episode_active", "state": "active", "runId": "run_runtime"},
+        ],
+    )
+
+    result = router.schedule_runtime_episode_handoff_resume(
+        {
+            "episodeId": "episode_done",
+            "kind": "engineering",
+            "state": "completed",
+            "sessionId": "session_runtime",
+            "runId": "run_runtime",
+        }
+    )
+
+    assert result["resume_scheduled"] is False
+    assert result["resume_error"] == "top_level_runtime_episode_still_active"
+    assert scheduled == []
+
+
+def test_runtime_episode_handoff_resume_is_not_scheduled_twice(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router.configure(schedule_chat_run=lambda *args, **kwargs: scheduled.append((args, kwargs)) or "run_runtime")
+    monkeypatch.setattr(
+        "erc.command_router.db.get_run_record",
+        lambda _run_id: {
+            "id": "run_runtime",
+            "session_id": "session_runtime",
+            "run_type": "chat",
+            "status": "running",
+            "metadata": {
+                "runtimeEpisodeResume": {
+                    "state": "scheduled",
+                    "episodeId": "episode_done",
+                }
+            },
+        },
+    )
+
+    result = router.schedule_runtime_episode_handoff_resume(
+        {
+            "episodeId": "episode_done",
+            "kind": "engineering",
+            "state": "completed",
+            "sessionId": "session_runtime",
+            "runId": "run_runtime",
+        }
+    )
+
+    assert result["resume_scheduled"] is False
+    assert result["resume_error"] == "runtime_episode_resume_already_scheduled"
+    assert scheduled == []
 
 
 def test_spec_approval_resume_failure_restores_waiting_approval(monkeypatch):

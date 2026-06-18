@@ -180,7 +180,8 @@ def test_engineering_mixed_spec_tasks_do_not_become_plan_only():
     ) is True
 
 
-def test_top_level_episode_completion_schedules_chat_handoff_resume(monkeypatch):
+@pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])
+def test_top_level_episode_terminal_state_schedules_chat_handoff_resume(monkeypatch, terminal_state):
     runner = RuntimeEpisodeRunner()
     scheduled = []
     monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
@@ -193,13 +194,35 @@ def test_top_level_episode_completion_schedules_chat_handoff_resume(monkeypatch)
         {
             "episodeId": "episode_done",
             "kind": "engineering",
-            "state": "completed",
+            "state": terminal_state,
             "sessionId": "session_done",
             "runId": "run_done",
         }
     )
 
     assert scheduled and scheduled[0]["episodeId"] == "episode_done"
+
+
+def test_nonterminal_top_level_episode_does_not_schedule_chat_handoff_resume(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    scheduled = []
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "core.runtime_episode_runner._schedule_runtime_episode_handoff_resume",
+        lambda episode: scheduled.append(dict(episode)) or {"resume_mode": "chat", "resume_scheduled": True},
+    )
+
+    runner._maybe_schedule_chat_handoff_resume(
+        {
+            "episodeId": "episode_active",
+            "kind": "engineering",
+            "state": "active",
+            "sessionId": "session_active",
+            "runId": "run_active",
+        }
+    )
+
+    assert scheduled == []
 
 
 def test_child_episode_completion_does_not_schedule_chat_handoff_resume(monkeypatch):
@@ -223,6 +246,61 @@ def test_child_episode_completion_does_not_schedule_chat_handoff_resume(monkeypa
     )
 
     assert scheduled == []
+
+
+def test_cancelled_handoff_persists_cancelled_episode_and_resumes_chat(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    completed_calls = []
+    scheduled = []
+
+    async def _cancelled_research(_episode):
+        return {
+            "kind": "research",
+            "status": "cancelled",
+            "compactSummary": "Research episode was cancelled.",
+        }
+
+    monkeypatch.setattr(runner, "_execute_research", _cancelled_research)
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_resume_parent_episode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_maybe_schedule_chat_handoff_resume",
+        lambda episode: scheduled.append(dict(episode)),
+    )
+    monkeypatch.setattr(
+        "core.runtime_episode_runner.db.add_runtime_episode_handoff",
+        lambda **kwargs: {**dict(kwargs["handoff"]), "handoffId": "handoff_cancelled"},
+    )
+
+    def _complete(episode_id, **kwargs):
+        completed_calls.append({"episode_id": episode_id, **kwargs})
+        return {
+            "episodeId": episode_id,
+            "kind": "research",
+            "state": kwargs["state"],
+            "sessionId": "session_cancelled",
+            "runId": "run_cancelled",
+        }
+
+    monkeypatch.setattr("core.runtime_episode_runner.db.complete_runtime_episode", _complete)
+
+    asyncio.run(
+        runner._execute_episode(
+            {
+                "episodeId": "episode_cancelled",
+                "kind": "research",
+                "state": "active",
+                "sessionId": "session_cancelled",
+                "runId": "run_cancelled",
+            }
+        )
+    )
+
+    assert completed_calls[0]["state"] == "cancelled"
+    assert completed_calls[0]["metadata"]["recovery"]["nextAction"] == "report_cancelled"
+    assert scheduled and scheduled[0]["state"] == "cancelled"
 
 
 def test_task_brief_normalization_preserves_engineering_write_contract():

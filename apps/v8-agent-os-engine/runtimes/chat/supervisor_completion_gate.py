@@ -3,18 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
-
-ACTIVE_EPISODE_STATES = {
-    "detected",
-    "routed",
-    "queued",
-    "leased",
-    "active",
-    "waiting",
-    "waiting_child",
-    "waiting_external",
-    "waiting_approval",
-}
+from core.runtime_episodes import ACTIVE_EPISODE_STATES
 
 
 RUNTIME_EXECUTION_HANDOFF_STATUSES = {"ready", "degraded"}

@@ -41,7 +41,7 @@ from core.graph_stream_watchdog import (
 )
 from core.json_safe import to_jsonable
 from core.realtime_protocol import protocol_connected_event
-from core.runtime_episodes import normalize_capability_kind
+from core.runtime_episodes import TERMINAL_EPISODE_STATES, normalize_capability_kind
 from core.scoped_workspace_resource import (
     build_workspace_resource_ref,
     resolve_scoped_workspace_resource,
@@ -4582,13 +4582,13 @@ class ChatRuntime:
                     "episodeId": resume_episode_id,
                     "needId": resume_episode_id,
                     "kind": resume_episode_kind,
-                    "state": "active",
+                    "state": str(runtime_handoff_resume.get("episodeState") or "completed").strip().lower(),
                     "sessionId": chat_run.session_id,
                     "session_id": chat_run.session_id,
                     "runId": chat_run.active_run_id,
                     "run_id": chat_run.active_run_id,
                     "source": "runtime_episode_handoff_resume",
-                    "reason": "runtime_episode_handoff_ready",
+                    "reason": "runtime_episode_terminal",
                 }
                 current_route_context = {
                     **current_route_context,
@@ -4612,15 +4612,15 @@ class ChatRuntime:
                             "kind": resume_episode_kind,
                             "episodeId": resume_episode_id,
                             "needId": resume_episode_id,
-                            "state": "active",
-                            "reason": "runtime_episode_handoff_ready",
+                            "state": str(runtime_handoff_resume.get("episodeState") or "completed").strip().lower(),
+                            "reason": "runtime_episode_terminal",
                             "source": "runtime_episode_handoff_resume",
                         }
                     ],
                     "autoDispatchDecision": {
                         "willDispatch": True,
                         "mode": "auto",
-                        "reason": "runtime_episode_handoff_ready",
+                        "reason": "runtime_episode_terminal",
                     },
                 }
                 runtime_handoff_dispatch_status = {
@@ -9037,6 +9037,24 @@ class ChatRuntime:
                 "run_id": chat_run.active_run_id,
             }
         if decision.action == "waiting_runtime":
+            resume_after_terminal = decision.reason == "runtime_episode_active_at_stream_end"
+            if resume_after_terminal:
+                top_level_episode_ids = [
+                    str(episode.get("episodeId") or episode.get("id") or "").strip()
+                    for episode in episodes
+                    if not str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+                    and str(episode.get("episodeId") or episode.get("id") or "").strip()
+                ]
+                run_service.update_metadata(
+                    chat_run.active_run_id,
+                    {
+                        "runtimeEpisodeResume": {
+                            "state": "waiting",
+                            "reason": decision.reason,
+                            "episodeIds": top_level_episode_ids,
+                        }
+                    },
+                )
             chat_run.emit_runtime_event(
                 "run.completion.waiting_for_runtime",
                 {"reason": decision.reason, **dict(decision.details or {})},
@@ -9044,6 +9062,19 @@ class ChatRuntime:
                 node="completion_gate",
             )
             chat_run.run_handle.transition("running", reason=decision.reason, node="completion_gate")
+            refreshed_episodes = db.list_runtime_episodes(run_id=chat_run.active_run_id, limit=200)
+            top_level_refreshed = [
+                dict(episode)
+                for episode in refreshed_episodes
+                if not str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+            ]
+            if resume_after_terminal and top_level_refreshed and all(
+                str(episode.get("state") or "").strip().lower() in TERMINAL_EPISODE_STATES
+                for episode in top_level_refreshed
+            ):
+                from erc.command_router import runtime_command_router
+
+                runtime_command_router.schedule_runtime_episode_handoff_resume(top_level_refreshed[-1])
             return {
                 "type": "done",
                 "status": "running",

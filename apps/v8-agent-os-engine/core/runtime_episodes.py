@@ -20,7 +20,7 @@ ACTIVE_EPISODE_STATES = {
     "waiting_external",
     "waiting_approval",
 }
-TERMINAL_EPISODE_STATES = {"completed", "failed", "merged", "cancelled"}
+TERMINAL_EPISODE_STATES = {"completed", "degraded", "failed", "merged", "cancelled"}
 
 TYPED_HANDOFF_KINDS = {
     "research": "research_evidence_bundle",

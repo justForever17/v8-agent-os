@@ -2,6 +2,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import pytest
+
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
@@ -16,7 +18,7 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_message,
     _should_hide_todo_tools_for_direct_writing,
 )
-from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
+from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
 from runtimes.chat.runtime import ChatRuntime
 
 
@@ -191,9 +193,10 @@ def test_runtime_or_artifact_writing_keeps_supervisor_todo_tools_available():
     assert not _should_hide_todo_tools_for_direct_writing(state, "调研后生成 skill 并保存到工作区。")
 
 
-def test_completion_gate_waits_for_active_runtime_episode():
+@pytest.mark.parametrize("active_state", sorted(ACTIVE_EPISODE_STATES))
+def test_completion_gate_waits_for_active_runtime_episode(active_state):
     decision = evaluate_supervisor_completion(
-        episodes=[{"episodeId": "episode_research", "state": "active", "kind": "research"}],
+        episodes=[{"episodeId": "episode_research", "state": active_state, "kind": "research"}],
         final_text="开始并行搜索~",
     )
 
@@ -632,7 +635,101 @@ def test_finalize_success_waits_for_active_runtime_episode_instead_of_failing():
     )
 
 
-def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch):
+def test_finalize_success_closes_terminal_race_after_arming_runtime_resume(monkeypatch):
+    emitted = []
+    run_handle = SimpleNamespace(
+        complete=Mock(),
+        transition=Mock(),
+        fail=Mock(),
+    )
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=False, spec_id="", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-runtime",
+        active_run_id="run-runtime",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    active_episode = {"episodeId": "episode_runtime", "kind": "engineering", "state": "active"}
+    terminal_episode = {"episodeId": "episode_runtime", "kind": "engineering", "state": "completed"}
+    scheduled = []
+    metadata_updates = []
+
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.list_runtime_episodes",
+        Mock(side_effect=[[active_episode], [terminal_episode]]),
+    )
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episode_handoffs", lambda _episode_id: [])
+    monkeypatch.setattr(ChatRuntime, "_completion_final_text", lambda *_args, **_kwargs: "执行仍在进行。")
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.run_service.update_metadata",
+        lambda run_id, updates: metadata_updates.append({"run_id": run_id, "updates": updates}),
+    )
+    monkeypatch.setattr(
+        "erc.command_router.runtime_command_router.schedule_runtime_episode_handoff_resume",
+        lambda episode: scheduled.append(dict(episode)) or {"resume_scheduled": True},
+    )
+
+    result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "running"
+    assert metadata_updates[0]["updates"]["runtimeEpisodeResume"]["state"] == "waiting"
+    assert scheduled == [terminal_episode]
+    run_handle.complete.assert_not_called()
+    run_handle.fail.assert_not_called()
+
+
+def test_finalize_success_does_not_arm_resume_for_terminal_spec_handoff_pending(monkeypatch):
+    run_handle = SimpleNamespace(
+        complete=Mock(),
+        transition=Mock(),
+        fail=Mock(),
+    )
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=True, spec_id="spec-runtime", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-runtime",
+        active_run_id="run-runtime",
+        run_handle=run_handle,
+        emit_runtime_event=lambda *_args, **_kwargs: None,
+    )
+    terminal_episode = {"episodeId": "episode_runtime", "kind": "engineering", "state": "completed"}
+    metadata_updates = []
+    scheduled = []
+
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episodes", lambda **_kwargs: [terminal_episode])
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episode_handoffs", lambda _episode_id: [])
+    monkeypatch.setattr(ChatRuntime, "_completion_final_text", lambda *_args, **_kwargs: "执行已结束。")
+    monkeypatch.setattr(
+        ChatRuntime,
+        "_completion_spec_brief",
+        lambda *_args, **_kwargs: {
+            "specId": "spec-runtime",
+            "status": "active",
+            "pipelineControl": {"runtimeExecutionAllowed": True},
+        },
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.run_service.update_metadata",
+        lambda run_id, updates: metadata_updates.append({"run_id": run_id, "updates": updates}),
+    )
+    monkeypatch.setattr(
+        "erc.command_router.runtime_command_router.schedule_runtime_episode_handoff_resume",
+        lambda episode: scheduled.append(dict(episode)) or {"resume_scheduled": True},
+    )
+
+    result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "running"
+    assert result["reason"] == "spec_runtime_execution_handoff_pending"
+    assert metadata_updates == []
+    assert scheduled == []
+    run_handle.complete.assert_not_called()
+    run_handle.fail.assert_not_called()
+
+
+@pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])
+def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, terminal_state):
     captured = {}
 
     async def fake_create_execution_bundle(**kwargs):
@@ -645,7 +742,7 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch):
         messages=[
             ChatMessage(
                 role="user",
-                content="[Runtime Episode Handoff Ready]\nepisodeId: episode_runtime",
+                content="[Runtime Episode Terminal]\nepisodeId: episode_runtime",
             )
         ],
         config=EngineConfig(provider="deepseek", model_name="deepseek-v4-flash"),
@@ -660,7 +757,7 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch):
             "runtimeEpisodeHandoff": {
                 "episodeId": "episode_runtime",
                 "episodeKind": "engineering",
-                "episodeState": "completed",
+                "episodeState": terminal_state,
                 "specId": "spec_runtime",
             }
         },
@@ -700,7 +797,8 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch):
     assert route_context["runtimeEpisodeHandoffResume"]["episodeId"] == "episode_runtime"
     episodes = route_context["capabilityEpisodes"]
     assert episodes and episodes[-1]["episodeId"] == "episode_runtime"
-    assert episodes[-1]["state"] == "active"
+    assert episodes[-1]["state"] == terminal_state
     planner_plan = captured["planner_plan"]
     assert planner_plan["autoDispatchDecision"]["willDispatch"] is True
     assert planner_plan["capabilityPlan"][0]["episodeId"] == "episode_runtime"
+    assert planner_plan["capabilityPlan"][0]["state"] == terminal_state

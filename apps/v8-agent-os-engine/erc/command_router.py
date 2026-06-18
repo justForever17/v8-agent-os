@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from typing import Any, Callable, Dict, Optional
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 from core.database import db
 from core.realtime_protocol import build_runtime_event
+from core.runtime_episodes import ACTIVE_EPISODE_STATES, TERMINAL_EPISODE_STATES
 from core.spec_service import spec_service
 
 from erc.kernel import erc_kernel
@@ -19,11 +21,14 @@ from runtimes.memory.scope_resolution import session_scope_binding_service
 
 
 ChatScheduler = Callable[..., Optional[str]]
+RUNTIME_EPISODE_RESUME_METADATA_KEY = "runtimeEpisodeResume"
+RUNTIME_EPISODE_RESUME_TERMINAL_STATES = TERMINAL_EPISODE_STATES
 
 
 class RuntimeCommandRouter:
     def __init__(self) -> None:
         self._schedule_chat_run: Optional[ChatScheduler] = None
+        self._runtime_episode_resume_lock = threading.Lock()
 
     def configure(self, *, schedule_chat_run: ChatScheduler) -> None:
         self._schedule_chat_run = schedule_chat_run
@@ -301,7 +306,7 @@ class RuntimeCommandRouter:
         ).strip()
         resume_value = {
             "runtimeEpisodeHandoff": {
-                "kind": "runtime_episode_handoff_ready",
+                "kind": "runtime_episode_terminal",
                 "episodeId": episode_id,
                 "episodeKind": episode_kind,
                 "episodeState": episode_state,
@@ -316,10 +321,11 @@ class RuntimeCommandRouter:
                 ChatMessage(
                     role="user",
                     content=(
-                        "[Runtime Episode Handoff Ready]\n"
-                        "A previously routed runtime episode has now reached a terminal state and its typed handoff is ready. "
-                        "Continue by merging the runtime handoff into the user-facing answer. Do not route a new runtime episode, "
-                        "do not rewrite Spec documents, and do not perform direct file or command work.\n"
+                        "[Runtime Episode Terminal]\n"
+                        "A previously routed runtime episode has now reached a terminal state. "
+                        "Continue by merging any available typed handoff into the user-facing answer; if the episode failed "
+                        "or was cancelled without a usable handoff, report that terminal outcome accurately. "
+                        "Do not route a new runtime episode, rewrite Spec documents, or perform direct file or command work.\n"
                         f"episodeId: {episode_id}\n"
                         f"episodeKind: {episode_kind}\n"
                         f"episodeState: {episode_state}\n"
@@ -568,56 +574,153 @@ class RuntimeCommandRouter:
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
         if not run_id:
             return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_id_missing"}
-        run_record = db.get_run_record(run_id)
-        if not run_record:
-            return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_not_found"}
-        if self._resume_mode_for_run(run_record) != "chat":
-            return {"resume_mode": self._resume_mode_for_run(run_record), "resume_scheduled": False, "resume_error": "not_chat_run"}
-        status = str(run_record.get("status") or "").strip()
-        if status not in {"running"}:
+        episode_state = str(episode.get("state") or "").strip().lower()
+        if episode_state not in RUNTIME_EPISODE_RESUME_TERMINAL_STATES:
             return {
                 "resume_mode": "chat",
                 "resume_scheduled": False,
-                "resume_error": f"run_not_running:{status or 'unknown'}",
+                "resume_error": f"episode_not_terminal:{episode_state or 'unknown'}",
             }
-        if self._schedule_chat_run is None:
+        with self._runtime_episode_resume_lock:
+            run_record = db.get_run_record(run_id)
+            if not run_record:
+                return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_not_found"}
+            if self._resume_mode_for_run(run_record) != "chat":
+                return {
+                    "resume_mode": self._resume_mode_for_run(run_record),
+                    "resume_scheduled": False,
+                    "resume_error": "not_chat_run",
+                }
+            status = str(run_record.get("status") or "").strip()
+            if status not in {"running"}:
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": f"run_not_running:{status or 'unknown'}",
+                }
+            metadata = dict(run_record.get("metadata") or {})
+            marker = (
+                dict(metadata.get(RUNTIME_EPISODE_RESUME_METADATA_KEY) or {})
+                if isinstance(metadata.get(RUNTIME_EPISODE_RESUME_METADATA_KEY), dict)
+                else {}
+            )
+            marker_state = str(marker.get("state") or "").strip().lower()
+            if marker_state == "scheduled":
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": "runtime_episode_resume_already_scheduled",
+                }
+            if marker_state != "waiting":
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": "run_not_waiting_for_runtime_resume",
+                }
+            top_level_episodes = [
+                dict(item)
+                for item in db.list_runtime_episodes(run_id=run_id, limit=200)
+                if not str(item.get("parentEpisodeId") or item.get("parent_episode_id") or "").strip()
+            ]
+            if any(
+                str(item.get("state") or "").strip().lower() in ACTIVE_EPISODE_STATES
+                or str(item.get("state") or "").strip().lower() not in RUNTIME_EPISODE_RESUME_TERMINAL_STATES
+                for item in top_level_episodes
+            ):
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": "top_level_runtime_episode_still_active",
+                }
+            if self._schedule_chat_run is None:
+                self._emit_resume_event(
+                    run_record,
+                    "run.resume.not_scheduled",
+                    {
+                        "resumeMode": "chat",
+                        "transport": "system_resume",
+                        "reason": "chat_scheduler_unavailable",
+                        "runtimeEpisodeId": episode.get("episodeId") or episode.get("id"),
+                    },
+                )
+                return {"resume_mode": "chat", "resume_scheduled": False, "resume_error": "chat_scheduler_unavailable"}
+            episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+            scheduled_marker = {
+                **marker,
+                "state": "scheduled",
+                "episodeId": episode_id,
+                "episodeState": episode_state,
+            }
+            run_service.update_metadata(
+                run_id,
+                {RUNTIME_EPISODE_RESUME_METADATA_KEY: scheduled_marker},
+            )
+            resume_request = self._build_runtime_handoff_resume_chat_request(run_record, episode=episode)
+            try:
+                scheduled_run_id = self._schedule_chat_run(
+                    resume_request,
+                    transport="system_resume",
+                    run_id=str(run_record["id"]),
+                )
+            except Exception as exc:
+                run_service.update_metadata(
+                    run_id,
+                    {
+                        RUNTIME_EPISODE_RESUME_METADATA_KEY: {
+                            **marker,
+                            "state": "waiting",
+                            "lastError": "chat_scheduler_raised",
+                        }
+                    },
+                )
+                self._emit_resume_event(
+                    run_record,
+                    "run.resume.not_scheduled",
+                    {
+                        "resumeMode": "chat",
+                        "transport": "system_resume",
+                        "reason": "chat_scheduler_raised",
+                        "runtimeEpisodeId": episode_id,
+                        "runtimeEpisodeState": episode_state,
+                    },
+                )
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": f"chat_scheduler_raised:{type(exc).__name__}",
+                }
+            scheduled = bool(scheduled_run_id)
+            if not scheduled:
+                run_service.update_metadata(
+                    run_id,
+                    {
+                        RUNTIME_EPISODE_RESUME_METADATA_KEY: {
+                            **marker,
+                            "state": "waiting",
+                            "lastError": "chat_scheduler_returned_empty_run_id",
+                        }
+                    },
+                )
             self._emit_resume_event(
                 run_record,
-                "run.resume.not_scheduled",
+                "run.resume.scheduled" if scheduled else "run.resume.not_scheduled",
                 {
                     "resumeMode": "chat",
                     "transport": "system_resume",
-                    "reason": "chat_scheduler_unavailable",
-                    "runtimeEpisodeId": episode.get("episodeId") or episode.get("id"),
+                    "resumeReason": "runtime_episode_terminal",
+                    "scheduledRunId": scheduled_run_id or run_record.get("id"),
+                    "runtimeEpisodeId": episode_id,
+                    "runtimeEpisodeKind": episode.get("kind"),
+                    "runtimeEpisodeState": episode_state,
+                    **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
                 },
             )
-            return {"resume_mode": "chat", "resume_scheduled": False, "resume_error": "chat_scheduler_unavailable"}
-        resume_request = self._build_runtime_handoff_resume_chat_request(run_record, episode=episode)
-        scheduled_run_id = self._schedule_chat_run(
-            resume_request,
-            transport="system_resume",
-            run_id=str(run_record["id"]),
-        )
-        scheduled = bool(scheduled_run_id)
-        self._emit_resume_event(
-            run_record,
-            "run.resume.scheduled" if scheduled else "run.resume.not_scheduled",
-            {
-                "resumeMode": "chat",
-                "transport": "system_resume",
-                "resumeReason": "runtime_episode_handoff_ready",
-                "scheduledRunId": scheduled_run_id or run_record.get("id"),
-                "runtimeEpisodeId": episode.get("episodeId") or episode.get("id"),
-                "runtimeEpisodeKind": episode.get("kind"),
-                **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
-            },
-        )
-        return {
-            "resume_mode": "chat",
-            "resume_scheduled": scheduled,
-            "resumed_run_id": scheduled_run_id or run_record["id"],
-            **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
-        }
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": scheduled,
+                "resumed_run_id": scheduled_run_id or run_record["id"],
+                **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
+            }
 
     def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any] | None:
         approval_kind = self._approval_kind(approval)

@@ -1368,12 +1368,12 @@ def _render_web_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget:
             lines.append("Source quality: " + " | ".join(quality_bits[:4]))
     elif payload.get("quality"):
         lines.append(f"Source quality: {_short_text(payload.get('quality'), 100)}")
-    extraction_bits = []
-    for key in ("extractionQuality", "contentFormat", "contentChars", "htmlChars", "missingContentReason", "usedBrowserProfile"):
-        if payload.get(key) not in (None, "", [], {}):
-            extraction_bits.append(f"{key}={_short_text(payload.get(key), 80)}")
-    if extraction_bits:
-        lines.append("Extraction: " + " | ".join(extraction_bits[:6]))
+    extraction_quality = payload.get("extractionQuality")
+    missing_content_reason = payload.get("missingContentReason")
+    if extraction_quality not in (None, "", [], {}):
+        lines.append(f"Extraction quality: {_short_text(extraction_quality, 100)}")
+    if missing_content_reason not in (None, "", [], {}):
+        lines.append(f"Limit: {_short_text(missing_content_reason, 160)}")
 
     results = payload.get("results") or payload.get("sources") or payload.get("items")
     if isinstance(results, list) and results:

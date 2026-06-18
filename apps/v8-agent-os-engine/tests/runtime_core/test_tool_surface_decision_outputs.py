@@ -364,6 +364,12 @@ def test_web_broker_read_exposes_content_and_url():
             "finalUrl": "https://example.com/api",
             "textPreview": "Use this endpoint to create durable runtime episodes.",
             "links": [{"title": "Reference", "url": "https://example.com/ref"}],
+            "contentChars": 4096,
+            "htmlChars": 9999,
+            "usedBrowserProfile": False,
+            "providerAttemptMatrix": [{"provider": "duckduckgo", "status": "ok"}],
+            "networkRoute": "global_proxy",
+            "sourceRouter": {"selectedProvider": "duckduckgo"},
         },
     )
 
@@ -371,6 +377,12 @@ def test_web_broker_read_exposes_content_and_url():
     assert "Official API docs" in visible
     assert "https://example.com/api" in visible
     assert "durable runtime episodes" in visible
+    assert "contentChars" not in visible
+    assert "htmlChars" not in visible
+    assert "usedBrowserProfile" not in visible
+    assert "providerAttemptMatrix" not in visible
+    assert "networkRoute" not in visible
+    assert "sourceRouter" not in visible
     _assert_not_json_wrapper(visible)
 
 

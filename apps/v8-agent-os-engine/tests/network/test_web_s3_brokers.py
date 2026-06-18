@@ -141,6 +141,10 @@ class WebAndS3BrokerTests(unittest.TestCase):
                     "results": [{"title": "V8", "url": "https://example.com", "snippet": "demo"}],
                     "attemptedProviders": [{"provider": "bing", "status": "ok", "resultCount": 1}],
                     "searchUrl": "https://www.bing.com/search?q=v8",
+                    "sourceCapability": {"role": "discovery"},
+                    "networkRoute": "global_proxy",
+                    "providerAttemptMatrix": [{"provider": "bing", "status": "ok"}],
+                    "sourceRouter": {"selectedProvider": "bing"},
                 },
                 ensure_ascii=False,
             ),
@@ -152,6 +156,36 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "search")
         self.assertIn("debug", payload)
         self.assertEqual(payload["debug"]["searchUrl"], "https://www.bing.com/search?q=v8")
+        self.assertEqual(payload["debug"]["networkRoute"], "global_proxy")
+        self.assertEqual(payload["debug"]["sourceRouter"]["selectedProvider"], "bing")
+
+    def test_web_broker_default_hides_source_router_runtime_fields(self):
+        with patch(
+            "core.tools.web_fetcher.web_fetch.func",
+            return_value=json.dumps(
+                {
+                    "ok": True,
+                    "query": "v8",
+                    "provider": "bing",
+                    "results": [{"title": "V8", "url": "https://example.com", "snippet": "demo"}],
+                    "sourceCapability": {"role": "discovery"},
+                    "networkRoute": "global_proxy",
+                    "providerAttemptMatrix": [{"provider": "bing", "status": "ok"}],
+                    "sourceRouter": {"selectedProvider": "bing"},
+                },
+                ensure_ascii=False,
+            ),
+        ):
+            result = web_broker.func(target="v8", mode="search")
+
+        payload = json.loads(result)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["mode"], "search")
+        self.assertNotIn("debug", payload)
+        self.assertNotIn("sourceCapability", payload)
+        self.assertNotIn("networkRoute", payload)
+        self.assertNotIn("providerAttemptMatrix", payload)
+        self.assertNotIn("sourceRouter", payload)
 
     def test_web_broker_error_surfaces_timeout_without_debug(self):
         with patch(
@@ -166,6 +200,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
                     "elapsedMs": 45001,
                     "retryable": True,
                     "recommendedNextAction": "换可访问来源或改用 research_broker。",
+                    "networkRoute": "global_proxy",
+                    "providerAttemptMatrix": [{"provider": "duckduckgo", "status": "timeout"}],
+                    "sourceRouter": {"selectedProvider": "duckduckgo"},
                 },
                 ensure_ascii=False,
             ),
@@ -179,6 +216,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["elapsedMs"], 45001)
         self.assertTrue(payload["retryable"])
         self.assertIn("research_broker", payload["recommendedNextAction"])
+        self.assertNotIn("networkRoute", payload)
+        self.assertNotIn("providerAttemptMatrix", payload)
+        self.assertNotIn("sourceRouter", payload)
 
     def test_web_broker_search_marks_weak_results(self):
         with patch(

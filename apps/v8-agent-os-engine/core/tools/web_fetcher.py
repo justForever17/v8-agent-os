@@ -2203,9 +2203,6 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
         for key in ("extractionQuality", "contentChars", "htmlChars", "missingContentReason", "contentFormat", "usedBrowserProfile"):
             if payload.get(key) not in (None, "", [], {}):
                 compact[key] = payload.get(key)
-        for key in ("sourceCapability", "providerAttemptMatrix", "networkRoute", "sourceRouter"):
-            if payload.get(key) not in (None, "", [], {}):
-                compact[key] = payload.get(key)
         analysis_hints = payload.get("analysisHints")
         if analysis_hints not in (None, "", [], {}):
             compact["analysisHints"] = analysis_hints
@@ -2246,9 +2243,6 @@ def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str,
             compact["query"] = payload.get("query")
         if payload.get("attemptedProviders") not in (None, "", [], {}):
             compact["attemptedProviders"] = payload.get("attemptedProviders")
-        for key in ("sourceCapability", "providerAttemptMatrix", "networkRoute", "sourceRouter"):
-            if payload.get(key) not in (None, "", [], {}):
-                compact[key] = payload.get(key)
         if isinstance(payload.get("agentBrowserProfile"), dict):
             compact["agentBrowserProfile"] = payload.get("agentBrowserProfile")
 

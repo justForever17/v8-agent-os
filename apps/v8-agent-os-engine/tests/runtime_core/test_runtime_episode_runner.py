@@ -2071,6 +2071,50 @@ def test_parallel_branch_stops_repeated_no_progress_loop():
         asyncio.run(_run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"}))
 
 
+def test_parallel_branch_stops_repeated_same_tool_purpose_loop():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "looping_worker",
+            "agentName": "Looping Worker",
+            "delegationId": "delegation-looping-tool",
+            "invocationId": "invoke-looping-tool",
+            "taskBriefId": "TASK-LOOPING-TOOL",
+            "reason": "Detect repeated same command purpose.",
+        },
+    }
+    call_count = 0
+
+    def _node_func(_state):
+        nonlocal call_count
+        call_count += 1
+        return Command(
+            goto="looping_worker",
+            update={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": f"call-repeat-{call_count}",
+                                "name": "run_system_command",
+                                "args": {"command": "cd project && python inspect_brief.py"},
+                            }
+                        ],
+                    )
+                ]
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="same tool purpose"):
+        asyncio.run(_run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"}))
+
+
 def test_parallel_branch_stops_semantic_artifact_stall_even_with_varied_messages(tmp_path):
     from graph.parallel_support import _run_parallel_agent_branch
     from langchain_core.messages import HumanMessage

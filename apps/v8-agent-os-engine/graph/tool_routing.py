@@ -21,6 +21,14 @@ from core.tool_surface import (
 DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000
 DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = float(os.environ.get("V8_AGENT_OS_TOOL_CALL_TIMEOUT_SECONDS", "240").strip() or "240")
 
+
+def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(str(os.environ.get(name, "") or "").strip() or default)
+    except Exception:
+        return default
+    return max(minimum, value)
+
 SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS = {
     "delegation_broker",
     "runtime_broker",
@@ -58,9 +66,10 @@ _ENGINEERING_ROUTE_TOOLS = {
     "delete_native_file",
 }
 _RESEARCH_ROUTE_TOOLS = {"web_broker"}
-_PLANNING_WEB_TOOL_LIMIT = 3
-_SPEC_PLANNING_WEB_TOOL_LIMIT = 8
-_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT = 3
+_PLANNING_WEB_TOOL_LIMIT = _int_env("V8_AGENT_OS_PLANNING_WEB_TOOL_LIMIT", 8, minimum=1)
+_SPEC_PLANNING_WEB_TOOL_LIMIT = _int_env("V8_AGENT_OS_SPEC_PLANNING_WEB_TOOL_LIMIT", 12, minimum=1)
+_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT", 8, minimum=0)
+_SUPERVISOR_DIRECT_PRESSURE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_PRESSURE_LIMIT", 40, minimum=1)
 _SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS = {
     "ask_user",
     "fetch_skill_instructions",
@@ -267,7 +276,7 @@ def _supervisor_limited_write_native_file_allowed(
     return (
         str(tool_name or "").strip() == "write_native_file"
         and project_write_count <= _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT
-        and direct_pressure_count <= 10
+        and direct_pressure_count <= _SUPERVISOR_DIRECT_PRESSURE_LIMIT
     )
 
 
@@ -392,6 +401,23 @@ def _user_request_from_state(state_mapping: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _explicit_user_tool_call_limit(user_request: str, tool_name: str) -> int | None:
+    request_text = str(user_request or "")
+    normalized_tool = str(tool_name or "").strip()
+    if not request_text or not normalized_tool:
+        return None
+    escaped_tool = re.escape(normalized_tool)
+    patterns = (
+        rf"{escaped_tool}\s*(?:的)?\s*(?:总调用次数|调用总次数|总调用|调用次数)\s*(?:最多|不超过|不得超过|至多|≤|<=)\s*(\d+)\s*次",
+        rf"{escaped_tool}\s+(?:total\s+)?(?:call\s+count|calls?)\s*(?:must\s+be\s+)?(?:at\s+most|max(?:imum)?|no\s+more\s+than|<=)\s*(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, request_text, flags=re.IGNORECASE)
+        if match:
+            return max(0, int(match.group(1)))
+    return None
 
 
 def _compact_user_request(text: str, *, limit: int = 1800) -> str:
@@ -841,6 +867,27 @@ def _supervisor_direct_scope_hard_block_message(
     tool_step_count = len([name for name in tool_names if name])
     direct_pressure_count = _supervisor_direct_pressure_count(tool_calls)
     project_write_count = len([name for name in tool_names if name in SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS])
+    explicit_tool_limit = _explicit_user_tool_call_limit(_user_request_from_state(state_mapping), tool_name)
+    current_tool_count = len([name for name in tool_names if name == tool_name])
+    if explicit_tool_limit is not None and current_tool_count > explicit_tool_limit:
+        return ToolMessage(
+            content=(
+                "[user tool limit reached]\n"
+                f"Blocked {tool_name} call {current_tool_count}: the user limited this tool to "
+                f"{explicit_tool_limit} total call(s).\n"
+                "Use the evidence already collected, change approach without another call, or ask the user to raise the limit."
+            ),
+            name=tool_name,
+            tool_call_id=str(tool_call.get("id") or ""),
+            status="error",
+            additional_kwargs={
+                "riskCode": "user_tool_call_limit_reached",
+                "blockedTool": tool_name,
+                "toolCallLimit": explicit_tool_limit,
+                "attemptedToolCallCount": current_tool_count,
+                "recommendedNextAction": "synthesize_existing_evidence_or_ask_user",
+            },
+        )
     from erc.runtime_context import get_runtime_context
 
     runtime_context = get_runtime_context()
@@ -914,10 +961,10 @@ def _supervisor_direct_scope_hard_block_message(
     )
     if route_required and not limited_write_allowed:
         hard_reasons.append("capability_route_required")
-    if direct_pressure_count > 10:
-        hard_reasons.append("supervisor_tool_steps_gt_10")
+    if direct_pressure_count > _SUPERVISOR_DIRECT_PRESSURE_LIMIT:
+        hard_reasons.append("supervisor_direct_pressure_gt_budget")
     if project_write_count > _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT:
-        hard_reasons.append("supervisor_project_file_writes_gt_3")
+        hard_reasons.append("supervisor_project_file_writes_gt_budget")
     if not hard_reasons:
         return None
     raw_reasons = ", ".join(hard_reasons)

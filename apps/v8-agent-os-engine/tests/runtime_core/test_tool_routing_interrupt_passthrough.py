@@ -33,6 +33,21 @@ def _previous_write_messages(count: int) -> list[types.SimpleNamespace]:
     ]
 
 
+def _previous_tool_messages(tool_name: str, count: int) -> list[types.SimpleNamespace]:
+    return [
+        types.SimpleNamespace(
+            tool_calls=[
+                {
+                    "name": tool_name,
+                    "id": f"tool_call_previous_{tool_name}_{index}",
+                    "args": {"mode": "search", "target": f"query {index}"},
+                }
+            ]
+        )
+        for index in range(count)
+    ]
+
+
 class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         fake_native_tools = types.ModuleType("core.native_tools")
@@ -111,7 +126,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
             "write_native_file",
             "tool_call_write",
             state={
-                "messages": _previous_write_messages(3),
+                "messages": _previous_write_messages(8),
                 "current_route_context": {"engineeringRequired": True},
             },
         )
@@ -144,6 +159,48 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result, ToolMessage)
         self.assertNotIn("[route required]", str(result.content))
         self.assertIn("wrote one lightweight file", str(result.content))
+
+    async def test_explicit_user_tool_total_call_limit_blocks_the_next_call(self):
+        request = _DummyRequest(
+            "web_broker",
+            "tool_call_web_5",
+            state={
+                "messages": _previous_tool_messages("web_broker", 4),
+                "current_route_context": {
+                    "latestUserContent": "web_broker 总调用次数最多 4 次，search/read/extract 都计入。",
+                },
+            },
+        )
+
+        async def execute(_request):
+            raise AssertionError("the fifth call must be blocked by the user's explicit total-call limit")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(getattr(result, "status", None), "error")
+        self.assertIn("[user tool limit reached]", str(result.content))
+        self.assertEqual(result.additional_kwargs["riskCode"], "user_tool_call_limit_reached")
+        self.assertEqual(result.additional_kwargs["toolCallLimit"], 4)
+        self.assertEqual(result.additional_kwargs["attemptedToolCallCount"], 5)
+
+    async def test_ordinary_numbers_do_not_create_an_implicit_tool_limit(self):
+        request = _DummyRequest(
+            "web_broker",
+            "tool_call_web_5",
+            state={
+                "messages": _previous_tool_messages("web_broker", 4),
+                "current_route_context": {"latestUserContent": "请找 4 个来源并提炼 5 条结论。"},
+            },
+        )
+
+        async def execute(_request):
+            return ToolMessage(content="continued", name="web_broker", tool_call_id="tool_call_web_5")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(str(result.content), "continued")
 
     async def test_spec_runtime_execution_blocks_limited_direct_write(self):
         request = _DummyRequest(
@@ -279,7 +336,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
             "write_native_file",
             "tool_call_write",
             state={
-                "messages": _previous_write_messages(3),
+                "messages": _previous_write_messages(8),
                 "current_route_context": {"engineeringRequired": True},
             },
         )
@@ -306,7 +363,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
             "write_native_file",
             "tool_call_write",
             state={
-                "messages": _previous_write_messages(3),
+                "messages": _previous_write_messages(8),
                 "current_route_context": {
                     "engineeringRequired": True,
                     "capabilityEpisodes": [

@@ -2591,6 +2591,10 @@ def run_system_command(
 ) -> str:
     """Run a system command through a unified command surface.
 
+    Use this for real shell work: running tests, scripts, installers, dev servers, environment checks, or commands the task explicitly asks to execute.
+    Do not use it just to read or write a known text/JSON/Markdown/source file. Use `read_native_file` and `write_native_file` for file content.
+    If the same command purpose fails twice, stop changing shell wrappers; switch to the right tool or return the blocker/degraded reason.
+
     mode=auto:
     - 短命令/非交互命令直接同步执行并返回结果
     - 交互式、脚手架、依赖安装或长驻命令自动启动可观察 command session 并返回 sessionId/commandId

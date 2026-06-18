@@ -140,6 +140,64 @@ def _extract_tool_names(messages: list[Any]) -> list[str]:
     return names
 
 
+def _tool_call_dicts_from_message(message: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for call in list(getattr(message, "tool_calls", None) or []):
+        if isinstance(call, dict):
+            calls.append(dict(call))
+            continue
+        calls.append(
+            {
+                "id": getattr(call, "id", None),
+                "name": getattr(call, "name", None),
+                "args": getattr(call, "args", None),
+            }
+        )
+    additional = getattr(message, "additional_kwargs", None)
+    if isinstance(additional, dict):
+        for call in list(additional.get("tool_calls") or []):
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            args: Any = {}
+            name = call.get("name")
+            if isinstance(function, dict):
+                name = function.get("name") or name
+                args = function.get("arguments") or {}
+            calls.append({"id": call.get("id"), "name": name, "args": args})
+    return calls
+
+
+def _normalize_tool_call_args(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _repeat_sensitive_tool_call_signature(call: dict[str, Any]) -> tuple[str, str] | None:
+    name = str(call.get("name") or "").strip()
+    if not name:
+        return None
+    args = _normalize_tool_call_args(call.get("args"))
+    if name in {"run_system_command", "start_background_command"}:
+        command = re.sub(r"\s+", " ", str(args.get("command") or "").strip())
+        if command:
+            return name, command.lower()
+    if name == "read_native_file":
+        path = str(args.get("path") or "").strip()
+        start_line = str(args.get("start_line") or args.get("startLine") or "").strip()
+        end_line = str(args.get("end_line") or args.get("endLine") or "").strip()
+        if path:
+            return name, "|".join([path.lower(), start_line, end_line])
+    return None
+
+
 def _stringify_for_acceptance(value: Any, *, limit: int = 12000) -> str:
     try:
         if isinstance(value, str):
@@ -752,6 +810,9 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
 
     repeated_state_limit = 8
     seen_progress_states: dict[str, int] = {}
+    repeat_sensitive_tool_limit = 3
+    seen_tool_call_ids: set[str] = set()
+    repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
     artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
     artifact_stall_rounds = 0
@@ -846,6 +907,23 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
             raise RuntimeError(f"{agent_id} 并发分支返回了非 Command 结果。")
 
         local_state = _merge_state_update(local_state, getattr(result, "update", None) or {})
+        delta_messages_for_guard = list(local_state.get("messages") or [])[initial_message_count:]
+        for message in delta_messages_for_guard:
+            for call in _tool_call_dicts_from_message(message):
+                signature = _repeat_sensitive_tool_call_signature(call)
+                if not signature:
+                    continue
+                call_id = str(call.get("id") or "").strip() or f"{signature[0]}:{signature[1]}:{len(seen_tool_call_ids)}"
+                if call_id in seen_tool_call_ids:
+                    continue
+                seen_tool_call_ids.add(call_id)
+                repeated_tool_signatures[signature] = repeated_tool_signatures.get(signature, 0) + 1
+                if repeated_tool_signatures[signature] > repeat_sensitive_tool_limit:
+                    raise RuntimeError(
+                        f"{agent_id} repeated the same tool purpose too many times: "
+                        f"{signature[0]} {signature[1][:180]}. "
+                        "Return a degraded/blocker handoff instead of retrying the same operation."
+                    )
         if expected_artifact_paths:
             next_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
             if next_snapshot != artifact_snapshot:

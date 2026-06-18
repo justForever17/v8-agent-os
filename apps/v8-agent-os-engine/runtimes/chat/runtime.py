@@ -2235,6 +2235,39 @@ class ChatRuntime:
             "dispatchEligibilityReason": "",
         }
 
+    @staticmethod
+    def _planner_request_is_plan_only(request_text: str) -> bool:
+        lower_request = str(request_text or "").lower()
+        no_write_markers = (
+            "不需要真实写文件",
+            "不需要写真实文件",
+            "不要真实写",
+            "不要真实写文件",
+            "不要写真实",
+            "不要写真实文件",
+            "不要写真实项目文件",
+            "不要写项目文件",
+            "不用写真实",
+            "不写文件",
+            "不保存",
+            "不创建文件",
+            "不落盘",
+            "不要落盘",
+            "只规划",
+            "只要计划",
+            "只需要计划",
+            "只输出计划",
+            "说明为什么只需要计划",
+            "no file write",
+            "no real file write",
+            "do not write files",
+            "do not create files",
+            "plan only",
+            "plan_only",
+            "writeRequired=false".lower(),
+        )
+        return any(marker in lower_request for marker in no_write_markers)
+
     def _fallback_runtime_episode_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
         latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
         lower_request = latest_user_content.lower()
@@ -2249,7 +2282,7 @@ class ChatRuntime:
         }
         wants_research = any(marker in lower_request for marker in ("research", "evidence", "source", "调研", "证据", "来源"))
         wants_delegation = any(marker in lower_request for marker in ("delegation", "subagent", "child agent", "委派", "子代理", "孙 agent"))
-        no_write = any(marker in lower_request for marker in ("不需要真实写文件", "不要真实写", "不写文件", "no file write", "plan_only", "writeRequired=false".lower()))
+        no_write = self._planner_request_is_plan_only(lower_request)
         deliverable_kind = "plan_only" if no_write or "plan_only" in lower_request else "proof"
 
         task_briefs: list[dict[str, Any]] = []

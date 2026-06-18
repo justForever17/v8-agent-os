@@ -57,7 +57,12 @@ def test_research_to_engineering_to_delegation_handoff_chain(monkeypatch) -> Non
             compact_summary="delegated worker completed patch proposal",
             status="ready",
             confidence="medium",
-            extra={"refs": ["subagent_result:worker-1"], "taskConfirmed": True},
+            extra={
+                "refs": ["subagent_result:worker-1"],
+                "artifactRefs": ["artifact:patch-proposal"],
+                "proof": ["verified handoff shape"],
+                "taskConfirmed": True,
+            },
         )
 
     monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_research", _fake_research)

@@ -120,6 +120,7 @@ def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):
     target.write_text("one\nold-a\nold-b\nfour\n", encoding="utf-8")
 
     with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        native_tools.read_native_file.func("src/longish.txt")
         result = native_tools.write_native_file.func("src/longish.txt", "new-a\nnew-b", line_start=2, line_end=3)
 
     assert "scoped_file_patch" in result
@@ -144,7 +145,82 @@ def test_write_native_file_blocks_existing_long_file_full_overwrite_without_anch
     target.write_text("".join(f"line {index}\n" for index in range(1000)), encoding="utf-8")
 
     with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        native_tools.read_native_file.func("src/very_long.txt")
         result = native_tools.write_native_file.func("src/very_long.txt", "replacement")
 
     assert "long_file_full_overwrite_block" in result
     assert "line 999" in target.read_text(encoding="utf-8")
+
+
+def test_write_native_file_requires_read_before_modifying_existing_file(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    monkeypatch.setattr(
+        native_tools,
+        "_workspace_inventory_status",
+        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
+    )
+    target = active_root / "src" / "existing.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("before", encoding="utf-8")
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+    ):
+        blocked = native_tools.write_native_file.func("src/existing.txt", "after")
+        native_tools.read_native_file.func("src/existing.txt")
+        allowed = native_tools.write_native_file.func(
+            "src/existing.txt",
+            "after",
+            expected_old_text="before",
+        )
+        blocked_again = native_tools.write_native_file.func(
+            "src/existing.txt",
+            "after-again",
+            expected_old_text="after",
+        )
+
+    assert "read_before_write_required" in blocked
+    assert "scoped_file_patch" in allowed
+    assert "read_before_write_required" in blocked_again
+    assert target.read_text(encoding="utf-8") == "after"
+
+
+def test_write_native_file_rejects_stale_read_receipt(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    monkeypatch.setattr(
+        native_tools,
+        "_workspace_inventory_status",
+        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
+    )
+    target = active_root / "src" / "changed.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("before", encoding="utf-8")
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+    ):
+        native_tools.read_native_file.func("src/changed.txt")
+        target.write_text("changed elsewhere with a different size", encoding="utf-8")
+        result = native_tools.write_native_file.func("src/changed.txt", "after")
+
+    assert "read_before_write_required" in result
+    assert "file_changed_after_read" in result
+    assert target.read_text(encoding="utf-8") == "changed elsewhere with a different size"

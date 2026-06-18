@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.task_shape_classifier import classify_task_shape
-from graph.workflow_assembly import build_planner_auto_dispatch_node
 import runtimes.chat.runtime as chat_runtime_module
 from runtimes.chat.runtime import ChatRuntime
 from runtimes.engineering.service import engineering_lane_service
@@ -115,6 +114,25 @@ def test_project_research_fallback_includes_runtime_capability_plan() -> None:
     assert [item["kind"] for item in plan["capabilityPlan"]] == ["research", "engineering"]
     assert plan["handoffPlan"][0]["fromTaskBriefId"] == "task-1"
     assert plan["handoffPlan"][0]["toTaskBriefId"] == "task-2"
+
+
+def test_runtime_episode_fallback_respects_chinese_plan_only_request() -> None:
+    runtime = ChatRuntime()
+    plan = runtime._fallback_runtime_episode_planner_plan(
+        chat_run=_chat_run_for_query(
+            "普通模式复杂任务边界测试：请规划一个需要 Research、Engineering、Subagent 协作的 V8OS 改造小任务，"
+            "并选择合适方式启动一次 runtime/delegation 编排或说明为什么只需要计划。不要写真实项目文件，不要使用 Computer Use/RPA。"
+        ),
+        reason="planner_model_timeout_after_0.35s",
+    )
+
+    engineering_brief = next(item for item in plan["taskBriefs"] if item.get("familyHint") == "engineering")
+    engineering_capability = next(item for item in plan["capabilityPlan"] if item.get("kind") == "engineering")
+    assert engineering_brief["deliverableKind"] == "plan_only"
+    assert engineering_brief["writeRequired"] is False
+    assert engineering_brief["writeSet"] == []
+    assert engineering_capability["writeRequired"] is False
+    assert "plan_only_engineering" in plan["qualityFlags"]
 
 
 def _chat_run_for_query(query: str) -> SimpleNamespace:
@@ -340,6 +358,8 @@ def test_subagent_delegation_broker_requires_recursive_grant() -> None:
 
 
 def test_planner_auto_dispatch_blocks_when_explicit_engineering_is_disabled() -> None:
+    from graph.workflow_assembly import build_planner_auto_dispatch_node
+
     node = build_planner_auto_dispatch_node()
     command = node(
         {

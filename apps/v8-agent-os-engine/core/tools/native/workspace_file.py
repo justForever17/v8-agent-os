@@ -5,6 +5,8 @@ import mimetypes
 import os
 import re
 import sys
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,10 @@ def _workspace_inventory_status_compat(runtime_context: dict[str, Any]) -> dict[
 
 
 TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.json', '.yaml', '.yml', '.csv', '.log', '.sh', '.bat', '.ps1', '.html', '.css', '.js', '.ts', '.tsx', '.jsx'}
+_READ_BEFORE_WRITE_TTL_SECONDS = 30 * 60
+_READ_BEFORE_WRITE_MAX_RECEIPTS = 4096
+_READ_BEFORE_WRITE_LOCK = threading.RLock()
+_READ_BEFORE_WRITE_RECEIPTS: dict[str, dict[str, Any]] = {}
 
 
 def is_binary(file_path: str) -> bool:
@@ -101,12 +107,99 @@ def _agent_limited_list(value: Any, *, limit: int = 20) -> list[Any]:
     return list(value or [])[:limit] if isinstance(value, list) else []
 
 
+def _read_before_write_key(runtime_context: dict[str, Any], target_path: Path) -> str:
+    scope_parts = (
+        str(runtime_context.get("session_id") or "").strip(),
+        str(runtime_context.get("run_id") or runtime_context.get("root_run_id") or "").strip(),
+        str(runtime_context.get("workspace_id") or runtime_context.get("project_id") or "").strip(),
+    )
+    normalized_path = os.path.normcase(str(target_path.resolve(strict=False)))
+    return "\x1f".join((*scope_parts, normalized_path))
+
+
+def _file_state_fingerprint(target_path: Path) -> tuple[int, int]:
+    stat = target_path.stat()
+    return int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def _prune_read_before_write_receipts(now: float) -> None:
+    expired = [
+        key
+        for key, receipt in _READ_BEFORE_WRITE_RECEIPTS.items()
+        if now - float(receipt.get("recordedAtMonotonic") or 0.0) > _READ_BEFORE_WRITE_TTL_SECONDS
+    ]
+    for key in expired:
+        _READ_BEFORE_WRITE_RECEIPTS.pop(key, None)
+    if len(_READ_BEFORE_WRITE_RECEIPTS) <= _READ_BEFORE_WRITE_MAX_RECEIPTS:
+        return
+    oldest = sorted(
+        _READ_BEFORE_WRITE_RECEIPTS.items(),
+        key=lambda item: float(item[1].get("recordedAtMonotonic") or 0.0),
+    )
+    for key, _ in oldest[: len(_READ_BEFORE_WRITE_RECEIPTS) - _READ_BEFORE_WRITE_MAX_RECEIPTS]:
+        _READ_BEFORE_WRITE_RECEIPTS.pop(key, None)
+
+
+def _record_file_read(runtime_context: dict[str, Any], target_path: Path) -> None:
+    now = time.monotonic()
+    receipt = {
+        "fingerprint": _file_state_fingerprint(target_path),
+        "recordedAtMonotonic": now,
+    }
+    with _READ_BEFORE_WRITE_LOCK:
+        _prune_read_before_write_receipts(now)
+        _READ_BEFORE_WRITE_RECEIPTS[_read_before_write_key(runtime_context, target_path)] = receipt
+
+
+def _consume_file_read_receipt(runtime_context: dict[str, Any], target_path: Path) -> tuple[bool, str]:
+    if not target_path.exists() or not target_path.is_file():
+        return True, ""
+    now = time.monotonic()
+    key = _read_before_write_key(runtime_context, target_path)
+    with _READ_BEFORE_WRITE_LOCK:
+        _prune_read_before_write_receipts(now)
+        receipt = _READ_BEFORE_WRITE_RECEIPTS.get(key)
+        if not receipt:
+            return False, "missing"
+        if tuple(receipt.get("fingerprint") or ()) != _file_state_fingerprint(target_path):
+            _READ_BEFORE_WRITE_RECEIPTS.pop(key, None)
+            return False, "stale"
+    return True, ""
+
+
+def _invalidate_file_read_receipt(runtime_context: dict[str, Any], target_path: Path) -> None:
+    with _READ_BEFORE_WRITE_LOCK:
+        _READ_BEFORE_WRITE_RECEIPTS.pop(_read_before_write_key(runtime_context, target_path), None)
+
+
+def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str, Any]:
+    stale = reason == "stale"
+    return {
+        "ok": False,
+        "kind": "read_before_write_required",
+        "summary": (
+            "文件在读取后发生了变化，已阻止基于旧内容继续修改。"
+            if stale
+            else "修改已有文件前必须先读取当前内容。"
+        ),
+        "error": "file_changed_after_read" if stale else "existing_file_not_read",
+        "path": str(target_path),
+        "recommendedNextAction": (
+            "重新调用 read_native_file 读取当前文件，再重试 write_native_file。局部修改请同时提供行范围或 expected_old_text。"
+        ),
+    }
+
+
 @tool
 def read_native_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
     """Read contents of a text file on the host filesystem.
 
+    Use this for known text, JSON, Markdown, source, task brief, Spec, or config paths in the active workspace.
+    Do not use shell commands, Python one-liners, `type`, `Get-Content`, or `cat` just to read a known file.
+    Reading a file also creates the same-run receipt required before modifying an existing file with `write_native_file`.
+
     If the file is binary, it will refuse to read it to protect context.
-    If the file is very large (> 2000 lines), you MUST specify start_line and end_line, otherwise it will be truncated.
+    If the file is very large (> 2000 lines), specify start_line and end_line and continue reading the same file as needed.
 
     Arguments:
         path (str): Absolute path to the file.
@@ -157,6 +250,7 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
         content = "".join(lines[start_idx:end_idx])
         header = f"--- File: {target_path} (Lines {start_idx + 1} to {end_idx} of {total_lines}) ---\n"
         footer = "\n--- [TRUNCATED] Read exceeded 2000 lines limit. Use start_line/end_line to read more. ---" if truncated else ""
+        _record_file_read(runtime_context, target_path)
 
         return header + content + footer
 
@@ -384,7 +478,11 @@ def write_native_file(
     allow_full_replace: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Write or append text content to a native file on the host filesystem.
+    """Create a text file, or modify an existing text file after reading it first.
+
+    New files may be created directly. Before changing or appending to an existing file,
+    call `read_native_file` in the same run. A successful write consumes that read receipt,
+    so read the file again before another modification.
 
     Arguments:
         path (str): Absolute path to the file.
@@ -421,6 +519,13 @@ def write_native_file(
             return json.dumps(
                 _workspace_inventory_block_payload(runtime_context, operation="file_write", subject=str(target_path)),
                 ensure_ascii=False,
+            )
+        read_allowed, read_block_reason = _consume_file_read_receipt(runtime_context, target_path)
+        if not read_allowed:
+            return json.dumps(
+                _read_before_write_block_payload(target_path, read_block_reason),
+                ensure_ascii=False,
+                indent=2,
             )
         allowed, error_message = _enforce_safety_decision(
             safety_guardian.assess_file_write(
@@ -494,6 +599,7 @@ def write_native_file(
         mode = 'a' if append else 'w'
         with open(target_path, mode, encoding='utf-8') as f:
             f.write(write_content)
+        _invalidate_file_read_receipt(runtime_context, target_path)
 
         safety_guardian.observe_post_action(
             action_family="file_write",

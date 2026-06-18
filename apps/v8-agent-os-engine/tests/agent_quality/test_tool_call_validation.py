@@ -127,24 +127,48 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result, ToolMessage)
         self.assertIn("[route required]", str(result.content))
 
-    async def test_planning_mode_allows_only_three_web_fact_gathering_calls(self) -> None:
+    async def test_planning_mode_allows_expanded_web_fact_gathering_budget(self) -> None:
+        previous_calls = [
+            types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": f"web-{index}"}])
+            for index in range(7)
+        ]
         request = _DummyRequest(
             "web_broker",
-            "tool_call_web_4",
+            "tool_call_web_8",
             state={
                 "taskPlanningMode": True,
                 "current_route_context": {"engineeringRequired": True},
-                "messages": [
-                    types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": "a"}]),
-                    types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": "b"}]),
-                    types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": "c"}]),
-                ],
+                "messages": previous_calls,
             },
             args={"query": "current docs"},
         )
 
         async def execute(_request):
-            raise AssertionError("fourth planning web call should route to Research")
+            return ToolMessage(content="web evidence", name="web_broker", tool_call_id="tool_call_web_8")
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIn("web evidence", str(result.content))
+        self.assertNotIn("[route required]", str(result.content))
+
+    async def test_planning_mode_routes_web_after_expanded_budget(self) -> None:
+        previous_calls = [
+            types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": f"web-{index}"}])
+            for index in range(8)
+        ]
+        request = _DummyRequest(
+            "web_broker",
+            "tool_call_web_9",
+            state={
+                "taskPlanningMode": True,
+                "current_route_context": {"engineeringRequired": True},
+                "messages": previous_calls,
+            },
+            args={"query": "current docs"},
+        )
+
+        async def execute(_request):
+            raise AssertionError("ninth planning web call should route to Research")
 
         result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 

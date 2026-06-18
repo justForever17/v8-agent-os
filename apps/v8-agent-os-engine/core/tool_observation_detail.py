@@ -43,6 +43,80 @@ def _tool_observation_content_excerpt(value: Any, limit: int = 1600) -> str:
     return f"{text[:head_limit].rstrip()}\n\n...[content truncated]...\n\n{text[-tail_limit:].lstrip()}"
 
 
+def _tool_observation_display_value(value: Any, limit: int = 420) -> str:
+    if isinstance(value, dict):
+        parts = [
+            f"{key}={_tool_observation_short_text(item, 120)}"
+            for key, item in list(value.items())[:6]
+            if not isinstance(item, (dict, list)) and item not in (None, "")
+        ]
+        return "; ".join(parts) if parts else f"{len(value)} field(s)"
+    if isinstance(value, list):
+        scalar_items = [
+            _tool_observation_short_text(item, 120)
+            for item in value[:6]
+            if not isinstance(item, (dict, list))
+        ]
+        return "; ".join(scalar_items) if scalar_items else f"{len(value)} item(s)"
+    return _tool_observation_short_text(value, limit)
+
+
+def _render_generic_json_observation_detail(
+    payload: dict[str, Any],
+    *,
+    record: dict[str, Any],
+    raw_ref: str,
+    max_chars: int,
+) -> str:
+    lines = [
+        "Tool observation detail",
+        f"rawRef: {raw_ref}",
+        f"tool: {record.get('tool_name') or 'unknown'}",
+        f"runtime: {record.get('runtime_kind') or 'unknown'}",
+        f"chars: raw={record.get('raw_chars') or 0}, visible={record.get('visible_chars') or 0}",
+    ]
+    if payload.get("ok") is False:
+        lines.append("status: failed")
+    elif payload.get("status") not in (None, "", [], {}):
+        lines.append(f"status: {_tool_observation_display_value(payload.get('status'), 100)}")
+    elif payload.get("kind") not in (None, "", [], {}):
+        lines.append(f"kind: {_tool_observation_display_value(payload.get('kind'), 100)}")
+
+    rendered_keys: set[str] = {"ok", "status", "kind", "_v8ToolSurface"}
+    for key, label in (
+        ("summary", "Summary"),
+        ("message", "Message"),
+        ("answer", "Answer"),
+        ("result", "Result"),
+        ("error", "Error"),
+        ("recommendedNextAction", "Next"),
+        ("nextAction", "Next"),
+    ):
+        value = payload.get(key)
+        if value in (None, "", [], {}):
+            continue
+        lines.append(f"{label}: {_tool_observation_display_value(value, 1000)}")
+        rendered_keys.add(key)
+
+    remaining = [
+        (key, value)
+        for key, value in payload.items()
+        if key not in rendered_keys and value not in (None, "", [], {})
+    ]
+    if remaining:
+        lines.append("")
+        lines.append("Details:")
+        for key, value in remaining[:12]:
+            lines.append(f"- {key}: {_tool_observation_display_value(value, 360)}")
+        if len(remaining) > 12:
+            lines.append(f"- … {len(remaining) - 12} more field(s)")
+
+    rendered = _redact_tool_observation_preview("\n".join(lines).strip())
+    if len(rendered) > max_chars:
+        rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
+    return rendered
+
+
 def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str, max_chars: int) -> str | None:
     kind = str(payload.get("kind") or "").strip()
     if kind not in {"research_evidence_bundle", "research_result_pack", "research_experience_pack"} and not any(
@@ -235,6 +309,13 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
             rendered = _render_web_observation_detail(payload, raw_ref=normalized_ref, max_chars=requested_chars)
             if rendered:
                 return rendered
+        if payload:
+            return _render_generic_json_observation_detail(
+                payload,
+                record=record,
+                raw_ref=normalized_ref,
+                max_chars=requested_chars,
+            )
 
         raw_preview = raw_body[:requested_chars]
         preview = _redact_tool_observation_preview(raw_preview)

@@ -59,6 +59,51 @@ def test_renderer_redacts_generic_preview(tmp_path, monkeypatch) -> None:
     assert "[secrets redacted]" in result
 
 
+def test_renderer_formats_generic_json_without_raw_json(tmp_path, monkeypatch) -> None:
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+    from core.tool_observation_detail import render_tool_observation_detail
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    temp_db.add_tool_observation_record(
+        {
+            "id": "obs-renderer-json",
+            "raw_ref": "toolobs://obs-renderer-json",
+            "tool_name": "experimental_json_tool",
+            "tool_call_id": "call-renderer-json",
+            "runtime_kind": "native",
+            "surface": "tool_node",
+            "raw_chars": 180,
+            "visible_chars": 80,
+            "raw_sha256": "sha",
+            "raw_body": json.dumps(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "summary": "The requested calibration resource is unavailable.",
+                    "error": "resource_missing",
+                    "recommendedNextAction": "Choose another resource.",
+                    "details": {"resourceType": "fixture", "attempts": 1},
+                }
+            ),
+            "budget": {"agentVisibleBudget": 1000},
+            "metadata": {},
+        }
+    )
+
+    result = render_tool_observation_detail("toolobs://obs-renderer-json", max_chars=2000)
+
+    assert result.startswith("Tool observation detail")
+    assert "status: failed" in result
+    assert "Summary: The requested calibration resource is unavailable." in result
+    assert "Error: resource_missing" in result
+    assert "Next: Choose another resource." in result
+    assert "- details: resourceType=fixture; attempts=1" in result
+    assert not result.lstrip().startswith("{")
+    assert '"recommendedNextAction"' not in result
+
+
 def test_renderer_prefers_research_answer_pack(tmp_path, monkeypatch) -> None:
     import core.observability_db as observability_module
     from core.observability_db import ObservabilityDatabaseManager

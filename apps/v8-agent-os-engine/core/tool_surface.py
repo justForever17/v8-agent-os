@@ -106,6 +106,7 @@ COMMAND_TOOL_NAMES = {
     "send_background_input",
     "terminate_background_command",
 }
+TOOL_OBSERVATION_DETAIL_NAME = "tool_observation_detail"
 
 WORKER_RESULT_RE = re.compile(
     r"<V8_WORKER_RESULT\b[^>]*>.*?</V8_WORKER_RESULT>",
@@ -2220,22 +2221,27 @@ def apply_tool_surface_budget(
     content_str = original_content_str
     budget_meta = dict(budget_meta or {})
     budget = int(budget_meta.get("agentVisibleBudget") or DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS)
-    raw_ref = record_raw_observation(
-        tool_name=tool_name,
-        tool_call_id=tool_call_id,
-        runtime_kind=runtime_kind,
-        surface=surface,
-        raw_content=original_content_str,
-        budget_meta=budget_meta,
-    )
+    raw_ref = ""
+    if tool_name != TOOL_OBSERVATION_DETAIL_NAME:
+        raw_ref = record_raw_observation(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            runtime_kind=runtime_kind,
+            surface=surface,
+            raw_content=original_content_str,
+            budget_meta=budget_meta,
+        )
 
     budget_meta.update(
         {
             "toolCallId": tool_call_id,
             "runtimeKind": runtime_kind,
-            "rawRef": raw_ref,
         }
     )
+    if raw_ref:
+        budget_meta["rawRef"] = raw_ref
+    else:
+        budget_meta.pop("rawRef", None)
 
     if tool_name in COMMAND_TOOL_NAMES and WORKER_RESULT_RE.search(content_str or ""):
         notice = (
@@ -2326,6 +2332,24 @@ def apply_tool_surface_budget(
             }
         )
         return _copy_tool_message_with_budget(message, decision_surface, budget_meta)
+
+    if tool_name == TOOL_OBSERVATION_DETAIL_NAME:
+        was_truncated = len(content_str) > budget
+        if was_truncated:
+            content_str = _head_tail_truncate_text(
+                content_str,
+                budget,
+                f"tool observation detail truncated; original length {len(original_content_str)} chars",
+            )
+        budget_meta.update(
+            {
+                "wasBudgetTruncated": was_truncated,
+                "semanticTruncationStrategy": "tool_observation_detail_surface",
+                "originalChars": len(original_content_str),
+                "visibleChars": len(content_str),
+            }
+        )
+        return _copy_tool_message_with_budget(message, content_str, budget_meta)
 
     strategy = "none"
     if len(content_str) > budget:

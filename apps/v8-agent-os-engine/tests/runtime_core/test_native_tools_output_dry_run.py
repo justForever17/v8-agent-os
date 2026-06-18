@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import importlib.util
 import sys
@@ -44,6 +45,48 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     )
     by_name = {item["name"]: item for item in loaded_index["tools"]}
     assert by_name["runtime_broker"]["toolFamily"] == "runtime"
+
+
+def test_native_tools_dry_run_detail_scenario_is_representative(tmp_path, monkeypatch) -> None:
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    tool_ref = next(
+        tool
+        for tool in native_tools_dry_run._all_export_tools()
+        if getattr(tool, "name", "") == "tool_observation_detail"
+    )
+
+    record = asyncio.run(
+        native_tools_dry_run._collect_tool_observation_detail_scenario(
+            tool_ref,
+            "Read a bounded observation detail.",
+        )
+    )
+
+    assert record.representative is True
+    assert record.scenario_name == "seeded_observation_detail"
+    assert record.output.startswith("Tool observation detail")
+    assert "Calibration observation rendered as readable detail." in record.output
+    assert "tool_observation_detail(raw_ref=" not in record.output
+    assert record.diagnostics["jsonLikeVisible"] is False
+
+
+def test_fail_on_dirty_includes_json_like_agent_visible_output() -> None:
+    record = native_tools_dry_run._make_record(
+        name="tool_observation_detail",
+        status="invoked",
+        args={},
+        description="calibration",
+        output='{"ok": false, "_v8ToolSurface": {}}',
+        representative=True,
+        representative_reason="test",
+        scenario_name="test",
+    )
+
+    assert native_tools_dry_run._dirty_invoked_records([record]) == [record]
 
 
 def test_command_embedded_tool_messages_are_truncated() -> None:

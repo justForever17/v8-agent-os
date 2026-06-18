@@ -27,7 +27,12 @@ from langgraph.types import Command  # noqa: E402
 from core.native_tools import NATIVE_TOOLS  # noqa: E402
 from core.tools.native.registry import native_tool_family_for_name  # noqa: E402
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor  # noqa: E402
-from core.tool_surface import MAX_TOOL_OUTPUT_LENGTH, TOOL_OUTPUT_TARGET_CHARS, runtime_kind_for_tool  # noqa: E402
+from core.tool_surface import (  # noqa: E402
+    MAX_TOOL_OUTPUT_LENGTH,
+    TOOL_OUTPUT_TARGET_CHARS,
+    record_raw_observation,
+    runtime_kind_for_tool,
+)
 from graph.tool_routing import create_routed_tool_node  # noqa: E402
 from runtimes.extensions.skills.loader import fetch_skill_instructions  # noqa: E402
 
@@ -172,7 +177,6 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "manage_cron": {"action": "list"},
     "manage_hook": {"action": "list"},
     "read_audit_log": {"limit": 1},
-    "tool_observation_detail": {"raw_ref": "toolobs://calibration-absent-observation", "max_chars": 1000},
     "research_broker": {
         "mode": "plan",
         "question": "Compare official docs for V8 provider APIs",
@@ -205,6 +209,7 @@ SPECIAL_SCENARIOS = {
     "send_background_input",
     "terminate_background_command",
 }
+DETAIL_SCENARIOS = {"tool_observation_detail"}
 
 LEDGER_ID_SCENARIOS: dict[str, dict[str, Any]] = {
     "creative_media_get_job": {
@@ -386,6 +391,7 @@ def missing_invocation_names() -> list[str]:
     covered = (
         set(BASE_SAFE_INVOCATIONS)
         | set(SPECIAL_SCENARIOS)
+        | set(DETAIL_SCENARIOS)
         | set(LEDGER_ID_SCENARIOS)
         | set(UNSAFE_REASONS)
         | set(STATEFUL_UNOBSERVED_REASONS)
@@ -708,6 +714,39 @@ async def _collect_command_scenario(name: str, tool_ref: Any, by_name: dict[str,
     )
 
 
+async def _collect_tool_observation_detail_scenario(tool_ref: Any, description: str) -> ToolCalibrationRecord:
+    raw_ref = record_raw_observation(
+        tool_name="native_tool_calibration_probe",
+        tool_call_id="calibration-tool-observation-detail-source",
+        runtime_kind="native",
+        surface="native_tool_calibration",
+        raw_content=_json_dumps(
+            {
+                "ok": False,
+                "status": "not_found",
+                "summary": "Calibration observation rendered as readable detail.",
+                "error": "calibration resource was not found",
+                "recommendedNextAction": "Use the summary and original rawRef to decide the next step.",
+                "details": {"resourceType": "calibration_fixture", "attempts": 1},
+            }
+        ),
+        budget_meta={"agentVisibleBudget": DETAIL_VISIBLE_BUDGET},
+        metadata={"calibration": True},
+    )
+    args = {"raw_ref": raw_ref, "max_chars": 2000}
+    output = await _invoke_agent_visible(tool_ref, args)
+    return _make_record(
+        name="tool_observation_detail",
+        status="invoked",
+        args=args,
+        description=description,
+        output=output,
+        representative=True,
+        representative_reason="read a seeded bounded observation through ToolNode without creating a recursive detail rawRef",
+        scenario_name="seeded_observation_detail",
+    )
+
+
 async def _collect_ledger_id_scenario(name: str, tool_ref: Any, by_name: dict[str, Any], description: str) -> ToolCalibrationRecord:
     scenario = LEDGER_ID_SCENARIOS[name]
     list_tool = by_name[str(scenario["listTool"])]
@@ -841,6 +880,8 @@ async def _collect_records_async(*, invoke: bool = True) -> list[ToolCalibration
         try:
             if name in SPECIAL_SCENARIOS:
                 record = await _collect_command_scenario(name, tool_ref, by_name, description)
+            elif name in DETAIL_SCENARIOS:
+                record = await _collect_tool_observation_detail_scenario(tool_ref, description)
             elif name in LEDGER_ID_SCENARIOS:
                 record = await _collect_ledger_id_scenario(name, tool_ref, by_name, description)
             else:
@@ -1139,6 +1180,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _dirty_invoked_records(records: list[ToolCalibrationRecord]) -> list[ToolCalibrationRecord]:
+    return [
+        record
+        for record in records
+        if record.status == "invoked"
+        and (
+            bool(record.diagnostics.get("dirtySignals"))
+            or bool(record.diagnostics.get("jsonLikeVisible"))
+        )
+    ]
+
+
 def main() -> int:
     args = parse_args()
     missing = missing_invocation_names()
@@ -1154,11 +1207,7 @@ def main() -> int:
         return 2
     print(_json_dumps(index))
     if args.fail_on_dirty:
-        dirty = [
-            record
-            for record in records
-            if record.status == "invoked" and record.diagnostics.get("dirtySignals")
-        ]
+        dirty = _dirty_invoked_records(records)
         if dirty:
             print("Dirty native tool outputs detected: " + ", ".join(record.name for record in dirty), file=sys.stderr)
             return 1

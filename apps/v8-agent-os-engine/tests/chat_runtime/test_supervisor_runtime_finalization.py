@@ -245,6 +245,35 @@ def test_completion_gate_accepts_failed_episode_with_degraded_handoff():
     assert decision.reason == "eligible"
 
 
+def test_completion_gate_blocks_spec_runtime_degraded_handoff_as_delivery():
+    decision = evaluate_supervisor_completion(
+        spec_mode=True,
+        spec_brief={
+            "specId": "spec_demo",
+            "currentStage": "tasks",
+            "pipelineControl": {
+                "runtimeExecutionAllowed": True,
+            },
+        },
+        episodes=[{"episodeId": "episode_engineering", "state": "failed", "kind": "engineering"}],
+        handoffs_by_episode={
+            "episode_engineering": [
+                {
+                    "handoffRefId": "handoff_engineering_degraded",
+                    "kind": "engineering_patch_bundle",
+                    "status": "degraded",
+                    "engineeringState": "recoverable_failed",
+                    "errorCode": "skill_artifact_validation_failed",
+                }
+            ]
+        },
+        final_text="技能产物已经交付。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "spec_runtime_execution_degraded"
+
+
 def test_completion_gate_keeps_spec_stage_waiting_for_approval():
     decision = evaluate_supervisor_completion(
         spec_mode=True,

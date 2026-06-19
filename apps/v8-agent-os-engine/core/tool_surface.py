@@ -2159,9 +2159,46 @@ def record_raw_observation(
     observation_id = f"toolobs_{uuid.uuid4().hex}"
     raw_ref = f"toolobs://{observation_id}"
     metadata_payload = dict(metadata or {})
-    run_id = str((budget_meta or {}).get("runId") or (budget_meta or {}).get("run_id") or "").strip()
+    runtime_context: dict[str, Any] = {}
+    try:
+        from erc.runtime_context import get_runtime_context
+
+        runtime_context = dict(get_runtime_context() or {})
+    except Exception:
+        runtime_context = {}
+    run_id = str(
+        (budget_meta or {}).get("runId")
+        or (budget_meta or {}).get("run_id")
+        or metadata_payload.get("runId")
+        or metadata_payload.get("run_id")
+        or runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or ""
+    ).strip()
+    session_id = str(
+        metadata_payload.get("sessionId")
+        or metadata_payload.get("session_id")
+        or (budget_meta or {}).get("sessionId")
+        or (budget_meta or {}).get("session_id")
+        or runtime_context.get("session_id")
+        or runtime_context.get("sessionId")
+        or ""
+    ).strip()
+    workspace_path = str(
+        metadata_payload.get("workspacePath")
+        or metadata_payload.get("workspace_path")
+        or (budget_meta or {}).get("workspacePath")
+        or (budget_meta or {}).get("workspace_path")
+        or runtime_context.get("workspace_path")
+        or runtime_context.get("workspacePath")
+        or ""
+    ).strip()
     if run_id and not metadata_payload.get("runId"):
         metadata_payload["runId"] = run_id
+    if session_id and not metadata_payload.get("sessionId"):
+        metadata_payload["sessionId"] = session_id
+    if workspace_path and not metadata_payload.get("workspacePath"):
+        metadata_payload["workspacePath"] = workspace_path
     try:
         from core.observability_db import observability_db
 

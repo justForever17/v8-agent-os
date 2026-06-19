@@ -120,3 +120,75 @@ def test_engineering_expected_artifact_check_requires_every_declared_file(tmp_pa
     )
 
     assert missing == [".v8/demo/README.md"]
+
+
+def test_nuwa_like_spec_tasks_are_distributed_without_route_layer_compression():
+    bundle = _bundle()
+    bundle["specId"] = "spec_nuwa"
+    bundle["workspacePath"] = "E:/Projects/test2"
+    bundle["documents"]["tasks"]["ids"] = [f"TASK-{index:03d}" for index in range(1, 12)]
+    bundle["tasks"] = [
+        *[
+            {
+                "taskId": f"TASK-{index:03d}",
+                "title": f"调研维度 {index}",
+                "runtimeLane": "Research",
+                "expectedOutput": f"`references/research/{index:02d}-dimension.md`",
+                "acceptance": "输出有来源的研究文件。",
+                "taskExcerpt": "按女娲方法调研一个独立维度并写入对应 research markdown。",
+            }
+            for index in range(1, 7)
+        ],
+        {
+            "taskId": "TASK-007",
+            "title": "初始化 skill 目录",
+            "runtimeLane": "Engineering",
+            "expectedOutput": "创建目录，不写核心内容。",
+            "taskExcerpt": "创建目标 skill 目录和 references/research 目录。",
+        },
+        {
+            "taskId": "TASK-008",
+            "title": "构建 SKILL.md",
+            "runtimeLane": "Engineering",
+            "expectedOutput": "`SKILL.md`",
+            "dependsOn": [f"TASK-{index:03d}" for index in range(1, 7)] + ["TASK-007"],
+            "taskExcerpt": "基于六份 research 文件生成 SKILL.md。",
+        },
+        {
+            "taskId": "TASK-009",
+            "title": "验证资料引用",
+            "runtimeLane": "Research",
+            "expectedOutput": "验证报告，确认来源和研究文件质量。",
+            "dependsOn": ["TASK-008"],
+            "taskExcerpt": "验证 skill 成品是否正确引用研究资料。",
+        },
+        {
+            "taskId": "TASK-010",
+            "title": "验证表达 DNA",
+            "runtimeLane": "Research",
+            "expectedOutput": "验证报告，确认表达 DNA 覆盖。",
+            "dependsOn": ["TASK-008"],
+            "taskExcerpt": "检查表达 DNA 是否符合女娲方法。",
+        },
+        {
+            "taskId": "TASK-011",
+            "title": "最终交付摘要",
+            "runtimeLane": "Engineering",
+            "expectedOutput": "最终交付摘要。",
+            "dependsOn": ["TASK-007", "TASK-008", "TASK-009", "TASK-010"],
+            "taskExcerpt": "汇总产物、验证结果和风险。",
+        },
+    ]
+
+    briefs = _task_briefs_from_spec_bundle(bundle, "engineering")
+    ids = [brief["taskBriefId"] for brief in briefs]
+
+    assert ids == [f"TASK-{index:03d}" for index in range(1, 12)]
+    assert all(briefs[index]["writeRequired"] for index in range(6))
+    assert briefs[0]["engineeringTaskCapsule"]["expectedArtifacts"] == ["references/research/01-dimension.md"]
+    assert briefs[7]["dependency"] == [f"TASK-{index:03d}" for index in range(1, 7)] + ["TASK-007"]
+    assert briefs[8]["preferredAgentId"] == "verification-engineer"
+    assert briefs[8]["dependency"] == ["TASK-008"]
+    assert briefs[9]["preferredAgentId"] == "verification-engineer"
+    assert briefs[9]["dependency"] == ["TASK-008"]
+    assert briefs[10]["dependency"] == ["TASK-007", "TASK-008", "TASK-009", "TASK-010"]

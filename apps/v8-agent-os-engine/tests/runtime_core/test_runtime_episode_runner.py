@@ -4,11 +4,33 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from langgraph.types import Send
 
 from erc.runtime_context import bind_runtime_context
 from core.database import db
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
+
+
+def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: str = "worker") -> Send:
+    task_brief = {
+        "taskBriefId": task_id,
+        "dependency": list(deps or []),
+        "context": {"taskId": task_id},
+    }
+    return Send(
+        "parallel_delegate_task",
+        {
+            "parallel_branch": {
+                "agentId": agent_id,
+                "agentName": agent_id,
+                "taskBriefId": task_id,
+                "taskBrief": task_brief,
+                "dependency": list(deps or []),
+                "reason": f"Run {task_id}",
+            }
+        },
+    )
 
 
 def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably():
@@ -105,6 +127,72 @@ def test_engineering_plan_only_without_workers_returns_ready_handoff():
     assert handoff["writeRequired"] is False
     assert handoff.get("recoverable") is not True
     assert "errorCode" not in handoff
+
+
+def test_local_delegation_blocks_task_when_dependency_failed(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    executed: list[str] = []
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data):
+        task_id = arg["parallel_branch"]["taskBriefId"]
+        executed.append(task_id)
+        if task_id == "TASK-001":
+            return [], [], {"taskBriefId": task_id, "status": "error", "error": "research_failed"}, []
+        return [], [], {"taskBriefId": task_id, "status": "ok"}, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=[_delegation_send("TASK-001"), _delegation_send("TASK-002", deps=["TASK-001"])]),
+            {"episodeId": "episode_test", "inputs": {}, "need": {}},
+        )
+    )
+
+    assert executed == ["TASK-001"]
+    assert [item["taskBriefId"] for item in results] == ["TASK-001", "TASK-002"]
+    assert results[1]["status"] == "blocked"
+    assert results[1]["error"] == "dependency_failed"
+    assert results[1]["blockedDependencies"] == ["TASK-001"]
+
+
+def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    seen_args: dict[str, dict] = {}
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data):
+        task_id = arg["parallel_branch"]["taskBriefId"]
+        seen_args[task_id] = arg
+        return [], [], {"taskBriefId": task_id, "status": "ok", "summary": f"{task_id} finished"}, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=[_delegation_send("TASK-001"), _delegation_send("TASK-002", deps=["TASK-001"])]),
+            {"episodeId": "episode_test", "inputs": {}, "need": {}},
+        )
+    )
+
+    assert [item["taskBriefId"] for item in results] == ["TASK-001", "TASK-002"]
+    dependency_results = seen_args["TASK-002"]["parallel_branch"]["taskBrief"]["context"]["dependencyResults"]
+    assert dependency_results[0]["taskBriefId"] == "TASK-001"
+    assert dependency_results[0]["status"] == "ok"
+    assert "TASK-001 finished" in dependency_results[0]["summary"]
 
 
 def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):

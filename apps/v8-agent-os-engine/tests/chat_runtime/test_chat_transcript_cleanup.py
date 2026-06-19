@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from langchain_core.messages import AIMessage
 
 import runtimes.chat.runtime as chat_runtime_module
 from erc.runtime_context import bind_runtime_context
@@ -394,6 +395,60 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("运行时链路已经完成并回流", row["content_text"])
         self.assertIn("Research Runtime 已生成证据包", row["content_text"])
         self.assertNotIn("开始跑调研通道啦", row["content_text"])
+
+    async def test_runtime_handoff_reconciliation_replaces_pending_runtime_text_from_final_state(self):
+        self.chat_run.active_run_id = f"run_test_{uuid.uuid4().hex}"
+        chat_runtime_module.db.create_run_record(
+            self.chat_run.active_run_id,
+            self.chat_run.session_id,
+            run_type="chat",
+            status="running",
+        )
+        message_id = self.runtime._ensure_assistant_canonical_message(self.chat_run, self.stream_state)
+        self.runtime._append_canonical_node(
+            self.chat_run,
+            self.stream_state,
+            node={
+                "id": f"{message_id}:narrative:pending",
+                "kind": "narrative",
+                "role": "assistant",
+                "content": "Runtime 已排队，等待 handoff。让我检查执行状态。",
+                "timestamp": self.runtime._now_timestamp_ms(),
+            },
+        )
+        final_state = {
+            "planner_dispatch_status": {
+                "mode": "runtime_episode",
+                "nextAction": "resume_supervisor",
+                "state": "degraded_handoff_ready",
+                "handoffCount": 1,
+            },
+            "current_route_context": {
+                "handoffRefs": [
+                    {
+                        "kind": "engineering_patch_bundle",
+                        "status": "degraded",
+                        "compactSummary": "Skill 产物验证失败，缺少必需研究文件。",
+                    },
+                ]
+            },
+            "messages": [AIMessage(content="Runtime 已排队，等待 handoff。让我检查执行状态。")],
+        }
+
+        async def _fake_state(_bundle):
+            return final_state
+
+        with mock.patch.object(chat_runtime_module.supervisor_runner, "get_state_snapshot", side_effect=_fake_state):
+            await self.runtime.reconcile_final_assistant_message(
+                self.chat_run,
+                self.stream_state,
+                SimpleNamespace(runner_bundle=object()),
+            )
+
+        row = chat_runtime_module.db.get_chat_canonical_message(message_id)
+        self.assertIn("运行时链路已经完成并回流", row["content_text"])
+        self.assertIn("Skill 产物验证失败", row["content_text"])
+        self.assertNotIn("等待 handoff。让我检查执行状态", row["content_text"])
 
     async def test_tool_start_sanitizes_runtime_internal_input(self):
         await self.runtime.handle_stream_event(

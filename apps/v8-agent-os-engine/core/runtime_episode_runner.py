@@ -1573,6 +1573,126 @@ class RuntimeEpisodeRunner:
             normalized.append(item)
         return normalized
 
+    @staticmethod
+    def _delegation_send_arg(item: Any) -> dict[str, Any]:
+        arg = getattr(item, "arg", None)
+        return dict(arg) if isinstance(arg, dict) else {}
+
+    @classmethod
+    def _delegation_send_branch(cls, item: Any) -> dict[str, Any]:
+        arg = cls._delegation_send_arg(item)
+        return dict(arg.get("parallel_branch") or {}) if isinstance(arg.get("parallel_branch"), dict) else {}
+
+    @classmethod
+    def _delegation_send_task_id(cls, item: Any) -> str:
+        branch = cls._delegation_send_branch(item)
+        task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+        return str(
+            branch.get("taskBriefId")
+            or branch.get("taskId")
+            or task_brief.get("taskBriefId")
+            or task_brief.get("taskId")
+            or ""
+        ).strip()
+
+    @classmethod
+    def _delegation_send_dependencies(cls, item: Any) -> list[str]:
+        branch = cls._delegation_send_branch(item)
+        task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+        context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        deps: list[str] = []
+        for source in (
+            branch.get("dependency"),
+            branch.get("dependencies"),
+            branch.get("dependsOn"),
+            task_brief.get("dependency"),
+            task_brief.get("dependencies"),
+            task_brief.get("dependsOn"),
+            context.get("dependency"),
+            context.get("dependencies"),
+            context.get("dependsOn"),
+        ):
+            values = source if isinstance(source, list) else [source]
+            for value in values:
+                text = str(value or "").strip()
+                if text and text not in deps:
+                    deps.append(text)
+        return deps
+
+    @staticmethod
+    def _delegation_summary_succeeded(summary: dict[str, Any]) -> bool:
+        status = str(summary.get("status") or "").strip().lower()
+        if status in {"ok", "ready", "success", "completed", "done"}:
+            return True
+        if status in {"degraded", "blocked", "error", "failed", "cancelled"}:
+            return False
+        return bool(summary.get("artifacts") or summary.get("proofRefs") or summary.get("changedFiles"))
+
+    @classmethod
+    def _dependency_results_for_delegation(
+        cls,
+        deps: list[str],
+        completed_by_task_id: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for dep in deps:
+            summary = completed_by_task_id.get(dep)
+            if not summary:
+                continue
+            results.append(
+                {
+                    "taskBriefId": dep,
+                    "status": summary.get("status"),
+                    "agentId": summary.get("agentId"),
+                    "agentName": summary.get("agentName"),
+                    "summary": cls._delegation_handoff_visible_evidence_summary(summary)[:1600],
+                    "artifacts": list(summary.get("artifacts") or [])[:8] if isinstance(summary.get("artifacts"), list) else [],
+                    "proofRefs": list(summary.get("proofRefs") or [])[:8] if isinstance(summary.get("proofRefs"), list) else [],
+                    "blockers": list(summary.get("blockers") or [])[:6] if isinstance(summary.get("blockers"), list) else [],
+                    "error": summary.get("error"),
+                }
+            )
+        return results
+
+    @staticmethod
+    def _blocked_dependency_summary(*, branch: dict[str, Any], task_id: str, deps: list[str], reason: str, failed: list[str]) -> dict[str, Any]:
+        return {
+            "invocationId": branch.get("invocationId"),
+            "taskBriefId": task_id or branch.get("taskBriefId"),
+            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+            "taskGoal": branch.get("reason"),
+            "agentId": branch.get("agentId"),
+            "agentName": branch.get("agentName") or branch.get("agentId"),
+            "delegationId": branch.get("delegationId"),
+            "lane": branch.get("lane") or "subagent",
+            "targetId": branch.get("agentId"),
+            "targetLabel": branch.get("agentName") or branch.get("agentId"),
+            "branchIndex": branch.get("branchIndex"),
+            "status": "blocked",
+            "error": reason,
+            "dependency": deps,
+            "blockedDependencies": failed,
+            "completedAt": utc_now_iso(),
+        }
+
+    @staticmethod
+    def _inject_dependency_results_into_send_arg(arg: dict[str, Any], dependency_results: list[dict[str, Any]]) -> dict[str, Any]:
+        if not dependency_results:
+            return dict(arg)
+        updated = dict(arg)
+        branch = dict(updated.get("parallel_branch") or {})
+        task_brief = dict(branch.get("taskBrief") or {}) if isinstance(branch.get("taskBrief"), dict) else {}
+        context = dict(task_brief.get("context") or {}) if isinstance(task_brief.get("context"), dict) else {}
+        context["dependencyResults"] = dependency_results
+        task_brief["context"] = context
+        branch["taskBrief"] = task_brief
+        branch["dependencyResults"] = dependency_results
+        updated["parallel_branch"] = branch
+        route_context = dict(updated.get("current_route_context") or {})
+        route_context["dependencyResults"] = dependency_results
+        updated["current_route_context"] = route_context
+        return updated
+
     def _validate_skill_artifact_if_requested(
         self,
         episode: dict[str, Any],
@@ -2362,12 +2482,20 @@ class RuntimeEpisodeRunner:
             or need.get("workspace_path")
             or ""
         ).strip() or None
-        for item in sends:
+
+        pending = list(sends)
+        completed_by_task_id: dict[str, dict[str, Any]] = {}
+
+        async def _run_ready_send(item: Send) -> None:
+            task_id = self._delegation_send_task_id(item)
+            deps = self._delegation_send_dependencies(item)
             node = str(getattr(item, "node", "") or "")
             arg = getattr(item, "arg", None)
             if node != "parallel_delegate_task" or not isinstance(arg, dict):
-                continue
+                return
             arg = dict(arg)
+            dependency_results = self._dependency_results_for_delegation(deps, completed_by_task_id)
+            arg = self._inject_dependency_results_into_send_arg(arg, dependency_results)
             route_context = dict(arg.get("current_route_context") or {})
             route_context.setdefault("activeCapabilityEpisodeId", episode.get("episodeId"))
             route_context["capabilityEpisodes"] = [
@@ -2394,25 +2522,26 @@ class RuntimeEpisodeRunner:
             agent_id = str(branch.get("agentId") or "").strip()
             agent_data = agent_nodes_map.get(agent_id)
             if not agent_data:
-                results.append(
-                    {
-                        "invocationId": branch.get("invocationId"),
-                        "taskBriefId": branch.get("taskBriefId"),
-                        "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
-                        "taskGoal": branch.get("reason"),
-                        "agentId": agent_id,
-                        "agentName": branch.get("agentName") or agent_id,
-                        "delegationId": branch.get("delegationId"),
-                        "lane": branch.get("lane") or "subagent",
-                        "targetId": agent_id,
-                        "targetLabel": branch.get("agentName") or agent_id,
-                        "branchIndex": branch.get("branchIndex"),
-                        "status": "error",
-                        "error": f"未找到子 Agent '{agent_id}'。",
-                        "completedAt": utc_now_iso(),
-                    }
-                )
-                continue
+                summary = {
+                    "invocationId": branch.get("invocationId"),
+                    "taskBriefId": task_id or branch.get("taskBriefId"),
+                    "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "lane": branch.get("lane") or "subagent",
+                    "targetId": agent_id,
+                    "targetLabel": branch.get("agentName") or agent_id,
+                    "branchIndex": branch.get("branchIndex"),
+                    "status": "error",
+                    "error": f"未找到子 Agent '{agent_id}'。",
+                    "completedAt": utc_now_iso(),
+                }
+                results.append(summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
+                return
             try:
                 _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
                     str(episode.get("episodeId") or ""),
@@ -2448,27 +2577,82 @@ class RuntimeEpisodeRunner:
                                 "RuntimeEpisodeRunner promoted a conservative child delegation episode instead of failing the parent."
                             ),
                         }
-                results.append(dict(summary or {}))
+                summary = dict(summary or {})
+                summary.setdefault("taskBriefId", task_id or branch.get("taskBriefId"))
+                results.append(summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
                 child_episode_ids.extend(self._enqueue_child_delegation_requests(child_requests, episode=episode))
             except Exception as exc:
-                results.append(
-                    {
-                        "invocationId": branch.get("invocationId"),
-                        "taskBriefId": branch.get("taskBriefId"),
-                        "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
-                        "taskGoal": branch.get("reason"),
-                        "agentId": agent_id,
-                        "agentName": branch.get("agentName") or agent_id,
-                        "delegationId": branch.get("delegationId"),
-                        "lane": branch.get("lane") or "subagent",
-                        "targetId": agent_id,
-                        "targetLabel": branch.get("agentName") or agent_id,
-                        "branchIndex": branch.get("branchIndex"),
-                        "status": "error",
-                        "error": str(exc).strip() or exc.__class__.__name__,
-                        "completedAt": utc_now_iso(),
-                    }
+                summary = {
+                    "invocationId": branch.get("invocationId"),
+                    "taskBriefId": task_id or branch.get("taskBriefId"),
+                    "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "lane": branch.get("lane") or "subagent",
+                    "targetId": agent_id,
+                    "targetLabel": branch.get("agentName") or agent_id,
+                    "branchIndex": branch.get("branchIndex"),
+                    "status": "error",
+                    "error": str(exc).strip() or exc.__class__.__name__,
+                    "completedAt": utc_now_iso(),
+                }
+                results.append(summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
+
+        while pending:
+            progressed = False
+            for item in list(pending):
+                task_id = self._delegation_send_task_id(item)
+                deps = self._delegation_send_dependencies(item)
+                failed_deps = [
+                    dep
+                    for dep in deps
+                    if dep in completed_by_task_id and not self._delegation_summary_succeeded(completed_by_task_id[dep])
+                ]
+                if failed_deps:
+                    branch = self._delegation_send_branch(item)
+                    summary = self._blocked_dependency_summary(
+                        branch=branch,
+                        task_id=task_id,
+                        deps=deps,
+                        reason="dependency_failed",
+                        failed=failed_deps,
+                    )
+                    results.append(summary)
+                    if task_id:
+                        completed_by_task_id[task_id] = summary
+                    pending.remove(item)
+                    progressed = True
+                    continue
+                if any(dep not in completed_by_task_id for dep in deps):
+                    continue
+                await _run_ready_send(item)
+                pending.remove(item)
+                progressed = True
+                break
+            if progressed:
+                continue
+            for item in list(pending):
+                task_id = self._delegation_send_task_id(item)
+                deps = self._delegation_send_dependencies(item)
+                missing_deps = [dep for dep in deps if dep not in completed_by_task_id]
+                branch = self._delegation_send_branch(item)
+                summary = self._blocked_dependency_summary(
+                    branch=branch,
+                    task_id=task_id,
+                    deps=deps,
+                    reason="dependency_not_satisfied",
+                    failed=missing_deps,
                 )
+                results.append(summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
+                pending.remove(item)
         return results, child_episode_ids
 
     @staticmethod

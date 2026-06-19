@@ -8318,6 +8318,44 @@ class ChatRuntime:
             return True
         return False
 
+    @staticmethod
+    def _looks_like_pending_runtime_handoff_text(text: str) -> bool:
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        if len(normalized) > 900:
+            return False
+        pending_markers = (
+            "runtime 已排队",
+            "runtime已排队",
+            "运行时已排队",
+            "运行时链路已排队",
+            "等待 handoff",
+            "等待handoff",
+            "等待 runtime",
+            "等待运行时",
+            "等待回流",
+            "检查执行状态",
+            "queued",
+            "wait_episode",
+            "waiting handoff",
+            "waiting runtime",
+        )
+        completion_markers = (
+            "已经完成并回流",
+            "完成并回流",
+            "已完成",
+            "已生成",
+            "降级",
+            "失败",
+            "degraded",
+            "completed",
+            "ready",
+        )
+        return any(marker in normalized for marker in pending_markers) and not any(
+            marker in normalized for marker in completion_markers
+        )
+
     _WORKSPACE_MEDIA_PATH_PATTERN = re.compile(
         r"(?P<path>[A-Za-z]:[\\/][^\r\n`\"']+?\.(?:png|jpe?g|gif|webp|bmp|mp4|mov|webm|mkv|mp3|wav|m4a|aac|flac))",
         re.IGNORECASE,
@@ -8445,13 +8483,15 @@ class ChatRuntime:
         row = db.get_chat_canonical_message(message_id) or {}
         current_text = str(row.get("content_text") or self._current_canonical_text(stream_state) or "")
         final_text = self._extract_final_assistant_text_from_state(state)
-        handoff_summary = ""
+        handoff_summary = self._runtime_handoff_summary_from_state(state)
         force_reconcile = False
-        if not str(final_text or "").strip():
-            handoff_summary = self._runtime_handoff_summary_from_state(state)
-            if handoff_summary:
-                final_text = handoff_summary
-                force_reconcile = True
+        if handoff_summary and (
+            not str(final_text or "").strip()
+            or self._looks_like_pending_runtime_handoff_text(final_text)
+            or self._looks_like_pending_runtime_handoff_text(current_text)
+        ):
+            final_text = handoff_summary
+            force_reconcile = True
         if not self._should_reconcile_final_text(
             current_text=current_text,
             final_text=final_text,

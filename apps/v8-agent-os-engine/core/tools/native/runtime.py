@@ -621,7 +621,10 @@ def _spec_task_runtime_family(task: dict[str, Any], route_kind: str) -> str:
 
 def _spec_task_required_capabilities(family: str, *, writes_artifact: bool) -> list[str]:
     if family == "research":
-        return ["source_backed_research", "evidence_pack", "research_handoff"]
+        capabilities = ["source_backed_research", "evidence_pack", "research_handoff"]
+        if writes_artifact:
+            capabilities.append("workspace_mutation")
+        return capabilities
     if family == "creative_media":
         return ["creative_asset_request", "artifact_handoff"]
     if family == "delegation":
@@ -657,6 +660,13 @@ def _spec_task_deliverable_kind(family: str) -> str:
 def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
     if family == "creative_media":
         return True
+    if family == "research":
+        output = str(task.get("expectedOutput") or task.get("expectedOutputs") or "")
+        text = " ".join(
+            str(task.get(key) or "")
+            for key in ("taskId", "title", "excerpt", "taskExcerpt", "expectedOutput", "expectedOutputs", "acceptance", "proofRequired")
+        )
+        return bool(_spec_task_expected_paths(output, text))
     if family != "engineering":
         return False
     lane = str(task.get("runtimeLane") or "").strip().lower()
@@ -799,6 +809,15 @@ def _preferred_agent_for_spec_task(
 ) -> str:
     if validates_skill_artifact:
         return "skill-workflow-curator"
+    if family == "research":
+        text = " ".join(
+            str(task.get(key) or "")
+            for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
+        ).lower()
+        verification_markers = ("验收", "验证", "测试", "检查", "verify", "verification", "test", "validate")
+        if not writes_artifact and any(marker in text for marker in verification_markers):
+            return "verification-engineer"
+        return "web-research-architect"
     if family != "engineering":
         return ""
     text = " ".join(
@@ -944,197 +963,16 @@ def _canonical_spec_detail_ref(spec_id: str, detail_ref: Any, *, fallback_stage:
     return ref
 
 
-def _coalesced_spec_research_brief(research_briefs: list[dict[str, Any]], *, spec_id: str, workspace_path: str) -> dict[str, Any]:
-    assigned_ids = [str(item.get("taskBriefId") or item.get("taskId") or "").strip() for item in research_briefs]
-    assigned_ids = [item for item in assigned_ids if item]
-    summaries = []
-    details = []
-    detail_refs = []
-    for item in research_briefs:
-        context = item.get("context") if isinstance(item.get("context"), dict) else {}
-        task_id = str(item.get("taskBriefId") or context.get("taskId") or "").strip()
-        detail_ref = _canonical_spec_detail_ref(
-            spec_id,
-            context.get("taskDetailRef"),
-            fallback_stage="tasks",
-            fallback_id=task_id,
-        )
-        if detail_ref:
-            detail_refs.append(detail_ref)
-        summaries.append(
-            {
-                "taskId": task_id,
-                "title": item.get("title"),
-                "goal": item.get("goal"),
-                "taskDetailRef": detail_ref,
-            }
-        )
-        acceptance_contract = item.get("acceptanceContract") if isinstance(item.get("acceptanceContract"), dict) else {}
-        details.append(
-            {
-                "taskId": task_id,
-                "title": item.get("title") or item.get("goal") or task_id,
-                "goal": item.get("goal"),
-                "taskExcerpt": context.get("taskExcerpt") or item.get("excerpt") or item.get("goal") or "",
-                "expectedOutput": item.get("expectedOutput") or context.get("expectedOutput") or "",
-                "acceptance": item.get("acceptance") or acceptance_contract.get("must") or "",
-                "taskDetailRef": detail_ref,
-            }
-        )
-    detail_lines = []
-    for detail in details[:12]:
-        task_id = str(detail.get("taskId") or "").strip()
-        title = str(detail.get("title") or "").strip()
-        excerpt = _safe_compact_text(detail.get("taskExcerpt"), limit=1800)
-        expected = _safe_compact_text(detail.get("expectedOutput"), limit=700)
-        acceptance = _safe_compact_text(detail.get("acceptance"), limit=900)
-        lines = [f"### {task_id}: {title}".strip()]
-        if excerpt:
-            lines.append(excerpt)
-        if expected:
-            lines.append(f"Expected output: {expected}")
-        if acceptance:
-            lines.append(f"Acceptance: {acceptance}")
-        if detail.get("taskDetailRef"):
-            lines.append(f"DetailRef: {detail.get('taskDetailRef')}")
-        detail_lines.append("\n".join(lines))
-    assigned_research_brief = "\n\n".join(detail_lines)
-    execution_contract = {
-        "workspacePath": workspace_path,
-        "taskId": "TASK-RESEARCH",
-        "runtimeFamily": "research",
-        "writeRequired": False,
-        "allowedWorkset": [],
-        "expectedArtifacts": [],
-        "sourceRefs": {
-            "specId": spec_id,
-            "taskIds": assigned_ids,
-            "detailRefs": detail_refs[:12],
-        },
-        "mustRead": [
-            "Use context.assignedResearchBrief / context.assignedTaskDetails as the concrete research brief.",
-            "Use taskDetailRefs to read exact approved research dimensions when the compact brief is insufficient.",
-        ],
-        "acceptance": ["Return source-backed claims, gaps, limitations, and source refs for downstream execution."],
-        "forbiddenScopes": [
-            "Do not write project files.",
-            "Do not treat search snippets, captcha pages, or footer/nav text as final evidence.",
-            "Do not fabricate missing canon or source claims.",
-        ],
-    }
-    handoff_contract = {
-        "type": "research_evidence_handoff",
-        "requiredFields": [
-            "status",
-            "specId",
-            "taskIds",
-            "answerOrFindings",
-            "sources",
-            "claimTable",
-            "limitations",
-            "rejectedEvidence",
-            "proofRefs",
-            "blockers",
-        ],
-        "completionRule": "Return reusable evidence or a degraded/missing-evidence handoff; a plain summary is not enough.",
-        "mustInclude": ["source refs", "assigned task IDs", "gaps/conflicts"],
-        "writeRequired": False,
-    }
-    return normalize_task_brief(
-        {
-            "taskBriefId": "TASK-RESEARCH",
-            "title": "Execute approved Spec research lane",
-            "goal": (
-                "Complete the approved research task group as one coordinated lane; "
-                f"assigned task IDs: {', '.join(assigned_ids) or 'n/a'}."
-            ),
-            "context": {
-                "source": "approved_spec_research_lane_macro",
-                "specId": spec_id,
-                "assignedTaskIds": assigned_ids,
-                "assignedTaskSummaries": summaries[:12],
-                "assignedTaskDetails": details[:12],
-                "assignedResearchBrief": assigned_research_brief,
-                "taskDetailRefs": detail_refs[:12],
-                "workspacePath": workspace_path,
-                "engineeringExecutionContract": execution_contract,
-                "handoffContract": handoff_contract,
-            },
-            "writeSet": [workspace_path] if workspace_path else [],
-            "behaviorScope": ["approved_spec_execution", "runtime_first", "research_lane"],
-            "requiredCapabilities": ["source_backed_research", "evidence_pack", "research_handoff"],
-            "runtimeAccess": ["research.core"],
-            "acceptanceContract": {
-                "must": [
-                    "Return one source-backed evidence handoff covering all assigned research task IDs.",
-                    "Use context.assignedResearchBrief / context.assignedTaskDetails as the concrete research brief; do not rely on task IDs alone.",
-                    "Do not treat search snippets, captcha pages, or footer/nav text as final evidence.",
-                    "Include reusable claims, limitations, and source refs for downstream skill construction.",
-                ],
-                "should": [
-                    "Use taskDetailRefs to read exact approved research dimensions when the compact brief is insufficient.",
-                    "Preserve gaps or conflicts explicitly instead of fabricating missing canon.",
-                ],
-                "nice": [],
-            },
-            "parallelGroup": "research",
-            "executionLaneHint": "subagent",
-            "familyHint": "research",
-            "deliverableKind": "evidence",
-            "writeRequired": False,
-            "allowChildDelegation": False,
-            "specRefs": {
-                "specId": spec_id,
-                "taskIds": assigned_ids,
-                "detailRefs": detail_refs[:12],
-            },
-            "engineeringTaskCapsule": {
-                "deliverableKind": "evidence",
-                "writeRequired": False,
-                "specId": spec_id,
-                "taskIds": assigned_ids,
-                "runtimeLane": "research",
-                "writeSet": [workspace_path] if workspace_path else [],
-                "allowedWorkset": [],
-                "proofExpectations": [
-                    "Report selected sources and gaps.",
-                    "Reference approved specId and assigned task IDs.",
-                    "Return reusable claim/source refs or a degraded evidence blocker.",
-                ],
-                "handoffRequired": handoff_contract["requiredFields"],
-            },
-        }
-    )
-
-
 def _shape_spec_task_briefs_for_route(briefs: list[dict[str, Any]], *, kind: str, spec_id: str, workspace_path: str) -> list[dict[str, Any]]:
     if not briefs:
         return briefs
     normalized_kind = _normalize_capability_kind(kind)
-    if normalized_kind == "delegation":
-        explicit = [item for item in briefs if _brief_family_hint(item) == "delegation"]
-        if explicit:
-            return explicit
-        research = [item for item in briefs if _brief_family_hint(item) == "research"]
-        if research:
-            return [_coalesced_spec_research_brief(research, spec_id=spec_id, workspace_path=workspace_path)]
-        return []
-    if normalized_kind != "engineering":
+    if normalized_kind in {"engineering", "delegation"}:
+        # Spec tasks are the approved delivery contract. The route layer must
+        # not merge, drop, or rename them; dependency-aware execution and UI
+        # compaction belong to lower layers.
         return briefs
-    shaped: list[dict[str, Any]] = []
-    research: list[dict[str, Any]] = []
-    for item in briefs:
-        family = _brief_family_hint(item)
-        if family == "research":
-            research.append(item)
-            continue
-        if family in {"delegation", "governance"}:
-            continue
-        shaped.append(item)
-    if research:
-        insert_at = 1 if shaped else 0
-        shaped.insert(insert_at, _coalesced_spec_research_brief(research, spec_id=spec_id, workspace_path=workspace_path))
-    return shaped
+    return briefs
 
 
 def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dict[str, Any]]:

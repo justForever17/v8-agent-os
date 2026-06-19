@@ -537,6 +537,20 @@ def _poll_case_with_spec_auto_approve(
             result.status = "submitted"
             result.failure_reason = None
             continue
+        run_status = _current_run_status(result.run_id)
+        if run_status in ACTIVE_RUN_STATUSES:
+            result.key_events.append(
+                _redact(
+                    {
+                        "runStillActiveAfterPoll": True,
+                        "runId": result.run_id,
+                        "runStatus": run_status,
+                    }
+                )[:1600]
+            )
+            result.status = "submitted"
+            result.failure_reason = None
+            continue
         if result.status != "timeout":
             return result
         result.status = "submitted"

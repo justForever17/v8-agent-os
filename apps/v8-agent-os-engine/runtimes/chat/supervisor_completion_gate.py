@@ -84,6 +84,31 @@ def _has_ready_runtime_handoff(
     return False
 
 
+def _required_runtime_degraded_handoffs(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    degraded: list[dict[str, Any]] = []
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not episode_id:
+            continue
+        for handoff in list(handoffs_by_episode.get(episode_id, []) or []):
+            status = str(handoff.get("status") or "").strip().lower()
+            if status == "degraded":
+                degraded.append(
+                    {
+                        "episodeId": episode_id,
+                        "handoffRefId": handoff.get("handoffRefId"),
+                        "kind": handoff.get("kind"),
+                        "status": status,
+                    }
+                )
+    return degraded
+
+
 def evaluate_supervisor_completion(
     *,
     episodes: Iterable[Mapping[str, Any]] = (),
@@ -198,6 +223,18 @@ def evaluate_supervisor_completion(
                     "episodeCount": len(normalized_episodes),
                 },
             )
+        if bool(pipeline.get("runtimeExecutionAllowed")):
+            degraded_handoffs = _required_runtime_degraded_handoffs(normalized_episodes, normalized_handoffs)
+            if degraded_handoffs:
+                return SupervisorCompletionDecision(
+                    action="fail",
+                    reason="spec_runtime_execution_degraded",
+                    details={
+                        "specId": brief.get("specId"),
+                        "currentStage": brief.get("currentStage"),
+                        "handoffs": degraded_handoffs[:8],
+                    },
+                )
         # A fast client-side approval can be applied before the turn that wrote
         # the previous stage reaches finalization. In that race window the
         # pipeline legitimately has `nextStage=design|tasks` and no approval

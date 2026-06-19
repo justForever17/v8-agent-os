@@ -288,6 +288,8 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Task Excerpt", "taskExcerpt", 1800),
     ("Assigned Task IDs", "assignedTaskIds", 500),
     ("Assigned Research Brief", "assignedResearchBrief", 2600),
+    ("Detail Refs", "detailRefs", 900),
+    ("Evidence Refs", "evidenceRefs", 900),
     ("Task Detail Refs", "taskDetailRefs", 900),
     ("Spec Execution Summary", "specExecutionSummary", 3600),
     ("Framework Digest", "frameworkDigest", 1400),

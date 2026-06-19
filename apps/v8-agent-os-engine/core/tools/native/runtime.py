@@ -43,6 +43,7 @@ def _runtime_broker_payload(
     changed: list[dict[str, Any]] | None = None,
     episode: dict[str, Any] | None = None,
     next_action: str | None = None,
+    route_brief_quality: dict[str, Any] | None = None,
 ) -> str:
     normalized_detail = str(detail_level or "summary").strip().lower()
     group_items = list(groups or [])
@@ -88,6 +89,8 @@ def _runtime_broker_payload(
         payload["nextAction"] = "wait_episode"
     if next_action:
         payload["recommendedNextAction"] = next_action
+    if route_brief_quality:
+        payload["routeBriefQuality"] = dict(route_brief_quality)
     if normalized_detail not in {"catalog", "detail", "full"} and groups:
         omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
         payload["omitted"] = {
@@ -192,6 +195,11 @@ def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, 
     if blocked_tool:
         brief["context"] = {"blockedTool": blocked_tool, **({"workspacePath": workspace} if workspace else {})}
     return brief
+
+
+def _explicit_task_briefs_from_inputs(inputs: dict[str, Any] | None) -> list[dict[str, Any]]:
+    inputs = dict(inputs or {})
+    return normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
 
 
 def _safe_compact_text(value: Any, *, limit: int = 6000) -> str:
@@ -1525,7 +1533,8 @@ def _enrich_route_need_for_episode(
                 enriched["requiredRuntimeAccess"] = list(dict.fromkeys([*existing_groups, *spec_groups]))
 
     if kind in {"engineering", "delegation"}:
-        route_tasks = planner_briefs or normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        explicit_route_tasks = _explicit_task_briefs_from_inputs(inputs)
+        route_tasks = explicit_route_tasks or planner_briefs
         task_filter_applied = False
         if (
             spec_bundle
@@ -1562,6 +1571,16 @@ def _enrich_route_need_for_episode(
             task_filter_applied = True
         if not route_tasks:
             route_tasks = [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
+            inputs["routeBriefQuality"] = {
+                "status": "insufficient",
+                "reason": "minimal_brief_only",
+                "blocking": True,
+                "message": (
+                    "runtime_broker(route) only has a minimal inferred brief. "
+                    "Provide workerBriefs/taskBriefs/tasks with goal, context, expected output, acceptance criteria, constraints, and detailRefs."
+                ),
+                "requiredFields": ["goal", "context", "expectedOutput", "acceptance", "constraints", "detailRefs"],
+            }
         if task_filter_applied or not inputs.get("workerBriefs"):
             inputs["workerBriefs"] = route_tasks
         if task_filter_applied or not inputs.get("tasks"):
@@ -1577,7 +1596,8 @@ def _enrich_route_need_for_episode(
                 ],
             )
     elif kind == "research":
-        route_briefs = planner_briefs or normalize_task_briefs(inputs.get("taskBriefs") or inputs.get("tasks") or [])
+        explicit_route_briefs = _explicit_task_briefs_from_inputs(inputs)
+        route_briefs = explicit_route_briefs or planner_briefs
         brief_query = ""
         for brief in route_briefs:
             if not isinstance(brief, dict):
@@ -1902,6 +1922,48 @@ def runtime_broker(
                 },
             )
         need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
+        route_inputs = dict(need_payload.get("inputs") or {}) if isinstance(need_payload.get("inputs"), dict) else {}
+        route_brief_quality = route_inputs.get("routeBriefQuality") if isinstance(route_inputs.get("routeBriefQuality"), dict) else {}
+        if (
+            route_kind in {"engineering", "delegation"}
+            and bool(route_brief_quality.get("blocking"))
+            and str(route_brief_quality.get("reason") or "") == "minimal_brief_only"
+        ):
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=(
+                                    f"{route_kind} runtime route needs a concrete task brief before it can queue an episode. "
+                                    "Planner hints may fill blanks, but cannot replace a Supervisor-written task."
+                                ),
+                                error="task_brief_required",
+                                detail_level=detail_level,
+                                next_action=(
+                                    "Call runtime_broker(mode='route') again with need.inputs.workerBriefs/taskBriefs/tasks. "
+                                    "Each brief should include goal, context, expectedOutput, acceptance, constraints, and detailRefs."
+                                ),
+                                route_brief_quality=route_brief_quality,
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                    "planner_dispatch_status": {
+                        "mode": "runtime_broker_route",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": "task_brief_required",
+                        "episodeKind": route_kind,
+                        "episodeCount": 0,
+                        "nextAction": "provide_task_brief",
+                    },
+                },
+            )
         requested_groups = _capability_route_groups(
             need=need_payload,
             runtime_kind=runtime_kind or route_kind,

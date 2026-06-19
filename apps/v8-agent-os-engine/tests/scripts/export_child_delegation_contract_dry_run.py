@@ -78,7 +78,16 @@ def build_matrix() -> dict[str, Any]:
         "runtimeAccess": ["research.core", "memory.read", "delegation.recursive"],
         "acceptanceContract": "Typed handoff must include answer, sources, score, limitations, rejectedEvidence, and detailRef.",
         "context": {
+            "workspacePath": "E:/Projects/test3",
+            "specId": "spec_ling_nuwa_dry_run",
+            "taskId": "TASK-003",
             "specRefs": ["REQ-001", "DES-002", "TASK-003"],
+            "detailRefs": [
+                "spec://spec_ling_nuwa_dry_run/requirements#REQ-001",
+                "spec://spec_ling_nuwa_dry_run/design#DES-002",
+                "spec://spec_ling_nuwa_dry_run/tasks#TASK-003",
+            ],
+            "evidenceRefs": ["runtime-handoff://parent-evidence-pack"],
             "handoffContract": {
                 "type": "research_evidence_pack",
                 "requiredFields": ["answer", "sources", "score", "limitations", "detailRef"],
@@ -209,6 +218,15 @@ def build_matrix() -> dict[str, Any]:
         "grandchild_prompt_contains_executable_context": _contains_all(
             grandchild_prompt,
             ["Assigned Task Brief", "绝区零角色“玲”", "Acceptance Contract", "Global Acceptance Contract"],
+        ),
+        "grandchild_prompt_preserves_workspace_spec_task_and_evidence_refs": _contains_all(
+            grandchild_prompt,
+            [
+                "E:/Projects/test3",
+                "spec_ling_nuwa_dry_run",
+                "TASK-003",
+                "runtime-handoff://parent-evidence-pack",
+            ],
         ),
         "grandchild_prompt_contains_stable_operating_charter": _contains_all(
             grandchild_prompt,

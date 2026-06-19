@@ -250,6 +250,56 @@ def test_runtime_broker_route_fills_delegation_tasks_from_planner_plan():
     assert episode["inputs"]["workerBriefs"][0]["goal"] == "Build the visible application shell."
 
 
+def test_runtime_broker_route_prefers_explicit_supervisor_briefs_over_planner_plan():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "delegation",
+            "source": "supervisor",
+            "reason": "parallel implementation",
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "supervisor-explicit-task",
+                        "title": "Use the user-approved brief",
+                        "goal": "Implement the exact current user request.",
+                        "context": {"source": "supervisor_current_turn"},
+                        "expectedOutput": "A concise proof-backed handoff.",
+                        "acceptance": "Matches the current user request.",
+                        "detailRefs": ["conversation://current-turn"],
+                    }
+                ]
+            },
+        },
+        state={
+            "current_route_context": {},
+            "planner_plan": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "planner-stale-task",
+                        "title": "Stale planner task",
+                        "goal": "Do something from an older route hint.",
+                    }
+                ]
+            },
+        },
+        tool_call_id="call-runtime-explicit-over-planner",
+    )
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert episode["inputs"]["workerBriefs"][0]["taskBriefId"] == "supervisor-explicit-task"
+    assert episode["inputs"]["workerBriefs"][0]["goal"] == "Implement the exact current user request."
+    assert episode["inputs"]["workerBriefs"][0]["context"]["source"] == "supervisor_current_turn"
+
+
+def test_delegation_broker_description_requires_complete_explicit_task_briefs():
+    description = str(getattr(delegation_broker, "description", "") or "")
+
+    for phrase in ("goal", "context", "expected output", "acceptance criteria", "constraints", "detailRefs"):
+        assert phrase in description
+    assert "Do not dispatch vague ID-only tasks" in description
+
+
 def test_runtime_broker_route_accepts_json_need_string_and_infers_engineering():
     command = runtime_broker.func(
         mode="route",
@@ -264,16 +314,16 @@ def test_runtime_broker_route_accepts_json_need_string_and_infers_engineering():
         tool_call_id="call-runtime-route-json",
     )
     payload = _tool_message_payload(command)
-    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
 
-    assert payload["episodeKind"] == "engineering"
-    assert payload["nextAction"] == "wait_episode"
-    assert episode["kind"] == "engineering"
-    assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
-    assert episode["inputs"]["workerBriefs"][0]["context"]["blockedTool"] == "write_native_file"
+    assert payload["ok"] is False
+    assert payload["error"] == "task_brief_required"
+    assert payload["routeBriefQuality"]["reason"] == "minimal_brief_only"
+    assert payload["recommendedNextAction"].startswith("Call runtime_broker(mode='route') again")
+    assert command.update["current_route_context"] == {}
+    assert command.update["planner_dispatch_status"]["nextAction"] == "provide_task_brief"
 
 
-def test_runtime_broker_route_binds_session_run_root_and_workspace_before_enqueue():
+def test_runtime_broker_route_requires_task_brief_before_enqueue_for_engineering():
     with bind_runtime_context(
         session_id="session-route-binding",
         run_id="run-route-binding",
@@ -286,6 +336,44 @@ def test_runtime_broker_route_binds_session_run_root_and_workspace_before_enqueu
             state={"current_route_context": {}},
             tool_call_id="call-runtime-route-binding",
         )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "task_brief_required"
+    assert "goal" in payload["routeBriefQuality"]["requiredFields"]
+    assert "detailRefs" in payload["routeBriefQuality"]["requiredFields"]
+    assert command.update["planner_dispatch_status"]["blocked"] is True
+
+
+def test_runtime_broker_route_binds_session_run_root_and_workspace_with_explicit_brief():
+    with bind_runtime_context(
+        session_id="session-route-binding",
+        run_id="run-route-binding",
+        rootRunId="root-route-binding",
+        workspace_path=r"E:\Projects\test7",
+    ):
+        command = runtime_broker.func(
+            mode="route",
+            need={
+                "kind": "engineering",
+                "source": "supervisor",
+                "reason": "bounded implementation",
+                "inputs": {
+                    "workerBriefs": [
+                        {
+                            "taskBriefId": "explicit-engineering-task",
+                            "goal": "Patch the requested file after reading it.",
+                            "context": {"workspacePath": r"E:\Projects\test7"},
+                            "expectedOutput": "Patch plus proof.",
+                            "acceptance": "Tests pass or blockers are reported.",
+                            "detailRefs": ["conversation://current-turn"],
+                        }
+                    ]
+                },
+            },
+            state={"current_route_context": {}},
+            tool_call_id="call-runtime-route-binding-explicit",
+        )
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
 
     assert episode["sessionId"] == "session-route-binding"
@@ -295,6 +383,7 @@ def test_runtime_broker_route_binds_session_run_root_and_workspace_before_enqueu
     assert episode["rootRunId"] == "root-route-binding"
     assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
     assert episode["inputs"]["workspace_path"] == r"E:\Projects\test7"
+    assert episode["inputs"]["workerBriefs"][0]["taskBriefId"] == "explicit-engineering-task"
 
 
 def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
@@ -871,7 +960,7 @@ def test_delegation_broker_refuses_generic_dispatch_for_ready_spec_episode():
     assert payload["dispatchStatus"] == "missing_tasks"
 
 
-def test_runtime_broker_list_with_episode_intent_auto_routes_but_catalog_stays_list():
+def test_runtime_broker_list_with_episode_intent_requires_brief_but_catalog_stays_list():
     catalog = runtime_broker.func(
         mode="list",
         runtime_kind="engineering",
@@ -896,16 +985,14 @@ def test_runtime_broker_list_with_episode_intent_auto_routes_but_catalog_stays_l
             tool_call_id="call-runtime-list-route",
         )
     payload = _tool_message_payload(command)
-    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
 
     assert payload["mode"] == "route"
-    assert payload["episodeKind"] == "engineering"
-    assert payload["nextAction"] == "wait_episode"
-    assert episode["kind"] == "engineering"
-    assert episode["sessionId"] == "session-auto-route"
-    assert episode["runId"] == "run-auto-route"
-    assert episode["rootRunId"] == "root-auto-route"
-    assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
+    assert payload["ok"] is False
+    assert payload["error"] == "task_brief_required"
+    assert payload["routeBriefQuality"]["reason"] == "minimal_brief_only"
+    assert "workerBriefs/taskBriefs/tasks" in payload["recommendedNextAction"]
+    assert command.update["current_route_context"] == {}
+    assert command.update["planner_dispatch_status"]["nextAction"] == "provide_task_brief"
 
 
 def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():

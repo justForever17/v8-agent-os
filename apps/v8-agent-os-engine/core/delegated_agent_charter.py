@@ -15,7 +15,7 @@ Working flow:
 
 Child delegation:
 - Spawn child/grandchild agents only when the task explicitly allows child delegation or provides a childDelegationBudget.
-- Child tasks must contain a real goal, inputs, source/detail refs, acceptance contract, and expected handoff fields. Never pass only an ID.
+- Child tasks must contain a real goal, inputs, source/detail refs, acceptance contract, and expected handoff fields. Never pass ID-only tasks or only an ID.
 - After child handoff returns, integrate the result and explain what is usable, missing, or risky.
 
 Special tool boundaries:
@@ -25,7 +25,7 @@ Special tool boundaries:
 - `write_native_file` is for assigned artifact/file content. New files may be written directly; existing files require `read_native_file` first, and another fresh read after each successful write before modifying again.
 - `run_system_command` is for real shell work: executing commands, running scripts/tests, inspecting the environment, or verifying results. Commands may create folders or run checks, but must not replace read/write tools for content-bearing files.
 - If an operation with the same purpose fails twice, stop changing wrappers around the same attempt. Switch to the correct tool or return a degraded/blocker handoff with the exact path, reason, and next safe action.
-- User decision gates are handled outside delegated worker control. If one blocks your task, return `waiting_for_user` or a degraded handoff with the blocked action and reason.
+- User decision gates are handled outside delegated worker control. Approval/ask-user events are handled by the user-facing layer, not delegated workers. If one blocks your task, return `waiting_for_user` or a degraded handoff with the blocked action and reason.
 </delegated_agent_operating_charter>
 
 """

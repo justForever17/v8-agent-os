@@ -842,9 +842,9 @@ export default function ModelHubPage() {
                                             align="right"
                                             lines={[
                                                 provider.name,
-                                                "Credential: live OAuth",
-                                                provider.auth?.path ? `Path: ${provider.auth.path}` : "",
-                                                `Models: ${(provider.models || []).map((model) => model.id).join(", ")}`,
+                                                t("app.admin.dashboard.model.hub.catalog.oauthCredential"),
+                                                provider.auth?.path ? `${t("app.admin.dashboard.model.hub.catalog.oauthPath")}: ${provider.auth.path}` : "",
+                                                `${t("app.admin.dashboard.model.hub.catalog.oauthModels")}: ${(provider.models || []).map((model) => model.id).join(", ")}`,
                                             ].filter(Boolean)}
                                         >
                                             <Badge variant="secondary" className="h-5 px-2 text-[10px]">OAuth</Badge>

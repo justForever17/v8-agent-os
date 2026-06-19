@@ -1727,7 +1727,7 @@ export default function SubagentsPage() {
                                             </Badge>
                                         </div>
                                         <div className="mt-3 text-xs leading-5 text-slate-500">
-                                            {resolveAdminLabel(t, "workerType", worker.workerType || "custom")} · {resolveAdminLabel(t, "workerCwdPolicy", worker.launchProfile.cwdPolicy || "inherit_workspace")}
+                                            {resolveAdminLabel(t, "workerType", worker.workerType || "custom")} · {resolveAdminLabel(t, "workerCwdPolicy", worker.launchProfile.cwdPolicy || "inherit_workspace")} · {resolveAdminLabel(t, "workerSessionMode", worker.sessionMode || "interactive")}
                                         </div>
                                     </button>;
             })}
@@ -1889,7 +1889,22 @@ export default function SubagentsPage() {
 
                                     </div>
                                     <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "7b11bd2b")} tooltip={tg(t, "761aca19")} />
+                                        <WorkerConfigLabel
+                                            label={tg(t, "7b11bd2b")}
+                                            tooltip={
+                                                <div className="space-y-1">
+                                                    <div>{tg(t, "761aca19")}</div>
+                                                    <div className="mt-2 font-semibold">Supported side effects / 支持的副作用:</div>
+                                                    <ul className="list-disc pl-4 text-xs">
+                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.workspace_write")}</li>
+                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.tool_use")}</li>
+                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.long_running_cli")}</li>
+                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.shell_command")}</li>
+                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.network_request")}</li>
+                                                    </ul>
+                                                </div>
+                                            }
+                                        />
 
                                         <Input value={externalWorkerForm.allowedSideEffectsText} onChange={event => setExternalWorkerForm(current => ({
                     ...current,

@@ -104,6 +104,21 @@ function modalityLabel(t: ReturnType<typeof useT>, modality: string) {
     return keyMap[normalized] ? t(keyMap[normalized]) : text(modality);
 }
 
+function creativeMediaStatusLabel(t: ReturnType<typeof useT>, status: unknown) {
+    const normalized = String(status || "").toLowerCase();
+    const keyMap: Record<string, string> = {
+        rendering: "app.admin.dashboard.creativeMedia.status.rendering",
+        completed: "app.admin.dashboard.creativeMedia.status.completed",
+        failed: "app.admin.dashboard.creativeMedia.status.failed",
+        pending_quality_review: "app.admin.dashboard.creativeMedia.status.pending_quality_review",
+        running: "app.admin.dashboard.creativeMedia.status.running",
+        paused: "app.admin.dashboard.creativeMedia.status.paused",
+        waiting_input: "app.admin.dashboard.creativeMedia.status.waiting_input",
+        waiting_approval: "app.admin.dashboard.creativeMedia.status.waiting_approval",
+    };
+    return keyMap[normalized] ? t(keyMap[normalized]) : text(status);
+}
+
 function asModelSelectOption(candidate: CreativeModelCandidate): AdminModelSelectOption {
     return {
         id: candidate.modelRef || candidate.candidateId,
@@ -381,7 +396,7 @@ export default function CreativeMediaPage() {
                                                 <div className="max-w-56 truncate text-xs text-muted-foreground">{text(workOrder.brief, "")}</div>
                                             </TableCell>
                                             <TableCell>{text(workOrder.requestingRuntime, t("app.admin.dashboard.creativeMedia.manualSource"))}</TableCell>
-                                            <TableCell><Badge variant="outline">{text(workOrder.status)}</Badge></TableCell>
+                                            <TableCell><Badge variant="outline">{creativeMediaStatusLabel(t, workOrder.status)}</Badge></TableCell>
                                             <TableCell className="text-xs text-muted-foreground">{text(workOrder.updatedAt || workOrder.createdAt)}</TableCell>
                                         </TableRow>
                                     )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyWorkOrders")} />}
@@ -566,7 +581,7 @@ export default function CreativeMediaPage() {
                                                 {recipe.modality === "music" ? <Badge>{text(recipe.musicKind)}</Badge> : null}
                                             </div>
                                         </TableCell>
-                                        <TableCell>{text(recipe.executionStatus)}</TableCell>
+                                        <TableCell>{creativeMediaStatusLabel(t, recipe.executionStatus)}</TableCell>
                                         <TableCell className="text-xs text-muted-foreground">{text(recipe.updatedAt)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyRecipes")} />}
@@ -681,7 +696,7 @@ export default function CreativeMediaPage() {
                                     <TableRow key={text(quality.qualityJobId)}>
                                         <TableCell className="max-w-32 truncate font-mono text-xs">{text(quality.qualityJobId)}</TableCell>
                                         <TableCell className="max-w-32 truncate font-mono text-xs">{text(quality.jobId)}</TableCell>
-                                        <TableCell>{text(quality.status)}</TableCell>
+                                        <TableCell>{creativeMediaStatusLabel(t, quality.status)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyQualityJobs")} />}
                             </TableBody>
@@ -763,7 +778,7 @@ export default function CreativeMediaPage() {
                                     <TableRow key={text(plan.planId)}>
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(plan.planId)}</TableCell>
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(plan.recipeId)}</TableCell>
-                                        <TableCell>{text(plan.status)}</TableCell>
+                                        <TableCell>{creativeMediaStatusLabel(t, plan.status)}</TableCell>
                                         <TableCell className="text-xs text-muted-foreground">{text(plan.updatedAt)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyEditPlans")} />}
@@ -792,7 +807,7 @@ export default function CreativeMediaPage() {
                                     <TableRow key={text(render.renderJobId)}>
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(render.renderJobId)}</TableCell>
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(render.planId)}</TableCell>
-                                        <TableCell>{text(render.status)}</TableCell>
+                                        <TableCell>{creativeMediaStatusLabel(t, render.status)}</TableCell>
                                         <TableCell>{Array.isArray(render.artifacts) ? render.artifacts.length : 0}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyRenderJobs")} />}
@@ -838,7 +853,7 @@ export default function CreativeMediaPage() {
                             </div>
                         </details>
                         <details className="rounded-lg border p-3">
-                            <summary className="cursor-pointer text-sm font-medium">Provider catalog</summary>
+                            <summary className="cursor-pointer text-sm font-medium">{t("app.admin.dashboard.creativeMedia.providerCatalogTitle")}</summary>
                             <div className="mt-3"><CompactJson value={data.catalog} /></div>
                         </details>
                         <details className="rounded-lg border p-3">

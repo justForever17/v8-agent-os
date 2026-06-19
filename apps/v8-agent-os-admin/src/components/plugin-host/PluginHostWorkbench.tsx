@@ -343,7 +343,11 @@ function gatewayLabel(status?: string | null): string {
 }
 function ownershipLabel(value?: string | null): string {
     const map: Record<string, string> = {
-        v8_owned: "components.plugin.host.PluginHostWorkbench.k1a5e9d16",
+        v8_owned: "app.admin.dashboard.pluginHost.handoff.v8_owned",
+        accept_decline: "app.admin.dashboard.pluginHost.handoff.accept_decline",
+        gateway: "app.admin.dashboard.pluginHost.handoff.gateway",
+        missing: "app.admin.dashboard.pluginHost.handoff.missing",
+        unknown: "app.admin.dashboard.pluginHost.handoff.unknown",
         delegated: "components.plugin.host.PluginHostWorkbench.ka5b48143",
         unverified: "components.plugin.host.PluginHostWorkbench.ke7ba1e89",
         disabled: "components.plugin.host.PluginHostWorkbench.kf6be1dc1",
@@ -926,7 +930,7 @@ export function PluginHostWorkbench() {
                                                 {plugin.onboardingCompleted
                 ? t("components.plugin.host.PluginHostWorkbench.k637b4ce7")
                 : plugin.supportTier === "transport-hosted" && String(host?.inboundOwnership || "").trim().toLowerCase() === "v8_owned"
-                    ? t("components.plugin.host.PluginHostWorkbench.k1a5e9d16")
+                    ? t("app.admin.dashboard.pluginHost.handoff.v8_owned")
                     : plugin.supportTier === "tool-bridged"
                         ? t("components.plugin.host.PluginHostWorkbench.k5628c6cc")
                         : t("components.plugin.host.PluginHostWorkbench.k844bf4da")}
@@ -1207,7 +1211,7 @@ export function PluginHostWorkbench() {
                                 })
                                 : t(launcherSourceLabel(host?.launcherSource))}</div>
                             <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.k75e1176f")}</span>{host?.lifecycleAuthority || "unknown"}</div>
-                            <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.kc9270402")}</span>{host?.bridgeStatusStale ? t("components.plugin.host.PluginHostWorkbench.k3d570918") : host?.bridgeReady ? `ready (${host?.bridgePluginId || "unknown"})` : "unready"}</div>
+                            <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.kc9270402")}</span>{host?.bridgeStatusStale ? t("components.plugin.host.PluginHostWorkbench.k3d570918") : host?.bridgeReady ? `${t("components.plugin.host.PluginHostWorkbench.k43d7227d")} (${host?.bridgePluginId || "unknown"})` : t("components.plugin.host.PluginHostWorkbench.k1a83bbab")}</div>
                             <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.k2995d436")}</span>{(host?.managedChannels || []).join(" / ") || t("components.plugin.host.PluginHostWorkbench.ka2c3f5c1")}</div>
                             <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.kf393549d")}</span>{t(bridgeProvenanceLabel(host?.installProvenance))}</div>
                             <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.k18d77f7f")}</span>{host?.refreshMode || "hot"}</div>
@@ -1238,7 +1242,7 @@ export function PluginHostWorkbench() {
                             {(host?.fieldContractWarnings || []).map((warning, index) => (<StatusNotice key={`field-contract-warning-${index}`} tone="warning" title={warning.title || "components.plugin.host.PluginHostWorkbench.k69eb5289"} description={`${warning.description || ""}${(warning.fields || []).length ? `\n${t("components.plugin.host.PluginHostWorkbench.ke054e6e1")}${(warning.fields || []).join(", ")}` : ""}`.trim()}/>))}
                             {host?.expectedBridgeClaimMissed ? (<StatusNotice tone="warning" title={"components.plugin.host.PluginHostWorkbench.k34a0b533"} description={"components.plugin.host.PluginHostWorkbench.k79e4d00c"}/>) : null}
                             {(host?.pluginProvenanceWarnings || []).map((warning, index) => (<StatusNotice key={`plugin-provenance-warning-${index}`} tone="warning" title={warning.title || "components.plugin.host.PluginHostWorkbench.kef51f8f0"} description={`${warning.description || ""}${warning.pluginId ? `\nplugin: ${warning.pluginId}` : ""}${(warning.pluginIds || []).length ? `\nplugins: ${(warning.pluginIds || []).join(", ")}` : ""}`.trim()}/>))}
-                            <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.k82e381cd")}</span>{host?.handoffReady ? "ready" : "unready"}{host?.handoffDrift ? t("components.plugin.host.PluginHostWorkbench.kdc92c921") : ""}</div>
+                            <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.k82e381cd")}</span>{host?.handoffReady ? t("components.plugin.host.PluginHostWorkbench.k43d7227d") : t("components.plugin.host.PluginHostWorkbench.k1a83bbab")}{host?.handoffDrift ? t("components.plugin.host.PluginHostWorkbench.kdc92c921") : ""}</div>
                             <div><span className="font-medium text-slate-900">{t("components.plugin.host.PluginHostWorkbench.kf6e5d49e")}</span>{host?.lastInboundHandoffAt || t("components.plugin.host.PluginHostWorkbench.k67cce65d")}</div>
                             {bridgeProvenance === "global_auto_discovery" ? (<StatusNotice tone="warning" title={"components.plugin.host.PluginHostWorkbench.k7279c68e"} description={"components.plugin.host.PluginHostWorkbench.kbaf4aa67"}/>) : bridgeProvenance === "missing" ? (<StatusNotice tone="warning" title={"components.plugin.host.PluginHostWorkbench.k1e81a230"} description={"components.plugin.host.PluginHostWorkbench.k01e07bc6"}/>) : host?.handoffConfigured === false || host?.lastClaimDeclineReason === "handoff_token_missing" ? (<StatusNotice tone="warning" title={"components.plugin.host.PluginHostWorkbench.k0604b2cc"} description={"components.plugin.host.PluginHostWorkbench.ka8ef5b0d"}/>) : null}
                             {proof ? (<div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-5">

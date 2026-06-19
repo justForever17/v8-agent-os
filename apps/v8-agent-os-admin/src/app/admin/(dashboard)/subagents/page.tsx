@@ -1347,7 +1347,7 @@ export default function SubagentsPage() {
       });
     }
   }, [fetchData, t, toast]);
-  return <div className="mx-auto max-w-7xl space-y-8 p-8">
+  return <div className="mx-auto max-w-[1600px] w-full space-y-8 p-6 lg:p-8">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-start gap-4">
                     <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
@@ -1368,113 +1368,612 @@ export default function SubagentsPage() {
                         {t("app.admin.dashboard.subagents.page.k876e8c06")}
                     </Button>
                     <Button onClick={() => {
-          setEditingAgent(null);
-          setIsDialogOpen(true);
-          resetForm(null);
-        }}>
-
+                        setEditingAgent(null);
+                        setIsDialogOpen(true);
+                        resetForm(null);
+                    }}>
                         <Plus className="mr-2 h-4 w-4" />
                         {t("app.admin.dashboard.subagents.page.k5ae562aa")}
                     </Button>
                 </div>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-4">
-                <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                    <CardHeader className="space-y-1 p-3 pb-1">
-                        <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.subagents.page.k00bf2013")} tooltip={<div>
-                                    <div>{tg(t, "47f887c9")}: {baselineToolNames.length}</div>
-                                    <div className="mt-1 break-words font-mono text-xs text-slate-200">
-                                        {baselineToolNames.slice(0, 12).join(", ") || "none"}
-                                    </div>
-                                </div>} />
-
-                        <CardDescription className="truncate text-xs">{baselineToolNames.length} loaded</CardDescription>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3">
-                        <div className="truncate font-mono text-[11px] text-slate-700">
-                            {baselineToolNames.slice(0, 2).join(" · ") || "none"}
-                            {baselineToolNames.length > 2 ? ` · +${baselineToolNames.length - 2}` : ""}
-                        </div>
-                    </CardContent>
-                </Card>
-                <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                    <CardHeader className="space-y-1 p-3 pb-1">
-                        <StatusCardTitle icon={<Sparkles className="h-4 w-4 shrink-0 text-violet-600" />} title={t("app.admin.dashboard.subagents.page.k9764402c")} tooltip={<div>
-                                    <div>Skills: {skills.length}</div>
-                                    <div>MCP servers: {connectedMcpServiceCount}/{mcpServiceCount}</div>
-                                    <div>MCP tools: {availableMcpToolCount}</div>
-                                    <div>PluginHost tools: {pluginHostTools.length}</div>
-                                </div>} />
-
-                        <CardDescription className="truncate text-xs">{t("app.admin.dashboard.subagents.page.k90999eb9")}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 pb-3 text-xs text-slate-500">
-                        <div>Skills <span className="font-medium text-slate-900">{skills.length}</span></div>
-                        <div>MCP <span className="font-medium text-slate-900">{connectedMcpServiceCount}/{mcpServiceCount}</span></div>
-                    </CardContent>
-                </Card>
-                <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                    <CardHeader className="space-y-1 p-3 pb-1">
-                        <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={t("app.admin.dashboard.subagents.page.k11cd990c")} tooltip={<div>
-                                    <div>Broker: fan-out / join</div>
-                                    <div>{tg(t, "b109c831")}</div>
-                                    <div>{tg(t, "495fdf53")}: {enabledSubagentCount}</div>
-                                    <div>{tg(t, "fb1073a6")}: {enabledExternalWorkerCount} / {externalWorkerTemplateCount}</div>
-                                    <div className="mt-1 text-xs text-slate-300">
-                                        {tg(t, "0159e367")}
-                                    </div>
-                                </div>} />
-
-                        <CardDescription className="truncate text-xs">
-                            {tg(t, "1940e65b")}
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-1 px-3 pb-3 text-xs text-slate-500">
-                        <div><span className="font-medium text-slate-900">fan-out / join</span></div>
-                        <div>{t("components.runtime.RecentRunsPanel.kbad18df9")} <span className="font-medium text-slate-900">{enabledSubagentCount} local / {enabledExternalWorkerCount} remote</span></div>
-                    </CardContent>
-                </Card>
-                <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                    <CardHeader className="space-y-1 p-3 pb-1">
-                        <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "520dbe37")} tooltip={<div>
-                                    <div>{tg(t, "8c3999bf")}: {formatDecimal(TEMPERATURE_PRESET)}</div>
-                                    <div>{tg(t, "a9f873a8")}: {subagentTemperature.trim() ? formatDecimal(temperatureSliderValue(subagentTemperature)) : temperatureDefaultText(t)}</div>
-                                    <div className="mt-1 text-xs text-slate-300">
-                                        {tg(t, "00f4e417")}
-                                    </div>
-                                </div>} />
-
-                        <CardDescription className="truncate text-xs">{temperatureStatusText(t, subagentTemperature)}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-2 px-3 pb-3">
-                        <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
-
-                        <div className="flex items-center justify-between gap-2">
-                            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setSubagentTemperature("")}>
-                                {t("components.memory.MemoryConfigPanel.k5e4b837d")}
-                            </Button>
-                            <Button size="sm" className="h-7 px-2 text-xs" onClick={() => void handleSaveSubagentTemperature()} disabled={isSavingSubagentTemperature}>
-                                {isSavingSubagentTemperature ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
-                                {t("components.memory.MemoryWorkflowsPanel.save")}
-                            </Button>
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
-
-            <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                <CardContent className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)_auto] lg:items-center">
-                    <div className="space-y-1">
-                        <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                            <BrainCircuit className="h-4 w-4 text-indigo-600" />
-                            {tg(t, "cd5d78a6")}
-                            <Badge variant={familyModeEnabled ? "secondary" : "destructive"}>{familyModeEnabled ? "compact" : "full"}</Badge>
-                        </div>
-                        <p className="text-xs leading-5 text-slate-500">
-                            {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
-                        </p>
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] xl:grid-cols-[1fr_450px] gap-6 items-start">
+                {/* 左栏：指标看板、Specialists 网格与 External Workers 面板 */}
+                <div className="space-y-6">
+                    {/* 数据统计看板 */}
+                    <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
+                        <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                            <CardHeader className="space-y-1 p-3 pb-1">
+                                <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.subagents.page.k00bf2013")} tooltip={<div>
+                                            <div>{tg(t, "47f887c9")}: {baselineToolNames.length}</div>
+                                            <div className="mt-1 break-words font-mono text-xs text-slate-200">
+                                                {baselineToolNames.slice(0, 12).join(", ") || "none"}
+                                            </div>
+                                        </div>} />
+                                <CardDescription className="truncate text-xs">{baselineToolNames.length} loaded</CardDescription>
+                            </CardHeader>
+                            <CardContent className="px-3 pb-3">
+                                <div className="truncate font-mono text-[11px] text-slate-700">
+                                    {baselineToolNames.slice(0, 2).join(" · ") || "none"}
+                                    {baselineToolNames.length > 2 ? ` · +${baselineToolNames.length - 2}` : ""}
+                                </div>
+                            </CardContent>
+                        </Card>
+                        <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                            <CardHeader className="space-y-1 p-3 pb-1">
+                                <StatusCardTitle icon={<Sparkles className="h-4 w-4 shrink-0 text-violet-600" />} title={t("app.admin.dashboard.subagents.page.k9764402c")} tooltip={<div>
+                                            <div>Skills: {skills.length}</div>
+                                            <div>MCP servers: {connectedMcpServiceCount}/{mcpServiceCount}</div>
+                                            <div>MCP tools: {availableMcpToolCount}</div>
+                                            <div>PluginHost tools: {pluginHostTools.length}</div>
+                                        </div>} />
+                                <CardDescription className="truncate text-xs">{t("app.admin.dashboard.subagents.page.k90999eb9")}</CardDescription>
+                            </CardHeader>
+                            <CardContent className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 pb-3 text-xs text-slate-500">
+                                <div>Skills <span className="font-medium text-slate-900">{skills.length}</span></div>
+                                <div>MCP <span className="font-medium text-slate-900">{connectedMcpServiceCount}/{mcpServiceCount}</span></div>
+                            </CardContent>
+                        </Card>
+                        <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                            <CardHeader className="space-y-1 p-3 pb-1">
+                                <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={t("app.admin.dashboard.subagents.page.k11cd990c")} tooltip={<div>
+                                            <div>Broker: fan-out / join</div>
+                                            <div>{tg(t, "b109c831")}</div>
+                                            <div>{tg(t, "495fdf53")}: {enabledSubagentCount}</div>
+                                            <div>{tg(t, "fb1073a6")}: {enabledExternalWorkerCount} / {externalWorkerTemplateCount}</div>
+                                            <div className="mt-1 text-xs text-slate-300">
+                                                {tg(t, "0159e367")}
+                                            </div>
+                                        </div>} />
+                                <CardDescription className="truncate text-xs">
+                                    {tg(t, "1940e65b")}
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-1 px-3 pb-3 text-xs text-slate-500">
+                                <div><span className="font-medium text-slate-900">fan-out / join</span></div>
+                                <div>{t("components.runtime.RecentRunsPanel.kbad18df9")} <span className="font-medium text-slate-900">{enabledSubagentCount} local / {enabledExternalWorkerCount} remote</span></div>
+                            </CardContent>
+                        </Card>
+                        <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                            <CardHeader className="space-y-1 p-3 pb-1">
+                                <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "520dbe37")} tooltip={<div>
+                                            <div>{tg(t, "8c3999bf")}: {formatDecimal(TEMPERATURE_PRESET)}</div>
+                                            <div>{tg(t, "a9f873a8")}: {subagentTemperature.trim() ? formatDecimal(temperatureSliderValue(subagentTemperature)) : temperatureDefaultText(t)}</div>
+                                            <div className="mt-1 text-xs text-slate-300">
+                                                {tg(t, "00f4e417")}
+                                            </div>
+                                        </div>} />
+                                <CardDescription className="truncate text-xs">{temperatureStatusText(t, subagentTemperature)}</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-2 px-3 pb-3">
+                                <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
+                                <div className="flex items-center justify-between gap-2">
+                                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setSubagentTemperature("")}>
+                                        {t("components.memory.MemoryConfigPanel.k5e4b837d")}
+                                    </Button>
+                                    <Button size="sm" className="h-7 px-2 text-xs" onClick={() => void handleSaveSubagentTemperature()} disabled={isSavingSubagentTemperature}>
+                                        {isSavingSubagentTemperature ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
+                                        {t("components.memory.MemoryWorkflowsPanel.save")}
+                                    </Button>
+                                </div>
+                            </CardContent>
+                        </Card>
                     </div>
+
+                    {/* Specialists 列表网格 */}
+                    <div className="grid gap-6 md:grid-cols-1 xl:grid-cols-2">
+                        {agents.map(agent => {
+                            const selectors = Array.isArray(agent.tools) ? agent.tools : [];
+                            const toolMode = agent.tool_mode === "explicit" ? "explicit" : "contextual_auto";
+                            const capabilitySnapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot) ? agent.capabilitySnapshot : {};
+                            const agentClass = typeof capabilitySnapshot.agentClass === "string" ? capabilitySnapshot.agentClass : "";
+                            const specialistFamily = typeof capabilitySnapshot.specialistFamily === "string" ? capabilitySnapshot.specialistFamily : "";
+                            const domainTags = Array.isArray(capabilitySnapshot.domainTags) ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3) : [];
+                            const familyKey = normalizeFamilyId(specialistFamily || "engineering");
+                            const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
+                            const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "engineering", "E");
+                            return <Card key={agent.id} className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+                                        <CardHeader className="space-y-4">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="flex min-w-0 items-center gap-3">
+                                                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={agent.globalExposure ? "globalExposure" : `family:${familyKey}`}>
+                                                        {avatarLabel}
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <CardTitle className="truncate text-lg">{agent.name}</CardTitle>
+                                                        <CardDescription className="truncate">{resolveAgentModelDisplay(agent)}</CardDescription>
+                                                    </div>
+                                                </div>
+                                                <div className="flex gap-1">
+                                                    <Button type="button" variant="ghost" size="sm" onClick={() => {
+                                                        setEditingAgent(agent);
+                                                        setIsDialogOpen(true);
+                                                    }}>
+                                                        {t("app.admin.dashboard.subagents.page.k75997619")}
+                                                    </Button>
+                                                    <Button type="button" variant="ghost" size="sm" className="text-rose-600" onClick={() => void handleDelete(agent.id)}>
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{resolveToolModeLabel(toolMode)}</Badge>
+                                                {specialistFamily ? <Badge variant="secondary">family:{specialistFamily}</Badge> : null}
+                                                {agent.globalExposure ? <Badge className="bg-emerald-600 hover:bg-emerald-600">globalExposure</Badge> : null}
+                                                {agentClass ? <Badge variant="outline">{agentClass}</Badge> : null}
+                                                {domainTags.map(tag => <Badge key={tag} variant="outline">{tag}</Badge>)}
+                                                {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t("app.admin.dashboard.subagents.page.kcec0f2f4")}</Badge> : null}
+                                                {agent.reflection_enabled ? <Badge variant="outline">{t("app.admin.dashboard.subagents.page.k1599cdff")} × {agent.max_reflections || 3}</Badge> : null}
+                                            </div>
+                                        </CardHeader>
+                                        <CardContent className="space-y-4">
+                                            <p className="min-h-[3rem] text-sm leading-6 text-slate-500">{agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}</p>
+                                            {toolMode === "explicit" ? <div className="space-y-2">
+                                                    <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.subagents.page.k1dc6b253")}</div>
+                                                    {renderToolBadgeSummary(selectors)}
+                                                </div> : <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-xs leading-5 text-slate-500">
+                                                    <div className="font-medium text-slate-900">{resolveToolModeLabel("contextual_auto")}</div>
+                                                    <div>{t("app.admin.dashboard.subagents.page.kf913a2e6")}</div>
+                                                </div>}
+                                        </CardContent>
+                                    </Card>;
+                        })}
+                        {agents.length === 0 ? <div className="col-span-full rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 py-12 text-center text-sm text-slate-500">
+                                    {t("app.admin.dashboard.subagents.page.kc6380706")}
+                                </div> : null}
+                    </div>
+
+                    {/* External Workers 工人配置 Card */}
+                    <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2 text-base">
+                                <Cable className="h-4 w-4 text-emerald-600" />
+                                {t("app.admin.dashboard.subagents.page.externalWorkers.title")}
+                            </CardTitle>
+                            <CardDescription>
+                                {t("app.admin.dashboard.subagents.page.externalWorkers.description")} <code>config.json#supervisor.delegation.externalWorkers</code>.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-5">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex flex-wrap gap-2">
+                                    <Button type="button" variant="outline" size="sm" onClick={() => handleStartExternalWorkerTemplate("claude_code")}>
+                                        Claude Code
+                                    </Button>
+                                    <Button type="button" variant="outline" size="sm" onClick={() => handleStartExternalWorkerTemplate("custom")}>
+                                        <Plus className="mr-2 h-4 w-4" />
+                                        {t("app.admin.dashboard.model.hub.catalog.customSuffix")}
+                                    </Button>
+                                </div>
+                                <Badge variant="secondary">
+                                    {tg(t, "ac5c1f76")} {enabledExternalWorkerCount}/{externalWorkerTemplateCount}
+                                </Badge>
+                            </div>
+
+                            <div className="grid gap-5 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,1.35fr)]">
+                                <div className="space-y-3">
+                                    {externalWorkers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-5 text-sm text-slate-500">
+                                            {tg(t, "bbb79e84")}
+                                        </div> : null}
+                                    {externalWorkers.map(worker => {
+                                        const isActive = worker.id === editingExternalWorkerId;
+                                        const isEnabledTarget = Boolean(worker.enabled && worker.launchProfile.commandTemplate.trim());
+                                        return <button key={worker.id} type="button" className={`w-full rounded-2xl border p-4 text-left transition ${isActive ? "border-emerald-400 bg-emerald-50/70" : "border-slate-200 bg-slate-50/70 hover:border-slate-300"}`} onClick={() => handleSelectExternalWorker(worker.id)}>
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="truncate text-sm font-semibold text-slate-950">{worker.name || worker.id}</div>
+                                                        <div className="mt-1 truncate font-mono text-xs text-slate-500">{worker.id}</div>
+                                                    </div>
+                                                    <Badge variant={isEnabledTarget ? "default" : "secondary"}>
+                                                        {isEnabledTarget ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "06d0f38d")}
+                                                    </Badge>
+                                                </div>
+                                                <div className="mt-3 text-xs leading-5 text-slate-500">
+                                                    {resolveAdminLabel(t, "workerType", worker.workerType || "custom")} · {resolveAdminLabel(t, "workerCwdPolicy", worker.launchProfile.cwdPolicy || "inherit_workspace")} · {resolveAdminLabel(t, "workerSessionMode", worker.sessionMode || "interactive")}
+                                                </div>
+                                            </button>;
+                                    })}
+                                </div>
+
+                                <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                    <div className="grid gap-3 md:grid-cols-4">
+                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                            <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={tg(t, "8263f1ae")} tooltip={tg(t, "b70ead00")} />
+                                            <div className="mt-2 truncate text-xs text-slate-500">{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType || "custom")}</div>
+                                        </div>
+                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                            <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "f17bef17")} tooltip={tg(t, "4a77fff3")} />
+                                            <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.agentClass || "external_worker"}</div>
+                                        </div>
+                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                            <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.automation.cron.page.k3936c4f6")} tooltip={tg(t, "77b8a673")} />
+                                            <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.enabled ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "cfb6d117")}</div>
+                                        </div>
+                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                            <StatusCardTitle icon={<Wrench className="h-4 w-4 shrink-0 text-slate-600" />} title={tg(t, "6dac0d10")} tooltip={tg(t, "e1efa4b4")} />
+                                            <div className="mt-2 truncate text-xs text-slate-500">V8_WORKER_RESULT</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <WorkerConfigLabel label={t("app.admin.dashboard.creativeMedia.tableName")} tooltip={tg(t, "c94b6fbd")} />
+                                            <Input value={externalWorkerForm.name} onChange={event => setExternalWorkerForm(current => ({
+                                                ...current,
+                                                name: event.target.value
+                                            }))} placeholder="Claude Code Worker" />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <WorkerConfigLabel label={tg(t, "93b2f9c3")} tooltip={tg(t, "be1620ca")} />
+                                            <Input value={externalWorkerForm.agentClass} onChange={event => setExternalWorkerForm(current => ({
+                                                ...current,
+                                                agentClass: event.target.value
+                                            }))} placeholder="coder / reviewer / writer" />
+                                        </div>
+                                        <div className="space-y-2 md:col-span-2">
+                                            <WorkerConfigLabel label={tg(t, "16536cdf")} tooltip={tg(t, "4cc8846a")} />
+                                            <Input value={externalWorkerForm.description} onChange={event => setExternalWorkerForm(current => ({
+                                                ...current,
+                                                description: event.target.value
+                                            }))} placeholder={tg(t, "052ddc5f")} />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <WorkerConfigLabel label={tg(t, "49aa0a72")} tooltip={tg(t, "20fb46f5")} />
+                                            <Input value={externalWorkerForm.domainTagsText} onChange={event => setExternalWorkerForm(current => ({
+                                                ...current,
+                                                domainTagsText: event.target.value
+                                            }))} placeholder="software_engineering, code_review" />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <WorkerConfigLabel label={tg(t, "396f27fd")} tooltip={tg(t, "cf125faf")} />
+                                            <Input value={externalWorkerForm.operationCapabilitiesText} onChange={event => setExternalWorkerForm(current => ({
+                                                ...current,
+                                                operationCapabilitiesText: event.target.value
+                                            }))} placeholder="implement, debug, review, verify" />
+                                        </div>
+                                    </div>
+
+                                    <details className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                        <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                                            {tg(t, "976a39ef")}
+                                        </summary>
+                                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label="Worker ID" tooltip={tg(t, "02087023")} />
+                                                <Input value={externalWorkerForm.id} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    id: event.target.value
+                                                }))} placeholder="claude-code-worker" />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "c7209605")} tooltip={tg(t, "db37b9b6")} />
+                                                <Select value={externalWorkerForm.workerType} onValueChange={value => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    workerType: value
+                                                }))}>
+                                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {!getAdminOptions("workerType").some((option) => option.value === externalWorkerForm.workerType) && externalWorkerForm.workerType ? <SelectItem value={externalWorkerForm.workerType}>{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType)}</SelectItem> : null}
+                                                        {getAdminOptions("workerType").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2 md:col-span-2">
+                                                <WorkerConfigLabel label={tg(t, "3ce5c87e")} tooltip={tg(t, "734fe4f1", { task_brief_b64: "{task_brief_b64}" })} />
+                                                <Textarea value={externalWorkerForm.commandTemplate} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    commandTemplate: event.target.value
+                                                }))} className="min-h-[84px] font-mono text-xs" placeholder='claude -p "... {task_brief_b64} ..."' />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "5a843790")} tooltip={tg(t, "51924d82")} />
+                                                <Select value={externalWorkerForm.cwdPolicy} onValueChange={value => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    cwdPolicy: value
+                                                }))}>
+                                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {!getAdminOptions("workerCwdPolicy").some((option) => option.value === externalWorkerForm.cwdPolicy) && externalWorkerForm.cwdPolicy ? <SelectItem value={externalWorkerForm.cwdPolicy}>{resolveAdminLabel(t, "workerCwdPolicy", externalWorkerForm.cwdPolicy)}</SelectItem> : null}
+                                                        {getAdminOptions("workerCwdPolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "7764f97e")} tooltip={tg(t, "ccd23c9d")} />
+                                                <Input type="number" min={3} max={120} value={externalWorkerForm.startupTimeoutSeconds} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    startupTimeoutSeconds: event.target.value
+                                                }))} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "9633e050")} tooltip={tg(t, "7dc5d6fa")} />
+                                                <Select value={externalWorkerForm.sessionMode} onValueChange={value => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    sessionMode: value
+                                                }))}>
+                                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {!getAdminOptions("workerSessionMode").some((option) => option.value === externalWorkerForm.sessionMode) && externalWorkerForm.sessionMode ? <SelectItem value={externalWorkerForm.sessionMode}>{resolveAdminLabel(t, "workerSessionMode", externalWorkerForm.sessionMode)}</SelectItem> : null}
+                                                        {getAdminOptions("workerSessionMode").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "5f90878e")} tooltip={tg(t, "fc1f4a2f")} />
+                                                <Input value={externalWorkerForm.envPassThroughText} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    envPassThroughText: event.target.value
+                                                }))} placeholder="PATH, HOME" />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel
+                                                    label={tg(t, "7b11bd2b")}
+                                                    tooltip={
+                                                        <div className="space-y-1">
+                                                            <div>{tg(t, "761aca19")}</div>
+                                                            <div className="mt-2 font-semibold">Supported side effects / 支持的副作用:</div>
+                                                            <ul className="list-disc pl-4 text-xs">
+                                                                <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.workspace_write")}</li>
+                                                                <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.tool_use")}</li>
+                                                                <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.long_running_cli")}</li>
+                                                                <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.shell_command")}</li>
+                                                                <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.network_request")}</li>
+                                                            </ul>
+                                                        </div>
+                                                    }
+                                                />
+                                                <Input value={externalWorkerForm.allowedSideEffectsText} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    allowedSideEffectsText: event.target.value
+                                                }))} placeholder="workspace_write, tool_use" />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "9d1f7d68")} tooltip={tg(t, "9b2ec4bf")} />
+                                                <Select value={externalWorkerForm.toolExposurePolicy} onValueChange={value => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    toolExposurePolicy: value
+                                                }))}>
+                                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {!getAdminOptions("toolExposurePolicy").some((option) => option.value === externalWorkerForm.toolExposurePolicy) && externalWorkerForm.toolExposurePolicy ? <SelectItem value={externalWorkerForm.toolExposurePolicy}>{resolveAdminLabel(t, "toolExposurePolicy", externalWorkerForm.toolExposurePolicy)}</SelectItem> : null}
+                                                        {getAdminOptions("toolExposurePolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <WorkerConfigLabel label={tg(t, "3a3a388f")} tooltip={tg(t, "abc3953d")} />
+                                                <Input value={externalWorkerForm.runtimeAffinitiesText} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    runtimeAffinitiesText: event.target.value
+                                                }))} placeholder="chat, command_session" />
+                                            </div>
+                                            <div className="space-y-2 md:col-span-2">
+                                                <WorkerConfigLabel label={tg(t, "8f472ae1")} tooltip={tg(t, "63d27c83")} />
+                                                <Input value={externalWorkerForm.resultMarkersText} onChange={event => setExternalWorkerForm(current => ({
+                                                    ...current,
+                                                    resultMarkersText: event.target.value
+                                                }))} placeholder="<V8_WORKER_RESULT>, </V8_WORKER_RESULT>" />
+                                            </div>
+                                        </div>
+                                    </details>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                                        <label className="flex items-center gap-3 text-sm font-medium text-slate-900">
+                                            <Checkbox checked={externalWorkerForm.enabled} onCheckedChange={next => setExternalWorkerForm(current => ({
+                                                ...current,
+                                                enabled: Boolean(next)
+                                            }))} />
+                                            {tg(t, "dd0b58a6")}
+                                        </label>
+                                        <div className="flex gap-2">
+                                            {editingExternalWorkerId ? <Button type="button" variant="ghost" className="text-rose-600" onClick={() => handleDeleteExternalWorker(editingExternalWorkerId)}>
+                                                    <Trash2 className="mr-2 h-4 w-4" />
+                                                    {t("components.memory.MemoryWorkflowsPanel.delete")}
+                                                </Button> : null}
+                                            <Button type="button" variant="outline" onClick={handleApplyExternalWorkerForm}>
+                                                {tg(t, "2fb9af69")}
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <details className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4" open={showExternalWorkersJson} onToggle={event => setShowExternalWorkersJson(event.currentTarget.open)}>
+                                <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                                    {tg(t, "30b77df9")}
+                                </summary>
+                                <Textarea value={externalWorkersJson} onChange={event => setExternalWorkersJson(event.target.value)} className="mt-3 min-h-[220px] font-mono text-xs" placeholder='[{"id":"coding-cli-worker","enabled":false}]' />
+                                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                                    <p className="text-xs leading-5 text-slate-500">
+                                        {t("app.admin.dashboard.subagents.page.externalWorkers.hintPrefix")} <code>launchProfile.commandTemplate</code> {t("app.admin.dashboard.subagents.page.externalWorkers.hintMiddle")} <code>resultSchema.markers</code>.
+                                    </p>
+                                    <Button type="button" variant="outline" size="sm" onClick={handleApplyExternalWorkersJson}>
+                                        {tg(t, "7780539e")}
+                                    </Button>
+                                </div>
+                            </details>
+
+                            <div className="flex items-center justify-end">
+                                <Button onClick={() => void handleSaveExternalWorkers()} disabled={isSavingExternalWorkers}>
+                                    {isSavingExternalWorkers ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                    {t("app.admin.dashboard.subagents.page.externalWorkers.saveButton")}
+                                </Button>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* 右栏：全局委派与研究参数配置 */}
+                <div className="space-y-6">
+                    {/* 1. Specialist Registry 家族配置 Card */}
+                    <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                        <CardHeader className="space-y-1 p-4 pb-2 border-b">
+                            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                <BrainCircuit className="h-4 w-4 text-indigo-600" />
+                                {tg(t, "cd5d78a6")}
+                                <Badge variant={familyModeEnabled ? "secondary" : "destructive"}>{familyModeEnabled ? "compact" : "full"}</Badge>
+                            </CardTitle>
+                            <p className="text-[11px] leading-relaxed text-slate-500">
+                                {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
+                            </p>
+                        </CardHeader>
+                        <CardContent className="p-4 space-y-4">
+                            <div className="space-y-2">
+                                <SettingToggleCard
+                                    title={<span>{tg(t, "7074eefa")}：{maxMembersPerFamily}</span>}
+                                    checked={familyModeEnabled}
+                                    onCheckedChange={setFamilyModeEnabled}
+                                    className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                                    titleClassName="text-xs font-normal"
+                                />
+                                <Slider value={[maxMembersPerFamily]} min={1} max={MAX_SPECIALIST_FAMILY_MEMBERS} step={1} disabled={!familyModeEnabled} onValueChange={([value]) => setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Math.round(value))))} />
+                            </div>
+                            <Button onClick={() => void handleSaveSpecialistRegistry()} disabled={isSavingSpecialistRegistry} className="w-full">
+                                {isSavingSpecialistRegistry ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                {tg(t, "a518dc17")}
+                            </Button>
+                        </CardContent>
+                    </Card>
+
+                    {/* 2. Search/Research 搜寻配置 Card */}
+                    <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                        <CardHeader className="space-y-1 p-4 pb-2 border-b">
+                            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                                <SearchCheck className="h-4 w-4 text-cyan-600" />
+                                {tg(t, "ed0fa816")}
+                                <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
+                            </div>
+                            <p className="text-[11px] leading-relaxed text-slate-500">
+                                {tg(t, "a1c3fdb1")}
+                            </p>
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "6f6a45fc")}</Badge>
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "cfd045a5")}</Badge>
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.research.evidenceLedgerTtl")} 6h</Badge>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="p-4 space-y-4">
+                            <SettingToggleCard
+                                title={<span>{tg(t, "2a5c9f81")}</span>}
+                                checked={researchEnabled}
+                                onCheckedChange={setResearchEnabled}
+                                className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                                titleClassName="text-xs font-normal"
+                            />
+                            <div className="space-y-3">
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label className="text-xs">{tg(t, "d6c520d8")}：{researchDefaultShards}</Label>
+                                        <span className="text-xs text-slate-500">1-30</span>
+                                    </div>
+                                    <Slider value={[researchDefaultShards]} min={1} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => {
+                                        const nextDefault = Math.max(1, Math.min(30, Math.round(value)));
+                                        setResearchDefaultShards(nextDefault);
+                                        setResearchMaxShards(current => Math.max(nextDefault, current));
+                                    }} />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label className="text-xs">{tg(t, "03514d16")}：{researchMaxShards}</Label>
+                                        <span className="text-xs text-slate-500">max 30</span>
+                                    </div>
+                                    <Slider value={[researchMaxShards]} min={researchDefaultShards} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxShards(Math.max(researchDefaultShards, Math.min(30, Math.round(value))))} />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label className="text-xs">{tg(t, "d28b7ea4")}：{researchMaxRounds}</Label>
+                                        <span className="text-xs text-slate-500">1-5</span>
+                                    </div>
+                                    <Slider value={[researchMaxRounds]} min={1} max={5} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxRounds(Math.max(1, Math.min(5, Math.round(value))))} />
+                                </div>
+                            </div>
+                            <Button onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch} className="w-full">
+                                {isSavingResearch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                {tg(t, "cdd9d125")}
+                            </Button>
+                        </CardContent>
+                    </Card>
+
+                    {/* 3. Recursive 递归委派配置 Card */}
+                    <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                        <CardHeader className="space-y-1 p-4 pb-2 border-b">
+                            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                                <Cable className="h-4 w-4 text-emerald-600" />
+                                {t("admin.pages.subagents.recursive.title")}
+                                <Badge variant={recursiveDelegationEnabled ? "secondary" : "destructive"}>
+                                    {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
+                                </Badge>
+                            </div>
+                            <p className="text-[11px] leading-relaxed text-slate-500">
+                                {t("admin.pages.subagents.recursive.description")}
+                            </p>
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</Badge>
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</Badge>
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</Badge>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="p-4 space-y-4">
+                            <SettingToggleCard
+                                title={<HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />}
+                                checked={recursiveDelegationEnabled}
+                                onCheckedChange={setRecursiveDelegationEnabled}
+                                className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                            />
+                            <div className="space-y-3">
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })} tooltip={t("admin.pages.subagents.recursive.maxDepthTooltip")} />
+                                        <span className="text-xs text-slate-500">1-100</span>
+                                    </div>
+                                    <Slider value={[recursiveMaxDepth]} min={1} max={100} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxDepth(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100))} />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip", { value: recursiveMaxChildren })} />
+                                        <span className="text-xs text-slate-500">1-50</span>
+                                    </div>
+                                    <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })} tooltip={t("admin.pages.subagents.recursive.maxTotalTooltip")} />
+                                        <span className="text-xs text-slate-500">1-1000</span>
+                                    </div>
+                                    <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })} tooltip={t("admin.pages.subagents.recursive.maxConcurrentTooltip")} />
+                                        <span className="text-xs text-slate-500">1-50</span>
+                                    </div>
+                                    <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
+                                </div>
+                            </div>
+                            <Button onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation} className="w-full">
+                                {isSavingRecursiveDelegation ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                {t("admin.pages.subagents.recursive.save")}
+                            </Button>
+                        </CardContent>
+                    </Card>
+                </div>
+
+        {/* 右栏：全局委派与研究参数配置 */}
+        <div className="space-y-6">
+            {/* 1. Specialist Registry 家族配置 Card */}
+            <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
+                <CardHeader className="space-y-1 p-4 pb-2 border-b">
+                    <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                        <BrainCircuit className="h-4 w-4 text-indigo-600" />
+                        {tg(t, "cd5d78a6")}
+                        <Badge variant={familyModeEnabled ? "secondary" : "destructive"}>{familyModeEnabled ? "compact" : "full"}</Badge>
+                    </CardTitle>
+                    <p className="text-[11px] leading-relaxed text-slate-500">
+                        {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
+                    </p>
+                </CardHeader>
+                <CardContent className="p-4 space-y-4">
                     <div className="space-y-2">
                         <SettingToggleCard
                             title={<span>{tg(t, "7074eefa")}：{maxMembersPerFamily}</span>}
@@ -1484,515 +1983,137 @@ export default function SubagentsPage() {
                             titleClassName="text-xs font-normal"
                         />
                         <Slider value={[maxMembersPerFamily]} min={1} max={MAX_SPECIALIST_FAMILY_MEMBERS} step={1} disabled={!familyModeEnabled} onValueChange={([value]) => setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Math.round(value))))} />
-
                     </div>
-                    <Button onClick={() => void handleSaveSpecialistRegistry()} disabled={isSavingSpecialistRegistry}>
+                    <Button onClick={() => void handleSaveSpecialistRegistry()} disabled={isSavingSpecialistRegistry} className="w-full">
                         {isSavingSpecialistRegistry ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                         {tg(t, "a518dc17")}
                     </Button>
                 </CardContent>
             </Card>
 
+            {/* 2. Search/Research 搜寻配置 Card */}
             <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                <CardContent className="grid gap-5 p-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,1fr)_auto] lg:items-center">
-                    <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
-                            <SearchCheck className="h-4 w-4 text-cyan-600" />
-                            {tg(t, "ed0fa816")}
-                            <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
-                        </div>
-                        <p className="text-xs leading-5 text-slate-500">
-                            {tg(t, "a1c3fdb1")}
-                        </p>
-                        <div className="flex flex-wrap gap-2 text-xs">
-                            <Badge variant="outline">{tg(t, "6f6a45fc")}</Badge>
-                            <Badge variant="outline">{tg(t, "cfd045a5")}</Badge>
-                            <Badge variant="outline">{t("admin.pages.subagents.research.evidenceLedgerTtl")} 6h</Badge>
-                        </div>
+                <CardHeader className="space-y-1 p-4 pb-2 border-b">
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                        <SearchCheck className="h-4 w-4 text-cyan-600" />
+                        {tg(t, "ed0fa816")}
+                        <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
                     </div>
-                    <div className="space-y-4">
-                        <SettingToggleCard
-                            title={<span>{tg(t, "2a5c9f81")}</span>}
-                            checked={researchEnabled}
-                            onCheckedChange={setResearchEnabled}
-                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
-                            titleClassName="text-xs font-normal"
-                        />
-                        <div className="space-y-2">
+                    <p className="text-[11px] leading-relaxed text-slate-500">
+                        {tg(t, "a1c3fdb1")}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "6f6a45fc")}</Badge>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "cfd045a5")}</Badge>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.research.evidenceLedgerTtl")} 6h</Badge>
+                    </div>
+                </CardHeader>
+                <CardContent className="p-4 space-y-4">
+                    <SettingToggleCard
+                        title={<span>{tg(t, "2a5c9f81")}</span>}
+                        checked={researchEnabled}
+                        onCheckedChange={setResearchEnabled}
+                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                        titleClassName="text-xs font-normal"
+                    />
+                    <div className="space-y-3">
+                        <div className="space-y-1">
                             <div className="flex items-center justify-between gap-3">
                                 <Label className="text-xs">{tg(t, "d6c520d8")}：{researchDefaultShards}</Label>
                                 <span className="text-xs text-slate-500">1-30</span>
                             </div>
                             <Slider value={[researchDefaultShards]} min={1} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => {
-              const nextDefault = Math.max(1, Math.min(30, Math.round(value)));
-              setResearchDefaultShards(nextDefault);
-              setResearchMaxShards(current => Math.max(nextDefault, current));
-            }} />
-
+                                const nextDefault = Math.max(1, Math.min(30, Math.round(value)));
+                                setResearchDefaultShards(nextDefault);
+                                setResearchMaxShards(current => Math.max(nextDefault, current));
+                            }} />
                         </div>
-                        <div className="space-y-2">
+                        <div className="space-y-1">
                             <div className="flex items-center justify-between gap-3">
                                 <Label className="text-xs">{tg(t, "03514d16")}：{researchMaxShards}</Label>
                                 <span className="text-xs text-slate-500">max 30</span>
                             </div>
                             <Slider value={[researchMaxShards]} min={researchDefaultShards} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxShards(Math.max(researchDefaultShards, Math.min(30, Math.round(value))))} />
-
                         </div>
-                        <div className="space-y-2">
+                        <div className="space-y-1">
                             <div className="flex items-center justify-between gap-3">
                                 <Label className="text-xs">{tg(t, "d28b7ea4")}：{researchMaxRounds}</Label>
                                 <span className="text-xs text-slate-500">1-5</span>
                             </div>
                             <Slider value={[researchMaxRounds]} min={1} max={5} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxRounds(Math.max(1, Math.min(5, Math.round(value))))} />
-
                         </div>
                     </div>
-                    <Button onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch}>
+                    <Button onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch} className="w-full">
                         {isSavingResearch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                         {tg(t, "cdd9d125")}
                     </Button>
                 </CardContent>
             </Card>
 
+            {/* 3. Recursive 递归委派配置 Card */}
             <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                <CardContent className="grid gap-5 p-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,1fr)_auto] lg:items-center">
-                    <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
-                            <Cable className="h-4 w-4 text-emerald-600" />
-                            {t("admin.pages.subagents.recursive.title")}
-                            <Badge variant={recursiveDelegationEnabled ? "secondary" : "destructive"}>
-                                {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
-                            </Badge>
-                        </div>
-                        <p className="text-xs leading-5 text-slate-500">
-                            {t("admin.pages.subagents.recursive.description")}
-                        </p>
-                        <div className="flex flex-wrap gap-2 text-xs">
-                            <Badge variant="outline">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</Badge>
-                            <Badge variant="outline">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</Badge>
-                            <Badge variant="outline">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</Badge>
-                        </div>
+                <CardHeader className="space-y-1 p-4 pb-2 border-b">
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                        <Cable className="h-4 w-4 text-emerald-600" />
+                        {t("admin.pages.subagents.recursive.title")}
+                        <Badge variant={recursiveDelegationEnabled ? "secondary" : "destructive"}>
+                            {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
+                        </Badge>
                     </div>
-                    <div className="space-y-4">
-                        <SettingToggleCard
-                            title={<HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />}
-                            checked={recursiveDelegationEnabled}
-                            onCheckedChange={setRecursiveDelegationEnabled}
-                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
-                        />
-                        <div className="space-y-2">
+                    <p className="text-[11px] leading-relaxed text-slate-500">
+                        {t("admin.pages.subagents.recursive.description")}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</Badge>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</Badge>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</Badge>
+                    </div>
+                </CardHeader>
+                <CardContent className="p-4 space-y-4">
+                    <SettingToggleCard
+                        title={<HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />}
+                        checked={recursiveDelegationEnabled}
+                        onCheckedChange={setRecursiveDelegationEnabled}
+                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
+                    />
+                    <div className="space-y-3">
+                        <div className="space-y-1">
                             <div className="flex items-center justify-between gap-3">
                                 <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })} tooltip={t("admin.pages.subagents.recursive.maxDepthTooltip")} />
                                 <span className="text-xs text-slate-500">1-100</span>
                             </div>
                             <Slider value={[recursiveMaxDepth]} min={1} max={100} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxDepth(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100))} />
                         </div>
-                        <div className="space-y-2">
+                        <div className="space-y-1">
                             <div className="flex items-center justify-between gap-3">
                                 <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip", { value: recursiveMaxChildren })} />
                                 <span className="text-xs text-slate-500">1-50</span>
                             </div>
                             <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />
                         </div>
-                        <div className="grid gap-4 md:grid-cols-2">
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between gap-3">
-                                    <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })} tooltip={t("admin.pages.subagents.recursive.maxTotalTooltip")} />
-                                    <span className="text-xs text-slate-500">1-1000</span>
-                                </div>
-                                <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between gap-3">
+                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })} tooltip={t("admin.pages.subagents.recursive.maxTotalTooltip")} />
+                                <span className="text-xs text-slate-500">1-1000</span>
                             </div>
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between gap-3">
-                                    <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })} tooltip={t("admin.pages.subagents.recursive.maxConcurrentTooltip")} />
-                                    <span className="text-xs text-slate-500">1-50</span>
-                                </div>
-                                <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
+                            <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
+                        </div>
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between gap-3">
+                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })} tooltip={t("admin.pages.subagents.recursive.maxConcurrentTooltip")} />
+                                <span className="text-xs text-slate-500">1-50</span>
                             </div>
+                            <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
                         </div>
                     </div>
-                    <Button onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation}>
+                    <Button onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation} className="w-full">
                         {isSavingRecursiveDelegation ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                         {t("admin.pages.subagents.recursive.save")}
                     </Button>
                 </CardContent>
             </Card>
-
-            <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-                {agents.map(agent => {
-        const selectors = Array.isArray(agent.tools) ? agent.tools : [];
-        const toolMode = agent.tool_mode === "explicit" ? "explicit" : "contextual_auto";
-        const capabilitySnapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot) ? agent.capabilitySnapshot : {};
-        const agentClass = typeof capabilitySnapshot.agentClass === "string" ? capabilitySnapshot.agentClass : "";
-        const specialistFamily = typeof capabilitySnapshot.specialistFamily === "string" ? capabilitySnapshot.specialistFamily : "";
-        const domainTags = Array.isArray(capabilitySnapshot.domainTags) ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3) : [];
-        const familyKey = normalizeFamilyId(specialistFamily || "engineering");
-        const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
-        const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "engineering", "E");
-        return <Card key={agent.id} className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
-                            <CardHeader className="space-y-4">
-                                <div className="flex items-start justify-between gap-3">
-                                    <div className="flex min-w-0 items-center gap-3">
-                                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={agent.globalExposure ? "globalExposure" : `family:${familyKey}`}>
-
-                                            {avatarLabel}
-                                        </div>
-                                            <div className="min-w-0">
-                                                <CardTitle className="truncate text-lg">{agent.name}</CardTitle>
-                                                <CardDescription className="truncate">{resolveAgentModelDisplay(agent)}</CardDescription>
-                                            </div>
-                                        </div>
-                                        <div className="flex gap-1">
-                                            <Button type="button" variant="ghost" size="sm" onClick={() => {
-                  setEditingAgent(agent);
-                  setIsDialogOpen(true);
-                }}>
-                                                {t("app.admin.dashboard.subagents.page.k75997619")}
-                                            </Button>
-                                        <Button type="button" variant="ghost" size="sm" className="text-rose-600" onClick={() => void handleDelete(agent.id)}>
-                                            <Trash2 className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                    <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{resolveToolModeLabel(toolMode)}</Badge>
-                                    {specialistFamily ? <Badge variant="secondary">family:{specialistFamily}</Badge> : null}
-                                    {agent.globalExposure ? <Badge className="bg-emerald-600 hover:bg-emerald-600">globalExposure</Badge> : null}
-                                    {agentClass ? <Badge variant="outline">{agentClass}</Badge> : null}
-                                    {domainTags.map(tag => <Badge key={tag} variant="outline">{tag}</Badge>)}
-                                    {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t("app.admin.dashboard.subagents.page.kcec0f2f4")}</Badge> : null}
-                                    {agent.reflection_enabled ? <Badge variant="outline">{t("app.admin.dashboard.subagents.page.k1599cdff")} × {agent.max_reflections || 3}</Badge> : null}
-                                </div>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                <p className="min-h-[3rem] text-sm leading-6 text-slate-500">{agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}</p>
-                                {toolMode === "explicit" ? <div className="space-y-2">
-                                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.subagents.page.k1dc6b253")}</div>
-                                        {renderToolBadgeSummary(selectors)}
-                                    </div> : <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-xs leading-5 text-slate-500">
-                                        <div className="font-medium text-slate-900">{resolveToolModeLabel("contextual_auto")}</div>
-                                        <div>{t("app.admin.dashboard.subagents.page.kf913a2e6")}</div>
-                                    </div>}
-                            </CardContent>
-                        </Card>;
-      })}
-                {agents.length === 0 ? <div className="col-span-full rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 py-12 text-center text-sm text-slate-500">
-                        {t("app.admin.dashboard.subagents.page.kc6380706")}
-                    </div> : null}
-            </div>
-
-            <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                        <Cable className="h-4 w-4 text-emerald-600" />
-                        {t("app.admin.dashboard.subagents.page.externalWorkers.title")}
-                    </CardTitle>
-                    <CardDescription>
-                        {t("app.admin.dashboard.subagents.page.externalWorkers.description")} <code>config.json#supervisor.delegation.externalWorkers</code>.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex flex-wrap gap-2">
-                            <Button type="button" variant="outline" size="sm" onClick={() => handleStartExternalWorkerTemplate("claude_code")}>
-                                Claude Code
-                            </Button>
-                            <Button type="button" variant="outline" size="sm" onClick={() => handleStartExternalWorkerTemplate("custom")}>
-                                <Plus className="mr-2 h-4 w-4" />
-                                {t("app.admin.dashboard.model.hub.catalog.customSuffix")}
-                            </Button>
-                        </div>
-                        <Badge variant="secondary">
-                            {tg(t, "ac5c1f76")} {enabledExternalWorkerCount}/{externalWorkerTemplateCount}
-                        </Badge>
-                    </div>
-
-                    <div className="grid gap-5 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,1.35fr)]">
-                        <div className="space-y-3">
-                            {externalWorkers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-5 text-sm text-slate-500">
-                                    {tg(t, "bbb79e84")}
-                                </div> : null}
-                            {externalWorkers.map(worker => {
-              const isActive = worker.id === editingExternalWorkerId;
-              const isEnabledTarget = Boolean(worker.enabled && worker.launchProfile.commandTemplate.trim());
-              return <button key={worker.id} type="button" className={`w-full rounded-2xl border p-4 text-left transition ${isActive ? "border-emerald-400 bg-emerald-50/70" : "border-slate-200 bg-slate-50/70 hover:border-slate-300"}`} onClick={() => handleSelectExternalWorker(worker.id)}>
-
-                                        <div className="flex items-start justify-between gap-3">
-                                            <div className="min-w-0">
-                                                <div className="truncate text-sm font-semibold text-slate-950">{worker.name || worker.id}</div>
-                                                <div className="mt-1 truncate font-mono text-xs text-slate-500">{worker.id}</div>
-                                            </div>
-                                            <Badge variant={isEnabledTarget ? "default" : "secondary"}>
-                                                {isEnabledTarget ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "06d0f38d")}
-                                            </Badge>
-                                        </div>
-                                        <div className="mt-3 text-xs leading-5 text-slate-500">
-                                            {resolveAdminLabel(t, "workerType", worker.workerType || "custom")} · {resolveAdminLabel(t, "workerCwdPolicy", worker.launchProfile.cwdPolicy || "inherit_workspace")} · {resolveAdminLabel(t, "workerSessionMode", worker.sessionMode || "interactive")}
-                                        </div>
-                                    </button>;
-            })}
-                        </div>
-
-                        <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                            <div className="grid gap-3 md:grid-cols-4">
-                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={tg(t, "8263f1ae")} tooltip={tg(t, "b70ead00")} />
-
-                                    <div className="mt-2 truncate text-xs text-slate-500">{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType || "custom")}</div>
-                                </div>
-                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "f17bef17")} tooltip={tg(t, "4a77fff3")} />
-
-                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.agentClass || "external_worker"}</div>
-                                </div>
-                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.automation.cron.page.k3936c4f6")} tooltip={tg(t, "77b8a673")} />
-
-                                    <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.enabled ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "cfb6d117")}</div>
-                                </div>
-                                <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                    <StatusCardTitle icon={<Wrench className="h-4 w-4 shrink-0 text-slate-600" />} title={tg(t, "6dac0d10")} tooltip={tg(t, "e1efa4b4")} />
-
-                                    <div className="mt-2 truncate text-xs text-slate-500">V8_WORKER_RESULT</div>
-                                </div>
-                            </div>
-
-                            <div className="grid gap-4 md:grid-cols-2">
-                                <div className="space-y-2">
-                                    <WorkerConfigLabel label={t("app.admin.dashboard.creativeMedia.tableName")} tooltip={tg(t, "c94b6fbd")} />
-
-                                    <Input value={externalWorkerForm.name} onChange={event => setExternalWorkerForm(current => ({
-                  ...current,
-                  name: event.target.value
-                }))} placeholder="Claude Code Worker" />
-
-                                </div>
-                                <div className="space-y-2">
-                                    <WorkerConfigLabel label={tg(t, "93b2f9c3")} tooltip={tg(t, "be1620ca")} />
-
-                                    <Input value={externalWorkerForm.agentClass} onChange={event => setExternalWorkerForm(current => ({
-                  ...current,
-                  agentClass: event.target.value
-                }))} placeholder="coder / reviewer / writer" />
-
-                                </div>
-                                <div className="space-y-2 md:col-span-2">
-                                    <WorkerConfigLabel label={tg(t, "16536cdf")} tooltip={tg(t, "4cc8846a")} />
-
-                                    <Input value={externalWorkerForm.description} onChange={event => setExternalWorkerForm(current => ({
-                  ...current,
-                  description: event.target.value
-                }))} placeholder={tg(t, "052ddc5f")} />
-
-                                </div>
-                                <div className="space-y-2">
-                                    <WorkerConfigLabel label={tg(t, "49aa0a72")} tooltip={tg(t, "20fb46f5")} />
-
-                                    <Input value={externalWorkerForm.domainTagsText} onChange={event => setExternalWorkerForm(current => ({
-                  ...current,
-                  domainTagsText: event.target.value
-                }))} placeholder="software_engineering, code_review" />
-
-                                </div>
-                                <div className="space-y-2">
-                                    <WorkerConfigLabel label={tg(t, "396f27fd")} tooltip={tg(t, "cf125faf")} />
-
-                                    <Input value={externalWorkerForm.operationCapabilitiesText} onChange={event => setExternalWorkerForm(current => ({
-                  ...current,
-                  operationCapabilitiesText: event.target.value
-                }))} placeholder="implement, debug, review, verify" />
-
-                                </div>
-                            </div>
-
-                            <details className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                <summary className="cursor-pointer text-sm font-medium text-slate-900">
-                                    {tg(t, "976a39ef")}
-                                </summary>
-                                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label="Worker ID" tooltip={tg(t, "02087023")} />
-
-                                        <Input value={externalWorkerForm.id} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    id: event.target.value
-                  }))} placeholder="claude-code-worker" />
-
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "c7209605")} tooltip={tg(t, "db37b9b6")} />
-
-                                        <Select value={externalWorkerForm.workerType} onValueChange={value => setExternalWorkerForm(current => ({
-                    ...current,
-                    workerType: value
-                  }))}>
-                                            <SelectTrigger><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                {!getAdminOptions("workerType").some((option) => option.value === externalWorkerForm.workerType) && externalWorkerForm.workerType ? <SelectItem value={externalWorkerForm.workerType}>{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType)}</SelectItem> : null}
-                                                {getAdminOptions("workerType").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2 md:col-span-2">
-                                        <WorkerConfigLabel label={tg(t, "3ce5c87e")} tooltip={tg(t, "734fe4f1", { task_brief_b64: "{task_brief_b64}" })} />
-
-                                        <Textarea value={externalWorkerForm.commandTemplate} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    commandTemplate: event.target.value
-                  }))} className="min-h-[84px] font-mono text-xs" placeholder='claude -p "... {task_brief_b64} ..."' />
-
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "5a843790")} tooltip={tg(t, "51924d82")} />
-
-                                        <Select value={externalWorkerForm.cwdPolicy} onValueChange={value => setExternalWorkerForm(current => ({
-                    ...current,
-                    cwdPolicy: value
-                  }))}>
-                                            <SelectTrigger><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                {!getAdminOptions("workerCwdPolicy").some((option) => option.value === externalWorkerForm.cwdPolicy) && externalWorkerForm.cwdPolicy ? <SelectItem value={externalWorkerForm.cwdPolicy}>{resolveAdminLabel(t, "workerCwdPolicy", externalWorkerForm.cwdPolicy)}</SelectItem> : null}
-                                                {getAdminOptions("workerCwdPolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "7764f97e")} tooltip={tg(t, "ccd23c9d")} />
-
-                                        <Input type="number" min={3} max={120} value={externalWorkerForm.startupTimeoutSeconds} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    startupTimeoutSeconds: event.target.value
-                  }))} />
-
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "9633e050")} tooltip={tg(t, "7dc5d6fa")} />
-
-                                        <Select value={externalWorkerForm.sessionMode} onValueChange={value => setExternalWorkerForm(current => ({
-                    ...current,
-                    sessionMode: value
-                  }))}>
-                                            <SelectTrigger><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                {!getAdminOptions("workerSessionMode").some((option) => option.value === externalWorkerForm.sessionMode) && externalWorkerForm.sessionMode ? <SelectItem value={externalWorkerForm.sessionMode}>{resolveAdminLabel(t, "workerSessionMode", externalWorkerForm.sessionMode)}</SelectItem> : null}
-                                                {getAdminOptions("workerSessionMode").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "5f90878e")} tooltip={tg(t, "fc1f4a2f")} />
-
-                                        <Input value={externalWorkerForm.envPassThroughText} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    envPassThroughText: event.target.value
-                  }))} placeholder="PATH, HOME" />
-
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel
-                                            label={tg(t, "7b11bd2b")}
-                                            tooltip={
-                                                <div className="space-y-1">
-                                                    <div>{tg(t, "761aca19")}</div>
-                                                    <div className="mt-2 font-semibold">Supported side effects / 支持的副作用:</div>
-                                                    <ul className="list-disc pl-4 text-xs">
-                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.workspace_write")}</li>
-                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.tool_use")}</li>
-                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.long_running_cli")}</li>
-                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.shell_command")}</li>
-                                                        <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.network_request")}</li>
-                                                    </ul>
-                                                </div>
-                                            }
-                                        />
-
-                                        <Input value={externalWorkerForm.allowedSideEffectsText} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    allowedSideEffectsText: event.target.value
-                  }))} placeholder="workspace_write, tool_use" />
-
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "9d1f7d68")} tooltip={tg(t, "9b2ec4bf")} />
-
-                                        <Select value={externalWorkerForm.toolExposurePolicy} onValueChange={value => setExternalWorkerForm(current => ({
-                    ...current,
-                    toolExposurePolicy: value
-                  }))}>
-                                            <SelectTrigger><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                {!getAdminOptions("toolExposurePolicy").some((option) => option.value === externalWorkerForm.toolExposurePolicy) && externalWorkerForm.toolExposurePolicy ? <SelectItem value={externalWorkerForm.toolExposurePolicy}>{resolveAdminLabel(t, "toolExposurePolicy", externalWorkerForm.toolExposurePolicy)}</SelectItem> : null}
-                                                {getAdminOptions("toolExposurePolicy").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <WorkerConfigLabel label={tg(t, "3a3a388f")} tooltip={tg(t, "abc3953d")} />
-
-                                        <Input value={externalWorkerForm.runtimeAffinitiesText} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    runtimeAffinitiesText: event.target.value
-                  }))} placeholder="chat, command_session" />
-
-                                    </div>
-                                    <div className="space-y-2 md:col-span-2">
-                                        <WorkerConfigLabel label={tg(t, "8f472ae1")} tooltip={tg(t, "63d27c83")} />
-
-                                        <Input value={externalWorkerForm.resultMarkersText} onChange={event => setExternalWorkerForm(current => ({
-                    ...current,
-                    resultMarkersText: event.target.value
-                  }))} placeholder="<V8_WORKER_RESULT>, </V8_WORKER_RESULT>" />
-
-                                    </div>
-                                </div>
-                            </details>
-
-                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
-                                <label className="flex items-center gap-3 text-sm font-medium text-slate-900">
-                                    <Checkbox checked={externalWorkerForm.enabled} onCheckedChange={next => setExternalWorkerForm(current => ({
-                  ...current,
-                  enabled: Boolean(next)
-                }))} />
-
-                                    {tg(t, "dd0b58a6")}
-                                </label>
-                                <div className="flex gap-2">
-                                    {editingExternalWorkerId ? <Button type="button" variant="ghost" className="text-rose-600" onClick={() => handleDeleteExternalWorker(editingExternalWorkerId)}>
-                                            <Trash2 className="mr-2 h-4 w-4" />
-                                            {t("components.memory.MemoryWorkflowsPanel.delete")}
-                                        </Button> : null}
-                                    <Button type="button" variant="outline" onClick={handleApplyExternalWorkerForm}>
-                                        {tg(t, "2fb9af69")}
-                                    </Button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <details className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4" open={showExternalWorkersJson} onToggle={event => setShowExternalWorkersJson(event.currentTarget.open)}>
-                        <summary className="cursor-pointer text-sm font-medium text-slate-900">
-                            {tg(t, "30b77df9")}
-                        </summary>
-                        <Textarea value={externalWorkersJson} onChange={event => setExternalWorkersJson(event.target.value)} className="mt-3 min-h-[220px] font-mono text-xs" placeholder='[{"id":"coding-cli-worker","enabled":false}]' />
-
-                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                            <p className="text-xs leading-5 text-slate-500">
-                                {t("app.admin.dashboard.subagents.page.externalWorkers.hintPrefix")} <code>launchProfile.commandTemplate</code> {t("app.admin.dashboard.subagents.page.externalWorkers.hintMiddle")} <code>resultSchema.markers</code>.
-                            </p>
-                            <Button type="button" variant="outline" size="sm" onClick={handleApplyExternalWorkersJson}>
-                                {tg(t, "7780539e")}
-                            </Button>
-                        </div>
-                    </details>
-
-                    <div className="flex items-center justify-end">
-                        <Button onClick={() => void handleSaveExternalWorkers()} disabled={isSavingExternalWorkers}>
-                            {isSavingExternalWorkers ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            {t("app.admin.dashboard.subagents.page.externalWorkers.saveButton")}
-                        </Button>
-                    </div>
-                </CardContent>
-            </Card>
+        </div>
+    </div>
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">

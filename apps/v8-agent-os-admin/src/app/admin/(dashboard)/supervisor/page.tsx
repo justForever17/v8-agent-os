@@ -302,342 +302,367 @@ export default function SupervisorPage() {
                 <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>;
   }
-  return <div className="p-8 space-y-8 max-w-4xl mx-auto">
-            <div className="flex items-start gap-4">
-                <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
-                    <Link href="/admin/chat-runtime" aria-label={t("app.admin.dashboard.common.backToChatRuntime")}>
-                        <ArrowLeft className="h-4 w-4" />
-                    </Link>
-                </Button>
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-                        <Crown className="w-8 h-8 text-amber-500" />
-                        {t("app.admin.dashboard.supervisor.page.kf45c6152")}
-                    </h1>
-                    <p className="text-muted-foreground mt-2">
-                        {t("app.admin.dashboard.supervisor.page.k48284369")}
-                    </p>
+  return <div className="p-6 lg:p-8 space-y-8 max-w-7xl mx-auto">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-4">
+                    <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
+                        <Link href="/admin/chat-runtime" aria-label={t("app.admin.dashboard.common.backToChatRuntime")}>
+                            <ArrowLeft className="h-4 w-4" />
+                        </Link>
+                    </Button>
+                    <div>
+                        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+                            <Crown className="w-8 h-8 text-amber-500" />
+                            {t("app.admin.dashboard.supervisor.page.kf45c6152")}
+                        </h1>
+                        <p className="text-muted-foreground mt-2">
+                            {t("app.admin.dashboard.supervisor.page.k48284369")}
+                        </p>
+                    </div>
                 </div>
+                <Button onClick={handleSave} disabled={isSaving || promptBudgetOverLimit} size="lg" className="shrink-0">
+                    {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+                    {t("app.admin.dashboard.supervisor.page.kaf9b5430")}
+                </Button>
             </div>
 
-            <Card>
-                <CardHeader>
-                    <CardTitle>{t("app.admin.dashboard.supervisor.page.k74e8cae6")}</CardTitle>
-                    <CardDescription>{t("app.admin.dashboard.supervisor.page.k2a6c03f1")}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6 pt-6">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b">
-                        <div className="space-y-4">
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.supervisor.page.kb6f6dc96")}</Label>
-                                <Input value={name} onChange={e => setName(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k1fa30a0f")} />
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.supervisor.page.k38bbe3a5")}</Label>
-                                <Input value={roleLabel} onChange={e => setRoleLabel(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.kc76b7a64")} />
-                            </div>
-                        </div>
-                        <div className="space-y-3">
-                            <Label>{t("app.admin.dashboard.supervisor.page.k19d90be6")}</Label>
-                            <div className="flex items-center gap-4">
-                                <div className="relative flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border bg-muted">
-                                    {avatar ? <>
-                                            <img src={avatar} alt="Avatar Preview" className="h-full w-full object-cover" />
-                                            <button type="button" className="absolute right-2 top-2 rounded-full bg-black/60 p-1 text-white transition-colors hover:bg-black/75" onClick={() => setAvatar("")}>
-                                                <X className="h-5 w-5" />
-                                            </button>
-                                        </> : <Crown className="h-10 w-10 text-slate-400" />}
-                                </div>
-                                <div className="flex-1 space-y-3">
-                                    <div className="flex flex-wrap gap-2">
-                                        <Input id="supervisor-avatar-upload" type="file" accept="image/*" className="hidden" onChange={async event => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    setIsUploading(true);
-                    const formData = new FormData();
-                    formData.append("file", file);
-                    try {
-                      const response = await fetch("/api/avatar-upload", {
-                        method: "POST",
-                        body: formData
-                      });
-                      const data = await response.json().catch(() => ({}));
-                      if (!response.ok || !data.url) {
-                        throw new Error(data.error || t("app.admin.dashboard.extensions.page.k0dc966ec"));
-                      }
-                      setAvatar(String(data.url));
-                    } catch (error) {
-                      toast({
-                        variant: "destructive",
-                        title: t("app.admin.dashboard.supervisor.page.k6faec809"),
-                        description: error instanceof Error ? error.message : t("app.admin.dashboard.supervisor.page.k2eee8863")
-                      });
-                    } finally {
-                      setIsUploading(false);
-                      event.target.value = "";
-                    }
-                  }} />
-                                        <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("supervisor-avatar-upload")?.click()} disabled={isUploading}>
-                                            <Upload className="mr-2 h-4 w-4" />
-                                            {isUploading ? t("app.admin.dashboard.supervisor.page.k94dfe70e") : t("app.admin.dashboard.supervisor.page.k819aecae")}
-                                        </Button>
-                                        <Button type="button" variant="ghost" size="sm" onClick={() => {
-                    const url = window.prompt(tg(t, "67cc1ee4"), avatar || "");
-                    if (url !== null) {
-                      setAvatar(url.trim());
-                    }
-                  }}>
-                                            {t("app.admin.dashboard.supervisor.page.kcb7b1896")}
-                                        </Button>
-                                        {avatar ? <Button type="button" variant="ghost" size="sm" onClick={() => setAvatar("")}>
-                                                {t("app.admin.dashboard.supervisor.page.kffee2f55")}
-                                            </Button> : null}
+            <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-6 items-start">
+                {/* 左侧栏：核心配置与提示词策略 */}
+                <div className="space-y-6">
+                    {/* 卡片 1：基本设定与主模型参数 */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>{t("app.admin.dashboard.supervisor.page.k74e8cae6")}</CardTitle>
+                            <CardDescription>{t("app.admin.dashboard.supervisor.page.k2a6c03f1")}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b">
+                                <div className="space-y-4">
+                                    <div className="space-y-2">
+                                        <Label>{t("app.admin.dashboard.supervisor.page.kb6f6dc96")}</Label>
+                                        <Input value={name} onChange={e => setName(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k1fa30a0f")} />
                                     </div>
                                     <div className="space-y-2">
-                                        <Label>{t("app.admin.dashboard.supervisor.page.kc933bd04")}</Label>
-                                        <Input value={avatar} onChange={e => setAvatar(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k19e35ac4")} />
+                                        <Label>{t("app.admin.dashboard.supervisor.page.k38bbe3a5")}</Label>
+                                        <Input value={roleLabel} onChange={e => setRoleLabel(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.kc76b7a64")} />
                                     </div>
-                                    <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k0e3baca6")}</p>
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.kba259bc3")}</Label>
-                        <ModelSelect models={models} value={selectedModelId} emptyValue="default" emptyLabel={t("app.admin.dashboard.supervisor.page.k534ef300")} emptyOutputValue="default" placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")} onValueChange={setSelectedModelId} />
-
-                        <p className="text-xs text-muted-foreground">
-                            {tg(t, "dbdc66e6")}
-                        </p>
-                        {defaultModelId ? <p className="text-xs text-muted-foreground">
-                                {tg(t, "4c85d452", {
-              value1: defaultModelId
-            })}
-                            </p> : null}
-                    </div>
-
-                    <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
-                        <div className="space-y-3">
-                            <div className="flex items-center justify-between gap-3">
-                                <Label>{tg(t, "bd753fce")}</Label>
-                                <span className="text-xs font-medium text-muted-foreground">
-                                    {temperatureStatusText(t, supervisorTemperature)}
-                                </span>
-                            </div>
-                            <Slider value={[temperatureSliderValue(supervisorTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSupervisorTemperature(formatDecimal(value))} />
-
-                            <Button type="button" variant="outline" size="sm" onClick={() => setSupervisorTemperature("")}>
-                                {tg(t, "89699da9")}
-                            </Button>
-                            <p className="text-xs leading-5 text-muted-foreground">
-                                {tg(t, "e3097bad", {
-                value1: temperatureDefaultText(t)
-              })}
-                            </p>
-                        </div>
-                        <div className="space-y-3">
-                            <div className="flex items-center justify-between gap-3">
-                                <Label>{tg(t, "4cc6e647")}</Label>
-                                <span className="text-xs font-medium text-muted-foreground">
-                                    {temperatureStatusText(t, subagentTemperature)}
-                                </span>
-                            </div>
-                            <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
-
-                            <Button type="button" variant="outline" size="sm" onClick={() => setSubagentTemperature("")}>
-                                {tg(t, "89699da9")}
-                            </Button>
-                            <p className="text-xs leading-5 text-muted-foreground">
-                                {tg(t, "3949675c")}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div id="vision-media-model" className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.kf558439c")}</Label>
-                        <ModelSelect models={visionCapableModels} value={visionModelId || "__empty__"} emptyLabel={t("app.admin.dashboard.supervisor.page.k3930f0e4")} placeholder={t("app.admin.dashboard.supervisor.page.k3930f0e4")} onValueChange={setVisionModelId} />
-
-                        <p className="text-xs text-muted-foreground">
-                            {t("app.admin.dashboard.supervisor.page.k948f683d")}
-                        </p>
-                        {visionModelSource ? <p className="text-xs text-muted-foreground">
-                                {tg(t, "83b1a316", {
-              value1: visionModelSource
-            })}
-                            </p> : null}
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.kc2dd0474")}</Label>
-                        <p className="text-xs text-muted-foreground mb-2">{t("app.admin.dashboard.supervisor.page.kd096e672")}</p>
-                        <div className={`rounded-md border px-3 py-2 text-xs ${promptBudgetOverLimit ? "border-rose-300 bg-rose-50 text-rose-700" : promptBudgetNearLimit || runtimePromptTruncated ? "border-amber-300 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-                            {promptBudgetOverLimit ? t("app.admin.dashboard.supervisor.page.promptBudget.overStatus", promptBudgetParams) : runtimePromptTruncated ? t("app.admin.dashboard.supervisor.page.promptBudget.runtimeTruncated") : promptBudgetNearLimit ? t("app.admin.dashboard.supervisor.page.promptBudget.nearStatus", promptBudgetParams) : t("app.admin.dashboard.supervisor.page.promptBudget.okStatus", promptBudgetParams)}
-                        </div>
-                        <Textarea value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} className="font-mono text-sm min-h-[250px] leading-relaxed resize-y" placeholder={t("app.admin.dashboard.supervisor.page.k59c88769")} />
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.k4da74fc8")}</Label>
-                        <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k0201cb86")}</p>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            <div className="rounded-md border bg-background p-3">
-                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k0638c7d8")}</div>
-                                <div className="mt-2 text-sm font-medium text-foreground">
-                                    {t("app.admin.dashboard.supervisor.page.k187de0c5")}
-                                </div>
-                                <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k4dc4cf4d")}</p>
-                            </div>
-                            <div className="rounded-md border bg-background p-3">
-                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kcfd39f1a")}</div>
-                                <div className="mt-2 text-2xl font-semibold">{lockedNativeTools.length}</div>
-                                <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.ked4287a1")}</p>
-                            </div>
-                            <div className="rounded-md border bg-background p-3">
-                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k988cfeb5")}</div>
-                                <div className="mt-2 text-sm font-medium text-foreground">
-                                    {runtimeManagedTools.length > 0 ? tg(t, "372bd827", {
-                  value1: new Set(runtimeManagedTools.map(tool => tool.runtimeLabel || tool.runtimeKind || "runtime")).size
-                }) : t("app.admin.dashboard.supervisor.page.k3a8f88de")}
-                                </div>
-                                <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kf48a48f7")}</p>
-                            </div>
-                        </div>
-                        <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3">
-                            <p className="text-sm font-medium text-foreground">{t("app.admin.dashboard.supervisor.page.k7d574fe0")}</p>
-                            <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.ka8658654")}</p>
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.k6e509c9a")}</Label>
-                        <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.ke738ec8e")}</p>
-                        <div className="rounded-md border bg-muted/20 p-3">
-                            {lockedNativeTools.length > 0 ? <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    {lockedNativeTools.map(tool => <div key={tool.name} className="rounded border bg-background px-3 py-2">
-                                            <div className="flex items-start gap-2">
-                                                <Lock className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
-                                                <div className="min-w-0">
-                                                    <div className="font-medium text-sm break-all">{tool.name}</div>
-                                                    <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2" title={tool.description}>
-                                                        {tool.description || t("app.admin.dashboard.supervisor.page.k86e9a787")}
-                                                    </p>
-                                                </div>
+                                <div className="space-y-3">
+                                    <Label>{t("app.admin.dashboard.supervisor.page.k19d90be6")}</Label>
+                                    <div className="flex items-center gap-4">
+                                        <div className="relative flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border bg-muted">
+                                            {avatar ? <>
+                                                    <img src={avatar} alt="Avatar Preview" className="h-full w-full object-cover" />
+                                                    <button type="button" className="absolute right-2 top-2 rounded-full bg-black/60 p-1 text-white transition-colors hover:bg-black/75" onClick={() => setAvatar("")}>
+                                                        <X className="h-5 w-5" />
+                                                    </button>
+                                                </> : <Crown className="h-10 w-10 text-slate-400" />}
+                                        </div>
+                                        <div className="flex-1 space-y-3">
+                                            <div className="flex flex-wrap gap-2">
+                                                <Input id="supervisor-avatar-upload" type="file" accept="image/*" className="hidden" onChange={async event => {
+                                                    const file = event.target.files?.[0];
+                                                    if (!file) return;
+                                                    setIsUploading(true);
+                                                    const formData = new FormData();
+                                                    formData.append("file", file);
+                                                    try {
+                                                        const response = await fetch("/api/avatar-upload", {
+                                                            method: "POST",
+                                                            body: formData
+                                                        });
+                                                        const data = await response.json().catch(() => ({}));
+                                                        if (!response.ok || !data.url) {
+                                                            throw new Error(data.error || t("app.admin.dashboard.extensions.page.k0dc966ec"));
+                                                        }
+                                                        setAvatar(String(data.url));
+                                                    } catch (error) {
+                                                        toast({
+                                                            variant: "destructive",
+                                                            title: t("app.admin.dashboard.supervisor.page.k6faec809"),
+                                                            description: error instanceof Error ? error.message : t("app.admin.dashboard.supervisor.page.k2eee8863")
+                                                        });
+                                                    } finally {
+                                                        setIsUploading(false);
+                                                        event.target.value = "";
+                                                    }
+                                                }} />
+                                                <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("supervisor-avatar-upload")?.click()} disabled={isUploading}>
+                                                    <Upload className="mr-2 h-4 w-4" />
+                                                    {isUploading ? t("app.admin.dashboard.supervisor.page.k94dfe70e") : t("app.admin.dashboard.supervisor.page.k819aecae")}
+                                                </Button>
+                                                <Button type="button" variant="ghost" size="sm" onClick={() => {
+                                                    const url = window.prompt(tg(t, "67cc1ee4"), avatar || "");
+                                                    if (url !== null) {
+                                                        setAvatar(url.trim());
+                                                    }
+                                                }}>
+                                                    {t("app.admin.dashboard.supervisor.page.kcb7b1896")}
+                                                </Button>
+                                                {avatar ? <Button type="button" variant="ghost" size="sm" onClick={() => setAvatar("")}>
+                                                        {t("app.admin.dashboard.supervisor.page.kffee2f55")}
+                                                    </Button> : null}
                                             </div>
-                                        </div>)}
-                                </div> : <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kca19dcd0")}</p>}
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.k988cfeb5")}</Label>
-                        <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kf48a48f7")}</p>
-                        <div className="rounded-md border border-dashed border-border/70 bg-background/70 p-3 text-xs text-muted-foreground">
-                            {runtimeManagedTools.length > 0 ? <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                                    {runtimeManagedTools.map(tool => <div key={tool.name} className="rounded border border-border/60 px-3 py-2">
-                                            <div className="flex items-start gap-2">
-                                                <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                                                <div className="min-w-0">
-                                                    <div className="font-medium text-foreground break-all">{tool.name}</div>
-                                                    <div className="mt-1 text-[10px] leading-5">{tool.reason || tool.description || t("app.admin.dashboard.supervisor.page.k4ac23e30")}</div>
-                                                </div>
+                                            <div className="space-y-2">
+                                                <Label>{t("app.admin.dashboard.supervisor.page.kc933bd04")}</Label>
+                                                <Input value={avatar} onChange={e => setAvatar(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k19e35ac4")} />
                                             </div>
-                                        </div>)}
-                                </div> : <p>{t("app.admin.dashboard.supervisor.page.kc1580290")}</p>}
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.supervisor.page.kd6a7fff1")}</Label>
-                        <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k98541b0f")}</p>
-                        {detachedSelectedTools.length > 0 ? <div className="rounded-md border border-violet-300/50 bg-violet-50 px-3 py-2 text-xs text-violet-900">
-                                {tg(t, "6322f71f", {
-              value1: detachedSelectedTools.length,
-              value2: detachedSelectedTools.join(", ")
-            })}
-                            </div> : null}
-                        <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div className="text-xs leading-5 text-muted-foreground">
-                                    {t("app.admin.dashboard.supervisor.page.manualMcpMode.description")}
+                                            <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k0e3baca6")}</p>
+                                        </div>
+                                    </div>
                                 </div>
-                                <Button type="button" variant="outline" size="sm" onClick={() => setShowManualMcpTools(current => !current)}>
-                                    {showManualMcpTools ? <ChevronDown className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
-                                    {showManualMcpTools ? t("app.admin.dashboard.supervisor.page.manualMcpMode.hideButton") : t("app.admin.dashboard.supervisor.page.manualMcpMode.showButton")}
-                                </Button>
                             </div>
-                        </div>
-                        {showManualMcpTools ? <div className="border rounded-md bg-muted/30 max-h-[400px] overflow-y-auto mt-2">
-                            {editableMcpTools.length > 0 ? (() => {
-              const grouped = editableMcpTools.reduce((acc, tool) => {
-                const srv = tool.serverName || tg(t, "c740945b");
-                if (!acc[srv]) acc[srv] = [];
-                acc[srv].push(tool);
-                return acc;
-              }, {} as Record<string, MCPTool[]>);
-              return Object.entries(grouped).map(([server, tools]) => {
-                const isExpanded = expandedServers[server] ?? true;
-                const isAllSelected = tools.every(t => selectedTools.includes(t.name));
-                const isSomeSelected = tools.some(t => selectedTools.includes(t.name));
-                return <div key={server} className="border-b last:border-b-0">
-                                                <div className="flex items-center gap-2 p-2 bg-muted/50 hover:bg-muted/80 transition-colors">
-                                                    <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={() => setExpandedServers(prev => ({
-                      ...prev,
-                      [server]: !isExpanded
-                    }))}>
-                                                        {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                                                    </Button>
-                                                    <div className="flex-1 cursor-pointer font-medium text-sm flex items-center" onClick={() => setExpandedServers(prev => ({
-                      ...prev,
-                      [server]: !isExpanded
-                    }))}>
-                                                        <span>{server}</span>
-                                                        <Button variant="outline" size="sm" className="ml-4 gap-1 h-6 text-[10px] px-2" disabled={testingServers[server]} onClick={e => handleTestConnection(e, server)}>
-                                                            {testingServers[server] ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-                                                            {t("app.admin.dashboard.supervisor.page.k4b0ac62c")}
+
+                            <div className="space-y-2 pt-2">
+                                <Label>{t("app.admin.dashboard.supervisor.page.kba259bc3")}</Label>
+                                <ModelSelect models={models} value={selectedModelId} emptyValue="default" emptyLabel={t("app.admin.dashboard.supervisor.page.k534ef300")} emptyOutputValue="default" placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")} onValueChange={setSelectedModelId} />
+
+                                <p className="text-xs text-muted-foreground">
+                                    {tg(t, "dbdc66e6")}
+                                </p>
+                                {defaultModelId ? <p className="text-xs text-muted-foreground">
+                                        {tg(t, "4c85d452", {
+                                            value1: defaultModelId
+                                        })}
+                                    </p> : null}
+                            </div>
+
+                            <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label>{tg(t, "bd753fce")}</Label>
+                                        <span className="text-xs font-medium text-muted-foreground">
+                                            {temperatureStatusText(t, supervisorTemperature)}
+                                        </span>
+                                    </div>
+                                    <Slider value={[temperatureSliderValue(supervisorTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSupervisorTemperature(formatDecimal(value))} />
+
+                                    <Button type="button" variant="outline" size="sm" onClick={() => setSupervisorTemperature("")}>
+                                        {tg(t, "89699da9")}
+                                    </Button>
+                                    <p className="text-xs leading-5 text-muted-foreground">
+                                        {tg(t, "e3097bad", {
+                                            value1: temperatureDefaultText(t)
+                                        })}
+                                    </p>
+                                </div>
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <Label>{tg(t, "4cc6e647")}</Label>
+                                        <span className="text-xs font-medium text-muted-foreground">
+                                            {temperatureStatusText(t, subagentTemperature)}
+                                        </span>
+                                    </div>
+                                    <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
+
+                                    <Button type="button" variant="outline" size="sm" onClick={() => setSubagentTemperature("")}>
+                                        {tg(t, "89699da9")}
+                                    </Button>
+                                    <p className="text-xs leading-5 text-muted-foreground">
+                                        {tg(t, "3949675c")}
+                                    </p>
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {/* 卡片 2：全局系统提示词 (System Prompt) */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>{t("app.admin.dashboard.supervisor.page.kc2dd0474")}</CardTitle>
+                            <CardDescription>{t("app.admin.dashboard.supervisor.page.kd096e672")}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className={`rounded-md border px-3 py-2 text-xs ${promptBudgetOverLimit ? "border-rose-300 bg-rose-50 text-rose-700" : promptBudgetNearLimit || runtimePromptTruncated ? "border-amber-300 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                                {promptBudgetOverLimit ? t("app.admin.dashboard.supervisor.page.promptBudget.overStatus", promptBudgetParams) : runtimePromptTruncated ? t("app.admin.dashboard.supervisor.page.promptBudget.runtimeTruncated") : promptBudgetNearLimit ? t("app.admin.dashboard.supervisor.page.promptBudget.nearStatus", promptBudgetParams) : t("app.admin.dashboard.supervisor.page.promptBudget.okStatus", promptBudgetParams)}
+                            </div>
+                            <Textarea value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} className="font-mono text-sm min-h-[300px] leading-relaxed resize-y" placeholder={t("app.admin.dashboard.supervisor.page.k59c88769")} />
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* 右侧栏：辅助模型与工具箱授权 */}
+                <div className="space-y-6">
+                    {/* 卡片 3：视觉模型绑定 */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>{t("app.admin.dashboard.supervisor.page.kf558439c")}</CardTitle>
+                            <CardDescription>{t("app.admin.dashboard.supervisor.page.k948f683d")}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                            <ModelSelect models={visionCapableModels} value={visionModelId || "__empty__"} emptyLabel={t("app.admin.dashboard.supervisor.page.k3930f0e4")} placeholder={t("app.admin.dashboard.supervisor.page.k3930f0e4")} onValueChange={setVisionModelId} />
+
+                            {visionModelSource ? <p className="text-xs text-muted-foreground">
+                                    {tg(t, "83b1a316", {
+                                        value1: visionModelSource
+                                    })}
+                                </p> : null}
+                        </CardContent>
+                    </Card>
+
+                    {/* 卡片 4：工具箱授权与 MCP 服务 */}
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>{t("app.admin.dashboard.supervisor.page.k4da74fc8")}</CardTitle>
+                            <CardDescription>{t("app.admin.dashboard.supervisor.page.k0201cb86")}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-6">
+                            {/* 核心工具统计 */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div className="rounded-md border bg-background p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k0638c7d8")}</div>
+                                    <div className="mt-2 text-sm font-medium text-foreground">
+                                        {t("app.admin.dashboard.supervisor.page.k187de0c5")}
+                                    </div>
+                                    <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k4dc4cf4d")}</p>
+                                </div>
+                                <div className="rounded-md border bg-background p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kcfd39f1a")}</div>
+                                    <div className="mt-2 text-2xl font-semibold">{lockedNativeTools.length}</div>
+                                    <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.ked4287a1")}</p>
+                                </div>
+                                <div className="rounded-md border bg-background p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k988cfeb5")}</div>
+                                    <div className="mt-2 text-sm font-medium text-foreground">
+                                        {runtimeManagedTools.length > 0 ? tg(t, "372bd827", {
+                                            value1: new Set(runtimeManagedTools.map(tool => tool.runtimeLabel || tool.runtimeKind || "runtime")).size
+                                        }) : t("app.admin.dashboard.supervisor.page.k3a8f88de")}
+                                    </div>
+                                    <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kf48a48f7")}</p>
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3">
+                                <p className="text-sm font-medium text-foreground">{t("app.admin.dashboard.supervisor.page.k7d574fe0")}</p>
+                                <p className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.ka8658654")}</p>
+                            </div>
+
+                            {/* 锁定工具 */}
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">{t("app.admin.dashboard.supervisor.page.k6e509c9a")}</Label>
+                                <div className="rounded-md border bg-muted/20 p-3">
+                                    {lockedNativeTools.length > 0 ? <div className="grid grid-cols-1 gap-3">
+                                            {lockedNativeTools.map(tool => <div key={tool.name} className="rounded border bg-background px-3 py-2">
+                                                    <div className="flex items-start gap-2">
+                                                        <Lock className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+                                                        <div className="min-w-0">
+                                                            <div className="font-medium text-sm break-all">{tool.name}</div>
+                                                            <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2" title={tool.description}>
+                                                                {tool.description || t("app.admin.dashboard.supervisor.page.k86e9a787")}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>)}
+                                        </div> : <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.kca19dcd0")}</p>}
+                                </div>
+                            </div>
+
+                            {/* 受管工具 */}
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">{t("app.admin.dashboard.supervisor.page.k988cfeb5")}</Label>
+                                <div className="rounded-md border border-dashed border-border/70 bg-background/70 p-3 text-xs text-muted-foreground">
+                                    {runtimeManagedTools.length > 0 ? <div className="grid grid-cols-1 gap-2">
+                                            {runtimeManagedTools.map(tool => <div key={tool.name} className="rounded border border-border/60 px-3 py-2 bg-background">
+                                                    <div className="flex items-start gap-2">
+                                                        <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                                                        <div className="min-w-0">
+                                                            <div className="font-medium text-foreground break-all text-sm">{tool.name}</div>
+                                                            <div className="mt-1 text-[10px] leading-5">{tool.reason || tool.description || t("app.admin.dashboard.supervisor.page.k4ac23e30")}</div>
+                                                        </div>
+                                                    </div>
+                                                </div>)}
+                                        </div> : <p>{t("app.admin.dashboard.supervisor.page.kc1580290")}</p>}
+                                </div>
+                            </div>
+
+                            {/* MCP 工具授权 */}
+                            <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">{t("app.admin.dashboard.supervisor.page.kd6a7fff1")}</Label>
+                                {detachedSelectedTools.length > 0 ? <div className="rounded-md border border-violet-300/50 bg-violet-50 px-3 py-2 text-xs text-violet-900 mb-2">
+                                        {tg(t, "6322f71f", {
+                                            value1: detachedSelectedTools.length,
+                                            value2: detachedSelectedTools.join(", ")
+                                        })}
+                                    </div> : null}
+                                <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-3">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <div className="text-xs leading-5 text-muted-foreground">
+                                            {t("app.admin.dashboard.supervisor.page.manualMcpMode.description")}
+                                        </div>
+                                        <Button type="button" variant="outline" size="sm" onClick={() => setShowManualMcpTools(current => !current)}>
+                                            {showManualMcpTools ? <ChevronDown className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+                                            {showManualMcpTools ? t("app.admin.dashboard.supervisor.page.manualMcpMode.hideButton") : t("app.admin.dashboard.supervisor.page.manualMcpMode.showButton")}
+                                        </Button>
+                                    </div>
+                                </div>
+                                {showManualMcpTools ? <div className="border rounded-md bg-muted/30 max-h-[300px] overflow-y-auto mt-2">
+                                    {editableMcpTools.length > 0 ? (() => {
+                                        const grouped = editableMcpTools.reduce((acc, tool) => {
+                                            const srv = tool.serverName || tg(t, "c740945b");
+                                            if (!acc[srv]) acc[srv] = [];
+                                            acc[srv].push(tool);
+                                            return acc;
+                                        }, {} as Record<string, MCPTool[]>);
+                                        return Object.entries(grouped).map(([server, tools]) => {
+                                            const isExpanded = expandedServers[server] ?? true;
+                                            const isAllSelected = tools.every(t => selectedTools.includes(t.name));
+                                            const isSomeSelected = tools.some(t => selectedTools.includes(t.name));
+                                            return <div key={server} className="border-b last:border-b-0">
+                                                    <div className="flex items-center gap-2 p-2 bg-muted/50 hover:bg-muted/80 transition-colors">
+                                                        <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={() => setExpandedServers(prev => ({
+                                                            ...prev,
+                                                            [server]: !isExpanded
+                                                        }))}>
+                                                            {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                                                        </Button>
+                                                        <div className="flex-1 cursor-pointer font-medium text-sm flex items-center" onClick={() => setExpandedServers(prev => ({
+                                                            ...prev,
+                                                            [server]: !isExpanded
+                                                        }))}>
+                                                            <span>{server}</span>
+                                                            <Button variant="outline" size="sm" className="ml-4 gap-1 h-6 text-[10px] px-2" disabled={testingServers[server]} onClick={e => handleTestConnection(e, server)}>
+                                                                {testingServers[server] ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                                                                {t("app.admin.dashboard.supervisor.page.k4b0ac62c")}
+                                                            </Button>
+                                                        </div>
+                                                        <span className="text-xs text-muted-foreground mr-2 font-normal">{tools.length} {t("app.admin.dashboard.supervisor.page.kf2e24950")}</span>
+                                                        <Button type="button" variant={isAllSelected ? "default" : isSomeSelected ? "secondary" : "outline"} size="sm" className="h-6 text-[10px] px-2" onClick={e => {
+                                                            e.stopPropagation();
+                                                            if (isAllSelected) {
+                                                                setSelectedTools(prev => prev.filter(name => !tools.some(t => t.name === name)));
+                                                            } else {
+                                                                const toAdd = tools.filter(t => !selectedTools.includes(t.name)).map(t => t.name);
+                                                                setSelectedTools(prev => [...prev, ...toAdd]);
+                                                            }
+                                                        }}>
+                                                            {isAllSelected ? <><Check className="w-3 h-3 mr-1" /> {t("app.admin.dashboard.supervisor.page.kaf4bbc27")}</> : isSomeSelected ? t("app.admin.dashboard.supervisor.page.kd1299571") : t("app.admin.dashboard.supervisor.page.k02d0d287")}
                                                         </Button>
                                                     </div>
-                                                    <span className="text-xs text-muted-foreground mr-2 font-normal">{tools.length} {t("app.admin.dashboard.supervisor.page.kf2e24950")}</span>
-                                                    <Button type="button" variant={isAllSelected ? "default" : isSomeSelected ? "secondary" : "outline"} size="sm" className="h-6 text-[10px] px-2" onClick={e => {
-                      e.stopPropagation();
-                      if (isAllSelected) {
-                        setSelectedTools(prev => prev.filter(name => !tools.some(t => t.name === name)));
-                      } else {
-                        const toAdd = tools.filter(t => !selectedTools.includes(t.name)).map(t => t.name);
-                        setSelectedTools(prev => [...prev, ...toAdd]);
-                      }
-                    }}>
-                                                        {isAllSelected ? <><Check className="w-3 h-3 mr-1" /> {t("app.admin.dashboard.supervisor.page.kaf4bbc27")}</> : isSomeSelected ? t("app.admin.dashboard.supervisor.page.kd1299571") : t("app.admin.dashboard.supervisor.page.k02d0d287")}
-                                                    </Button>
-                                                </div>
-                                                
-                                                {isExpanded && <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3 bg-background/50">
-                                                        {tools.map(tool => <div key={tool.name} className="flex items-start space-x-2">
-                                                                <Checkbox id={`tool-${tool.name}`} name="tools" value={tool.name} checked={selectedTools.includes(tool.name)} onCheckedChange={(checked: boolean) => {
-                        if (checked) setSelectedTools(prev => [...prev, tool.name]);else setSelectedTools(prev => prev.filter(t => t !== tool.name));
-                      }} className="mt-1" />
-                                                                <div className="grid gap-1.5 leading-none flex-1">
-                                                                    <Label htmlFor={`tool-${tool.name}`} className="font-medium cursor-pointer break-all text-sm">
-                                                                        {tool.name}
-                                                                    </Label>
-                                                                    <p className="text-[10px] text-muted-foreground line-clamp-2" title={tool.description}>
-                                                                        {tool.description || t("app.admin.dashboard.supervisor.page.k86e9a787")}
-                                                                    </p>
-                                                                </div>
-                                                            </div>)}
-                                                    </div>}
-                                            </div>;
-              });
-            })() : <div className="p-4"><p className="text-xs text-muted-foreground col-span-full">{t("app.admin.dashboard.supervisor.page.k58c74c39")}</p></div>}
-                        </div> : null}
-                    </div>
-                </CardContent>
-                <CardFooter className="flex justify-end pt-4 border-t">
-                    <Button onClick={handleSave} disabled={isSaving || promptBudgetOverLimit} size="lg">
-                        {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-                        {t("app.admin.dashboard.supervisor.page.kaf9b5430")}
-                    </Button>
-                </CardFooter>
-            </Card>
+
+                                                    {isExpanded && <div className="p-3 grid grid-cols-1 gap-3 bg-background/50">
+                                                            {tools.map(tool => <div key={tool.name} className="flex items-start space-x-2">
+                                                                    <Checkbox id={`tool-${tool.name}`} name="tools" value={tool.name} checked={selectedTools.includes(tool.name)} onCheckedChange={(checked: boolean) => {
+                                                                        if (checked) setSelectedTools(prev => [...prev, tool.name]);else setSelectedTools(prev => prev.filter(t => t !== tool.name));
+                                                                    }} className="mt-1" />
+                                                                    <div className="grid gap-1.5 leading-none flex-1">
+                                                                        <Label htmlFor={`tool-${tool.name}`} className="font-medium cursor-pointer break-all text-sm">
+                                                                            {tool.name}
+                                                                        </Label>
+                                                                        <p className="text-[10px] text-muted-foreground line-clamp-2" title={tool.description}>
+                                                                            {tool.description || t("app.admin.dashboard.supervisor.page.k86e9a787")}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>)}
+                                                        </div>}
+                                                </div>;
+                                        });
+                                    })() : <div className="p-4"><p className="text-xs text-muted-foreground col-span-full">{t("app.admin.dashboard.supervisor.page.k58c74c39")}</p></div>}
+                                </div> : null}
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+            </div>
         </div>;
 }
+

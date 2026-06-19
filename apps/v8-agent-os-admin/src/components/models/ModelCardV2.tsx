@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
-import type { ControlPlaneModel } from "@/components/models/control-plane-types";
+import type { ControlPlaneModel, ModelDefaultCategory } from "@/components/models/control-plane-types";
 import { useT } from "@/components/providers/LocaleProvider";
 import { resolveModelIcon } from "@/lib/models/model-assets";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
@@ -41,7 +41,7 @@ interface ModelCardV2Props {
   };
   controlMeta?: ControlPlaneModel | null;
   isDefault?: boolean;
-  onSetDefault?: (modelRef: string) => void;
+  onSetDefault?: (modelRef: string, categoryKey?: string) => void;
   onTestConnection?: (modelRef: string) => Promise<void> | void;
   onRepairReasoning?: (modelRef: string) => Promise<void> | void;
   connectionStatus?: {
@@ -69,6 +69,24 @@ const ROLE_LABELS: Record<string, string> = {
   computer_use_visual_judge: "components.models.ModelCardV2.ke3c7666e",
   rpa_discovery: "components.models.ModelCardV2.k526071af"
 };
+const DEFAULT_CATEGORY_LABEL_KEYS: Record<string, TranslationKey> = {
+  text_generation: "components.models.ModelCardV2.defaultCategory.text_generation",
+  vision_multimodal: "components.models.ModelCardV2.defaultCategory.vision_multimodal",
+  embedding: "components.models.ModelCardV2.defaultCategory.embedding",
+  reranker: "components.models.ModelCardV2.defaultCategory.reranker"
+};
+const DEFAULT_CATEGORY_BADGE_CLASSES: Record<string, string> = {
+  sky: "bg-sky-50 text-sky-700 ring-sky-200 hover:bg-sky-100",
+  violet: "bg-violet-50 text-violet-700 ring-violet-200 hover:bg-violet-100",
+  emerald: "bg-emerald-50 text-emerald-700 ring-emerald-200 hover:bg-emerald-100",
+  amber: "bg-amber-50 text-amber-700 ring-amber-200 hover:bg-amber-100"
+};
+const DEFAULT_CATEGORY_STAR_CLASSES: Record<string, string> = {
+  sky: "fill-sky-500 text-sky-500",
+  violet: "fill-violet-500 text-violet-500",
+  emerald: "fill-emerald-500 text-emerald-500",
+  amber: "fill-amber-500 text-amber-500"
+};
 type CapabilityIconItem = {
   key: string;
   labelKey: TranslationKey;
@@ -88,6 +106,38 @@ type ControlPlaneModelWithDoctor = ControlPlaneModel & {
 type ModelWithDoctor = ModelCardV2Props["model"] & {
   roleDoctor?: RoleDoctorState | null;
 };
+function inferDefaultCategory(modelType: string, controlMeta?: ControlPlaneModel | null): string | null {
+  const normalizedType = String(modelType || controlMeta?.type || "").toUpperCase();
+  const capabilityClass = String(controlMeta?.capabilityClass || "").toLowerCase();
+  const capabilities = controlMeta?.capabilities || null;
+  const isMediaType = new Set(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]).has(normalizedType);
+  const mediaCapability = Boolean(
+    capabilities?.image ||
+    capabilities?.video ||
+    capabilities?.audio ||
+    capabilities?.voice ||
+    capabilities?.music ||
+    capabilities?.workflow ||
+    capabilities?.model3d
+  );
+  if (capabilityClass === "media_generation" || isMediaType || (mediaCapability && !capabilities?.chat && !capabilities?.vision && !capabilities?.multimodal)) {
+    return null;
+  }
+  if (capabilityClass === "embedding" || normalizedType === "EMBEDDING" || capabilities?.embedding) {
+    return "embedding";
+  }
+  if (capabilityClass === "reranker" || capabilityClass === "rerank" || normalizedType === "RERANK" || normalizedType === "RERANKER" || capabilities?.rerank) {
+    return "reranker";
+  }
+  if (capabilityClass === "vision_multimodal" || normalizedType === "MULTIMODAL" || capabilities?.vision || capabilities?.multimodal) {
+    return "vision_multimodal";
+  }
+  return "text_generation";
+}
+function defaultCategoryLabel(category: Pick<ModelDefaultCategory, "key" | "label">, t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
+  const labelKey = DEFAULT_CATEGORY_LABEL_KEYS[String(category.key || "")];
+  return labelKey ? t(labelKey) : category.label || String(category.key || "");
+}
 function buildCapabilityIconItems(modelType: string, capabilityTags: string[], capabilities?: ControlPlaneModel["capabilities"] | null): CapabilityIconItem[] {
   const source = `${modelType} ${capabilityTags.join(" ")}`.toLowerCase();
   const has = (...needles: string[]) => needles.some(needle => source.includes(needle.toLowerCase()));
@@ -150,6 +200,23 @@ export function ModelCardV2({
   const roleDoctor = (controlMeta as ControlPlaneModelWithDoctor | null | undefined)?.roleDoctor || (model as ModelWithDoctor).roleDoctor || null;
   const roleDoctorIssues = Array.isArray(roleDoctor?.issues) ? roleDoctor.issues : [];
   const roleDoctorWarnings = Array.isArray(roleDoctor?.warnings) ? roleDoctor.warnings : [];
+  const explicitDefaultCategories = controlMeta?.defaultCategories || [];
+  const defaultBadges: ModelDefaultCategory[] = explicitDefaultCategories.length
+    ? explicitDefaultCategories
+    : isDefault
+      ? [{
+        key: "text_generation",
+        label: t(DEFAULT_CATEGORY_LABEL_KEYS.text_generation),
+        role: "default",
+        badge: "sky"
+      }]
+      : [];
+  const defaultCategoryToSet = inferDefaultCategory(model.type, controlMeta);
+  const isDefaultForInferredCategory = Boolean(
+    defaultCategoryToSet &&
+    (defaultBadges.some((category) => category.key === defaultCategoryToSet) ||
+      (defaultCategoryToSet === "text_generation" && isDefault))
+  );
   const modelIcon = resolveModelIcon({
     modelId: model.modelId,
     providerId: model.provider?.id,
@@ -157,7 +224,7 @@ export function ModelCardV2({
     explicitAsset: model.logoAsset || null
   });
   const details = [`ID: ${model.modelId}`, `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
-  return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${isDefault ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
+  return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
                     <AdminHoverInfo lines={details} triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600">
@@ -170,10 +237,15 @@ export function ModelCardV2({
                                 {model.modelId}
                                 <span className="font-normal text-muted-foreground"> · {model.provider?.name || t("components.models.ModelCardV2.k4f162e67")}</span>
                             </span>
-                            {isDefault && <Badge className="h-5 shrink-0 border-none bg-primary/20 px-1.5 text-[10px] text-primary hover:bg-primary/30">
-                                    <Star className="mr-1 h-3 w-3 fill-primary" />
-                                    {t("components.models.ModelCardV2.k6509c658")}
-                                </Badge>}
+                            {defaultBadges.map((category) => {
+              const badgeTone = String(category.badge || "sky");
+              const badgeClass = DEFAULT_CATEGORY_BADGE_CLASSES[badgeTone] || DEFAULT_CATEGORY_BADGE_CLASSES.sky;
+              const starClass = DEFAULT_CATEGORY_STAR_CLASSES[badgeTone] || DEFAULT_CATEGORY_STAR_CLASSES.sky;
+              return <Badge key={`${modelRef}:${category.key}`} className={`h-5 shrink-0 border-none px-1.5 text-[10px] ring-1 ${badgeClass}`}>
+                                    <Star className={`mr-1 h-3 w-3 ${starClass}`} />
+                                    {defaultCategoryLabel(category, t)}
+                                </Badge>;
+            })}
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
                             {capabilityIconItems.map(({
@@ -212,8 +284,10 @@ export function ModelCardV2({
 
                                 <Wrench className={`h-3.5 w-3.5 ${repairing ? "animate-pulse" : ""}`} />
                             </Button>}
-                        {!isDefault && onSetDefault && <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => onSetDefault(modelRef)} title={t("components.models.ModelCardV2.ka96c553d")}>
-                                <Star className="h-3.5 w-3.5" />
+                        {!isDefaultForInferredCategory && defaultCategoryToSet && onSetDefault && <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" onClick={() => onSetDefault(modelRef, defaultCategoryToSet)} title={t("components.models.ModelCardV2.setCategoryDefault", {
+              category: t(DEFAULT_CATEGORY_LABEL_KEYS[defaultCategoryToSet])
+            })}>
+                                <Star className="h-3.5 w-3.5" aria-hidden="true" />
                             </Button>}
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t("components.models.ModelCardV2.ke0b2f296")}>
                             <Copy className="h-3.5 w-3.5" />

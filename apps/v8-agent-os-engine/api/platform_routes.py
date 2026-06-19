@@ -15,6 +15,7 @@ from core.json_safe import to_jsonable
 from core.model_connection_tester import model_connection_tester
 from core.model_reasoning_repair import model_reasoning_repair_service
 from core.model_control_plane import model_control_plane
+from core.model_ref import make_model_ref
 from core.model_provider_catalog import model_provider_catalog
 from core.model_role_doctor import diagnose_models
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
@@ -978,6 +979,39 @@ async def save_model_control_plane(data: dict = Body(...)):
     try:
         config = model_control_plane.save_config(data)
         return {"status": "success", **model_control_plane.build_payload(config)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models/defaults")
+async def get_model_default_categories():
+    try:
+        config = model_control_plane.get_config()
+        return {"categories": model_control_plane.get_default_categories(config)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/defaults")
+async def set_model_default_category(data: dict = Body(...)):
+    try:
+        model_ref = str(data.get("modelRef") or data.get("model_ref") or "").strip()
+        if not model_ref:
+            provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
+            model_id = str(data.get("modelId") or data.get("model_id") or "").strip()
+            if provider_id and model_id:
+                model_ref = make_model_ref(provider_id, model_id)
+        if not model_ref:
+            raise HTTPException(status_code=422, detail="modelRef is required")
+        result = model_control_plane.set_default_model_for_category(
+            model_ref=model_ref,
+            category=str(data.get("category") or data.get("categoryKey") or data.get("category_key") or "").strip() or None,
+        )
+        return {"status": "success", **result}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

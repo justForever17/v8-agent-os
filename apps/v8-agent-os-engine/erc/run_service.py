@@ -85,6 +85,42 @@ class RunService:
         refreshed = self.get_run(run_id)
         return refreshed
 
+    def update_metadata_key_if_state(
+        self,
+        run_id: str,
+        *,
+        key: str,
+        expected_state: str,
+        next_value: Dict[str, Any],
+        expected_status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return db.update_run_metadata_key_if_state(
+            run_id,
+            key=key,
+            expected_state=expected_state,
+            next_value=next_value,
+            expected_status=expected_status,
+        )
+
+    def claim_runtime_episode_resume_schedule(
+        self,
+        run_id: str,
+        *,
+        marker_key: str,
+        next_marker: Dict[str, Any],
+        terminal_states: set[str],
+        active_states: set[str],
+    ) -> Dict[str, Any]:
+        return db.claim_runtime_episode_resume_schedule(
+            run_id,
+            marker_key=marker_key,
+            next_marker=next_marker,
+            expected_marker_state="waiting",
+            expected_status="running",
+            terminal_states=terminal_states,
+            active_states=active_states,
+        )
+
     def set_control_signal(
         self,
         run_id: str,

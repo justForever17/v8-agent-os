@@ -17,6 +17,19 @@ export type ModelCapabilities = {
     computerUse: boolean;
 };
 
+export type ModelDefaultCategory = {
+    key: "text_generation" | "vision_multimodal" | "embedding" | "reranker" | string;
+    label: string;
+    role: string;
+    capabilityClasses?: string[];
+    badge?: "sky" | "violet" | "emerald" | "amber" | string;
+    modelRef?: string;
+    modelId?: string;
+    providerId?: string;
+    providerName?: string;
+    bindingState?: "explicit" | "unbound" | string;
+};
+
 export type ControlPlaneModel = {
     id: string;
     modelRef?: string;
@@ -56,6 +69,7 @@ export type ControlPlaneModel = {
     capabilities: ModelCapabilities;
     capabilityTags: string[];
     assignedRoles: string[];
+    defaultCategories?: ModelDefaultCategory[];
 };
 
 export type ControlPlaneRoleCard = {
@@ -176,6 +190,7 @@ export type ControlPlanePayload = {
     models: ControlPlaneModel[];
     roles: ControlPlaneRoleCard[];
     modules: ControlPlaneModuleStatus[];
+    defaultCategories: ModelDefaultCategory[];
     providersOverview: ProviderOverview[];
     governanceSummary?: {
         budgets: {
@@ -247,6 +262,7 @@ export const EMPTY_CONTROL_PLANE_PAYLOAD: ControlPlanePayload = {
     models: [],
     roles: [],
     modules: [],
+    defaultCategories: [],
     providersOverview: [],
     governanceSummary: {
         budgets: {

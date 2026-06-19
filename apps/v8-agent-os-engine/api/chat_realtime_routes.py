@@ -458,7 +458,7 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
         )
         async for _ in event_iter:
             pass
-    except Exception:
+    except Exception as exc:
         _emit_background_chat_run_event(
             "run.resume.worker.failed",
             request,
@@ -470,6 +470,32 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
             active_run_id or "<unknown>",
             transport,
         )
+        if transport == "system_resume" and active_run_id:
+            try:
+                recovery = runtime_command_router.recover_runtime_episode_resume_worker_failure(
+                    active_run_id,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+                if recovery.get("resume_scheduled") or recovery.get("resume_error"):
+                    _emit_background_chat_run_event(
+                        "run.resume.worker.recovery_scheduled"
+                        if recovery.get("resume_scheduled")
+                        else "run.resume.worker.recovery_not_scheduled",
+                        request,
+                        transport=transport,
+                        run_id=active_run_id,
+                        payload={
+                            "resumeScheduled": bool(recovery.get("resume_scheduled")),
+                            "resumeError": recovery.get("resume_error"),
+                            "workerCrashCount": recovery.get("worker_crash_count"),
+                        },
+                    )
+            except Exception:
+                logging.getLogger("v8chat.chat_realtime").exception(
+                    "Failed to recover runtime episode resume worker crash for run '%s'",
+                    active_run_id,
+                )
+            return
         raise
     finally:
         if event_iter is not None:

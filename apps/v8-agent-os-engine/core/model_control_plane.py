@@ -152,6 +152,52 @@ DEFAULT_ROUTING_POLICIES = {
     "rpaDiscovery": "rpa_discovery",
 }
 
+DEFAULT_MODEL_CATEGORIES: Dict[str, Dict[str, Any]] = {
+    "text_generation": {
+        "label": "文本生成默认",
+        "role": "default",
+        "capabilityClasses": CHAT_CAPABILITY_CLASSES,
+        "badge": "sky",
+    },
+    "vision_multimodal": {
+        "label": "多模态视觉默认",
+        "role": "vision",
+        "capabilityClasses": ["vision_multimodal"],
+        "badge": "violet",
+    },
+    "embedding": {
+        "label": "向量默认",
+        "role": "embedding",
+        "capabilityClasses": ["embedding"],
+        "badge": "emerald",
+    },
+    "reranker": {
+        "label": "重排默认",
+        "role": "reranker",
+        "capabilityClasses": ["reranker"],
+        "badge": "amber",
+    },
+}
+
+ROLE_DEFAULT_CATEGORY_MAP = {
+    "default": "text_generation",
+    "supervisor": "text_generation",
+    "planner": "text_generation",
+    "subagent": "text_generation",
+    "summary": "text_generation",
+    "extraction": "text_generation",
+    "extensions_prefilter": "text_generation",
+    "channel": "text_generation",
+    "automation": "text_generation",
+    "vision": "vision_multimodal",
+    "computer_use_visual_actor": "vision_multimodal",
+    "computer_use_visual_judge": "vision_multimodal",
+    "embedding": "embedding",
+    "reranker": "reranker",
+    "extensions_reranker": "reranker",
+    "computer_use_candidate_reranker": "reranker",
+}
+
 ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "default": {
         "label": "默认聊天",
@@ -992,6 +1038,46 @@ class ModelControlPlane:
         capability_class = str((model_record.get("model") or {}).get("capabilityClass") or "")
         return capability_class in allowed
 
+    def default_category_for_role(self, role: str, role_definition: Optional[Dict[str, Any]] = None) -> str:
+        role_key = str(role or "").strip()
+        if role_key in ROLE_DEFAULT_CATEGORY_MAP:
+            return ROLE_DEFAULT_CATEGORY_MAP[role_key]
+        allowed = {
+            str(item or "").strip()
+            for item in list((role_definition or {}).get("capabilityClasses") or [])
+            if str(item or "").strip()
+        }
+        if allowed and allowed <= {"embedding"}:
+            return "embedding"
+        if allowed and allowed <= {"reranker"}:
+            return "reranker"
+        if allowed and "vision_multimodal" in allowed and not (allowed & {"chat_general", "chat_tool_calling", "chat_reasoning"}):
+            return "vision_multimodal"
+        return "text_generation"
+
+    def default_category_for_model_record(self, model_record: Optional[Dict[str, Any]]) -> str:
+        if not model_record:
+            return ""
+        model = dict(model_record.get("model") or {})
+        model_type = str(model.get("type") or "").strip().upper()
+        capability_class = str(model.get("capabilityClass") or "").strip().lower()
+        capabilities = dict(model.get("capabilities") or {})
+        if capability_class == "media_generation" or model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}:
+            return ""
+        if capability_class == "embedding" or model_type == "EMBEDDING" or capabilities.get("embedding"):
+            return "embedding"
+        if capability_class in {"reranker", "rerank"} or model_type in {"RERANK", "RERANKER"} or capabilities.get("rerank"):
+            return "reranker"
+        if capability_class == "vision_multimodal" or model_type == "MULTIMODAL" or capabilities.get("vision") or capabilities.get("multimodal"):
+            return "vision_multimodal"
+        return "text_generation"
+
+    def _category_definition(self, category_key: str) -> Dict[str, Any]:
+        normalized = str(category_key or "").strip()
+        if normalized not in DEFAULT_MODEL_CATEGORIES:
+            raise ValueError(f"unsupported_default_model_category:{normalized or 'missing'}")
+        return DEFAULT_MODEL_CATEGORIES[normalized]
+
     def resolve_model_for_role(self, role: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized = config or self.get_config()
         roles = normalized.get("roles") or {}
@@ -999,24 +1085,47 @@ class ModelControlPlane:
 
         explicit_model_id = str(roles.get(role) or "")
         default_model_id = str(roles.get("default") or "")
+        default_category = self.default_category_for_role(role, role_definition)
+        category_definition = DEFAULT_MODEL_CATEGORIES.get(default_category) or DEFAULT_MODEL_CATEGORIES["text_generation"]
+        category_role = str(category_definition.get("role") or "default")
+        category_default_model_id = str(roles.get(category_role) or "")
         explicit_lookup = self._resolve_model_lookup(explicit_model_id, normalized) if explicit_model_id else {"status": "empty", "record": None, "matches": []}
         default_lookup = self._resolve_model_lookup(default_model_id, normalized) if default_model_id else {"status": "empty", "record": None, "matches": []}
+        category_default_lookup = (
+            self._resolve_model_lookup(category_default_model_id, normalized)
+            if category_default_model_id
+            else {"status": "empty", "record": None, "matches": []}
+        )
         explicit_record = explicit_lookup.get("record")
         default_record = default_lookup.get("record")
+        category_default_record = category_default_lookup.get("record")
 
         binding_state = "unbound"
         model_record: Optional[Dict[str, Any]] = None
         resolved_model_id = ""
         resolved_model_ref = ""
+        default_role = ""
 
         if explicit_model_id and self._is_model_compatible(role_definition, explicit_record):
             model_record = explicit_record
             binding_state = "explicit"
             resolved_model_id = str(explicit_record.get("model_id") or explicit_model_id)
             resolved_model_ref = str(explicit_record.get("model_ref") or "")
-        elif role != "default" and default_model_id and self._is_model_compatible(role_definition, default_record):
+        elif role != category_role and category_default_model_id and self._is_model_compatible(role_definition, category_default_record):
+            model_record = category_default_record
+            binding_state = "inherited_default" if explicit_model_id else "default"
+            default_role = category_role
+            resolved_model_id = str(category_default_record.get("model_id") or category_default_model_id)
+            resolved_model_ref = str(category_default_record.get("model_ref") or "")
+        elif (
+            role != "default"
+            and category_role != "default"
+            and default_model_id
+            and self._is_model_compatible(role_definition, default_record)
+        ):
             model_record = default_record
             binding_state = "inherited_default" if explicit_model_id else "default"
+            default_role = "default"
             resolved_model_id = str(default_record.get("model_id") or default_model_id)
             resolved_model_ref = str(default_record.get("model_ref") or "")
         elif explicit_model_id:
@@ -1034,6 +1143,8 @@ class ModelControlPlane:
             "resolvedProviderId": (model_record or {}).get("provider_id") or "",
             "lookupStatus": explicit_lookup.get("status") if explicit_model_id else "",
             "lookupMatches": explicit_lookup.get("matches") or [],
+            "defaultCategory": default_category,
+            "defaultRole": default_role,
             "resolvedModel": resolved_model,
             "resolvedProvider": resolved_provider,
         }
@@ -1043,6 +1154,66 @@ class ModelControlPlane:
         return {
             role_key: self.resolve_model_for_role(role_key, normalized)
             for role_key in self.get_role_definitions(normalized).keys()
+        }
+
+    def get_default_categories(self, config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        normalized = config or self.get_config()
+        roles = dict(normalized.get("roles") or {})
+        categories: List[Dict[str, Any]] = []
+        for category_key, category in DEFAULT_MODEL_CATEGORIES.items():
+            role_key = str(category.get("role") or "").strip()
+            model_ref = str(roles.get(role_key) or "").strip()
+            record = self.get_model_record(model_ref, normalized) if model_ref else None
+            provider = dict((record or {}).get("provider") or {})
+            categories.append(
+                {
+                    "key": category_key,
+                    "label": category.get("label") or category_key,
+                    "role": role_key,
+                    "capabilityClasses": list(category.get("capabilityClasses") or []),
+                    "badge": category.get("badge") or "sky",
+                    "modelRef": str((record or {}).get("model_ref") or model_ref),
+                    "modelId": str((record or {}).get("model_id") or ""),
+                    "providerId": str((record or {}).get("provider_id") or ""),
+                    "providerName": provider.get("name") or "",
+                    "bindingState": "explicit" if record else "unbound",
+                }
+            )
+        return categories
+
+    def set_default_model_for_category(
+        self,
+        *,
+        model_ref: str,
+        category: str | None = None,
+    ) -> Dict[str, Any]:
+        normalized = self.get_config()
+        record = self.get_model_record(model_ref, normalized)
+        if not record:
+            raise ValueError("default_model_not_found")
+        inferred_category = self.default_category_for_model_record(record)
+        if not inferred_category:
+            raise ValueError("media_generation_models_do_not_support_default_binding")
+        target_category = str(category or inferred_category).strip() or inferred_category
+        category_definition = self._category_definition(target_category)
+        if not self._is_model_compatible(category_definition, record):
+            raise ValueError(f"default_model_category_mismatch:{target_category}:{inferred_category}")
+        role_key = str(category_definition.get("role") or "").strip()
+        if not role_key:
+            raise ValueError(f"default_model_category_missing_role:{target_category}")
+        roles = dict(normalized.get("roles") or {})
+        roles[role_key] = str(record.get("model_ref") or model_ref)
+        normalized["roles"] = roles
+        saved = self.save_config(normalized)
+        return {
+            "ok": True,
+            "category": target_category,
+            "role": role_key,
+            "modelRef": str(record.get("model_ref") or model_ref),
+            "modelId": str(record.get("model_id") or ""),
+            "providerId": str(record.get("provider_id") or ""),
+            "defaultCategories": self.get_default_categories(saved),
+            "config": saved,
         }
 
     def build_summary(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1078,6 +1249,19 @@ class ModelControlPlane:
             resolved_model_ref = str(resolution.get("resolvedModelRef") or "")
             if resolved_model_ref:
                 assigned_roles_by_model.setdefault(resolved_model_ref, []).append(role_key)
+        default_categories_by_model: Dict[str, List[Dict[str, Any]]] = {}
+        for category in self.get_default_categories(normalized):
+            model_ref = str(category.get("modelRef") or "").strip()
+            if not model_ref:
+                continue
+            default_categories_by_model.setdefault(model_ref, []).append(
+                {
+                    "key": category.get("key"),
+                    "label": category.get("label"),
+                    "role": category.get("role"),
+                    "badge": category.get("badge"),
+                }
+            )
 
         models: List[Dict[str, Any]] = []
         for provider_id, provider_data in (normalized.get("providers") or {}).items():
@@ -1119,6 +1303,7 @@ class ModelControlPlane:
                         label for key, label in CAPABILITY_TAG_ORDER if capabilities.get(key)
                     ],
                     "assignedRoles": assigned_roles_by_model.get(model_ref, []),
+                    "defaultCategories": default_categories_by_model.get(model_ref, []),
                 }
                 model_row["roleDoctor"] = diagnose_model_role(model_row, role="model_hub")
                 models.append(model_row)
@@ -1242,6 +1427,7 @@ class ModelControlPlane:
             "models": self.list_models(normalized),
             "roles": self.get_role_cards(normalized),
             "modules": self.get_module_statuses(normalized),
+            "defaultCategories": self.get_default_categories(normalized),
             "providersOverview": self.get_provider_statuses(normalized),
             "governanceSummary": {
                 "budgets": {

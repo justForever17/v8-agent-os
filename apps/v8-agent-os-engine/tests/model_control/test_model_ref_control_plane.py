@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from api import platform_routes
 from core.llm_factory import llm_factory
 from core.model_capability_registry import model_capability_registry
@@ -261,6 +263,128 @@ def test_model_control_normalizes_legacy_voice_chat_capability_to_false():
     assert model["capabilities"]["chat"] is False
     assert model["capabilities"]["voice"] is True
     assert model["capabilities"]["audio"] is True
+
+
+def _layered_default_model_config():
+    return model_control_plane.normalize_config(
+        {
+            "providers": {
+                "demo": {
+                    "provider": {"name": "Demo"},
+                    "models": {
+                        "text-chat": {
+                            "type": "TEXT",
+                            "contextWindow": 128000,
+                            "maxTokens": 4096,
+                            "capabilityClass": "chat_general",
+                            "capabilities": {"chat": True, "streaming": True},
+                        },
+                        "vision-chat": {
+                            "type": "MULTIMODAL",
+                            "contextWindow": 128000,
+                            "maxTokens": 4096,
+                            "capabilityClass": "vision_multimodal",
+                            "capabilities": {"chat": True, "vision": True, "multimodal": True},
+                        },
+                        "embed": {
+                            "type": "EMBEDDING",
+                            "capabilityClass": "embedding",
+                            "capabilities": {"embedding": True},
+                        },
+                        "rerank": {
+                            "type": "RERANK",
+                            "capabilityClass": "reranker",
+                            "capabilities": {"rerank": True},
+                        },
+                        "image-gen": {
+                            "type": "IMAGE",
+                            "capabilityClass": "media_generation",
+                            "parameterProfile": "media_generation",
+                            "capabilities": {"image": True},
+                        },
+                    },
+                }
+            },
+            "roles": {
+                "default": make_model_ref("demo", "text-chat"),
+                "vision": make_model_ref("demo", "vision-chat"),
+                "embedding": make_model_ref("demo", "embed"),
+                "reranker": make_model_ref("demo", "rerank"),
+            },
+        }
+    )
+
+
+def test_role_resolution_uses_layered_default_categories():
+    config = _layered_default_model_config()
+
+    summary = model_control_plane.resolve_model_for_role("summary", config)
+    visual_judge = model_control_plane.resolve_model_for_role("computer_use_visual_judge", config)
+    extension_reranker = model_control_plane.resolve_model_for_role("extensions_reranker", config)
+
+    assert summary["resolvedModelRef"] == make_model_ref("demo", "text-chat")
+    assert summary["defaultCategory"] == "text_generation"
+    assert summary["defaultRole"] == "default"
+    assert visual_judge["resolvedModelRef"] == make_model_ref("demo", "vision-chat")
+    assert visual_judge["defaultCategory"] == "vision_multimodal"
+    assert visual_judge["defaultRole"] == "vision"
+    assert extension_reranker["resolvedModelRef"] == make_model_ref("demo", "rerank")
+    assert extension_reranker["defaultCategory"] == "reranker"
+    assert extension_reranker["defaultRole"] == "reranker"
+
+
+def test_model_list_exposes_layered_default_categories():
+    config = _layered_default_model_config()
+    models = {item["modelRef"]: item for item in model_control_plane.list_models(config)}
+
+    assert models[make_model_ref("demo", "text-chat")]["defaultCategories"] == [
+        {"key": "text_generation", "label": "文本生成默认", "role": "default", "badge": "sky"}
+    ]
+    assert models[make_model_ref("demo", "vision-chat")]["defaultCategories"] == [
+        {"key": "vision_multimodal", "label": "多模态视觉默认", "role": "vision", "badge": "violet"}
+    ]
+    assert models[make_model_ref("demo", "embed")]["defaultCategories"][0]["key"] == "embedding"
+    assert models[make_model_ref("demo", "rerank")]["defaultCategories"][0]["key"] == "reranker"
+
+
+def test_set_default_model_for_category_infers_type_and_rejects_media(monkeypatch):
+    config = _layered_default_model_config()
+    saved_config = {}
+    monkeypatch.setattr(model_control_plane, "get_config", lambda: config)
+
+    def save_config(next_config):
+        saved_config["value"] = next_config
+        return next_config
+
+    monkeypatch.setattr(model_control_plane, "save_config", save_config)
+
+    result = model_control_plane.set_default_model_for_category(model_ref=make_model_ref("demo", "embed"))
+
+    assert result["category"] == "embedding"
+    assert result["role"] == "embedding"
+    assert saved_config["value"]["roles"]["embedding"] == make_model_ref("demo", "embed")
+    with pytest.raises(ValueError, match="media_generation_models_do_not_support_default_binding"):
+        model_control_plane.set_default_model_for_category(model_ref=make_model_ref("demo", "image-gen"))
+
+
+def test_platform_model_defaults_endpoint_accepts_model_ref(monkeypatch):
+    captured = {}
+
+    def set_default_model_for_category(*, model_ref, category=None):
+        captured["model_ref"] = model_ref
+        captured["category"] = category
+        return {"ok": True, "category": category, "role": "embedding", "modelRef": model_ref}
+
+    monkeypatch.setattr(platform_routes.model_control_plane, "set_default_model_for_category", set_default_model_for_category)
+
+    result = asyncio.run(
+        platform_routes.set_model_default_category(
+            {"modelRef": make_model_ref("demo", "embed"), "category": "embedding"}
+        )
+    )
+
+    assert result["status"] == "success"
+    assert captured == {"model_ref": make_model_ref("demo", "embed"), "category": "embedding"}
 
 
 def test_role_cards_expose_role_doctor_readiness():

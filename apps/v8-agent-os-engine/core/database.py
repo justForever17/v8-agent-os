@@ -2114,6 +2114,173 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
 
+    def update_run_metadata_key_if_state(
+        self,
+        run_id: str,
+        *,
+        key: str,
+        expected_state: str,
+        next_value: Dict[str, Any],
+        expected_status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        marker_key = str(key or "").strip()
+        if not marker_key:
+            raise ValueError("metadata key is required")
+        expected_marker_state = str(expected_state or "").strip().lower()
+        expected_run_status = str(expected_status or "").strip()
+
+        def _parse_metadata(raw: Any) -> Dict[str, Any]:
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+
+        def _marker_state(metadata: Dict[str, Any]) -> str:
+            marker = metadata.get(marker_key)
+            if not isinstance(marker, dict):
+                return ""
+            return str(marker.get("state") or "").strip().lower()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                if not row:
+                    conn.rollback()
+                    return {"updated": False, "reason": "run_not_found"}
+                run_record = dict(row)
+                status = str(run_record.get("status") or "").strip()
+                if expected_run_status and status != expected_run_status:
+                    conn.rollback()
+                    return {
+                        "updated": False,
+                        "reason": f"run_status_mismatch:{status or 'unknown'}",
+                        "currentStatus": status,
+                    }
+                metadata = _parse_metadata(run_record.get("metadata"))
+                current_state = _marker_state(metadata)
+                if current_state != expected_marker_state:
+                    conn.rollback()
+                    return {
+                        "updated": False,
+                        "reason": f"metadata_state_mismatch:{current_state or 'missing'}",
+                        "currentState": current_state,
+                        "currentStatus": status,
+                    }
+                next_metadata = dict(metadata)
+                next_metadata[marker_key] = to_jsonable(next_value or {})
+                conn.execute(
+                    "UPDATE run_records SET metadata = ? WHERE id = ?",
+                    (json.dumps(to_jsonable(next_metadata), ensure_ascii=False), run_id),
+                )
+                conn.commit()
+                run_record["metadata"] = next_metadata
+                return {"updated": True, "run_record": run_record}
+
+        return self._run_write_with_retry(_write)
+
+    def claim_runtime_episode_resume_schedule(
+        self,
+        run_id: str,
+        *,
+        marker_key: str,
+        next_marker: Dict[str, Any],
+        expected_marker_state: str = "waiting",
+        expected_status: str = "running",
+        terminal_states: Optional[set[str]] = None,
+        active_states: Optional[set[str]] = None,
+    ) -> Dict[str, Any]:
+        key = str(marker_key or "").strip()
+        if not key:
+            raise ValueError("metadata marker key is required")
+        normalized_terminal = {str(item or "").strip().lower() for item in (terminal_states or set()) if str(item or "").strip()}
+        normalized_active = {str(item or "").strip().lower() for item in (active_states or set()) if str(item or "").strip()}
+        expected_state = str(expected_marker_state or "").strip().lower()
+        expected_run_status = str(expected_status or "").strip()
+
+        def _parse_metadata(raw: Any) -> Dict[str, Any]:
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                if not row:
+                    conn.rollback()
+                    return {"claimed": False, "reason": "run_not_found"}
+                run_record = dict(row)
+                status = str(run_record.get("status") or "").strip()
+                if expected_run_status and status != expected_run_status:
+                    conn.rollback()
+                    return {
+                        "claimed": False,
+                        "reason": f"run_not_running:{status or 'unknown'}",
+                        "currentStatus": status,
+                    }
+                metadata = _parse_metadata(run_record.get("metadata"))
+                marker = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
+                marker_state = str((marker or {}).get("state") or "").strip().lower()
+                if marker_state == "scheduled":
+                    conn.rollback()
+                    return {
+                        "claimed": False,
+                        "reason": "runtime_episode_resume_already_scheduled",
+                        "currentState": marker_state,
+                    }
+                if marker_state != expected_state:
+                    conn.rollback()
+                    return {
+                        "claimed": False,
+                        "reason": "run_not_waiting_for_runtime_resume",
+                        "currentState": marker_state,
+                    }
+
+                episode_rows = conn.execute(
+                    """
+                    SELECT id, state
+                    FROM runtime_episodes
+                    WHERE run_id = ? AND COALESCE(parent_episode_id, '') = ''
+                    """,
+                    (run_id,),
+                ).fetchall()
+                for episode_row in episode_rows:
+                    episode_state = str(episode_row["state"] or "").strip().lower()
+                    if episode_state in normalized_active or (
+                        normalized_terminal and episode_state not in normalized_terminal
+                    ):
+                        conn.rollback()
+                        return {
+                            "claimed": False,
+                            "reason": "top_level_runtime_episode_still_active",
+                            "episodeId": episode_row["id"],
+                            "episodeState": episode_state,
+                        }
+
+                next_metadata = dict(metadata)
+                next_metadata[key] = to_jsonable(next_marker or {})
+                conn.execute(
+                    "UPDATE run_records SET metadata = ? WHERE id = ?",
+                    (json.dumps(to_jsonable(next_metadata), ensure_ascii=False), run_id),
+                )
+                conn.commit()
+                run_record["metadata"] = next_metadata
+                return {
+                    "claimed": True,
+                    "run_record": run_record,
+                    "topLevelEpisodeCount": len(episode_rows),
+                }
+
+        return self._run_write_with_retry(_write)
+
     def get_next_runtime_seq(self, session_id: str) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()

@@ -502,18 +502,20 @@ export default function ModelHubPage() {
             });
         }
     };
-    const handleSetDefaultModel = async (modelRef: string) => {
-        const response = await fetch("/api/settings/default-agent-model", {
+    const handleSetDefaultModel = async (modelRef: string, categoryKey?: string) => {
+        const response = await fetch("/api/models/defaults", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ modelRef }),
+            body: JSON.stringify({ modelRef, category: categoryKey }),
         });
         if (!response.ok) {
             const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kd2b2caac"));
             toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.page.kd2b2caac"), description: errorMessage });
             return;
         }
-        setDefaultModelRef(modelRef);
+        if (!categoryKey || categoryKey === "text_generation") {
+            setDefaultModelRef(modelRef);
+        }
         await fetchData();
     };
     const handleProbeCatalogProvider = async () => {

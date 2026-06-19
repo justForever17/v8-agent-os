@@ -23,6 +23,7 @@ from runtimes.memory.scope_resolution import session_scope_binding_service
 ChatScheduler = Callable[..., Optional[str]]
 RUNTIME_EPISODE_RESUME_METADATA_KEY = "runtimeEpisodeResume"
 RUNTIME_EPISODE_RESUME_TERMINAL_STATES = TERMINAL_EPISODE_STATES
+RUNTIME_EPISODE_RESUME_MAX_WORKER_RETRIES = 2
 
 
 class RuntimeCommandRouter:
@@ -617,21 +618,6 @@ class RuntimeCommandRouter:
                     "resume_scheduled": False,
                     "resume_error": "run_not_waiting_for_runtime_resume",
                 }
-            top_level_episodes = [
-                dict(item)
-                for item in db.list_runtime_episodes(run_id=run_id, limit=200)
-                if not str(item.get("parentEpisodeId") or item.get("parent_episode_id") or "").strip()
-            ]
-            if any(
-                str(item.get("state") or "").strip().lower() in ACTIVE_EPISODE_STATES
-                or str(item.get("state") or "").strip().lower() not in RUNTIME_EPISODE_RESUME_TERMINAL_STATES
-                for item in top_level_episodes
-            ):
-                return {
-                    "resume_mode": "chat",
-                    "resume_scheduled": False,
-                    "resume_error": "top_level_runtime_episode_still_active",
-                }
             if self._schedule_chat_run is None:
                 self._emit_resume_event(
                     run_record,
@@ -648,13 +634,24 @@ class RuntimeCommandRouter:
             scheduled_marker = {
                 **marker,
                 "state": "scheduled",
+                "resumeKind": "runtime_episode_terminal",
                 "episodeId": episode_id,
                 "episodeState": episode_state,
             }
-            run_service.update_metadata(
+            claim = run_service.claim_runtime_episode_resume_schedule(
                 run_id,
-                {RUNTIME_EPISODE_RESUME_METADATA_KEY: scheduled_marker},
+                marker_key=RUNTIME_EPISODE_RESUME_METADATA_KEY,
+                next_marker=scheduled_marker,
+                terminal_states=RUNTIME_EPISODE_RESUME_TERMINAL_STATES,
+                active_states=ACTIVE_EPISODE_STATES,
             )
+            if not bool(claim.get("claimed")):
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": str(claim.get("reason") or "runtime_episode_resume_claim_failed"),
+                }
+            run_record = dict(claim.get("run_record") or run_record)
             resume_request = self._build_runtime_handoff_resume_chat_request(run_record, episode=episode)
             try:
                 scheduled_run_id = self._schedule_chat_run(
@@ -663,15 +660,16 @@ class RuntimeCommandRouter:
                     run_id=str(run_record["id"]),
                 )
             except Exception as exc:
-                run_service.update_metadata(
+                run_service.update_metadata_key_if_state(
                     run_id,
-                    {
-                        RUNTIME_EPISODE_RESUME_METADATA_KEY: {
-                            **marker,
-                            "state": "waiting",
-                            "lastError": "chat_scheduler_raised",
-                        }
+                    key=RUNTIME_EPISODE_RESUME_METADATA_KEY,
+                    expected_state="scheduled",
+                    next_value={
+                        **scheduled_marker,
+                        "state": "waiting",
+                        "lastError": "chat_scheduler_raised",
                     },
+                    expected_status="running",
                 )
                 self._emit_resume_event(
                     run_record,
@@ -691,15 +689,16 @@ class RuntimeCommandRouter:
                 }
             scheduled = bool(scheduled_run_id)
             if not scheduled:
-                run_service.update_metadata(
+                run_service.update_metadata_key_if_state(
                     run_id,
-                    {
-                        RUNTIME_EPISODE_RESUME_METADATA_KEY: {
-                            **marker,
-                            "state": "waiting",
-                            "lastError": "chat_scheduler_returned_empty_run_id",
-                        }
+                    key=RUNTIME_EPISODE_RESUME_METADATA_KEY,
+                    expected_state="scheduled",
+                    next_value={
+                        **scheduled_marker,
+                        "state": "waiting",
+                        "lastError": "chat_scheduler_returned_empty_run_id",
                     },
+                    expected_status="running",
                 )
             self._emit_resume_event(
                 run_record,
@@ -721,6 +720,116 @@ class RuntimeCommandRouter:
                 "resumed_run_id": scheduled_run_id or run_record["id"],
                 **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
             }
+
+    def recover_runtime_episode_resume_worker_failure(
+        self,
+        run_id: str,
+        *,
+        error_message: str = "",
+    ) -> Dict[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_id_missing"}
+        run_record = db.get_run_record(normalized_run_id)
+        if not run_record:
+            return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_not_found"}
+        if self._resume_mode_for_run(run_record) != "chat":
+            return {
+                "resume_mode": self._resume_mode_for_run(run_record),
+                "resume_scheduled": False,
+                "resume_error": "not_chat_run",
+            }
+        status = str(run_record.get("status") or "").strip()
+        if status != "running":
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": f"run_not_running:{status or 'unknown'}",
+            }
+        metadata = dict(run_record.get("metadata") or {})
+        marker = (
+            dict(metadata.get(RUNTIME_EPISODE_RESUME_METADATA_KEY) or {})
+            if isinstance(metadata.get(RUNTIME_EPISODE_RESUME_METADATA_KEY), dict)
+            else {}
+        )
+        marker_state = str(marker.get("state") or "").strip().lower()
+        episode_id = str(marker.get("episodeId") or "").strip()
+        if marker_state != "scheduled" or not episode_id:
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": "runtime_episode_resume_not_scheduled",
+            }
+        try:
+            crash_count = int(marker.get("workerCrashCount") or 0)
+        except (TypeError, ValueError):
+            crash_count = 0
+        next_crash_count = crash_count + 1
+        truncated_error = str(error_message or "").strip()[:500]
+        if crash_count >= RUNTIME_EPISODE_RESUME_MAX_WORKER_RETRIES:
+            failed_marker = {
+                **marker,
+                "state": "failed",
+                "lastError": "chat_resume_worker_failed",
+                "lastWorkerError": truncated_error,
+                "workerCrashCount": next_crash_count,
+            }
+            run_service.update_metadata_key_if_state(
+                normalized_run_id,
+                key=RUNTIME_EPISODE_RESUME_METADATA_KEY,
+                expected_state="scheduled",
+                next_value=failed_marker,
+                expected_status="running",
+            )
+            self._emit_resume_event(
+                run_record,
+                "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "transport": "system_resume",
+                    "resumeReason": "runtime_episode_terminal",
+                    "runtimeEpisodeId": episode_id,
+                    "reason": "chat_resume_worker_retry_limit_exceeded",
+                    "workerCrashCount": next_crash_count,
+                },
+            )
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": "chat_resume_worker_retry_limit_exceeded",
+                "worker_crash_count": next_crash_count,
+            }
+        episode = db.get_runtime_episode(episode_id)
+        if not episode:
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": "runtime_episode_not_found_for_worker_recovery",
+            }
+        reset_marker = {
+            **marker,
+            "state": "waiting",
+            "lastError": "chat_resume_worker_failed",
+            "lastWorkerError": truncated_error,
+            "workerCrashCount": next_crash_count,
+        }
+        reset = run_service.update_metadata_key_if_state(
+            normalized_run_id,
+            key=RUNTIME_EPISODE_RESUME_METADATA_KEY,
+            expected_state="scheduled",
+            next_value=reset_marker,
+            expected_status="running",
+        )
+        if not bool(reset.get("updated")):
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": str(reset.get("reason") or "runtime_episode_resume_reset_failed"),
+            }
+        result = self.schedule_runtime_episode_handoff_resume(episode)
+        result["worker_recovery"] = True
+        result["worker_crash_count"] = next_crash_count
+        return result
 
     def _resume_from_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any] | None:
         approval_kind = self._approval_kind(approval)

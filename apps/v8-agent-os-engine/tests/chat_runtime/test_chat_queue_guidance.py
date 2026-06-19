@@ -214,3 +214,78 @@ def test_injected_guidance_is_not_consumed_as_next_user_message(monkeypatch: pyt
 
     assert scheduled == []
     assert test_db.get_chat_user_message_queue_item("queue-injected")["state"] == "injected"
+
+
+def test_background_system_resume_worker_failure_triggers_runtime_recovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-runtime-resume", "Runtime Resume")
+    test_db.create_run_record(
+        run_id="run-runtime-resume",
+        session_id="session-runtime-resume",
+        run_type="chat",
+        status="running",
+    )
+    request = ChatRequest(
+        messages=[],
+        session_id="session-runtime-resume",
+        conversation_id="session-runtime-resume",
+        resume_run_id="run-runtime-resume",
+    )
+    recoveries: list[dict[str, str]] = []
+
+    async def broken_iter_chat_events(*_args, **_kwargs):
+        raise RuntimeError("background drain crashed")
+        yield {}
+
+    monkeypatch.setattr(routes, "iter_chat_events", broken_iter_chat_events)
+    monkeypatch.setattr(routes, "_fire_on_chat_end_if_terminal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        routes.runtime_command_router,
+        "recover_runtime_episode_resume_worker_failure",
+        lambda run_id, **kwargs: recoveries.append({"run_id": run_id, **kwargs}) or {
+            "resume_scheduled": True,
+            "worker_crash_count": 1,
+        },
+    )
+
+    asyncio.run(routes._drain_chat_run(request, transport="system_resume", run_id="run-runtime-resume"))
+
+    assert recoveries and recoveries[0]["run_id"] == "run-runtime-resume"
+    assert "RuntimeError: background drain crashed" in recoveries[0]["error_message"]
+    topics = [event["topic"] for event in test_db.get_runtime_events("session-runtime-resume")]
+    assert "run.resume.worker.failed" in topics
+    assert "run.resume.worker.recovery_scheduled" in topics
+
+
+def test_background_non_resume_worker_failure_still_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-background", "Background")
+    test_db.create_run_record(
+        run_id="run-background",
+        session_id="session-background",
+        run_type="chat",
+        status="running",
+    )
+    request = ChatRequest(
+        messages=[],
+        session_id="session-background",
+        conversation_id="session-background",
+    )
+    recoveries: list[str] = []
+
+    async def broken_iter_chat_events(*_args, **_kwargs):
+        raise RuntimeError("ordinary background drain crashed")
+        yield {}
+
+    monkeypatch.setattr(routes, "iter_chat_events", broken_iter_chat_events)
+    monkeypatch.setattr(routes, "_fire_on_chat_end_if_terminal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        routes.runtime_command_router,
+        "recover_runtime_episode_resume_worker_failure",
+        lambda run_id, **_kwargs: recoveries.append(run_id),
+    )
+
+    with pytest.raises(RuntimeError, match="ordinary background drain crashed"):
+        asyncio.run(routes._drain_chat_run(request, transport="background", run_id="run-background"))
+
+    assert recoveries == []

@@ -271,18 +271,20 @@ export default function ProviderConfigPage({ params
       });
     }
   };
-  const handleSetDefaultModel = async (modelRef: string) => {
-    const response = await fetch("/api/settings/default-agent-model", {
+  const handleSetDefaultModel = async (modelRef: string, categoryKey?: string) => {
+    const response = await fetch("/api/models/defaults", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modelRef })
+      body: JSON.stringify({ modelRef, category: categoryKey })
     });
     if (!response.ok) {
       const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.models.providers.id.page.kd2b2caac"));
       toast({ variant: "destructive", title: t("app.admin.dashboard.models.providers.id.page.kd2b2caac"), description: errorMessage });
       return;
     }
-    setDefaultModelId(modelRef);
+    if (!categoryKey || categoryKey === "text_generation") {
+      setDefaultModelId(modelRef);
+    }
     await fetchProvider();
   };
   const handleTestConnection = async (modelRef: string) => {

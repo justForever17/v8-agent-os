@@ -276,10 +276,24 @@ def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch, terminal
             }
         ],
     )
-    metadata_updates = []
+    claim_updates = []
+
+    def fake_claim(run_id, **kwargs):
+        claim_updates.append({"run_id": run_id, **kwargs})
+        return {
+            "claimed": True,
+            "run_record": {
+                **run_record,
+                "metadata": {
+                    **run_record["metadata"],
+                    "runtimeEpisodeResume": kwargs["next_marker"],
+                },
+            },
+        }
+
     monkeypatch.setattr(
-        "erc.command_router.run_service.update_metadata",
-        lambda run_id, updates: metadata_updates.append({"run_id": run_id, "updates": updates}),
+        "erc.command_router.run_service.claim_runtime_episode_resume_schedule",
+        fake_claim,
     )
     monkeypatch.setattr(
         router,
@@ -313,7 +327,7 @@ def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch, terminal
     assert request.resume_value["runtimeEpisodeHandoff"]["episodeId"] == "episode_runtime"
     assert request.resume_value["runtimeEpisodeHandoff"]["episodeState"] == terminal_state
     assert "Runtime Episode Terminal" in request.messages[0].content
-    assert metadata_updates[0]["updates"]["runtimeEpisodeResume"]["state"] == "scheduled"
+    assert claim_updates[0]["next_marker"]["state"] == "scheduled"
 
 
 def test_runtime_episode_handoff_resume_requires_completion_gate_wait_marker(monkeypatch):
@@ -367,6 +381,10 @@ def test_runtime_episode_handoff_resume_waits_for_other_top_level_episode(monkey
             {"episodeId": "episode_active", "state": "active", "runId": "run_runtime"},
         ],
     )
+    monkeypatch.setattr(
+        "erc.command_router.run_service.claim_runtime_episode_resume_schedule",
+        lambda *_args, **_kwargs: {"claimed": False, "reason": "top_level_runtime_episode_still_active"},
+    )
 
     result = router.schedule_runtime_episode_handoff_resume(
         {
@@ -416,6 +434,145 @@ def test_runtime_episode_handoff_resume_is_not_scheduled_twice(monkeypatch):
     assert result["resume_scheduled"] is False
     assert result["resume_error"] == "runtime_episode_resume_already_scheduled"
     assert scheduled == []
+
+
+def test_runtime_episode_handoff_resume_claim_blocks_duplicate_scheduler(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router.configure(schedule_chat_run=lambda *args, **kwargs: scheduled.append((args, kwargs)) or "run_runtime")
+    monkeypatch.setattr(
+        "erc.command_router.db.get_run_record",
+        lambda _run_id: {
+            "id": "run_runtime",
+            "session_id": "session_runtime",
+            "run_type": "chat",
+            "status": "running",
+            "metadata": {"runtimeEpisodeResume": {"state": "waiting"}},
+        },
+    )
+    monkeypatch.setattr(
+        "erc.command_router.run_service.claim_runtime_episode_resume_schedule",
+        lambda *_args, **_kwargs: {"claimed": False, "reason": "runtime_episode_resume_already_scheduled"},
+    )
+
+    result = router.schedule_runtime_episode_handoff_resume(
+        {
+            "episodeId": "episode_done",
+            "kind": "engineering",
+            "state": "completed",
+            "sessionId": "session_runtime",
+            "runId": "run_runtime",
+        }
+    )
+
+    assert result["resume_scheduled"] is False
+    assert result["resume_error"] == "runtime_episode_resume_already_scheduled"
+    assert scheduled == []
+
+
+def test_runtime_episode_worker_failure_resets_marker_and_reschedules(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+
+    def fake_schedule(request, *, transport, run_id=None):
+        scheduled.append({"request": request, "transport": transport, "run_id": run_id})
+        return run_id or request.resume_run_id
+
+    router.configure(schedule_chat_run=fake_schedule)
+    marker = {
+        "state": "scheduled",
+        "resumeKind": "runtime_episode_terminal",
+        "episodeId": "episode_runtime",
+        "episodeState": "completed",
+    }
+    run_record = {
+        "id": "run_runtime",
+        "session_id": "session_runtime",
+        "conversation_id": "session_runtime",
+        "user_id": "user_demo",
+        "run_type": "chat",
+        "status": "running",
+        "metadata": {"runtimeEpisodeResume": marker},
+    }
+    episode = {
+        "episodeId": "episode_runtime",
+        "kind": "engineering",
+        "state": "completed",
+        "sessionId": "session_runtime",
+        "runId": "run_runtime",
+    }
+    updates = []
+    claims = []
+
+    def fake_get_run_record(_run_id):
+        return run_record
+
+    def fake_update_key(run_id, **kwargs):
+        updates.append({"run_id": run_id, **kwargs})
+        run_record["metadata"]["runtimeEpisodeResume"] = kwargs["next_value"]
+        return {"updated": True, "run_record": run_record}
+
+    def fake_claim(run_id, **kwargs):
+        claims.append({"run_id": run_id, **kwargs})
+        run_record["metadata"]["runtimeEpisodeResume"] = kwargs["next_marker"]
+        return {"claimed": True, "run_record": run_record}
+
+    monkeypatch.setattr("erc.command_router.db.get_run_record", fake_get_run_record)
+    monkeypatch.setattr("erc.command_router.db.get_runtime_episode", lambda _episode_id: episode)
+    monkeypatch.setattr("erc.command_router.run_service.update_metadata_key_if_state", fake_update_key)
+    monkeypatch.setattr("erc.command_router.run_service.claim_runtime_episode_resume_schedule", fake_claim)
+
+    result = router.recover_runtime_episode_resume_worker_failure(
+        "run_runtime",
+        error_message="RuntimeError: worker crashed",
+    )
+
+    assert result["resume_scheduled"] is True
+    assert result["worker_recovery"] is True
+    assert result["worker_crash_count"] == 1
+    assert updates[0]["expected_state"] == "scheduled"
+    assert updates[0]["next_value"]["state"] == "waiting"
+    assert updates[0]["next_value"]["workerCrashCount"] == 1
+    assert claims[0]["next_marker"]["state"] == "scheduled"
+    assert claims[0]["next_marker"]["workerCrashCount"] == 1
+    assert scheduled and scheduled[0]["transport"] == "system_resume"
+
+
+def test_runtime_episode_worker_failure_stops_after_retry_limit(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router.configure(schedule_chat_run=lambda *args, **kwargs: scheduled.append((args, kwargs)) or "run_runtime")
+    run_record = {
+        "id": "run_runtime",
+        "session_id": "session_runtime",
+        "run_type": "chat",
+        "status": "running",
+        "metadata": {
+            "runtimeEpisodeResume": {
+                "state": "scheduled",
+                "resumeKind": "runtime_episode_terminal",
+                "episodeId": "episode_runtime",
+                "workerCrashCount": 2,
+            }
+        },
+    }
+    updates = []
+    emitted = []
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: run_record)
+    monkeypatch.setattr(
+        "erc.command_router.run_service.update_metadata_key_if_state",
+        lambda run_id, **kwargs: updates.append({"run_id": run_id, **kwargs}) or {"updated": True, "run_record": run_record},
+    )
+    monkeypatch.setattr(router, "_emit_resume_event", lambda *args, **kwargs: emitted.append((args, kwargs)))
+
+    result = router.recover_runtime_episode_resume_worker_failure("run_runtime", error_message="boom")
+
+    assert result["resume_scheduled"] is False
+    assert result["resume_error"] == "chat_resume_worker_retry_limit_exceeded"
+    assert updates[0]["next_value"]["state"] == "failed"
+    assert updates[0]["next_value"]["workerCrashCount"] == 3
+    assert scheduled == []
+    assert emitted
 
 
 def test_spec_approval_resume_failure_restores_waiting_approval(monkeypatch):

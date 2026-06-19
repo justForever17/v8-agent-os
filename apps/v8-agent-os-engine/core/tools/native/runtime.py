@@ -799,6 +799,73 @@ def _spec_stage_slice(markdown: Any, refs: list[str], *, stage: str, limit: int 
     return _safe_compact_text("\n\n".join(selected), limit=limit)
 
 
+def _spec_shared_stage_context(markdown: Any, *, stage: str, limit: int = 4200) -> str:
+    text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    if stage == "requirements":
+        # Requirements usually carry the target subject, scope, output path,
+        # and hard constraints shared by every task. Keep it compact, but do
+        # not slice it by task ID; otherwise public context can accidentally
+        # become private to one task.
+        return _safe_compact_text(text, limit=limit)
+    if stage == "design":
+        headings = list(re.finditer(r"(?m)^#{2,6}\s+(.+?)\s*$", text))
+        selected: list[str] = []
+        for index, match in enumerate(headings):
+            title = str(match.group(1) or "").strip()
+            if not re.search(r"(?i)(总体|架构|信息流|调研策略|source|strategy|runtime|design|框架|文件结构)", title):
+                continue
+            start = match.start()
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+            block = text[start:end].strip()
+            if block and block not in selected:
+                selected.append(block)
+        if selected:
+            return _safe_compact_text("\n\n".join(selected), limit=limit)
+    return _safe_compact_text(text, limit=limit)
+
+
+def _spec_shared_execution_context(
+    *,
+    spec_id: str,
+    workspace_path: str,
+    requirement_doc: dict[str, Any],
+    design_doc: dict[str, Any],
+    framework_digest: str,
+) -> str:
+    requirements = _spec_shared_stage_context(requirement_doc.get("content"), stage="requirements", limit=4600)
+    design = _spec_shared_stage_context(design_doc.get("content"), stage="design", limit=3200)
+    parts = [
+        f"Current active specId: {spec_id}" if spec_id else "",
+        f"Workspace: {workspace_path}" if workspace_path else "",
+        f"Framework / architecture everyone must follow: {framework_digest}" if framework_digest else "",
+        f"Shared requirements for every task:\n{requirements}" if requirements else "",
+        f"Shared design constraints for every task:\n{design}" if design else "",
+    ]
+    return _safe_compact_text("\n\n".join(part for part in parts if part), limit=7600)
+
+
+def _spec_task_route_query(
+    *,
+    task: dict[str, Any],
+    shared_context: str,
+    requirement_slice: str,
+    design_slice: str,
+    limit: int = 3600,
+) -> str:
+    # This is used only by Extensions/Skill/MCP prefiltering. It must preserve
+    # the task's real subject and method anchors, while avoiding raw JSON.
+    parts = [
+        str(task.get("title") or task.get("taskId") or "").strip(),
+        str(task.get("taskExcerpt") or task.get("excerpt") or "").strip(),
+        f"Shared Spec context:\n{shared_context}" if shared_context else "",
+        f"Task requirement slice:\n{requirement_slice}" if requirement_slice else "",
+        f"Task design slice:\n{design_slice}" if design_slice else "",
+    ]
+    return _safe_compact_text("\n\n".join(part for part in parts if part), limit=limit)
+
+
 def _preferred_agent_for_spec_task(
     task: dict[str, Any],
     *,
@@ -984,6 +1051,13 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
     requirement_doc = dict(docs.get("requirements") or docs.get("bugfix") or {})
     design_doc = dict(docs.get("design") or {})
     task_doc = dict(docs.get("tasks") or {})
+    shared_spec_context = _spec_shared_execution_context(
+        spec_id=spec_id,
+        workspace_path=workspace_path,
+        requirement_doc=requirement_doc,
+        design_doc=design_doc,
+        framework_digest=framework_digest,
+    )
     tasks = [item for item in list(bundle.get("tasks") or []) if isinstance(item, dict)]
     if not tasks:
         tasks = [
@@ -1014,9 +1088,15 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             spec_refs = requirement_refs + design_refs
         else:
             spec_refs = list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
+        task_text_for_paths = " ".join(
+            str(task.get(key) or "")
+            for key in ("taskId", "title", "excerpt", "taskExcerpt", "expectedOutput", "expectedOutputs", "acceptance", "proofRequired")
+        )
         writes_artifact = _spec_task_writes_artifact(task, family)
+        expected_paths = (_spec_task_expected_paths(output) or _spec_task_expected_paths("", task_text_for_paths)) if writes_artifact else []
+        if not output and expected_paths:
+            output = "; ".join(expected_paths)
         validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)
-        expected_paths = _spec_task_expected_paths(output)
         allowed_write_set = list(expected_paths or ([workspace_path] if workspace_path else []))
         execution_contract = _spec_task_engineering_execution_contract(
             spec_id=spec_id,
@@ -1097,6 +1177,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             "\n".join(
                 item
                 for item in [
+                    f"Shared Spec context: {shared_spec_context}" if shared_spec_context else "",
                     f"Framework / architecture everyone must follow: {framework_digest}" if framework_digest else "",
                     f"Task: {task.get('taskExcerpt') or task.get('excerpt') or task.get('title') or task_id}",
                     f"Requirements: {requirement_snippet_text}" if requirement_snippet_text else "",
@@ -1106,12 +1187,20 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             ),
             limit=4200,
         )
+        extensions_route_query = _spec_task_route_query(
+            task=task,
+            shared_context=shared_spec_context,
+            requirement_slice=approved_requirement_slice,
+            design_slice=approved_design_slice,
+        )
         context = {
             "source": "approved_spec_execution_bundle",
             "specId": spec_id,
             "taskId": task_id,
             "taskDetailRef": task_detail_ref,
             "taskExcerpt": task.get("taskExcerpt") or task.get("excerpt") or task.get("title") or task_id,
+            "sharedSpecContext": shared_spec_context,
+            "extensionsRouteQuery": extensions_route_query,
             "specExecutionSummary": spec_execution_summary,
             "frameworkDigest": framework_digest,
             "approvedRequirementSlice": approved_requirement_slice,
@@ -1147,6 +1236,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "title": task.get("title") or task_id,
                 "goal": f"{task_id}: {task.get('title') or 'Execute approved Spec task'}",
                 "context": context,
+                "routeQuery": extensions_route_query,
                 "writeSet": allowed_write_set,
                 "behaviorScope": ["approved_spec_execution", "runtime_first", "verification"],
                 "requiredCapabilities": _spec_task_required_capabilities(family, writes_artifact=writes_artifact),

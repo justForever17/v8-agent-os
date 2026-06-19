@@ -1402,6 +1402,147 @@ class RuntimeEpisodeRunner:
         return missing
 
     @staticmethod
+    def _engineering_expected_artifact_values(worker_briefs: list[dict[str, Any]] | None) -> list[str]:
+        expected: list[str] = []
+        for brief in list(worker_briefs or []):
+            if not isinstance(brief, dict):
+                continue
+            sources: list[dict[str, Any]] = [brief]
+            capsule = brief.get("engineeringTaskCapsule") or brief.get("engineering_task_capsule")
+            if isinstance(capsule, dict):
+                sources.append(capsule)
+            context = brief.get("context")
+            if isinstance(context, dict):
+                contract = context.get("engineeringExecutionContract") or context.get("engineering_execution_contract")
+                if isinstance(contract, dict):
+                    sources.append(contract)
+            for source in sources:
+                values = source.get("expectedArtifacts") or source.get("expected_artifacts")
+                if isinstance(values, str):
+                    values = [values]
+                for value in list(values or []):
+                    normalized = str(value or "").strip().strip("`'\"")
+                    if normalized and normalized not in expected:
+                        expected.append(normalized)
+        return expected
+
+    @staticmethod
+    def _engineering_brief_is_research_like(brief: dict[str, Any] | None) -> bool:
+        if not isinstance(brief, dict):
+            return False
+        context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
+        capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), dict) else {}
+        text = json.dumps(
+            {
+                "goal": brief.get("goal"),
+                "title": brief.get("title"),
+                "familyHint": brief.get("familyHint"),
+                "preferredAgentId": brief.get("preferredAgentId"),
+                "executionLaneHint": brief.get("executionLaneHint"),
+                "runtimeLane": context.get("runtimeLane") or capsule.get("runtimeLane"),
+                "taskExcerpt": context.get("taskExcerpt"),
+            },
+            ensure_ascii=False,
+        ).lower()
+        return any(marker in text for marker in ("research", "web-research", "调研", "证据", "来源"))
+
+    @classmethod
+    def _engineering_unready_expected_artifacts(
+        cls,
+        *,
+        workspace_path: str,
+        worker_briefs: list[dict[str, Any]] | None,
+    ) -> list[str]:
+        workspace = Path(str(workspace_path or "")).expanduser()
+        if not str(workspace_path or "").strip():
+            return []
+        try:
+            workspace = workspace.resolve()
+        except Exception:
+            return []
+        briefs = list(worker_briefs or [])
+        research_like = any(cls._engineering_brief_is_research_like(brief) for brief in briefs if isinstance(brief, dict))
+        if not research_like:
+            return []
+        placeholder_markers = (
+            "待 phase",
+            "待执行",
+            "待填充",
+            "待补充",
+            "占位",
+            "placeholder",
+            "todo:",
+            "tbd",
+        )
+        unready: list[str] = []
+        for value in cls._engineering_expected_artifact_values(briefs):
+            normalized = str(value or "").strip().strip("`'\"")
+            if (
+                not normalized
+                or normalized.startswith(("spec://", "http://", "https://"))
+                or any(marker in normalized for marker in ("<", ">", "\r", "\n"))
+            ):
+                continue
+            candidate = Path(normalized)
+            resolved = candidate if candidate.is_absolute() else workspace / candidate
+            try:
+                resolved = resolved.resolve()
+                resolved.relative_to(workspace)
+            except Exception:
+                continue
+            if not resolved.exists() or resolved.is_dir() or resolved.suffix.lower() not in {".md", ".txt"}:
+                continue
+            try:
+                content = resolved.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            normalized_content = content.strip().lower()
+            if not normalized_content:
+                unready.append(normalized)
+                continue
+            if any(marker in normalized_content for marker in placeholder_markers):
+                unready.append(normalized)
+        return unready
+
+    @classmethod
+    def _delegation_summary_with_expected_artifact_guard(
+        cls,
+        summary: dict[str, Any],
+        *,
+        branch: dict[str, Any],
+        workspace_path: str | None,
+    ) -> dict[str, Any]:
+        if not workspace_path or not isinstance(summary, dict):
+            return dict(summary or {})
+        task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+        if not task_brief:
+            return dict(summary or {})
+        missing = cls._engineering_missing_expected_artifacts(
+            workspace_path=str(workspace_path),
+            worker_briefs=[task_brief],
+        )
+        unready = cls._engineering_unready_expected_artifacts(
+            workspace_path=str(workspace_path),
+            worker_briefs=[task_brief],
+        )
+        if not missing and not unready:
+            return dict(summary or {})
+        guarded = dict(summary or {})
+        original_status = guarded.get("status")
+        guarded["status"] = "blocked"
+        guarded["error"] = "expected_artifact_not_ready"
+        guarded["originalStatus"] = original_status
+        if missing:
+            guarded["missingExpectedArtifacts"] = missing
+        if unready:
+            guarded["unreadyExpectedArtifacts"] = unready
+        guarded["localSelfCheck"] = (
+            "The worker returned before its declared evidence/artifact was ready. "
+            "Downstream dependent tasks are blocked so the parent episode cannot treat local worker text as a global success."
+        )
+        return guarded
+
+    @staticmethod
     def _engineering_contract_value(
         *,
         need: dict[str, Any],
@@ -2578,6 +2719,11 @@ class RuntimeEpisodeRunner:
                             ),
                         }
                 summary = dict(summary or {})
+                summary = self._delegation_summary_with_expected_artifact_guard(
+                    summary,
+                    branch=branch,
+                    workspace_path=workspace_path,
+                )
                 summary.setdefault("taskBriefId", task_id or branch.get("taskBriefId"))
                 results.append(summary)
                 if task_id:

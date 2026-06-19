@@ -126,6 +126,25 @@ def test_nuwa_like_spec_tasks_are_distributed_without_route_layer_compression():
     bundle = _bundle()
     bundle["specId"] = "spec_nuwa"
     bundle["workspacePath"] = "E:/Projects/test2"
+    bundle["documents"]["requirements"]["content"] = (
+        "# 玲（绝区零）角色视角 Skill 生成需求\n\n"
+        "## 概述\n\n"
+        "基于 huashu-nuwa 和 skill-creator，对米哈游游戏《绝区零》（Zenless Zone Zero）角色「玲」生成角色视角 Skill。\n\n"
+        "## 调研对象\n\n"
+        "- 角色：玲（Ling）\n"
+        "- 作品：《绝区零》（Zenless Zone Zero）\n"
+        "- 身份：法厄同之一，与哲共同经营绳匠业务。\n\n"
+        "## 交付物清单\n\n"
+        "- references/research/01-06.md\n"
+        "- SKILL.md\n"
+    )
+    bundle["documents"]["design"]["content"] = (
+        "# 玲（绝区零）角色视角 Skill 设计文档\n\n"
+        "## 1. 总体架构\n\n"
+        "huashu-nuwa 流程 → Research Runtime（多路调研）→ Engineering Runtime（文件构建）→ 验证交付。\n\n"
+        "## 2. 调研策略设计\n\n"
+        "每个 Research task 都必须保留《绝区零》、Zenless Zone Zero、玲、法厄同、哲这些公共身份线索。\n"
+    )
     bundle["documents"]["tasks"]["ids"] = [f"TASK-{index:03d}" for index in range(1, 12)]
     bundle["tasks"] = [
         *[
@@ -192,3 +211,10 @@ def test_nuwa_like_spec_tasks_are_distributed_without_route_layer_compression():
     assert briefs[9]["preferredAgentId"] == "verification-engineer"
     assert briefs[9]["dependency"] == ["TASK-008"]
     assert briefs[10]["dependency"] == ["TASK-007", "TASK-008", "TASK-009", "TASK-010"]
+    for brief in briefs:
+        context = brief["context"]
+        assert "绝区零" in context["sharedSpecContext"]
+        assert "Zenless Zone Zero" in context["sharedSpecContext"]
+        assert "法厄同" in context["extensionsRouteQuery"]
+        assert "玲" in context["extensionsRouteQuery"]
+        assert brief["routeQuery"] == context["extensionsRouteQuery"]

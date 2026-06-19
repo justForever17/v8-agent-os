@@ -902,6 +902,22 @@ def _merge_keepalive_skills(primary: list[dict[str, Any]], keepalive: list[dict[
     return merged
 
 
+def _merge_recent_keepalive_skills(primary: list[dict[str, Any]], keepalive: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Recent skills are only recall aids; direct current-query hits must stay
+    # ahead of them so old sessions do not crowd out the current request.
+    for entry in [*primary, *keepalive]:
+        skill_key = str(entry.get("skillId") or entry.get("skillRoot") or entry.get("path") or "").strip()
+        if not skill_key or skill_key in seen:
+            continue
+        seen.add(skill_key)
+        merged.append(entry)
+        if limit > 0 and len(merged) >= limit:
+            break
+    return merged
+
+
 def _score_skill_entry(
     *,
     query_text: str,
@@ -3618,7 +3634,7 @@ class ExtensionsRuntimeService:
             )
             recent_keepalive_candidates = [row[2] for row in ranked_recent if row[0] > 0][:_DYNAMIC_THEME_FALLBACK_LIMIT]
             if recent_keepalive_candidates:
-                skill_stage1_hits = _merge_keepalive_skills(
+                skill_stage1_hits = _merge_recent_keepalive_skills(
                     skill_stage1_hits,
                     recent_keepalive_candidates,
                     max(len(skill_stage1_hits) + len(recent_keepalive_candidates), effective_skill_stage1_limit),

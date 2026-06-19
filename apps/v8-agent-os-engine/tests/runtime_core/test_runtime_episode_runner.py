@@ -195,6 +195,87 @@ def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatc
     assert "TASK-001 finished" in dependency_results[0]["summary"]
 
 
+def test_local_delegation_blocks_dependent_task_when_research_artifact_is_placeholder(monkeypatch, tmp_path):
+    runner = RuntimeEpisodeRunner()
+    executed: list[str] = []
+    research_file = tmp_path / "references" / "research" / "01-writings.md"
+    research_file.parent.mkdir(parents=True)
+    research_file.write_text(
+        "# 01 - 官方设定调研\n\n"
+        "**状态：** 待执行\n\n"
+        "## 证据包\n（待 Phase 1 调研完成后填充）\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data):
+        task_id = arg["parallel_branch"]["taskBriefId"]
+        executed.append(task_id)
+        return [], [], {"taskBriefId": task_id, "status": "ok", "summary": f"{task_id} returned"}, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+    research_task = {
+        "taskBriefId": "TASK-001",
+        "goal": "调研玲的官方设定。",
+        "familyHint": "research",
+        "context": {"runtimeLane": "Research"},
+        "engineeringTaskCapsule": {"expectedArtifacts": ["references/research/01-writings.md"]},
+    }
+    build_task = {
+        "taskBriefId": "TASK-002",
+        "dependency": ["TASK-001"],
+        "context": {"taskId": "TASK-002"},
+    }
+    sends = [
+        Send(
+            "parallel_delegate_task",
+            {
+                "parallel_branch": {
+                    "agentId": "worker",
+                    "agentName": "worker",
+                    "taskBriefId": "TASK-001",
+                    "taskBrief": research_task,
+                    "reason": "Run TASK-001",
+                }
+            },
+        ),
+        Send(
+            "parallel_delegate_task",
+            {
+                "parallel_branch": {
+                    "agentId": "worker",
+                    "agentName": "worker",
+                    "taskBriefId": "TASK-002",
+                    "taskBrief": build_task,
+                    "dependency": ["TASK-001"],
+                    "reason": "Run TASK-002",
+                }
+            },
+        ),
+    ]
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=sends),
+            {"episodeId": "episode_test", "inputs": {"workspacePath": str(tmp_path)}, "need": {}},
+        )
+    )
+
+    assert executed == ["TASK-001"]
+    assert results[0]["status"] == "blocked"
+    assert results[0]["error"] == "expected_artifact_not_ready"
+    assert results[0]["unreadyExpectedArtifacts"] == ["references/research/01-writings.md"]
+    assert results[1]["status"] == "blocked"
+    assert results[1]["error"] == "dependency_failed"
+    assert results[1]["blockedDependencies"] == ["TASK-001"]
+
+
 def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):
     async def _fail_if_delegated(self, _episode):
         raise AssertionError("plan_only engineering episodes must not delegate executable workers")

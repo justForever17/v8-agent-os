@@ -499,36 +499,30 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
 
     assert [task["taskId"] for task in bundle["tasks"]] == ["TASK-002", "TASK-003", "TASK-004", "TASK-012", "TASK-013"]
     by_id = {item["taskBriefId"]: item for item in worker_briefs}
-    assert "TASK-003" not in by_id
-    assert "TASK-004" not in by_id
-    assert by_id["TASK-RESEARCH"]["familyHint"] == "research"
-    assert by_id["TASK-RESEARCH"]["deliverableKind"] == "evidence"
-    assert by_id["TASK-RESEARCH"]["writeRequired"] is False
-    assert by_id["TASK-RESEARCH"]["runtimeAccess"] == ["research.core"]
-    assert by_id["TASK-RESEARCH"]["allowChildDelegation"] is False
-    assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-003", "TASK-004"]
-    research_contract = by_id["TASK-RESEARCH"]["context"]["engineeringExecutionContract"]
-    assert research_contract["runtimeFamily"] == "research"
-    assert research_contract["writeRequired"] is False
-    assert research_contract["allowedWorkset"] == []
-    assert "Do not write project files." in research_contract["forbiddenScopes"]
-    assert "source refs" in by_id["TASK-RESEARCH"]["context"]["handoffContract"]["mustInclude"]
-    research_brief = by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
-    assert "TASK-003" in research_brief
-    assert "著作与系统性设定" in research_brief
-    assert "01-writings.md" in research_brief
-    assert "TASK-004" in research_brief
-    assert "剧情台词" in research_brief
+    assert "TASK-RESEARCH" not in by_id
+    for research_id, expected_title, expected_file in [
+        ("TASK-003", "著作与系统性设定", "01-writings.md"),
+        ("TASK-004", "剧情台词", "02-conversations.md"),
+    ]:
+        brief = by_id[research_id]
+        assert brief["familyHint"] == "research"
+        assert brief["deliverableKind"] == "evidence"
+        assert brief["allowChildDelegation"] is False
+        assert brief["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#{research_id}"
+        assert expected_title in brief["context"]["taskExcerpt"]
+        assert expected_file in "\n".join(brief["acceptanceTiers"]["must"])
+        assert brief["routeQuery"] == brief["context"]["extensionsRouteQuery"]
+        assert "Shared Spec context" in brief["context"]["specExecutionSummary"]
+        research_contract = brief["context"]["engineeringExecutionContract"]
+        assert research_contract["runtimeFamily"] == "research"
+        assert research_contract["sourceRefs"]["taskId"] == research_id
+        assert research_contract["expectedArtifacts"]
     assert by_id["TASK-012"]["familyHint"] == "engineering"
     assert by_id["TASK-012"]["deliverableKind"] == "skill_artifact"
     assert by_id["TASK-012"]["validateSkillArtifact"] is True
     assert by_id["TASK-012"]["writeRequired"] is True
     assert by_id["TASK-012"]["allowChildDelegation"] is False
     assert by_id["TASK-013"]["allowChildDelegation"] is True
-    assert by_id["TASK-RESEARCH"]["context"]["taskDetailRefs"] == [
-        f"spec://{spec_id}/tasks#TASK-003",
-        f"spec://{spec_id}/tasks#TASK-004",
-    ]
 
     with bind_runtime_context(
         session_id="session-spec-tid-repair",
@@ -554,7 +548,7 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
     repair_briefs = repair_inputs["workerBriefs"]
     assert repair_inputs["targetCount"] == 1
     assert repair_inputs["selectedSpecTaskIds"] == ["TASK-012"]
-    assert repair_inputs["specTaskFilter"]["omittedTaskCount"] == 3
+    assert repair_inputs["specTaskFilter"]["omittedTaskCount"] == 4
     assert [task["taskBriefId"] for task in repair_briefs] == ["TASK-012"]
     assert repair_briefs[0]["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#TASK-012"
 
@@ -637,11 +631,12 @@ def test_runtime_broker_parses_bold_markdown_task_fields_without_ref_noise(tmp_p
     by_id = {item["taskBriefId"]: item for item in episode["inputs"]["workerBriefs"]}
     assert by_id["TASK-001"]["dependency"] == []
     assert by_id["TASK-001"]["familyHint"] == "engineering"
-    assert "TASK-002" not in by_id
-    assert by_id["TASK-RESEARCH"]["familyHint"] == "research"
-    assert by_id["TASK-RESEARCH"]["dependency"] == []
-    assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-002"]
-    assert by_id["TASK-RESEARCH"]["context"]["taskDetailRefs"] == [f"spec://{spec_id}/tasks#TASK-002"]
+    assert "TASK-RESEARCH" not in by_id
+    assert by_id["TASK-002"]["familyHint"] == "research"
+    assert by_id["TASK-002"]["dependency"] == ["TASK-001"]
+    assert by_id["TASK-002"]["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#TASK-002"
+    assert by_id["TASK-002"]["routeQuery"] == by_id["TASK-002"]["context"]["extensionsRouteQuery"]
+    assert "Shared Spec context" in by_id["TASK-002"]["context"]["specExecutionSummary"]
     assert by_id["TASK-003"]["dependency"] == ["TASK-002"]
     assert by_id["TASK-003"]["writeRequired"] is True
 
@@ -734,16 +729,16 @@ def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path)
     assert by_id["TASK-001"]["writeRequired"] is True
     must_text = "\n".join(by_id["TASK-001"]["acceptanceTiers"]["must"])
     assert ".agents/skills/ling-perspective/scripts/" in must_text
-    assert "TASK-002" not in by_id
-    assert by_id["TASK-RESEARCH"]["familyHint"] == "research"
-    assert by_id["TASK-RESEARCH"]["writeRequired"] is False
-    assert by_id["TASK-RESEARCH"]["runtimeAccess"] == ["research.core"]
-    assert by_id["TASK-RESEARCH"]["context"]["assignedTaskIds"] == ["TASK-002"]
-    assert "官方设定与角色档案调研" in by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
-    assert "01-writings.md" in by_id["TASK-RESEARCH"]["context"]["assignedResearchBrief"]
+    assert "TASK-RESEARCH" not in by_id
+    assert by_id["TASK-002"]["familyHint"] == "research"
+    assert by_id["TASK-002"]["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#TASK-002"
+    assert "官方设定与角色档案调研" in by_id["TASK-002"]["context"]["taskExcerpt"]
+    assert "01-writings.md" in "\n".join(by_id["TASK-002"]["acceptanceTiers"]["must"])
+    assert by_id["TASK-002"]["routeQuery"] == by_id["TASK-002"]["context"]["extensionsRouteQuery"]
+    assert "Shared Spec context" in by_id["TASK-002"]["context"]["specExecutionSummary"]
 
 
-def test_runtime_broker_coalesces_spec_research_fanout_for_engineering_budget(tmp_path):
+def test_runtime_broker_preserves_spec_research_fanout_without_route_compression(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     created = spec_service.create_stage(
@@ -840,22 +835,19 @@ def test_runtime_broker_coalesces_spec_research_fanout_for_engineering_budget(tm
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
     briefs = episode["inputs"]["workerBriefs"]
     ids = [item["taskBriefId"] for item in briefs]
-    assert len(briefs) <= 6
+    assert len(briefs) == 11
     assert "TASK-001" in ids
-    assert "TASK-RESEARCH" in ids
+    assert "TASK-RESEARCH" not in ids
     assert "TASK-010" in ids
-    assert not any(task_id in ids for task_id in ["TASK-002", "TASK-003", "TASK-004", "TASK-005", "TASK-006", "TASK-007"])
-    research_brief = next(item for item in briefs if item["taskBriefId"] == "TASK-RESEARCH")
-    assert research_brief["familyHint"] == "research"
-    assert research_brief["writeRequired"] is False
-    assert research_brief["context"]["assignedTaskIds"] == [
-        "TASK-002",
-        "TASK-003",
-        "TASK-004",
-        "TASK-005",
-        "TASK-006",
-        "TASK-007",
-    ]
+    assert all(task_id in ids for task_id in ["TASK-002", "TASK-003", "TASK-004", "TASK-005", "TASK-006", "TASK-007"])
+    by_id = {item["taskBriefId"]: item for item in briefs}
+    for index in range(2, 8):
+        task_id = f"TASK-{index:03d}"
+        research_brief = by_id[task_id]
+        assert research_brief["familyHint"] == "research"
+        assert research_brief["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#{task_id}"
+        assert f"0{index - 1}-part.md" in "\n".join(research_brief["acceptanceTiers"]["must"])
+        assert research_brief["routeQuery"] == research_brief["context"]["extensionsRouteQuery"]
 
 
 def test_delegation_broker_refuses_generic_dispatch_for_ready_spec_episode():

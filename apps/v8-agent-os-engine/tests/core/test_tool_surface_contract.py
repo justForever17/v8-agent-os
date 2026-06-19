@@ -115,3 +115,65 @@ def test_record_raw_observation_inherits_runtime_context_metadata(monkeypatch):
     assert metadata["sessionId"] == "session_surface"
     assert metadata["runId"] == "run_surface"
     assert metadata["workspacePath"] == "E:/Projects/test2"
+
+
+def test_tool_surface_persists_agent_visible_markdown_with_session_identity(tmp_path, monkeypatch):
+    from core.observability_db import ObservabilityDatabaseManager
+
+    observation_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr("core.observability_db.observability_db", observation_db)
+    message = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "mode": "read",
+                "title": "Official runtime guide",
+                "finalUrl": "https://example.com/runtime",
+                "text": "The durable episode returns a typed handoff with proof.",
+                "providerAttemptMatrix": [{"provider": "internal-only"}],
+            },
+            ensure_ascii=False,
+        ),
+        name="web_broker",
+        tool_call_id="call-research-surface",
+    )
+
+    visible = apply_tool_surface_budget(
+        message,
+        {
+            "sessionId": "session-research-surface",
+            "runId": "run-research-surface",
+            "workspacePath": "E:/Projects/test2",
+            "agentVisibleBudget": 4000,
+            "hardMaxChars": 60000,
+        },
+    )
+
+    records = observation_db.list_tool_observation_records(session_id="session-research-surface", limit=5)
+    assert len(records["items"]) == 1
+    record = records["items"][0]
+    assert record["runId"] == "run-research-surface"
+    assert "Web broker (read)" in record["agentVisiblePreview"]
+    assert "typed handoff with proof" in record["agentVisiblePreview"]
+    assert "providerAttemptMatrix" not in record["agentVisiblePreview"]
+    assert str(visible.content) == record["agentVisiblePreview"]
+
+
+def test_raw_observation_does_not_return_unreadable_ref_when_persistence_fails(monkeypatch):
+    class _BrokenObservabilityDb:
+        @staticmethod
+        def add_tool_observation_record(_record: dict) -> None:
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("core.observability_db.observability_db", _BrokenObservabilityDb())
+
+    raw_ref = record_raw_observation(
+        tool_name="research_broker",
+        tool_call_id="call-broken-observation",
+        runtime_kind="research",
+        surface="tool_node",
+        raw_content="raw result",
+        budget_meta={"sessionId": "session-broken", "runId": "run-broken"},
+    )
+
+    assert raw_ref == ""

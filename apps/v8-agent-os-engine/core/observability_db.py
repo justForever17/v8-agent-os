@@ -224,6 +224,7 @@ class ObservabilityDatabaseManager:
                     visible_chars INTEGER DEFAULT 0,
                     raw_sha256 TEXT,
                     raw_body_text TEXT,
+                    visible_body_text TEXT,
                     budget_json TEXT,
                     metadata_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -236,6 +237,7 @@ class ObservabilityDatabaseManager:
                 {
                     "run_id": "TEXT",
                     "session_id": "TEXT",
+                    "visible_body_text": "TEXT",
                 },
             )
             conn.execute(
@@ -319,9 +321,9 @@ class ObservabilityDatabaseManager:
                 """
                 INSERT OR REPLACE INTO tool_observation_records (
                     id, raw_ref, tool_name, tool_call_id, run_id, session_id, runtime_kind, surface,
-                    raw_chars, visible_chars, raw_sha256, raw_body_text,
+                    raw_chars, visible_chars, raw_sha256, raw_body_text, visible_body_text,
                     budget_json, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.get("id"),
@@ -336,9 +338,37 @@ class ObservabilityDatabaseManager:
                     int(record.get("visible_chars") or 0),
                     record.get("raw_sha256"),
                     record.get("raw_body"),
+                    record.get("visible_body"),
                     json.dumps(record.get("budget") or {}, ensure_ascii=False),
                     json.dumps(metadata, ensure_ascii=False),
                     record.get("created_at") or utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def update_tool_observation_visible_surface(
+        self,
+        raw_ref_or_id: str,
+        *,
+        visible_content: str,
+        budget: Dict[str, Any] | None = None,
+    ) -> None:
+        normalized = str(raw_ref_or_id or "").strip()
+        if not normalized:
+            return
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE tool_observation_records
+                SET visible_body_text = ?, visible_chars = ?, budget_json = ?
+                WHERE raw_ref = ? OR id = ?
+                """,
+                (
+                    str(visible_content or ""),
+                    len(str(visible_content or "")),
+                    json.dumps(budget or {}, ensure_ascii=False),
+                    normalized,
+                    normalized.removeprefix("toolobs://"),
                 ),
             )
             conn.commit()
@@ -402,6 +432,9 @@ class ObservabilityDatabaseManager:
         raw_body = str(row.get("raw_body_text") or "")
         raw_preview = raw_body[: max(0, int(preview_chars or 0))]
         preview = redact_observability_text(raw_preview)
+        visible_body = str(row.get("visible_body_text") or "")
+        visible_raw_preview = visible_body[: max(0, int(preview_chars or 0))]
+        visible_preview = redact_observability_text(visible_raw_preview)
         return {
             "id": row.get("id"),
             "rawRef": row.get("raw_ref"),
@@ -422,6 +455,9 @@ class ObservabilityDatabaseManager:
             "previewChars": len(preview),
             "omittedChars": max(0, len(raw_body) - len(raw_preview)),
             "redacted": preview != raw_preview,
+            "agentVisiblePreview": visible_preview,
+            "agentVisiblePreviewChars": len(visible_preview),
+            "agentVisibleOmittedChars": max(0, len(visible_body) - len(visible_raw_preview)),
         }
 
     def add_conversation_compaction_record(self, record: Dict[str, Any]) -> Dict[str, Any]:

@@ -4793,13 +4793,21 @@ class ExtensionsRuntimeService:
 
     def emit_execution_completed(self, *, response: Any) -> None:
         tool_calls = list(getattr(response, "tool_calls", None) or [])
+        visible_text = _truncate(sanitize_background_model_output(response).text, 200)
+        tool_names = [str(item.get("name") or "") for item in tool_calls]
+        payload: dict[str, Any] = {
+            "hasToolCalls": bool(tool_calls),
+            "toolNames": tool_names,
+            "activityKind": "tool_calls_issued" if tool_calls else "model_text",
+            "toolResultPending": bool(tool_calls),
+        }
+        if visible_text:
+            payload["messagePreview"] = visible_text
+        elif tool_calls:
+            payload["activitySummary"] = "Requested tool execution; agent-visible knowledge arrives in the matching tool result."
         self._emit(
             "extension.execution.completed",
-            {
-                "hasToolCalls": bool(tool_calls),
-                "toolNames": [str(item.get("name") or "") for item in tool_calls],
-                "messagePreview": _truncate(sanitize_background_model_output(response).text, 200),
-            },
+            payload,
             node="execution_completed",
         )
 

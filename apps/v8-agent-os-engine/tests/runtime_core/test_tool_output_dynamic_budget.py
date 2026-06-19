@@ -16,10 +16,12 @@ from graph.tool_routing import (
 
 
 class ToolOutputDynamicBudgetTest(unittest.TestCase):
-    def _request(self, tool_name: str, messages=None, config=None):
+    def _request(self, tool_name: str, messages=None, config=None, state=None):
+        request_state = {"messages": list(messages or [])}
+        request_state.update(dict(state or {}))
         return SimpleNamespace(
             tool_call={"name": tool_name, "id": "tool-call-1", "args": {}},
-            state={"messages": list(messages or [])},
+            state=request_state,
             config=dict(config or {}),
         )
 
@@ -29,6 +31,23 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         self.assertLess(budget["agentVisibleBudget"], DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS)
         self.assertEqual(budget["hardMaxChars"], DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS)
         self.assertEqual(budget["budgetSource"], "dynamic_context_budget")
+
+    def test_budget_inherits_session_run_and_workspace_from_tool_node_state(self):
+        budget = _tool_output_budget_for_request(
+            self._request(
+                "research_broker",
+                state={
+                    "session_id": "session-research-surface",
+                    "run_id": "run-research-surface",
+                    "workspace_path": "E:/Projects/test2",
+                },
+            ),
+            "research_broker",
+        )
+
+        self.assertEqual(budget["sessionId"], "session-research-surface")
+        self.assertEqual(budget["runId"], "run-research-surface")
+        self.assertEqual(budget["workspacePath"], "E:/Projects/test2")
 
     def test_long_context_models_raise_clean_web_budget(self):
         budget = _tool_output_budget_for_request(

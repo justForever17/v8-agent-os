@@ -250,7 +250,15 @@ def _scaled_tool_target_chars(kind: str, base_target: int, context_window_tokens
 
 def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, Any]:
     config = _request_config(request)
-    run_id = _nested_config_value(config, "runId", "run_id", "activeRunId", "active_run_id")
+    state = getattr(request, "state", None)
+    state = state if isinstance(state, dict) else {}
+    run_id = _nested_config_value(config, "runId", "run_id", "activeRunId", "active_run_id") or state.get("run_id") or state.get("runId")
+    session_id = _nested_config_value(config, "sessionId", "session_id") or state.get("session_id") or state.get("sessionId")
+    workspace_path = (
+        _nested_config_value(config, "workspacePath", "workspace_path")
+        or state.get("workspace_path")
+        or state.get("workspacePath")
+    )
     context_window_tokens = _safe_int(
         _nested_config_value(
             config,
@@ -289,7 +297,7 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
     base_target_chars = TOOL_OUTPUT_TARGET_CHARS.get(kind, TOOL_OUTPUT_TARGET_CHARS["default"])
     target_chars = _scaled_tool_target_chars(kind, base_target_chars, context_window_tokens)
     agent_visible_budget = max(MIN_TOOL_OUTPUT_BUDGET_CHARS, min(dynamic_budget_chars, target_chars, hard_max_chars))
-    return {
+    payload = {
         "budgetSource": "dynamic_context_budget",
         "runId": run_id,
         "agentVisibleBudget": int(agent_visible_budget),
@@ -303,6 +311,11 @@ def tool_output_budget_for_request(request: Any, tool_name: str) -> dict[str, An
         "safetyBufferTokens": int(safety_buffer_tokens),
         "baseTargetChars": int(base_target_chars),
     }
+    if session_id:
+        payload["sessionId"] = str(session_id)
+    if workspace_path:
+        payload["workspacePath"] = str(workspace_path)
+    return payload
 
 
 def _line_safe_slice(text: str, limit: int, *, tail: bool = False) -> str:
@@ -2211,21 +2224,39 @@ def record_raw_observation(
                 "runtime_kind": runtime_kind,
                 "surface": surface,
                 "raw_chars": len(raw_content or ""),
-                "visible_chars": len(visible_content if visible_content is not None else raw_content or ""),
+                "visible_chars": len(visible_content or "") if visible_content is not None else 0,
                 "raw_sha256": _hash_text(raw_content or ""),
                 "raw_body": raw_content,
+                "visible_body": visible_content,
                 "budget": dict(budget_meta or {}),
                 "metadata": metadata_payload,
                 "created_at": utc_now_iso(),
             }
         )
-    except Exception:
+    except Exception as exc:
         # Raw refs should never break the agent-visible tool result.
-        pass
+        print(f"[ToolSurface] Failed to persist observation for {tool_name}: {exc}")
+        return ""
     return raw_ref
 
 
+def _persist_agent_visible_observation(raw_ref: str, visible_content: str, budget_meta: dict[str, Any]) -> None:
+    if not raw_ref:
+        return
+    try:
+        from core.observability_db import observability_db
+
+        observability_db.update_tool_observation_visible_surface(
+            raw_ref,
+            visible_content=visible_content,
+            budget=dict(budget_meta or {}),
+        )
+    except Exception as exc:
+        print(f"[ToolSurface] Failed to persist agent-visible surface for {raw_ref}: {exc}")
+
+
 def _copy_tool_message_with_budget(message: ToolMessage, content: str, budget_meta: dict[str, Any]) -> ToolMessage:
+    _persist_agent_visible_observation(str(budget_meta.get("rawRef") or ""), content, budget_meta)
     additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
     response_metadata = dict(getattr(message, "response_metadata", {}) or {})
     additional_kwargs["v8_tool_output_budget"] = budget_meta

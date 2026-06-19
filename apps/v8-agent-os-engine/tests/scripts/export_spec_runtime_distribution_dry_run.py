@@ -23,7 +23,20 @@ from runtimes.extensions.skills.loader import fetch_skill_instructions
 
 REPO_ROOT = ENGINE_ROOT.parents[1]
 OUTPUT_ROOT = REPO_ROOT / "docs" / "chatruntime" / "runtime_deep_observation_reports"
-DEFAULT_REFERENCE_SPEC_DIR = Path("E:/Projects/pdf2docx/.kiro/specs/pdf-to-docx-converter")
+DEFAULT_REFERENCE_SPEC_DIR = ENGINE_ROOT / "tests" / "fixtures" / "spec_runtime_distribution" / "counter-app-spec"
+
+
+def _read_reference_text(path: Path) -> str:
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+    if last_error:
+        raise last_error
+    return path.read_text(encoding="utf-8")
 
 
 def _tool_payload(command: Any) -> dict[str, Any]:
@@ -41,9 +54,9 @@ def _read_reference_spec(sample_dir: Path) -> dict[str, str] | None:
         if not sample_dir.exists() or not sample_dir.is_dir():
             return None
         payload = {
-            "requirements": (sample_dir / "requirements.md").read_text(encoding="utf-8", errors="ignore"),
-            "design": (sample_dir / "design.md").read_text(encoding="utf-8", errors="ignore"),
-            "tasks": (sample_dir / "tasks.md").read_text(encoding="utf-8", errors="ignore"),
+            "requirements": _read_reference_text(sample_dir / "requirements.md"),
+            "design": _read_reference_text(sample_dir / "design.md"),
+            "tasks": _read_reference_text(sample_dir / "tasks.md"),
         }
         if all(value.strip() for value in payload.values()):
             return payload
@@ -52,13 +65,18 @@ def _read_reference_spec(sample_dir: Path) -> dict[str, str] | None:
     return None
 
 
+def _sample_feature_name(sample_dir: Path | None) -> str:
+    source_dir = sample_dir or DEFAULT_REFERENCE_SPEC_DIR
+    return f"{source_dir.name}-reference"
+
+
 def _create_approved_demo_spec(workspace: Path, *, sample_spec_dir: Path | None = None) -> tuple[str, str]:
     reference = _read_reference_spec(sample_spec_dir or DEFAULT_REFERENCE_SPEC_DIR)
     if reference:
         created = spec_service.create_stage(
             workspace_path=str(workspace),
-            user_request="Validate Kiro-style PDF to DOCX converter Spec distribution.",
-            feature_name="pdf-to-docx-converter-reference",
+            user_request="Validate repo-local Spec runtime distribution fixture.",
+            feature_name=_sample_feature_name(sample_spec_dir),
         )
         spec_id = str(created["specId"])
         spec_service.edit_stage(
@@ -391,6 +409,10 @@ Sample source: `{payload.get('sampleSource')}`
 
 
 def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(description="Export a dry-run approved Spec runtime distribution payload.")
     parser.add_argument("--output", default="", help="Optional JSON output path.")
     parser.add_argument("--sample-spec-dir", default=str(DEFAULT_REFERENCE_SPEC_DIR), help="Optional requirements/design/tasks sample directory.")

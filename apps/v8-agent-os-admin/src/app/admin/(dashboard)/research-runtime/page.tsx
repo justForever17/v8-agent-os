@@ -32,7 +32,7 @@ export default async function ResearchRuntimePage() {
         <AdminPageShell>
             <AdminPageHeader
                 title="app.admin.dashboard.research.runtime.page.title"
-                description="app.admin.dashboard.research.runtime.page.description"
+                description="app.admin.dashboard.research.runtime.page.runtimeNote"
             />
             <div className="space-y-6">
                 <RuntimeConfigWorkbench
@@ -64,12 +64,6 @@ export default async function ResearchRuntimePage() {
                         </Link>
                     ))}
                 </div>
-                <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
-                    <CardContent className="flex items-start gap-3 p-6 text-sm text-slate-500">
-                        <Search className="mt-0.5 h-5 w-5 shrink-0 text-sky-600" />
-                        <div>{resolveText(locale, "app.admin.dashboard.research.runtime.page.runtimeNote")}</div>
-                    </CardContent>
-                </Card>
             </div>
         </AdminPageShell>
     );

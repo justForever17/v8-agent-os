@@ -30,7 +30,7 @@ export default async function ChatRuntimePage() {
         <AdminPageShell>
             <AdminPageHeader
                 title="CHAT RUNTIME"
-                description={"app.admin.dashboard.chat.runtime.page.keea91eab"}
+                description="app.admin.dashboard.chat.runtime.page.runtimeNote"
             />
             <div className="space-y-6">
                 <RuntimeConfigWorkbench kind="chat" fallbackDisplayName="CHAT RUNTIME" showGovernanceLink={false} />
@@ -54,14 +54,6 @@ export default async function ChatRuntimePage() {
                         </Link>
                     ))}
                 </div>
-                <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
-                    <CardContent className="flex items-start gap-3 p-6 text-sm text-slate-500">
-                        <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-sky-600" />
-                        <div>
-                            {resolveText(locale, "app.admin.dashboard.chat.runtime.page.runtimeNote")}
-                        </div>
-                    </CardContent>
-                </Card>
             </div>
         </AdminPageShell>
     );

@@ -10,6 +10,7 @@ import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -471,7 +472,35 @@ export default function DesktopAutomationPage() {
             <div className="grid gap-4 xl:grid-cols-2">
                 <ConfigCard title={"app.admin.dashboard.desktop.automation.page.keb697d9b"} description={"app.admin.dashboard.desktop.automation.page.k2a55c8b3"}>
                     <div className="space-y-2">
-                        <Label>{t("app.admin.dashboard.desktop.automation.page.k9d1ed51e")}</Label>
+                        <div className="flex items-center gap-1.5">
+                            <Label>{t("app.admin.dashboard.desktop.automation.page.k9d1ed51e")}</Label>
+                            <AdminHoverInfo
+                                content={
+                                    <div className="space-y-1.5 text-xs leading-5">
+                                        <div className="font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.page.kf558439c")}</div>
+                                        <div>
+                                            {t("app.admin.dashboard.desktop.automation.page.ke2e6c721")}
+                                            {" "}
+                                            <Link href="/admin/supervisor#vision-media-model" className="font-medium text-sky-700 underline underline-offset-2 hover:text-sky-800">
+                                                {t("app.admin.dashboard.desktop.automation.page.kf45c6152")}
+                                            </Link>
+                                            {" "}
+                                            {t("app.admin.dashboard.desktop.automation.page.k2a90dceb")}
+                                        </div>
+                                        <div className="mt-1 text-slate-500">
+                                            {t("app.admin.dashboard.desktop.automation.page.k091d7083")}{envelope.data.modelBindings.ocrAssistModel || t("app.admin.dashboard.desktop.automation.page.k594ee6bf")}
+                                        </div>
+                                    </div>
+                                }
+                                panelClassName="max-w-xs"
+                            >
+                                <span className="cursor-help text-slate-400 hover:text-slate-600">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="h-4 w-4">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />
+                                    </svg>
+                                </span>
+                            </AdminHoverInfo>
+                        </div>
                         <ModelSelect
                             models={llmModels}
                             value={envelope.data.modelBindings.plannerModel || "__empty__"}
@@ -479,21 +508,6 @@ export default function DesktopAutomationPage() {
                             placeholder={t("app.admin.dashboard.desktop.automation.page.k54745147")}
                             onValueChange={(value) => updateBinding("plannerModel", value)}
                         />
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-xs leading-6 text-slate-600">
-                        <div className="font-medium text-slate-900">{t("app.admin.dashboard.desktop.automation.page.kf558439c")}</div>
-                        <div className="mt-1">
-                            {t("app.admin.dashboard.desktop.automation.page.ke2e6c721")}
-                            {" "}
-                            <Link href="/admin/supervisor#vision-media-model" className="font-medium text-sky-700 underline underline-offset-2">
-                                {t("app.admin.dashboard.desktop.automation.page.kf45c6152")}
-                            </Link>
-                            {" "}
-                            {t("app.admin.dashboard.desktop.automation.page.k2a90dceb")}
-                        </div>
-                        <div className="mt-2 text-slate-500">
-                            {t("app.admin.dashboard.desktop.automation.page.k091d7083")}{envelope.data.modelBindings.ocrAssistModel || t("app.admin.dashboard.desktop.automation.page.k594ee6bf")}
-                        </div>
                     </div>
                 </ConfigCard>
 

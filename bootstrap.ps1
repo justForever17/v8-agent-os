@@ -90,7 +90,7 @@ function Sync-Repo([string]$RepoUrl, [string]$TargetDir) {
     git -C $TargetDir pull --ff-only | Out-Host
 }
 
-function Ensure-AdminEnv([string]$TargetDir) {
+function Ensure-AdminAuthSecret([string]$TargetDir) {
     $SecretScript = Join-Path $RepoDir "scripts\ensure-admin-auth-secret.mjs"
     if (-not (Test-Path $SecretScript)) {
         throw "Admin auth secret helper not found: $SecretScript"
@@ -288,7 +288,7 @@ Sync-RuntimeRegistry $EngineDir $PythonExe $ProfileMode $PlatformMode $Bootstrap
 if ($ServicesMode -eq "engine+admin") {
     Write-Step "Preparing admin"
     npm --prefix $AdminDir install | Out-Host
-    Ensure-AdminEnv $AdminDir
+    Ensure-AdminAuthSecret $AdminDir
 }
 
 Write-Step "Starting services"

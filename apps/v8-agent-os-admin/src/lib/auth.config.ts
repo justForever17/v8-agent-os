@@ -16,14 +16,14 @@ function shouldTrustCurrentHost() {
 export const authConfig = {
     trustHost: shouldTrustCurrentHost(),
     pages: {
-        signIn: "/admin/login",
+        signIn: "/login",
         verifyRequest: "/admin/verify",
     },
     callbacks: {
         authorized({ auth, request: { nextUrl } }) {
             const isLoggedIn = !!auth?.user
             const isOnAdmin = nextUrl.pathname.startsWith('/admin')
-            const isOnLoginPage = nextUrl.pathname === '/admin/login'
+            const isOnLoginPage = nextUrl.pathname === '/login'
             const isOnVerifyPage = nextUrl.pathname === '/admin/verify'
 
             // Allow access to login and verify pages

@@ -22,12 +22,9 @@ function runHelper() {
 try {
     runHelper();
     const secretFile = path.join(stateRoot, "secrets", "admin-auth-secret");
-    const envFile = path.join(adminDir, ".env.local");
     const firstSecret = fs.readFileSync(secretFile, "utf8").trim();
-    const firstEnv = fs.readFileSync(envFile, "utf8");
     assert.ok(firstSecret.length >= 48);
-    assert.match(firstEnv, new RegExp(`^AUTH_SECRET=${firstSecret}$`, "m"));
-    assert.match(firstEnv, new RegExp(`^NEXTAUTH_SECRET=${firstSecret}$`, "m"));
+    assert.ok(!fs.existsSync(path.join(adminDir, ".env.local")), "managed auth must not create project .env.local");
 
     runHelper();
     const secondSecret = fs.readFileSync(secretFile, "utf8").trim();
@@ -38,7 +35,7 @@ try {
         ok: true,
         checks: [
             "secret_generated_outside_repository",
-            "auth_and_nextauth_share_managed_secret",
+            "project_env_not_created",
             "secret_stable_across_launches",
             "config_json_untouched",
         ],

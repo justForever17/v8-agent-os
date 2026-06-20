@@ -68,8 +68,7 @@ apps/v8-agent-os-phone-tmp/
 **/tmp/
 **/temp/
 
-# Keep committed templates and public docs
-!**/env.template
+# Keep committed public docs and launchers
 !docs/
 !bootstrap.ps1
 !bootstrap.sh
@@ -84,8 +83,11 @@ docs/**
 
 docs/software-copyright
 
-# Exclude internal dev/admin scripts from source control
-apps/v8-agent-os-admin/scripts/
+# Exclude internal dev/admin scripts from source control, except committed smoke harnesses.
+apps/v8-agent-os-admin/scripts/*
+!apps/v8-agent-os-admin/scripts/
+!apps/v8-agent-os-admin/scripts/verify-instance-pairing.mjs
+!apps/v8-agent-os-admin/scripts/verify-device-connect-ui.mjs
 apps/v8-agent-os-engine/scripts/computer_use_primitive_live_matrix.*
 apps/v8-agent-os-engine/scripts/offline_visual_*
 apps/v8-agent-os-engine/scripts/SCRIPT_MIGRATION_MAP.md

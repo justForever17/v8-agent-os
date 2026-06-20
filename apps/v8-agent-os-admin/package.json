@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 9528",
-    "build": "next build",
-    "start": "next start -p 9528",
+    "dev": "node ../../scripts/run-next-with-managed-auth.mjs --app admin --mode dev --port 9528",
+    "build": "node ../../scripts/run-next-with-managed-auth.mjs --app admin --mode build --port 9528",
+    "start": "node ../../scripts/run-next-with-managed-auth.mjs --app admin --mode start --port 9528",
     "lint": "node scripts/validate-i18n.mjs && eslint",
     "verify:instance-pairing": "node scripts/verify-instance-pairing.mjs",
+    "smoke:owner-pairing": "node scripts/verify-instance-pairing.mjs",
     "verify:device-connect-ui": "node scripts/verify-device-connect-ui.mjs",
     "sync:lobe-icons": "node scripts/sync-lobe-icons.mjs"
   },

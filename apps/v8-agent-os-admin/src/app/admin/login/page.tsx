@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 
 import { AdminLoginScreen } from "@/components/admin/AdminLoginScreen";
 import { auth } from "@/lib/auth";
-import { hasUsers } from "@/lib/users";
+import { hasOwner } from "@/lib/users";
 
 export default async function AdminLoginPage() {
     const session = await auth();
@@ -10,5 +10,5 @@ export default async function AdminLoginPage() {
         redirect("/admin");
     }
 
-    return <AdminLoginScreen bootstrapMode={!hasUsers()} />;
+    return <AdminLoginScreen bootstrapMode={!hasOwner()} />;
 }

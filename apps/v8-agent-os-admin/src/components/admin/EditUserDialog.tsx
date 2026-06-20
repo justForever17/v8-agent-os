@@ -48,6 +48,7 @@ export function EditUserDialog({ user }: { user: User }) {
                     setOpen(false);
                 }}>
                     <input type="hidden" name="id" value={user.id} />
+                    <input type="hidden" name="role" value="ADMIN" />
                     <div className="grid gap-4 py-4">
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="name" className="text-right">
@@ -60,20 +61,6 @@ export function EditUserDialog({ user }: { user: User }) {
                                 {t("components.admin.EditUserDialog.k27ba7ff8")}
                             </Label>
                             <Input id="login" name="login" defaultValue={user.login} className="col-span-3" />
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="role" className="text-right">
-                                {t("components.admin.EditUserDialog.k0bd8550f")}
-                            </Label>
-                            <select
-                                id="role"
-                                name="role"
-                                defaultValue={user.role}
-                                className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 col-span-3"
-                            >
-                                <option value="USER">{t("components.admin.EditUserDialog.k4dd15429")}</option>
-                                <option value="ADMIN">{t("components.admin.EditUserDialog.kf2e17f9d")}</option>
-                            </select>
                         </div>
                         <div className="grid grid-cols-4 items-start gap-4">
                             <Label htmlFor="resetPassword" className="pt-2 text-right">

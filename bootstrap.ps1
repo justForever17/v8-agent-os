@@ -91,17 +91,11 @@ function Sync-Repo([string]$RepoUrl, [string]$TargetDir) {
 }
 
 function Ensure-AdminEnv([string]$TargetDir) {
-    $EnvFile = Join-Path $TargetDir ".env.local"
-    if (Test-Path $EnvFile) {
-        return
+    $SecretScript = Join-Path $RepoDir "scripts\ensure-admin-auth-secret.mjs"
+    if (-not (Test-Path $SecretScript)) {
+        throw "Admin auth secret helper not found: $SecretScript"
     }
-
-    $Secret = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-    @(
-        "NEXTAUTH_URL=http://127.0.0.1:9528"
-        "NEXTAUTH_SECRET=$Secret"
-        "NEXT_PUBLIC_APP_VERSION=1.0.0"
-    ) | Set-Content -Path $EnvFile -Encoding UTF8
+    node $SecretScript --admin-dir $TargetDir | Out-Host
 }
 
 function Get-RequirementsForProfile([string]$EngineDir) {

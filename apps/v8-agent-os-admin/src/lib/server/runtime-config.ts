@@ -5,6 +5,7 @@ import {
     readCanonicalBridge,
     type CanonicalConfig,
 } from "@/lib/server/bridge-config";
+import { readOrCreateInstanceIdentity } from "@/lib/server/instance-identity";
 
 type DesktopLiveConfig = {
     enabled?: boolean;
@@ -163,6 +164,7 @@ function normalizeTransportKind(value: unknown) {
 }
 
 export function buildAdminLinkManifest(requestOrigin?: string) {
+    const identity = readOrCreateInstanceIdentity();
     const config = readCanonicalAdminRuntimeConfig();
     const systemBase = (config.systemBase || {}) as SystemBaseConfig;
     const remoteLink = systemBase.remoteLink || {};
@@ -200,6 +202,9 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
         ok: true,
         kind: "v8_link_manifest",
         version: "1",
+        instanceId: identity.instanceId,
+        ownerMode: "single_owner",
+        clientGateway: "admin_bff",
         transportKind,
         activeProfileId: activeProfile.id || activeProfileId,
         admin: {
@@ -223,6 +228,8 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
         })),
         capabilities: {
             adminProxy: true,
+            pairing: true,
+            publicRegistration: false,
             phoneUpload: true,
             artifactPreview: true,
             runtimeEvents: true,
@@ -240,6 +247,34 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
             warnings,
         },
         warnings,
+    };
+}
+
+export function buildClientLinkManifest(requestOrigin?: string) {
+    const manifest = buildAdminLinkManifest(requestOrigin);
+    return {
+        ok: true,
+        kind: "v8_client_link_manifest",
+        version: manifest.version,
+        instanceId: manifest.instanceId,
+        ownerMode: manifest.ownerMode,
+        clientGateway: manifest.clientGateway,
+        transportKind: manifest.transportKind,
+        activeProfileId: manifest.activeProfileId,
+        admin: {
+            baseUrl: manifest.admin.baseUrl,
+            apiBaseUrl: manifest.admin.apiBaseUrl,
+        },
+        profiles: manifest.profiles.map((profile) => ({
+            id: profile.id,
+            kind: profile.kind,
+            label: profile.label,
+            enabled: profile.enabled,
+            adminBaseUrl: profile.adminBaseUrl,
+        })),
+        capabilities: manifest.capabilities,
+        diagnostics: manifest.diagnostics,
+        warnings: manifest.warnings,
     };
 }
 
@@ -267,6 +302,24 @@ function pickForwardedHeaderValue(value: string | null | undefined) {
         return "";
     }
     return normalized.split(",")[0]?.trim() || "";
+}
+
+export function resolveRequestOrigin(request: { headers?: Headers | HeadersInit | null; url?: string | null }) {
+    const requestUrl = String(request?.url || "").trim();
+    const fallback = (() => {
+        try {
+            return new URL(requestUrl).origin;
+        } catch {
+            return "";
+        }
+    })();
+    const headers = new Headers(request?.headers || undefined);
+    const forwardedHost = pickForwardedHeaderValue(headers.get("x-forwarded-host"));
+    const host = forwardedHost || pickForwardedHeaderValue(headers.get("host"));
+    if (!host) return fallback;
+    const fallbackProtocol = fallback.startsWith("https://") ? "https" : "http";
+    const protocol = normalizeForwardedProtocol(headers.get("x-forwarded-proto"), fallbackProtocol);
+    return `${protocol}://${host}`;
 }
 
 function normalizeForwardedProtocol(value: string | null | undefined, fallback = "http") {

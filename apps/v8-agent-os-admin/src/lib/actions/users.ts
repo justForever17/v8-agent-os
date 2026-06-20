@@ -2,29 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { hashPassword } from "@/lib/password";
-import { createUserRecord, deleteUserRecord, listUsers, updateUserRecord } from "@/lib/users";
+import { deleteUserRecord, listUsers, updateUserRecord } from "@/lib/users";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
 export async function getUsers() {
   return listUsers();
 }
 export async function createUser(formData: FormData) {
-  const login = String(formData.get("login") || "").trim();
-  const name = String(formData.get("name") || "").trim();
-  const role = (String(formData.get("role") || "USER").trim().toUpperCase() === "ADMIN" ? "ADMIN" : "USER") as "ADMIN" | "USER";
-  const password = String(formData.get("password") || "").trim();
-  const mustChangePassword = String(formData.get("mustChangePassword") || "") === "on";
-  if (!login || !password) {
-    throw new Error(INTERNAL_READABLE.ka2606c4b6d);
-  }
-  const passwordHash = await hashPassword(password);
-  createUserRecord({
-    login,
-    name,
-    role,
-    password: passwordHash,
-    mustChangePassword
-  });
-  revalidatePath("/admin/users");
+  void formData;
+  throw new Error("V8 Agent OS personal mode has one Owner. Use device pairing instead of creating users.");
 }
 export async function updateUser(formData: FormData) {
   const id = String(formData.get("id") || "").trim();

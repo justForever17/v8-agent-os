@@ -10,7 +10,8 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { Redirect, router, type Href } from "expo-router";
+import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
+import * as Linking from "expo-linking";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -29,11 +30,13 @@ import { colors, radii, spacing } from "@/src/theme/tokens";
 
 const BRAND_MARK = require("../assets/images/brand-mark.png");
 
-type Mode = "login" | "register";
+type Mode = "pair" | "login";
 
 export default function LoginScreen() {
-    const { status, adminBaseUrl, signIn, signUp, user } = useAppSession();
+    const { status, adminBaseUrl, signIn, pairDevice, user } = useAppSession();
     const { t } = useUiPrefs();
+    const incomingUrl = Linking.useURL();
+    const { pairingUri: pairingUriParam } = useLocalSearchParams<{ pairingUri?: string }>();
     const defaultWebBaseUrl = useMemo(() => {
         if (Platform.OS !== "web" || typeof window === "undefined") {
             return "";
@@ -44,12 +47,11 @@ export default function LoginScreen() {
         }
         return "";
     }, []);
-    const [mode, setMode] = useState<Mode>("login");
+    const [mode, setMode] = useState<Mode>("pair");
+    const [pairingUri, setPairingUri] = useState("");
     const [baseUrl, setBaseUrl] = useState(adminBaseUrl || defaultWebBaseUrl);
     const [login, setLogin] = useState("");
     const [password, setPassword] = useState("");
-    const [name, setName] = useState("");
-    const [email, setEmail] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
     const [profiles, setProfiles] = useState<AdminConnectionProfile[]>([]);
@@ -64,6 +66,16 @@ export default function LoginScreen() {
             setBaseUrl((current) => current || defaultWebBaseUrl);
         }
     }, [adminBaseUrl, defaultWebBaseUrl]);
+
+    useEffect(() => {
+        const nextPairingUri = String(pairingUriParam || incomingUrl || "");
+        if (!nextPairingUri.includes("://pair?")) {
+            return;
+        }
+        setMode("pair");
+        setPairingUri(nextPairingUri);
+        setError("");
+    }, [incomingUrl, pairingUriParam]);
 
     useEffect(() => {
         let cancelled = false;
@@ -89,14 +101,14 @@ export default function LoginScreen() {
     }, [adminBaseUrl, defaultWebBaseUrl]);
 
     const pageTitle = useMemo(
-        () => (mode === "login" ? t("app.login.welcome_back") : t("app.login.create_account")),
+        () => (mode === "pair" ? t("app.login.connect_this_device") : t("app.login.welcome_back")),
         [mode, t],
     );
     const pageSubtitle = useMemo(
         () =>
-            mode === "login"
-                ? t("app.login.sign_in_with_the_same_account_you_use_on_web_phone_connects_to_admin_as_the_user_surface_bff")
-                : t("app.login.this_mirrors_the_web_sign_up_flow_after_registration_you_will_be_signed_in_automatically_and_enter_the_same_user_runtime_lane_as_web"),
+            mode === "pair"
+                ? t("app.login.open_or_paste_the_single_use_link_created_by_your_v8_os_owner")
+                : t("app.login.advanced_password_login_description"),
         [mode, t],
     );
 
@@ -107,16 +119,19 @@ export default function LoginScreen() {
     const resetError = () => setError("");
 
     const validate = () => {
+        if (mode === "pair") {
+            if (!pairingUri.trim()) {
+                setError(t("app.login.please_enter_a_pairing_link"));
+                return false;
+            }
+            return true;
+        }
         if (!baseUrl.trim()) {
             setError(t("app.login.please_enter_a_reachable_admin_url"));
             return false;
         }
         if (!login.trim() || !password.trim()) {
             setError(t("app.login.please_enter_your_login_and_password"));
-            return false;
-        }
-        if (mode === "register" && !name.trim()) {
-            setError(t("app.login.display_name_is_required_when_registering"));
             return false;
         }
         return true;
@@ -129,24 +144,18 @@ export default function LoginScreen() {
         setBusy(true);
         setError("");
         try {
-            if (mode === "login") {
-                await signIn({ adminBaseUrl: baseUrl, login, password });
+            if (mode === "pair") {
+                await pairDevice({ pairingUri });
                 return;
             }
-            await signUp({
-                adminBaseUrl: baseUrl,
-                login,
-                password,
-                name,
-                email: email.trim() || undefined,
-            });
+            await signIn({ adminBaseUrl: baseUrl, login, password });
         } catch (nextError) {
             setError(
                 nextError instanceof Error
                     ? nextError.message
-                    : mode === "login"
-                        ? t("app.login.sign_in_failed")
-                        : t("app.login.registration_failed"),
+                    : mode === "pair"
+                        ? t("app.login.pairing_failed")
+                        : t("app.login.sign_in_failed"),
             );
         } finally {
             setBusy(false);
@@ -183,60 +192,65 @@ export default function LoginScreen() {
                     <GlassCard>
                         <View style={styles.modeSwitch}>
                             <Pressable
+                                style={[styles.modeButton, mode === "pair" && styles.modeButtonActive]}
+                                onPress={() => {
+                                    setMode("pair");
+                                    resetError();
+                                }}
+                            >
+                                <Text style={[styles.modeText, mode === "pair" && styles.modeTextActive]}>{t("app.login.pair_device")}</Text>
+                            </Pressable>
+                            <Pressable
                                 style={[styles.modeButton, mode === "login" && styles.modeButtonActive]}
                                 onPress={() => {
                                     setMode("login");
                                     resetError();
                                 }}
                             >
-                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("app.login.sign_in")}</Text>
-                            </Pressable>
-                            <Pressable
-                                style={[styles.modeButton, mode === "register" && styles.modeButtonActive]}
-                                onPress={() => {
-                                    setMode("register");
-                                    resetError();
-                                }}
-                            >
-                                <Text style={[styles.modeText, mode === "register" && styles.modeTextActive]}>{t("app.login.register")}</Text>
+                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("app.login.advanced_login")}</Text>
                             </Pressable>
                         </View>
 
                         <View style={styles.form}>
-                            <View style={styles.field}>
-                                <Text style={styles.label}>{t("app.login.admin_url")}</Text>
-                                <TextInput
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    value={baseUrl}
-                                    onChangeText={(next) => {
-                                        setBaseUrl(next);
-                                        resetError();
-                                    }}
-                                    placeholder={defaultWebBaseUrl || "http://192.168.x.x:9528"}
-                                    placeholderTextColor={colors.textSoft}
-                                    style={styles.input}
-                                />
-                            </View>
-
-                            {mode === "register" ? (
+                            {mode === "pair" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.display_name")}</Text>
+                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
                                     <TextInput
-                                        value={name}
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        value={pairingUri}
                                         onChangeText={(next) => {
-                                            setName(next);
+                                            setPairingUri(next);
                                             resetError();
                                         }}
-                                        placeholder={t("app.login.how_should_we_address_you")}
+                                        placeholder="v8agentosphone://pair?..."
+                                        placeholderTextColor={colors.textSoft}
+                                        multiline
+                                        style={[styles.input, styles.pairingInput]}
+                                    />
+                                    <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
+                                </View>
+                            ) : (
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>{t("app.login.admin_url")}</Text>
+                                    <TextInput
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        value={baseUrl}
+                                        onChangeText={(next) => {
+                                            setBaseUrl(next);
+                                            resetError();
+                                        }}
+                                        placeholder={defaultWebBaseUrl || "http://192.168.x.x:9528"}
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
                                 </View>
-                            ) : null}
+                            )}
 
-                            <View style={styles.field}>
-                                <Text style={styles.label}>{t("app.login.login")}</Text>
+                            {mode === "login" ? (
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>{t("app.login.login")}</Text>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
@@ -245,45 +259,29 @@ export default function LoginScreen() {
                                         setLogin(next);
                                         resetError();
                                     }}
-                                    placeholder={mode === "login" ? t("app.login.use_the_same_login_or_email_as_web") : t("app.login.choose_a_login_name")}
+                                    placeholder={t("app.login.owner_login")}
                                     placeholderTextColor={colors.textSoft}
                                     style={styles.input}
                                 />
-                            </View>
+                                </View>
+                            ) : null}
 
-                            {mode === "register" ? (
+                            {mode === "login" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.email")}</Text>
+                                    <Text style={styles.label}>{t("app.login.password")}</Text>
                                     <TextInput
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        keyboardType="email-address"
-                                        value={email}
+                                        secureTextEntry
+                                        value={password}
                                         onChangeText={(next) => {
-                                            setEmail(next);
+                                            setPassword(next);
                                             resetError();
                                         }}
-                                        placeholder={t("app.login.optional_useful_for_avatar_sync_and_notifications")}
+                                        placeholder="••••••"
                                         placeholderTextColor={colors.textSoft}
                                         style={styles.input}
                                     />
                                 </View>
                             ) : null}
-
-                            <View style={styles.field}>
-                                <Text style={styles.label}>{mode === "login" ? t("app.login.password") : t("app.login.set_password")}</Text>
-                                <TextInput
-                                    secureTextEntry
-                                    value={password}
-                                    onChangeText={(next) => {
-                                        setPassword(next);
-                                        resetError();
-                                    }}
-                                    placeholder="••••••"
-                                    placeholderTextColor={colors.textSoft}
-                                    style={styles.input}
-                                />
-                            </View>
 
                             {error ? (
                                 <View style={styles.errorRow}>
@@ -305,7 +303,7 @@ export default function LoginScreen() {
                                         <Text style={styles.submitText}>
                                             {mode === "login"
                                                 ? t("app.login.sign_in_to_v8_os_phone")
-                                                : t("app.login.create_account_and_enter_v8_os_phone")}
+                                                : t("app.login.connect_and_enter_v8_os_phone")}
                                         </Text>
                                     )}
                                 </LinearGradient>
@@ -313,7 +311,7 @@ export default function LoginScreen() {
                         </View>
                     </GlassCard>
 
-                    {profiles.length > 0 ? (
+                    {mode === "login" && profiles.length > 0 ? (
                         <GlassCard style={styles.savedConnectionsCard}>
                             <View style={styles.savedHeaderRow}>
                                 <Text style={styles.savedTitle}>{t("src.screens.connectscreen.saved_targets")}</Text>
@@ -466,6 +464,16 @@ const styles = StyleSheet.create({
         paddingVertical: 14,
         color: colors.text,
         fontSize: 16,
+    },
+    pairingInput: {
+        minHeight: 92,
+        textAlignVertical: "top",
+        paddingTop: spacing.md,
+    },
+    fieldHint: {
+        color: colors.textMuted,
+        fontSize: 12,
+        lineHeight: 18,
     },
     errorRow: {
         flexDirection: "row",

@@ -28,15 +28,13 @@ export type AuthSessionPayload = {
     accessToken: string;
     refreshToken: string;
     user: PhoneUser;
+    instanceId?: string;
+    adminBaseUrl?: string;
 };
 
-export type RegisterInput = {
-    adminBaseUrl: string;
-    login: string;
-    password: string;
-    name: string;
-    email?: string;
-    image?: string;
+export type DevicePairingInput = {
+    pairingUri: string;
+    deviceName?: string;
 };
 
 export type ConnectionSummary = {
@@ -67,6 +65,9 @@ export type V8LinkDiagnostics = {
 };
 
 export type V8LinkManifest = {
+    instanceId?: string;
+    ownerMode?: string;
+    clientGateway?: string;
     transportKind?: string;
     activeProfileId?: string;
     admin?: {

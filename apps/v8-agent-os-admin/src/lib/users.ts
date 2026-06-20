@@ -14,7 +14,8 @@ export type AdminUserRecord = {
   createdAt: string;
   updatedAt?: string;
 };
-export const MAX_NON_ADMIN_USERS = 1;
+export const PERSONAL_OWNER_MODE = true;
+export const MAX_NON_ADMIN_USERS = 0;
 type AdminUsersPayload = {
   users: AdminUserRecord[];
 };
@@ -68,6 +69,9 @@ export function listUsers() {
 export function hasUsers() {
   return listUsers().length > 0;
 }
+export function hasOwner() {
+  return listUsers().some(user => user.role === "ADMIN");
+}
 export function findUserById(id: string) {
   return listUsers().find(user => user.id === id) || null;
 }
@@ -99,6 +103,12 @@ export function createUserRecord(input: {
   const payload = readUsersPayload();
   assertUniqueLogin(input.login);
   const role = input.role || "USER";
+  if (PERSONAL_OWNER_MODE && payload.users.some(user => user.role === "ADMIN")) {
+    throw new Error("V8 Agent OS personal mode supports one Owner. Connect additional devices through pairing.");
+  }
+  if (PERSONAL_OWNER_MODE && role !== "ADMIN") {
+    throw new Error("Ordinary user registration is disabled in personal Owner mode.");
+  }
   if (role === "USER" && payload.users.filter(user => user.role === "USER").length >= MAX_NON_ADMIN_USERS) {
     throw new Error(`Ordinary user limit reached: max ${MAX_NON_ADMIN_USERS} USER accounts.`);
   }
@@ -134,6 +144,9 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
   }
   if (patch.role) {
     const nextRole = normalizeRole(patch.role);
+    if (PERSONAL_OWNER_MODE && nextRole !== "ADMIN") {
+      throw new Error("The personal instance Owner cannot be converted to an ordinary user.");
+    }
     if (nextRole === "USER" && target.role !== "USER" && payload.users.filter(user => user.role === "USER").length >= MAX_NON_ADMIN_USERS) {
       throw new Error(`Ordinary user limit reached: max ${MAX_NON_ADMIN_USERS} USER accounts.`);
     }
@@ -157,6 +170,10 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
 }
 export function deleteUserRecord(id: string) {
   const payload = readUsersPayload();
+  const target = payload.users.find(user => user.id === id);
+  if (PERSONAL_OWNER_MODE && target?.role === "ADMIN") {
+    throw new Error("The instance Owner cannot be deleted from the user list.");
+  }
   payload.users = payload.users.filter(user => user.id !== id);
   writeUsersPayload(payload);
 }

@@ -27,9 +27,34 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             name: "Credentials",
             credentials: {
                 login: { label: "Login", type: "text" },
-                password: { label: "Password", type: "password" }
+                password: { label: "Password", type: "password" },
+                pairingUri: { label: "Pairing link", type: "text" },
             },
             async authorize(credentials) {
+                const pairingUri = String(credentials?.pairingUri || "").trim();
+                if (pairingUri) {
+                    try {
+                        const parsed = new URL(pairingUri);
+                        const adminBaseUrl = String(parsed.searchParams.get("admin") || "").trim().replace(/\/+$/, "");
+                        const code = String(parsed.searchParams.get("code") || "").trim();
+                        const instanceId = String(parsed.searchParams.get("instance") || "").trim();
+                        if (!adminBaseUrl || !code) return null;
+                        const response = await fetch(`${adminBaseUrl}/api/client/pairing/consume`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                code,
+                                instanceId: instanceId || undefined,
+                                sessionKind: "web_session",
+                                deviceName: "v8-web",
+                            }),
+                        });
+                        const payload = await response.json().catch(() => ({}));
+                        return response.ok && payload?.user ? payload.user : null;
+                    } catch {
+                        return null;
+                    }
+                }
                 const login = String(credentials?.login || "").trim();
                 const password = String(credentials?.password || "");
                 if (!login || !password) {

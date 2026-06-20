@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 
+function notFound() {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+}
+
+export async function GET() {
+    return notFound();
+}
+
 export async function POST() {
-    return NextResponse.json(
-        {
-            error: "公开注册已关闭。请在 Admin 完成 Owner 初始化，再通过设备配对连接。",
-            nextAction: "pair_device",
-        },
-        { status: 410 },
-    );
+    return notFound();
 }

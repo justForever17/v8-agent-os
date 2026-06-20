@@ -48,6 +48,12 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "允许 V8 OS Phone 扫描 Admin 生成的设备配对二维码。"
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "ios": {

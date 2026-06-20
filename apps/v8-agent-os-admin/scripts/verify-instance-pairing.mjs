@@ -85,12 +85,19 @@ async function main() {
     });
     assert.equal(bootstrap.status, 200, JSON.stringify(await json(bootstrap)));
 
-    const registration = await request("/api/client/auth/register", {
+    const adminRegistration = await request("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ login: "extra", password: "password", name: "Extra" }),
     });
-    assert.equal(registration.status, 410);
+    assert.equal(adminRegistration.status, 404);
+
+    const clientRegistration = await request("/api/client/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login: "extra", password: "password", name: "Extra" }),
+    });
+    assert.equal(clientRegistration.status, 404);
 
     const login = await request("/api/client/auth/login", {
         method: "POST",
@@ -240,7 +247,7 @@ async function main() {
             "legacy_user_does_not_block_owner_bootstrap",
             "client_manifest_exposes_admin_bff_only",
             "root_redirects_to_login",
-            "public_registration_disabled",
+            "registration_routes_removed",
             "owner_bootstrap_and_login",
             "phone_pairing_single_use",
             "expired_pairing_ticket_rejected",

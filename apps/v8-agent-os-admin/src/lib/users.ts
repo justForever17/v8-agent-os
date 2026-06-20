@@ -107,10 +107,10 @@ export function createUserRecord(input: {
     throw new Error("V8 Agent OS personal mode supports one Owner. Connect additional devices through pairing.");
   }
   if (PERSONAL_OWNER_MODE && role !== "ADMIN") {
-    throw new Error("Ordinary user registration is disabled in personal Owner mode.");
+    throw new Error("Only the instance Owner can be created. Connect clients through device pairing.");
   }
   if (role === "USER" && payload.users.filter(user => user.role === "USER").length >= MAX_NON_ADMIN_USERS) {
-    throw new Error(`Ordinary user limit reached: max ${MAX_NON_ADMIN_USERS} USER accounts.`);
+    throw new Error(`Non-owner account creation is disabled: max ${MAX_NON_ADMIN_USERS}.`);
   }
   const now = new Date().toISOString();
   const nextUser: AdminUserRecord = {
@@ -145,10 +145,10 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
   if (patch.role) {
     const nextRole = normalizeRole(patch.role);
     if (PERSONAL_OWNER_MODE && nextRole !== "ADMIN") {
-      throw new Error("The personal instance Owner cannot be converted to an ordinary user.");
+      throw new Error("The personal instance Owner cannot be converted to a non-Owner account.");
     }
     if (nextRole === "USER" && target.role !== "USER" && payload.users.filter(user => user.role === "USER").length >= MAX_NON_ADMIN_USERS) {
-      throw new Error(`Ordinary user limit reached: max ${MAX_NON_ADMIN_USERS} USER accounts.`);
+      throw new Error(`Non-owner account creation is disabled: max ${MAX_NON_ADMIN_USERS}.`);
     }
     target.role = nextRole;
   }

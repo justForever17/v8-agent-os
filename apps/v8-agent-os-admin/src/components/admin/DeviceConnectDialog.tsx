@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Check, Clipboard, Loader2, QrCode } from "lucide-react";
 
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { DevicePairingPanel } from "@/components/admin/DevicePairingPanel";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,8 +69,12 @@ export function DeviceConnectDialog() {
             </DialogTrigger>
             <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto rounded-lg border-slate-200 bg-white p-5">
                 <DialogHeader>
-                    <DialogTitle>{t("components.admin.DeviceConnectDialog.title")}</DialogTitle>
-                    <DialogDescription>{t("components.admin.DeviceConnectDialog.description")}</DialogDescription>
+                    <DialogTitle>
+                        <AdminHoverInfo content={t("components.admin.DeviceConnectDialog.description")} panelClassName="text-xs leading-5">
+                            <span>{t("components.admin.DeviceConnectDialog.title")}</span>
+                        </AdminHoverInfo>
+                    </DialogTitle>
+                    <DialogDescription className="sr-only">{t("components.admin.DeviceConnectDialog.description")}</DialogDescription>
                 </DialogHeader>
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

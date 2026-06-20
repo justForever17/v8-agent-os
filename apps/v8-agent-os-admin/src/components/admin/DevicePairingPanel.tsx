@@ -5,6 +5,7 @@ import { Check, Clipboard, Link2, Loader2, Trash2 } from "lucide-react";
 import Image from "next/image";
 import QRCode from "qrcode";
 
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
 
@@ -57,7 +58,7 @@ export function DevicePairingPanel() {
     }, [loadDevices]);
 
     useEffect(() => {
-        if (!ticket?.pairingUri) {
+        if (!ticket?.pairingUri || ticket.surface !== "phone") {
             setQrDataUrl("");
             return;
         }
@@ -135,11 +136,10 @@ export function DevicePairingPanel() {
         <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
                 <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                        {t("components.admin.DevicePairingPanel.title")}
-                    </div>
-                    <div className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">
-                        {t("components.admin.DevicePairingPanel.description")}
+                    <div className="inline-flex max-w-full text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        <AdminHoverInfo content={t("components.admin.DevicePairingPanel.description")} panelClassName="text-xs leading-5">
+                            <span>{t("components.admin.DevicePairingPanel.title")}</span>
+                        </AdminHoverInfo>
                     </div>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
@@ -167,7 +167,7 @@ export function DevicePairingPanel() {
             ) : null}
 
             {ticket ? (
-                <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px] sm:items-start">
+                <div className={`mt-4 grid gap-3 ${ticket.surface === "phone" ? "sm:grid-cols-[minmax(0,1fr)_160px] sm:items-start" : ""}`}>
                     <div className="grid gap-3">
                         <div className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
                             <div className="text-xs text-slate-500">{t("components.admin.DevicePairingPanel.link")}</div>
@@ -184,13 +184,15 @@ export function DevicePairingPanel() {
                             <span>{t("components.admin.DevicePairingPanel.expires")}: {new Date(ticket.expiresAt).toLocaleTimeString()}</span>
                         </div>
                     </div>
-                    <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
-                        {qrDataUrl ? (
-                            <Image src={qrDataUrl} alt={t("components.admin.DevicePairingPanel.qrAlt")} width={144} height={144} unoptimized />
-                        ) : (
-                            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-                        )}
-                    </div>
+                    {ticket.surface === "phone" ? (
+                        <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+                            {qrDataUrl ? (
+                                <Image src={qrDataUrl} alt={t("components.admin.DevicePairingPanel.qrAlt")} width={144} height={144} unoptimized />
+                            ) : (
+                                <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                            )}
+                        </div>
+                    ) : null}
                 </div>
             ) : null}
 

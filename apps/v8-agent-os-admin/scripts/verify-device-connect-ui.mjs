@@ -78,10 +78,16 @@ try {
     await page.getByRole("dialog").waitFor();
     await page.getByText("当前 Admin URL", { exact: true }).waitFor();
     await page.getByRole("button", { name: "生成配对链接" }).click();
-    const qrImage = page.getByAltText("设备配对二维码");
-    await qrImage.waitFor({ timeout: 10_000 });
-    const qrSource = await qrImage.getAttribute("src");
-    assert.ok(qrSource?.startsWith("data:image/png;base64,"));
+    await page.getByText("配对链接", { exact: true }).waitFor();
+    const phoneQrImage = page.getByAltText("设备配对二维码");
+    await phoneQrImage.waitFor({ timeout: 10_000 });
+    const phoneQrSource = await phoneQrImage.getAttribute("src");
+    assert.ok(phoneQrSource?.startsWith("data:image/png;base64,"));
+
+    await page.locator("select").selectOption("cyber");
+    await page.getByRole("button", { name: "生成配对链接" }).click();
+    await page.getByText("配对链接", { exact: true }).waitFor();
+    assert.equal(await page.getByAltText("设备配对二维码").count(), 0, "Desktop clients should use copy/link pairing instead of QR scanning");
     assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
 
     const screenshot = path.join(reportRoot, "admin-device-connect-dialog.png");
@@ -92,8 +98,8 @@ try {
         checks: [
             "topbar_connect_button_visible",
             "admin_url_visible",
-            "pairing_ticket_created",
-            "qr_code_rendered_locally",
+            "phone_pairing_qr_code_rendered_locally",
+            "desktop_pairing_uses_copy_link",
             "no_browser_page_errors",
         ],
     }, null, 2));

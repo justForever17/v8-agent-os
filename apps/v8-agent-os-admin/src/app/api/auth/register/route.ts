@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 
+function notFound() {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+}
+
+export async function GET() {
+    return notFound();
+}
+
 export async function POST() {
-    return NextResponse.json(
-        {
-            error: "Public registration is disabled. Create the Owner during Admin bootstrap, then pair devices.",
-            nextAction: "open_admin_or_use_pairing",
-        },
-        { status: 410 },
-    );
+    return notFound();
 }

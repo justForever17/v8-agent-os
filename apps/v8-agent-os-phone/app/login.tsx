@@ -3,6 +3,7 @@ import {
     ActivityIndicator,
     Image,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     Pressable,
     StyleSheet,
@@ -11,6 +12,7 @@ import {
     View,
 } from "react-native";
 import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Linking from "expo-linking";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -36,6 +38,7 @@ export default function LoginScreen() {
     const { status, adminBaseUrl, signIn, pairDevice, user } = useAppSession();
     const { t } = useUiPrefs();
     const incomingUrl = Linking.useURL();
+    const [cameraPermission, requestCameraPermission] = useCameraPermissions();
     const { pairingUri: pairingUriParam } = useLocalSearchParams<{ pairingUri?: string }>();
     const defaultWebBaseUrl = useMemo(() => {
         if (Platform.OS !== "web" || typeof window === "undefined") {
@@ -56,6 +59,8 @@ export default function LoginScreen() {
     const [busy, setBusy] = useState(false);
     const [profiles, setProfiles] = useState<AdminConnectionProfile[]>([]);
     const [activeProfileId, setActiveProfileId] = useState("");
+    const [scannerOpen, setScannerOpen] = useState(false);
+    const [scanLocked, setScanLocked] = useState(false);
 
     useEffect(() => {
         if (adminBaseUrl) {
@@ -162,6 +167,33 @@ export default function LoginScreen() {
         }
     };
 
+    const openScanner = async () => {
+        resetError();
+        const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
+        if (!permission.granted) {
+            setError(t("app.login.camera_permission_required"));
+            return;
+        }
+        setScanLocked(false);
+        setScannerOpen(true);
+    };
+
+    const handlePairingQrScanned = (result: BarcodeScanningResult) => {
+        if (scanLocked) {
+            return;
+        }
+        setScanLocked(true);
+        const nextPairingUri = String(result.data || "").trim();
+        setScannerOpen(false);
+        if (!nextPairingUri.includes("://pair?")) {
+            setError(t("app.login.invalid_pairing_link"));
+            return;
+        }
+        setMode("pair");
+        setPairingUri(nextPairingUri);
+        setError("");
+    };
+
     return (
         <LinearGradient
             colors={["#EEF2FF", "#FFF7ED"]}
@@ -214,7 +246,15 @@ export default function LoginScreen() {
                         <View style={styles.form}>
                             {mode === "pair" ? (
                                 <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
+                                    <View style={styles.labelRow}>
+                                        <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
+                                        {Platform.OS === "web" ? null : (
+                                            <Pressable style={styles.scanButton} onPress={() => void openScanner()}>
+                                                <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.primaryDeep} />
+                                                <Text style={styles.scanButtonText}>{t("app.login.scan_pairing_qr")}</Text>
+                                            </Pressable>
+                                        )}
+                                    </View>
                                     <TextInput
                                         autoCapitalize="none"
                                         autoCorrect={false}
@@ -355,6 +395,27 @@ export default function LoginScreen() {
                     </Pressable>
                 </KeyboardAvoidingView>
             </SafeAreaView>
+            <Modal visible={scannerOpen} animationType="slide" transparent onRequestClose={() => setScannerOpen(false)}>
+                <View style={styles.scannerOverlay}>
+                    <View style={styles.scannerCard}>
+                        <CameraView
+                            active={scannerOpen}
+                            facing="back"
+                            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                            onBarcodeScanned={scannerOpen && !scanLocked ? handlePairingQrScanned : undefined}
+                            style={styles.scannerCamera}
+                        />
+                        <View style={styles.scannerShade}>
+                            <View style={styles.scannerFrame} />
+                            <Text style={styles.scannerTitle}>{t("app.login.scan_pairing_qr_title")}</Text>
+                            <Text style={styles.scannerHint}>{t("app.login.point_camera_at_pairing_qr")}</Text>
+                            <Pressable style={styles.scannerCancel} onPress={() => setScannerOpen(false)}>
+                                <Text style={styles.scannerCancelText}>{t("app.login.cancel_scan")}</Text>
+                            </Pressable>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
         </LinearGradient>
     );
 }
@@ -450,10 +511,32 @@ const styles = StyleSheet.create({
     field: {
         gap: 8,
     },
+    labelRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
     label: {
         color: colors.text,
         fontSize: 14,
         fontWeight: "700",
+    },
+    scanButton: {
+        minHeight: 32,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+        borderColor: "rgba(124,58,237,0.22)",
+        backgroundColor: "rgba(124,58,237,0.06)",
+        paddingHorizontal: 10,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    scanButtonText: {
+        color: colors.primaryDeep,
+        fontSize: 12,
+        fontWeight: "900",
     },
     input: {
         borderWidth: 1,
@@ -581,5 +664,64 @@ const styles = StyleSheet.create({
         color: colors.textMuted,
         fontSize: 13,
         fontWeight: "700",
+    },
+    scannerOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(15,23,42,0.64)",
+        justifyContent: "center",
+        padding: spacing.xl,
+    },
+    scannerCard: {
+        minHeight: 480,
+        borderRadius: radii.xl,
+        overflow: "hidden",
+        backgroundColor: "#020617",
+    },
+    scannerCamera: {
+        ...StyleSheet.absoluteFillObject,
+    },
+    scannerShade: {
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        padding: spacing.xl,
+        backgroundColor: "rgba(2,6,23,0.22)",
+    },
+    scannerFrame: {
+        width: 238,
+        height: 238,
+        borderRadius: 26,
+        borderWidth: 3,
+        borderColor: "rgba(255,255,255,0.92)",
+        backgroundColor: "rgba(255,255,255,0.02)",
+    },
+    scannerTitle: {
+        marginTop: spacing.xl,
+        color: "#FFFFFF",
+        fontSize: 20,
+        fontWeight: "900",
+    },
+    scannerHint: {
+        marginTop: 8,
+        color: "rgba(255,255,255,0.78)",
+        fontSize: 13,
+        textAlign: "center",
+        lineHeight: 20,
+    },
+    scannerCancel: {
+        marginTop: spacing.xl,
+        minHeight: 42,
+        borderRadius: radii.pill,
+        paddingHorizontal: 20,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.16)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.24)",
+    },
+    scannerCancelText: {
+        color: "#FFFFFF",
+        fontSize: 14,
+        fontWeight: "900",
     },
 });

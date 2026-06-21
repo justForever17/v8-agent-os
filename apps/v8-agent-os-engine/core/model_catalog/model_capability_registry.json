@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-04-29T12:53:23.149756+00:00",
+  "generatedAt": "2026-06-21T00:00:00+00:00",
   "sourcePolicy": {
     "primaryDirectory": "https://benchlm.ai/models",
     "pricing": "https://benchlm.ai/api/data/pricing?limit=500",
@@ -9,7 +9,7 @@
     "matchingPolicy": "exact_alias_only"
   },
   "stats": {
-    "models": 224,
+    "models": 237,
     "benchlmModelsPageEntries": 228,
     "benchlmPricingModels": 189,
     "benchlmLeaderboardModels": 115
@@ -813,26 +813,19 @@
       "canonicalModelId": "claude-sonnet-4.6",
       "benchlmSlug": "claude-sonnet-4-6",
       "creator": "Anthropic",
-      "contextWindowTokens": 200000,
-      "benchlmReasoningKind": "standard",
+      "contextWindowTokens": 1000000,
+      "benchlmReasoningKind": "reasoning",
       "status": "Current",
       "aliases": [
         "Claude Sonnet 4.6",
+        "claude-sonnet-4.6",
         "claude-sonnet-4-6",
-        "claude-sonnet-4.6"
+        "claude-sonnet-4-6"
       ],
       "sourceRefs": [
         {
-          "source": "benchlm_models",
-          "url": "https://benchlm.ai/models"
-        },
-        {
-          "source": "benchlm_pricing",
-          "url": "https://benchlm.ai/api/data/pricing?limit=500"
-        },
-        {
-          "source": "benchlm_leaderboard",
-          "url": "https://benchlm.ai/api/data/leaderboard?limit=200"
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/overview"
         }
       ],
       "isSiblingSku": false,
@@ -857,13 +850,33 @@
         "coding",
         "longContext",
         "multimodal",
+        "reasoning",
         "text",
+        "thinking",
+        "tools",
         "vision"
       ],
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "official_partial",
+      "maxOutputTokens": 64000,
+      "reasoningSurface": {
+        "mode": "typed_thinking",
+        "trust": "official",
+        "requestStyle": "anthropic_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "raw_thinking",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+        ],
+        "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+      }
     },
     {
       "displayName": "DeepSeek V4 Pro (High)",
@@ -2872,32 +2885,24 @@
       "canonicalModelId": "minimax-m2.7",
       "benchlmSlug": "minimax-m2-7",
       "creator": "MiniMax",
-      "contextWindowTokens": 200000,
+      "contextWindowTokens": 204800,
       "benchlmReasoningKind": "standard",
       "status": "Current",
       "aliases": [
         "MiniMax M2.7",
-        "minimax-m2-7",
-        "minimax-m2.7"
+        "minimax-m2.7",
+        "MiniMax-M2.7"
       ],
       "sourceRefs": [
         {
-          "source": "benchlm_models",
-          "url": "https://benchlm.ai/models"
-        },
-        {
-          "source": "benchlm_pricing",
-          "url": "https://benchlm.ai/api/data/pricing?limit=500"
-        },
-        {
-          "source": "benchlm_leaderboard",
-          "url": "https://benchlm.ai/api/data/leaderboard?limit=200"
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
         }
       ],
       "isSiblingSku": false,
       "inputPricePerMillionTokens": 0.3,
       "outputPricePerMillionTokens": 1.2,
-      "sourceType": "Open Weight",
+      "sourceType": "Proprietary",
       "benchlmRank": 46,
       "overallScore": 63,
       "categoryScores": {
@@ -2911,16 +2916,16 @@
         "math": null
       },
       "capabilities": [
-        "agentic",
         "chat",
         "coding",
         "longContext",
-        "text"
+        "text",
+        "tools"
       ],
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "official_partial"
     },
     {
       "displayName": "DeepSeek V3.2 (Thinking)",
@@ -3287,25 +3292,19 @@
       "benchlmSlug": "claude-haiku-4-5",
       "creator": "Anthropic",
       "contextWindowTokens": 200000,
-      "benchlmReasoningKind": "standard",
-      "status": "Established",
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
       "aliases": [
         "Claude Haiku 4.5",
+        "claude-haiku-4.5",
         "claude-haiku-4-5",
-        "claude-haiku-4.5"
+        "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5"
       ],
       "sourceRefs": [
         {
-          "source": "benchlm_models",
-          "url": "https://benchlm.ai/models"
-        },
-        {
-          "source": "benchlm_pricing",
-          "url": "https://benchlm.ai/api/data/pricing?limit=500"
-        },
-        {
-          "source": "benchlm_leaderboard",
-          "url": "https://benchlm.ai/api/data/leaderboard?limit=200"
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/overview"
         }
       ],
       "isSiblingSku": false,
@@ -3328,15 +3327,34 @@
         "agentic",
         "chat",
         "coding",
-        "longContext",
         "multimodal",
+        "reasoning",
         "text",
+        "thinking",
+        "tools",
         "vision"
       ],
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "official_partial",
+      "maxOutputTokens": 64000,
+      "reasoningSurface": {
+        "mode": "typed_thinking",
+        "trust": "official",
+        "requestStyle": "anthropic_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "raw_thinking",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+        ],
+        "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+      }
     },
     {
       "displayName": "o3",
@@ -10002,22 +10020,18 @@
       "canonicalModelId": "minimax-m2.5",
       "benchlmSlug": "minimax-m2-5",
       "creator": "MiniMax",
-      "contextWindowTokens": 128000,
+      "contextWindowTokens": 204800,
       "benchlmReasoningKind": "standard",
-      "status": "Superseded",
+      "status": "Current",
       "aliases": [
         "MiniMax M2.5",
-        "minimax-m2-5",
-        "minimax-m2.5"
+        "minimax-m2.5",
+        "MiniMax-M2.5"
       ],
       "sourceRefs": [
         {
-          "source": "benchlm_models",
-          "url": "https://benchlm.ai/models"
-        },
-        {
-          "source": "benchlm_pricing",
-          "url": "https://benchlm.ai/api/data/pricing?limit=500"
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
         }
       ],
       "isSiblingSku": false,
@@ -10026,13 +10040,15 @@
       "sourceType": "Proprietary",
       "capabilities": [
         "chat",
+        "coding",
         "longContext",
-        "text"
+        "text",
+        "tools"
       ],
       "missingFields": [
         "maxOutputTokens"
       ],
-      "confidence": "benchlm_partial"
+      "confidence": "official_partial"
     },
     {
       "displayName": "Ministral 3 14B",
@@ -11442,6 +11458,417 @@
         "maxOutputTokens"
       ],
       "confidence": "benchlm_partial"
+    },
+    {
+      "displayName": "MiniMax M3",
+      "canonicalModelId": "minimax-m3",
+      "creator": "MiniMax",
+      "contextWindowTokens": 1000000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "MiniMax-M3",
+        "MiniMax M3",
+        "minimax-m3"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "thinking",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ],
+      "reasoningSurface": {
+        "mode": "provider_reasoning",
+        "trust": "official",
+        "requestStyle": "minimax_interleaved_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "reasoning_details",
+          "additional_kwargs.reasoning_details",
+          "response_metadata.reasoning_details",
+          "generation_info.reasoning_details",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "provider_reasoning",
+        "sourceRefs": [
+          "https://platform.minimax.io/docs/guides/text-m3-function-call"
+        ],
+        "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
+      }
+    },
+    {
+      "displayName": "MiniMax M2.7 Highspeed",
+      "canonicalModelId": "minimax-m2.7-highspeed",
+      "creator": "MiniMax",
+      "contextWindowTokens": 204800,
+      "benchlmReasoningKind": "standard",
+      "status": "Current",
+      "aliases": [
+        "MiniMax M2.7 Highspeed",
+        "minimax-m2.7-highspeed",
+        "MiniMax-M2.7-Highspeed"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "chat",
+        "coding",
+        "longContext",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ]
+    },
+    {
+      "displayName": "MiniMax M2.5 Highspeed",
+      "canonicalModelId": "minimax-m2.5-highspeed",
+      "creator": "MiniMax",
+      "contextWindowTokens": 204800,
+      "benchlmReasoningKind": "standard",
+      "status": "Current",
+      "aliases": [
+        "MiniMax M2.5 Highspeed",
+        "minimax-m2.5-highspeed",
+        "MiniMax-M2.5-Highspeed"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "chat",
+        "coding",
+        "longContext",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ]
+    },
+    {
+      "displayName": "MiniMax M2.1",
+      "canonicalModelId": "minimax-m2.1",
+      "creator": "MiniMax",
+      "contextWindowTokens": 204800,
+      "benchlmReasoningKind": "standard",
+      "status": "Current",
+      "aliases": [
+        "MiniMax M2.1",
+        "minimax-m2.1",
+        "MiniMax-M2.1"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "chat",
+        "coding",
+        "longContext",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ]
+    },
+    {
+      "displayName": "MiniMax M2.1 Highspeed",
+      "canonicalModelId": "minimax-m2.1-highspeed",
+      "creator": "MiniMax",
+      "contextWindowTokens": 204800,
+      "benchlmReasoningKind": "standard",
+      "status": "Current",
+      "aliases": [
+        "MiniMax M2.1 Highspeed",
+        "minimax-m2.1-highspeed",
+        "MiniMax-M2.1-Highspeed"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "chat",
+        "coding",
+        "longContext",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ]
+    },
+    {
+      "displayName": "MiniMax M2",
+      "canonicalModelId": "minimax-m2",
+      "creator": "MiniMax",
+      "contextWindowTokens": 204800,
+      "benchlmReasoningKind": "standard",
+      "status": "Current",
+      "aliases": [
+        "MiniMax M2",
+        "minimax-m2",
+        "MiniMax-M2"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "chat",
+        "coding",
+        "longContext",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ]
+    },
+    {
+      "displayName": "MiniMax M2-her",
+      "canonicalModelId": "m2-her",
+      "creator": "MiniMax",
+      "contextWindowTokens": 64000,
+      "benchlmReasoningKind": "standard",
+      "status": "Current",
+      "aliases": [
+        "MiniMax M2-her",
+        "m2-her",
+        "MiniMax-M2-her"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.minimax.io/docs/guides/text-generation"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "chat",
+        "coding",
+        "longContext",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "missingFields": [
+        "maxOutputTokens"
+      ]
+    },
+    {
+      "displayName": "Claude Fable 5",
+      "canonicalModelId": "claude-fable-5",
+      "creator": "Anthropic",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "Claude Fable 5",
+        "claude-fable-5",
+        "claude-fable-5"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/overview"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "official",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/about-claude/models/overview"
+        ],
+        "notes": "This Claude model has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+      }
+    },
+    {
+      "displayName": "Claude Opus 4.8",
+      "canonicalModelId": "claude-opus-4.8",
+      "creator": "Anthropic",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "Claude Opus 4.8",
+        "claude-opus-4.8",
+        "claude-opus-4-8",
+        "claude-opus-4-8"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/overview"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "official",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/about-claude/models/overview"
+        ],
+        "notes": "This Claude model has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+      }
+    },
+    {
+      "displayName": "GLM-5.2",
+      "canonicalModelId": "glm-5.2",
+      "creator": "Z.ai",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 131072,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "GLM-5.2",
+        "glm-5.2",
+        "glm-5-2"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://docs.z.ai/devpack/latest-model"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "reasoning",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Z.ai reasoning capability does not yet imply a display-safe response field in V8 fixtures."
+      }
+    },
+    {
+      "displayName": "GLM-5.2 1M",
+      "canonicalModelId": "glm-5.2[1m]",
+      "creator": "Z.ai",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 131072,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "GLM-5.2 1M",
+        "glm-5.2[1m]",
+        "glm-5-2[1m]"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://docs.z.ai/devpack/latest-model"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "reasoning",
+        "text",
+        "tools"
+      ],
+      "confidence": "official_partial",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Z.ai reasoning capability does not yet imply a display-safe response field in V8 fixtures."
+      }
     }
   ]
 }

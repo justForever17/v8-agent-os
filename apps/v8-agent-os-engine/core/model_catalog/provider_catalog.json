@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastCheckedAt": "2026-04-27",
+  "lastCheckedAt": "2026-06-21",
   "providers": [
     {
       "id": "openai",
@@ -109,7 +109,7 @@
         "header": "x-api-key"
       },
       "probeStrategy": "anthropic_models",
-      "sourceUrl": "https://docs.anthropic.com/en/api/models-list",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -117,6 +117,112 @@
       },
       "confidence": "official",
       "models": [
+        {
+          "id": "claude-fable-5",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "official",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/about-claude/models/overview"
+            ],
+            "notes": "This Claude model has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+          }
+        },
+        {
+          "id": "claude-opus-4-8",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "official",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/about-claude/models/overview"
+            ],
+            "notes": "This Claude model has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+          }
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "typed_thinking",
+            "trust": "official",
+            "requestStyle": "anthropic_thinking",
+            "responseFields": [
+              "content[type=thinking]",
+              "thinking",
+              "thinking_delta",
+              "additional_kwargs.thinking"
+            ],
+            "displayKind": "raw_thinking",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+            ],
+            "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+          }
+        },
+        {
+          "id": "claude-haiku-4-5-20251001",
+          "contextWindow": 200000,
+          "maxOutputTokens": 64000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "typed_thinking",
+            "trust": "official",
+            "requestStyle": "anthropic_thinking",
+            "responseFields": [
+              "content[type=thinking]",
+              "thinking",
+              "thinking_delta",
+              "additional_kwargs.thinking"
+            ],
+            "displayKind": "raw_thinking",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+            ],
+            "notes": "Anthropic extended thinking is a typed content block and may carry signature/redacted thinking metadata."
+          }
+        },
         {
           "id": "claude-sonnet-4-5",
           "contextWindow": 200000,
@@ -283,118 +389,6 @@
         "displayKind": "hidden",
         "sourceRefs": [],
         "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
-      }
-    },
-    {
-      "id": "gemini",
-      "name": "Gemini CLI OAuth",
-      "apiStandard": "gemini",
-      "baseUrl": "https://cloudcode-pa.googleapis.com",
-      "auth": {
-        "type": "oauth_file",
-        "path": "~/.gemini/oauth_creds.json",
-        "preset": "geminiCli"
-      },
-      "probeStrategy": "catalog_only",
-      "singleActiveModel": true,
-      "sourceUrl": "https://github.com/google-gemini/gemini-cli",
-      "confidence": "local_cli",
-      "models": [
-        {
-          "id": "gemini-3.1-pro-preview",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 64000,
-          "capabilities": [
-            "chat",
-            "reasoning",
-            "streaming",
-            "vision",
-            "multimodal"
-          ],
-          "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
-          }
-        },
-        {
-          "id": "gemini-3-flash-preview",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 64000,
-          "capabilities": [
-            "chat",
-            "streaming",
-            "reasoning",
-            "vision",
-            "multimodal"
-          ],
-          "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
-          }
-        },
-        {
-          "id": "gemini-2.5-pro",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 64000,
-          "capabilities": [
-            "chat",
-            "reasoning",
-            "streaming",
-            "vision",
-            "multimodal"
-          ],
-          "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
-          }
-        },
-        {
-          "id": "gemini-2.5-flash",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 64000,
-          "capabilities": [
-            "chat",
-            "streaming",
-            "reasoning",
-            "vision",
-            "multimodal"
-          ],
-          "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
-          }
-        }
-      ],
-      "providerKind": "local_runtime",
-      "logoAsset": "/model-assets/lobe/geminicli-color.svg",
-      "reasoningSurface": {
-        "mode": "hidden",
-        "trust": "unknown",
-        "requestStyle": "none",
-        "responseFields": [],
-        "displayKind": "hidden",
-        "sourceRefs": [],
-        "notes": "Gemini CLI/API reasoning fields are not verified for direct ThinkingCard display."
       }
     },
     {
@@ -1130,6 +1124,82 @@
       }
     },
     {
+      "id": "zai-coding",
+      "name": "Z.ai Coding",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "catalog_only",
+      "sourceUrl": "https://docs.z.ai/devpack/latest-model",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://docs.z.ai/devpack/latest-model"
+      },
+      "confidence": "official",
+      "models": [
+        {
+          "id": "glm-5.2",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Z.ai reasoning capability does not yet imply a display-safe response field in V8 fixtures."
+          }
+        },
+        {
+          "id": "glm-5.2[1m]",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "GLM/Z.ai reasoning capability does not yet imply a display-safe response field in V8 fixtures."
+          }
+        }
+      ],
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/zhipu-color.svg",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "unknown",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [],
+        "notes": "GLM/Z.ai reasoning capability does not yet imply a display-safe response field in V8 fixtures."
+      }
+    },
+    {
       "id": "moonshot",
       "name": "Moonshot Kimi",
       "apiStandard": "openai",
@@ -1591,17 +1661,164 @@
         "header": "Authorization",
         "scheme": "Bearer"
       },
-      "probeStrategy": "openai_models",
-      "sourceUrl": "https://platform.minimax.io/docs/api-reference/text-openai-api",
+      "probeStrategy": "catalog_only",
+      "sourceUrl": "https://platform.minimax.io/docs/guides/text-generation",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
         "url": "https://platform.minimax.io/user-center/basic-information/interface-key"
       },
       "confidence": "official",
-      "models": [],
+      "models": [
+        {
+          "id": "MiniMax-M3",
+          "contextWindow": 1000000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal",
+            "coding",
+            "longContext"
+          ],
+          "reasoningSurface": {
+            "mode": "provider_reasoning",
+            "trust": "official",
+            "requestStyle": "minimax_interleaved_thinking",
+            "responseFields": [
+              "content[type=thinking]",
+              "thinking",
+              "thinking_delta",
+              "reasoning_details",
+              "additional_kwargs.reasoning_details",
+              "response_metadata.reasoning_details",
+              "generation_info.reasoning_details",
+              "additional_kwargs.thinking"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              "https://platform.minimax.io/docs/guides/text-m3-function-call"
+            ],
+            "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
+          }
+        },
+        {
+          "id": "MiniMax-M2.7",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.7-highspeed",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.5",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.5-highspeed",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.1",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.1-highspeed",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "longContext"
+          ]
+        },
+        {
+          "id": "M2-her",
+          "contextWindow": 64000,
+          "capabilities": [
+            "chat",
+            "streaming"
+          ]
+        }
+      ],
       "providerKind": "chat",
-      "logoAsset": "/model-assets/lobe/minimax-color.svg"
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "anthropicCompatible": {
+        "baseUrl": "https://api.minimax.io/anthropic",
+        "apiStandard": "anthropic",
+        "probeStrategy": "catalog_only",
+        "recommended": true,
+        "notes": "MiniMax recommends the Anthropic-compatible endpoint for thinking blocks and interleaved tool use."
+      },
+      "reasoningSurface": {
+        "mode": "provider_reasoning",
+        "trust": "official",
+        "requestStyle": "minimax_interleaved_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "reasoning_details",
+          "additional_kwargs.reasoning_details",
+          "response_metadata.reasoning_details",
+          "generation_info.reasoning_details",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "provider_reasoning",
+        "sourceRefs": [
+          "https://platform.minimax.io/docs/guides/text-m3-function-call"
+        ],
+        "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
+      }
     },
     {
       "id": "mistral",

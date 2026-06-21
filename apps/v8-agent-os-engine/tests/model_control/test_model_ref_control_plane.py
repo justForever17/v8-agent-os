@@ -52,8 +52,8 @@ def test_duplicate_naked_model_id_is_ambiguous_but_model_ref_is_exact():
 def test_catalog_contains_oauth_and_common_provider_entries():
     catalog = model_provider_catalog.load()
     provider_ids = {item["id"] for item in catalog["providers"]}
-    assert "gemini" in provider_ids
     assert "codex" in provider_ids
+    assert "gemini" not in provider_ids
     assert "openrouter" in provider_ids
     assert "siliconflow" in provider_ids
 
@@ -73,7 +73,9 @@ def test_model_capability_registry_contains_benchlm_scope_and_exact_aliases():
 
 def test_catalog_contains_bigmodel_layered_models():
     zhipu = model_provider_catalog.get_provider("zhipu")
+    zai_coding = model_provider_catalog.get_provider("zai-coding")
     assert zhipu
+    assert zai_coding
     model_ids = {item["id"] for item in zhipu["models"]}
     assert {
         "glm-5.1",
@@ -97,6 +99,14 @@ def test_catalog_contains_bigmodel_layered_models():
     assert embedding["type"] == "EMBEDDING"
     assert rerank["type"] == "RERANK"
 
+    zai_model_ids = {item["id"] for item in zai_coding["models"]}
+    assert {"glm-5.2", "glm-5.2[1m]"}.issubset(zai_model_ids)
+    glm_52 = model_provider_catalog.normalize_model(zai_coding, "glm-5.2")
+    assert zai_coding["baseUrl"] == "https://api.z.ai/api/coding/paas/v4"
+    assert glm_52["contextWindow"] == 1_000_000
+    assert glm_52["maxTokens"] == 131_072
+    assert glm_52["reasoningSurface"]["mode"] == "hidden"
+
 
 def test_catalog_exposes_credential_help_for_quick_connect():
     catalog = model_provider_catalog.load()
@@ -113,6 +123,7 @@ def test_catalog_exposes_credential_help_for_quick_connect():
         "huggingface-router",
         "moonshot",
         "zhipu",
+        "zai-coding",
         "xiaomi-mimo",
         "minimax",
         "groq",
@@ -190,6 +201,25 @@ def test_catalog_only_probe_does_not_return_preset_models():
     assert result["reason"] == "catalog_only_provider"
     assert result["models"] == []
     assert result["rawCount"] >= 1
+
+
+def test_minimax_catalog_uses_official_models_and_reasoning_contract():
+    provider = model_provider_catalog.get_provider("minimax")
+    assert provider
+    assert provider["probeStrategy"] == "catalog_only"
+    assert provider["baseUrl"] == "https://api.minimax.io/v1"
+    assert provider["anthropicCompatible"]["baseUrl"] == "https://api.minimax.io/anthropic"
+
+    model_ids = {item["id"] for item in provider["models"]}
+    assert {"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "M2-her"}.issubset(model_ids)
+
+    normalized = model_provider_catalog.normalize_model(provider, "MiniMax-M3")
+    assert normalized["contextWindow"] == 1_000_000
+    assert normalized["capabilities"]["reasoning"] is True
+    assert normalized["capabilities"]["vision"] is True
+    assert normalized["reasoningSurface"]["mode"] == "provider_reasoning"
+    assert normalized["reasoningSurface"]["trust"] == "official"
+    assert "reasoning_details" in normalized["reasoningSurface"]["responseFields"]
 
 
 def test_online_probe_strategy_requires_real_provider_list_not_catalog_fill():
@@ -749,28 +779,28 @@ def test_explicit_provider_capability_override_wins_over_registry():
 def test_connect_oauth_provider_does_not_seed_runtime_budget_parameters(monkeypatch):
     saved_config = {}
     provider = {
-        "id": "gemini",
-        "name": "Gemini CLI OAuth",
-        "baseUrl": "https://cloudcode-pa.googleapis.com",
-        "apiStandard": "gemini",
-        "auth": {"type": "oauth_file", "path": "~/.gemini/oauth_creds.json", "preset": "geminiCli"},
+        "id": "codex",
+        "name": "Codex OAuth",
+        "baseUrl": "https://chatgpt.com/backend-api",
+        "apiStandard": "openai",
+        "auth": {"type": "oauth_file", "path": "~/.codex/auth.json", "preset": "codex"},
         "models": [
             {
-                "id": "gemini-3-flash-preview",
-                "contextWindow": 1049000,
-                "maxTokens": 65536,
+                "id": "gpt-5.5",
+                "contextWindow": 1000000,
+                "maxTokens": 100000,
                 "capabilities": ["chat", "streaming"],
             }
         ],
     }
 
-    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda provider_id: provider if provider_id == "gemini" else None)
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda provider_id: provider if provider_id == "codex" else None)
     monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: {"providers": {}})
     monkeypatch.setattr(platform_routes.model_control_plane, "save_config", lambda config: saved_config.setdefault("value", config))
 
-    result = asyncio.run(platform_routes.connect_model_provider({"providerId": "gemini", "modelId": "gemini-3-flash-preview"}))
+    result = asyncio.run(platform_routes.connect_model_provider({"providerId": "codex", "modelId": "gpt-5.5"}))
 
-    model = result["config"]["providers"]["gemini"]["models"]["gemini-3-flash-preview"]
+    model = result["config"]["providers"]["codex"]["models"]["gpt-5.5"]
     assert model["contextWindow"] is None
     assert model["maxTokens"] is None
     assert "temperature" not in model
@@ -848,7 +878,7 @@ def test_connect_detected_voice_model_keeps_voice_type_when_chat_purpose_submits
 
 def test_catalog_capabilities_do_not_depend_on_models_endpoint_metadata():
     openai = model_provider_catalog.get_provider("openai")
-    gemini = model_provider_catalog.get_provider("gemini")
+    gemini = model_provider_catalog.get_provider("gemini-api")
     comfy = model_provider_catalog.get_provider("comfyui")
 
     assert openai and gemini and comfy

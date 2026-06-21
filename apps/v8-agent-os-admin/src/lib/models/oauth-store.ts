@@ -31,7 +31,7 @@ function canonicalOauthRoot(): string {
 }
 
 function shouldPreserveLiveOauthSource(platformLoginPreset?: string): boolean {
-    return platformLoginPreset === "qwenCode" || platformLoginPreset === "geminiCli" || platformLoginPreset === "codex";
+    return platformLoginPreset === "codex";
 }
 
 function isCanonicalOauthRuntimePath(filepath: string): boolean {

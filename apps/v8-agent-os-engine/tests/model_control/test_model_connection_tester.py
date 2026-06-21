@@ -35,12 +35,12 @@ def test_connection_probe_uses_small_output_cap(monkeypatch):
 def test_oauth_provider_connection_skips_deep_capability_suite(monkeypatch):
     tester = ModelConnectionTester()
     meta = {
-        "model_id": "gemini-3-flash-preview",
-        "model_ref": "gemini::gemini-3-flash-preview",
-        "provider_id": "gemini",
-        "provider_name": "Gemini CLI OAuth",
-        "base_url": "https://cloudcode-pa.googleapis.com",
-        "provider_adapter": "gemini-cli-runtime",
+        "model_id": "gpt-5.5",
+        "model_ref": "codex::gpt-5.5",
+        "provider_id": "codex",
+        "provider_name": "Codex OAuth",
+        "base_url": "https://chatgpt.com/backend-api",
+        "provider_adapter": "codex-oauth-runtime",
         "runtime_ready": True,
         "effective_capability_matrix": {
             "supports_streaming": True,
@@ -48,9 +48,9 @@ def test_oauth_provider_connection_skips_deep_capability_suite(monkeypatch):
             "supports_prompt_fallback_structured_output": True,
         },
         "provider_record": {
-            "id": "gemini",
+            "id": "codex",
             "type": "PLATFORM",
-            "oauth_preset": "geminiCli",
+            "oauth_preset": "codex",
         },
         "model_record": {"type": "TEXT"},
     }
@@ -64,7 +64,7 @@ def test_oauth_provider_connection_skips_deep_capability_suite(monkeypatch):
             "latencyMs": 12.3,
             "message": "OK",
             "requestKind": "chat_completion",
-            "resolvedEndpoint": "https://cloudcode-pa.googleapis.com",
+            "resolvedEndpoint": "https://chatgpt.com/backend-api",
         },
     )
     monkeypatch.setattr(
@@ -74,10 +74,10 @@ def test_oauth_provider_connection_skips_deep_capability_suite(monkeypatch):
     )
     monkeypatch.setattr(tester, "_record_health", lambda **_kwargs: None)
 
-    result = tester.test_model_connection(model_id="gemini-3-flash-preview", provider_id="gemini")
+    result = tester.test_model_connection(model_id="gpt-5.5", provider_id="codex")
 
     assert result["ok"] is True
-    assert result["modelRef"] == "gemini::gemini-3-flash-preview"
+    assert result["modelRef"] == "codex::gpt-5.5"
     assert result["capabilityChecks"]["toolCalling"]["status"] == "skipped"
     assert result["capabilityChecks"]["toolCalling"]["reason"] == "basic_connection_probe_only_for_oauth_quota_safety"
     assert result["degradeApplied"] is True

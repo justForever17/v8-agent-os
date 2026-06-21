@@ -101,7 +101,7 @@ export default function ProviderConfigPage({ params
   const [providerType, setProviderType] = useState<string>("API");
   const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
   const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
-  const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("geminiCli");
+  const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("codex");
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
   const [providerOauthPath, setProviderOauthPath] = useState("");
   const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
@@ -397,8 +397,6 @@ export default function ProviderConfigPage({ params
   const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
   const oauthHint = platformProviderSelected ?
   activePlatformPreset.helpText :
-  apiStandard === "gemini" ?
-  t("app.admin.dashboard.models.providers.id.page.k7ab7c579") :
   t("app.admin.dashboard.models.providers.id.page.k2daf728b");
   const controlModelsById = new Map<string, ControlPlaneModel>((controlPlane?.models || []).map((item: ControlPlaneModel) => [item.modelRef || item.id, item]));
   const providerOverviewById = new Map<string, ProviderOverview>((controlPlane?.providersOverview || []).map((item: ProviderOverview) => [item.providerId, item]));

@@ -74,7 +74,6 @@ export const INTERNAL_READABLE = {
   k5030156a3f: "正在读取高级 Safety 配置…",
   k53b0056fae: "默认关闭；开启后只做轻量采样、记录和短提示，不会自动杀进程、断网或唤醒 Supervisor。",
   k546f1f657f: "开发机默认：",
-  k55cf2fde08: "正式支持。保存后会持续引用 ~/.qwen/oauth_creds.json，跟随 Qwen Code 刷新的最新 access_token，不再复制成静态快照。",
   k56c6e05480: "开发机浏览器资料访问",
   k5740d4d0b2: "更早落 baseline，适合移动端和高频长会话。",
   k57b695c73d: "Embedding / 向量",
@@ -206,7 +205,6 @@ export const INTERNAL_READABLE = {
   kfae158475e: "向量",
   kfbd01caa81: "创意媒体",
   kfc8bd476af: "读取配置失败",
-  kfd667abf50: "支持 OAuth 文件接入与连接测试。保存后会按 Gemini CLI 预设读取本地 oauth_creds.json。",
   kfe367770b4: "同一会话一次只允许一个 authoritative run。",
   kfea74a25fa: "浏览器 profile、本地 secret 和某些外部 mutating HTTP 会更严格，适合当前这种混有私人日常使用的开发机。",
 } as const;

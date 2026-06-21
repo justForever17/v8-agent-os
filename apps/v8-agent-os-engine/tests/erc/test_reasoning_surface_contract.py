@@ -142,6 +142,38 @@ def test_doubao_dot_alias_resolves_to_verified_contract():
     assert surface["trust"] == "adapter_verified"
 
 
+def test_minimax_m3_reasoning_details_are_trusted_provider_reasoning():
+    surface = resolve_reasoning_surface_for_metadata(
+        {
+            "provider_id": "minimax",
+            "model_id": "MiniMax-M3",
+        }
+    )
+
+    assert surface["mode"] == "provider_reasoning"
+    assert surface["trust"] == "official"
+    assert "reasoning_details" in surface["responseFields"]
+
+    events = _adapter_events(
+        {
+            "additional_kwargs": {
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "format": "MiniMax-response-v1",
+                        "text": "I should inspect the task before calling tools.",
+                    }
+                ]
+            }
+        },
+        surface=surface,
+    )
+
+    assert [event.event_type for event in events] == ["reasoning_delta"]
+    assert events[0].delta == "I should inspect the task before calling tools."
+    assert events[0].diagnostics["reasoningKind"] == "provider_reasoning"
+
+
 def test_explicit_user_disabled_hidden_is_not_overridden_by_builtin_contract():
     surface = resolve_reasoning_surface_for_metadata(
         {

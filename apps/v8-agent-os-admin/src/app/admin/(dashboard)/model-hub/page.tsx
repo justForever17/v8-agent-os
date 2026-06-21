@@ -177,7 +177,7 @@ function modelMatchesTab(model: AIModel, tab: string) {
 
 function providerMatchesPurpose(provider: CatalogProvider, purpose: CatalogPurpose) {
     const authType = provider.auth?.type;
-    if (authType === "oauth_file") return false;
+    if (authType === "oauth_file") return purpose === "chat";
     const mediaModality = String(provider.mediaModality || "").toLowerCase();
     const providerKind = String(provider.providerKind || "").toLowerCase();
     const apiStandard = String(provider.apiStandard || "").toLowerCase();
@@ -258,7 +258,7 @@ export default function ModelHubPage() {
     const [providerBaseUrl, setProviderBaseUrl] = useState("");
     const [providerApiKey, setProviderApiKey] = useState("");
     const [providerOauthPath, setProviderOauthPath] = useState("");
-    const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("geminiCli");
+    const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("codex");
     const [localBackendPreset, setLocalBackendPreset] = useState<LocalBackendPreset>("ollama");
     const [modelType, setModelType] = useState("TEXT");
     const [modelProviderId, setModelProviderId] = useState("");
@@ -342,7 +342,6 @@ export default function ModelHubPage() {
         if (help.urlFrom === "baseUrl") return selectedCatalogProvider?.baseUrl || "";
         return help.url || "";
     }, [selectedCatalogProvider]);
-    const oauthCatalogProviders = useMemo(() => catalogProviders.filter((item) => item.auth?.type === "oauth_file" && catalogPurpose === "chat"), [catalogProviders, catalogPurpose]);
     const apiCatalogProviders = useMemo(() => catalogProviders.filter((item) => providerMatchesPurpose(item, catalogPurpose)), [catalogProviders, catalogPurpose]);
     const visibleCatalogModels = useMemo(() => {
         const query = catalogModelFilter.trim().toLowerCase();
@@ -382,9 +381,7 @@ export default function ModelHubPage() {
     const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
     const oauthHint = platformProviderSelected
         ? t(activePlatformPreset.helpText)
-        : providerApiStandard === "gemini"
-            ? t("app.admin.dashboard.model.hub.page.k37b02ec3")
-            : t("app.admin.dashboard.model.hub.page.k2daf728b");
+        : t("app.admin.dashboard.model.hub.page.k2daf728b");
     const localBackendConfig = getLocalBackendPresetConfig(localBackendPreset);
     const handleSaveModel = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -556,6 +553,22 @@ export default function ModelHubPage() {
             });
             return;
         }
+        if (!isCustomProvider && selectedCatalogProvider && (selectedCatalogProvider.auth?.type === "oauth_file" || selectedCatalogProvider.probeStrategy === "catalog_only")) {
+            const catalogModels = Array.isArray(selectedCatalogProvider.models) ? selectedCatalogProvider.models : [];
+            setProbedCatalogProviderId(selectedCatalogProvider.id);
+            setCatalogProbeModels(catalogModels);
+            setCatalogModelFilter("");
+            setSelectedCatalogModelId(catalogModels[0]?.modelId || catalogModels[0]?.id || "");
+            setManualModelEntryEnabled(catalogModels.length === 0);
+            setCatalogProbeStatus({
+                ok: true,
+                message: catalogModels.length
+                    ? t("app.admin.dashboard.model.hub.catalog.catalogLoaded", { count: catalogModels.length })
+                    : t("app.admin.dashboard.model.hub.catalog.catalogOnlyManual"),
+                source: "catalog",
+            });
+            return;
+        }
         setIsCatalogBusy(true);
         setCatalogProbeStatus(null);
         setManualModelEntryEnabled(false);
@@ -576,18 +589,21 @@ export default function ModelHubPage() {
             const data = await response.json().catch(() => ({}));
             const nextModels = Array.isArray(data.models) ? data.models : [];
             if (!response.ok || data.ok === false) {
-                setCatalogProbeModels([]);
-                setSelectedCatalogModelId("");
-                setProbedCatalogProviderId("");
                 const reason = extractErrorText(data.error || data.detail || data.reason, t("app.admin.dashboard.model.hub.catalog.fallback"));
                 const requiresCredential = data.reason === "credential_required" || String(reason).toLowerCase().includes("api key");
                 const catalogOnly = data.reason === "catalog_only_provider";
-                setManualModelEntryEnabled(!requiresCredential || catalogOnly);
+                const fallbackCatalogModels = catalogOnly && selectedCatalogProvider?.models ? selectedCatalogProvider.models : [];
+                setCatalogProbeModels(fallbackCatalogModels);
+                setSelectedCatalogModelId(fallbackCatalogModels[0]?.modelId || fallbackCatalogModels[0]?.id || "");
+                setProbedCatalogProviderId(fallbackCatalogModels.length ? selectedCatalogProviderId : "");
+                setManualModelEntryEnabled(fallbackCatalogModels.length === 0 && (!requiresCredential || catalogOnly));
                 setCatalogProbeStatus({
-                    ok: false,
-                    message: catalogOnly ? t("app.admin.dashboard.model.hub.catalog.catalogOnlyManual") : requiresCredential ? t("app.admin.dashboard.model.hub.catalog.credentialRequired") : reason,
+                    ok: catalogOnly && fallbackCatalogModels.length > 0,
+                    message: catalogOnly && fallbackCatalogModels.length > 0
+                        ? t("app.admin.dashboard.model.hub.catalog.catalogLoaded", { count: fallbackCatalogModels.length })
+                        : catalogOnly ? t("app.admin.dashboard.model.hub.catalog.catalogOnlyManual") : requiresCredential ? t("app.admin.dashboard.model.hub.catalog.credentialRequired") : reason,
                     resolvedModelsUrl: data.resolvedModelsUrl,
-                    source: data.source,
+                    source: catalogOnly && fallbackCatalogModels.length > 0 ? "catalog" : data.source,
                     credentialSource: data.credentialSource,
                     usedStoredCredential: Boolean(data.usedStoredCredential),
                 });
@@ -809,7 +825,7 @@ export default function ModelHubPage() {
                 setProviderBaseUrl("");
                 setProviderApiKey("");
                 setProviderOauthPath("");
-                setPlatformLoginPreset("geminiCli");
+                setPlatformLoginPreset("codex");
                 setLocalBackendPreset("ollama");
                 setIsProviderDialogOpen(true);
             }}>
@@ -830,62 +846,7 @@ export default function ModelHubPage() {
         ]}/>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.catalog.title")} description={t("app.admin.dashboard.model.hub.catalog.description")} variant="list" allowOverflow>
-                <div className="grid gap-4 xl:grid-cols-[1fr_1.4fr]">
-                    <div className="grid gap-3 md:grid-cols-2">
-                        {oauthCatalogProviders.map((provider) => {
-                            const firstModel = provider.models?.[0];
-                            return (
-                                <div key={provider.id} className="relative flex h-[158px] flex-col rounded-2xl border bg-card p-4">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="truncate text-sm font-semibold" title={provider.name}>{provider.name}</div>
-                                        <AdminHoverInfo
-                                            align="right"
-                                            lines={[
-                                                provider.name,
-                                                t("app.admin.dashboard.model.hub.catalog.oauthCredential"),
-                                                provider.auth?.path ? `${t("app.admin.dashboard.model.hub.catalog.oauthPath")}: ${provider.auth.path}` : "",
-                                                `${t("app.admin.dashboard.model.hub.catalog.oauthModels")}: ${(provider.models || []).map((model) => model.id).join(", ")}`,
-                                            ].filter(Boolean)}
-                                        >
-                                            <Badge variant="secondary" className="h-5 px-2 text-[10px]">OAuth</Badge>
-                                        </AdminHoverInfo>
-                                    </div>
-                                    <HydrationSafeClientOnly
-                                        fallback={<div className="mt-3 h-10 rounded-md border bg-background px-3 py-2 text-sm text-slate-700">{firstModel?.id || t("app.admin.dashboard.model.hub.catalog.selectModel")}</div>}
-                                    >
-                                        <Select
-                                            defaultValue={firstModel?.id || ""}
-                                            onValueChange={(value) => {
-                                                const select = document.getElementById(`oauth-model-${provider.id}`) as HTMLInputElement | null;
-                                                if (select) select.value = value;
-                                            }}
-                                        >
-                                            <SelectTrigger className="mt-3 h-10">
-                                                <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectModel")}/>
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {(provider.models || []).map((model) => (
-                                                    <SelectItem key={`${provider.id}:${model.id}`} value={model.id}>{model.id}</SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                    </HydrationSafeClientOnly>
-                                    <input id={`oauth-model-${provider.id}`} type="hidden" defaultValue={firstModel?.id || ""}/>
-                                    <Button
-                                        className="mt-auto w-full"
-                                        disabled={isCatalogBusy || !firstModel}
-                                        onClick={() => {
-                                            const select = document.getElementById(`oauth-model-${provider.id}`) as HTMLInputElement | null;
-                                            void handleConnectCatalogModel(provider.id, select?.value || firstModel?.id || "");
-                                        }}
-                                    >
-                                        {t("app.admin.dashboard.model.hub.catalog.detectAndConnect")}
-                                    </Button>
-                                </div>
-                            );
-                        })}
-                    </div>
-                    <div className="rounded-2xl border bg-card p-4">
+                <div className="rounded-2xl border bg-card p-4">
                         <div className="text-sm font-semibold">{t("app.admin.dashboard.model.hub.catalog.apiProvider")}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.catalog.apiProviderPurposeHint")}</div>
                         <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -929,32 +890,39 @@ export default function ModelHubPage() {
                                         <SelectItem value="__custom__">{t("app.admin.dashboard.model.hub.catalog.addCustomProvider")}</SelectItem>
                                         {apiCatalogProviders.filter((item) => item.isCustom).map((provider) => (
                                             <SelectItem key={provider.id} value={provider.id}>
-                                                <ProviderOptionLabel provider={provider} suffix={t("app.admin.dashboard.model.hub.catalog.customSuffix")} />
+                                                <ProviderOptionLabel provider={provider} suffix={provider.auth?.type === "oauth_file" ? "OAuth" : t("app.admin.dashboard.model.hub.catalog.customSuffix")} />
                                             </SelectItem>
                                         ))}
                                         {apiCatalogProviders.filter((item) => !item.isCustom).map((provider) => (
                                             <SelectItem key={provider.id} value={provider.id}>
-                                                <ProviderOptionLabel provider={provider} />
+                                                <ProviderOptionLabel provider={provider} suffix={provider.auth?.type === "oauth_file" ? "OAuth" : undefined} />
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
                                 </Select>
                             </HydrationSafeClientOnly>
-                            <div className="flex min-w-0 items-center rounded-xl border border-input bg-background">
-                                {selectedCredentialHelpUrl ? (
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="ml-1 h-9 w-9 shrink-0"
-                                        title={selectedCatalogProvider?.credentialHelp?.label || t("app.admin.dashboard.model.hub.catalog.getApiKey")}
-                                        onClick={() => window.open(selectedCredentialHelpUrl, "_blank", "noopener,noreferrer")}
-                                    >
-                                        <ExternalLink className="h-4 w-4"/>
-                                    </Button>
-                                ) : null}
-                                <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
-                            </div>
+                            {selectedCatalogProvider?.auth?.type === "oauth_file" ? (
+                                <div className="flex min-w-0 items-center gap-2 rounded-xl border border-input bg-background px-3 text-sm text-muted-foreground">
+                                    <Badge variant="secondary" className="shrink-0">OAuth</Badge>
+                                    <span className="truncate">{selectedCatalogProvider.auth.path || selectedCatalogProvider.name}</span>
+                                </div>
+                            ) : (
+                                <div className="flex min-w-0 items-center rounded-xl border border-input bg-background">
+                                    {selectedCredentialHelpUrl ? (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="ml-1 h-9 w-9 shrink-0"
+                                            title={selectedCatalogProvider?.credentialHelp?.label || t("app.admin.dashboard.model.hub.catalog.getApiKey")}
+                                            onClick={() => window.open(selectedCredentialHelpUrl, "_blank", "noopener,noreferrer")}
+                                        >
+                                            <ExternalLink className="h-4 w-4"/>
+                                        </Button>
+                                    ) : null}
+                                    <Input value={catalogApiKey} onChange={(event) => setCatalogApiKey(event.target.value)} type="password" className="min-w-0 border-0 shadow-none focus-visible:ring-0" placeholder={t("app.admin.dashboard.model.hub.catalog.apiKeyPlaceholder")}/>
+                                </div>
+                            )}
                             <Button disabled={isCatalogBusy} onClick={() => void handleProbeCatalogProvider()}>{t("app.admin.dashboard.model.hub.catalog.probe")}</Button>
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground">
@@ -1072,7 +1040,6 @@ export default function ModelHubPage() {
                                 </Button>
                             </div>
                         )}
-                    </div>
                 </div>
             </ConfigCard>
 

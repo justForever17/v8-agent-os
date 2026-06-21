@@ -19,19 +19,9 @@ from core.llm_factory import llm_factory  # noqa: E402
 from langchain_core.messages import HumanMessage  # noqa: E402
 
 
-GEMINI_PROVIDER_ID = "gemini"
 CODEX_PROVIDER_ID = "codex"
-GEMINI_OAUTH_PATH = Path.home() / ".gemini" / "oauth_creds.json"
 CODEX_OAUTH_PATH = Path.home() / ".codex" / "auth.json"
 CODEX_MODELS_CACHE_PATH = Path.home() / ".codex" / "models_cache.json"
-GEMINI_CANDIDATE_MODELS = [
-    "gemini-3-flash-preview",
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash-lite",
-]
 
 
 def _chat_model_meta(
@@ -228,13 +218,6 @@ def _sanitize_result(result: dict[str, Any]) -> dict[str, Any]:
 def bootstrap_oauth_presets(*, apply: bool, allow_partial: bool, probe_mode: str) -> dict[str, Any]:
     original_config = model_control_plane.get_config()
     working_config = deepcopy(original_config)
-    gemini_provider_meta = _provider_meta(
-        name="Gemini OAuth",
-        base_url="https://cloudcode-pa.googleapis.com",
-        api_standard="gemini",
-        oauth_preset="geminiCli",
-        oauth_path=GEMINI_OAUTH_PATH,
-    )
     codex_provider_meta = _provider_meta(
         name="Codex OAuth",
         base_url="https://chatgpt.com/backend-api",
@@ -245,34 +228,12 @@ def bootstrap_oauth_presets(*, apply: bool, allow_partial: bool, probe_mode: str
     results: dict[str, Any] = {
         "apply": apply,
         "allowPartial": allow_partial,
-        "gemini": {"oauthPath": str(GEMINI_OAUTH_PATH), "candidates": GEMINI_CANDIDATE_MODELS, "passed": []},
         "codex": {"oauthPath": str(CODEX_OAUTH_PATH), "candidates": _load_codex_candidate_models(), "passed": []},
         "applied": False,
         "probeMode": probe_mode,
     }
 
     try:
-        if not GEMINI_OAUTH_PATH.exists():
-            results["gemini"]["error"] = "Gemini OAuth file missing."
-        else:
-            for model_id in GEMINI_CANDIDATE_MODELS:
-                candidate_config = _merge_provider(
-                    working_config,
-                    GEMINI_PROVIDER_ID,
-                    gemini_provider_meta,
-                    {model_id: _chat_model_meta(name=model_id, context_window=1_000_000, max_tokens=8192)},
-                )
-                try:
-                    test_result = _save_and_test(candidate_config, model_id, probe_mode=probe_mode)
-                    if test_result.get("ok"):
-                        results["gemini"]["passed"].append(model_id)
-                        results["gemini"].setdefault("testResults", {})[model_id] = _sanitize_result(test_result)
-                        working_config = candidate_config
-                    else:
-                        results["gemini"].setdefault("failed", {})[model_id] = _sanitize_result(test_result)
-                except Exception as exc:
-                    results["gemini"].setdefault("failed", {})[model_id] = {"error": str(exc)}
-
         if not CODEX_OAUTH_PATH.exists():
             results["codex"]["error"] = "Codex auth file missing."
         else:
@@ -295,21 +256,10 @@ def bootstrap_oauth_presets(*, apply: bool, allow_partial: bool, probe_mode: str
                 except Exception as exc:
                     results["codex"].setdefault("failed", {})[model_id] = _sanitize_result({"error": str(exc)})
 
-        gemini_ok = bool(results["gemini"].get("passed"))
         codex_ok = bool(results["codex"].get("passed"))
-        should_apply = apply and ((gemini_ok and codex_ok) or (allow_partial and (gemini_ok or codex_ok)))
+        should_apply = apply and codex_ok
         if should_apply:
             final_config = deepcopy(original_config)
-            if gemini_ok:
-                final_config = _replace_provider_models(
-                    final_config,
-                    GEMINI_PROVIDER_ID,
-                    gemini_provider_meta,
-                    {
-                        model_id: _chat_model_meta(name=model_id, context_window=1_000_000, max_tokens=8192)
-                        for model_id in results["gemini"].get("passed", [])
-                    },
-                )
             if codex_ok:
                 codex_candidates = list(results["codex"].get("savedModels") or results["codex"].get("passed") or [])
                 final_config = _replace_provider_models(

@@ -68,8 +68,6 @@ const LABEL_DOMAINS: Record<LabelDomain, LabelOption[]> = {
         { value: "lmstudio", labelKey: "admin.enums.localBackendPreset.lmstudio" },
     ],
     platformLoginPreset: [
-        { value: "qwenCode", labelKey: "admin.enums.platformLoginPreset.qwenCode" },
-        { value: "geminiCli", labelKey: "admin.enums.platformLoginPreset.geminiCli" },
         { value: "codex", labelKey: "admin.enums.platformLoginPreset.codex" },
     ],
     toolMode: [

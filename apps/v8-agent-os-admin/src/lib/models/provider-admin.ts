@@ -1,7 +1,7 @@
 import { buildModelRef } from "@/lib/models/model-admin";
 import { ik } from "@/i18n/admin-legacy";
 export type ProviderCredentialMode = "apiKey" | "oauthFile";
-export type PlatformLoginPreset = "qwenCode" | "geminiCli" | "codex";
+export type PlatformLoginPreset = "codex";
 export type ProviderApiStandard = "openai" | "anthropic" | "gemini";
 export type LocalBackendPreset = "ollama" | "nexa" | "vllm" | "lmstudio";
 export type PlatformLoginPresetConfig = {
@@ -45,26 +45,6 @@ type EngineProviderContainer = {
 };
 const INVISIBLE_OAUTH_PATH_MARKERS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 export const PLATFORM_LOGIN_PRESETS: Record<PlatformLoginPreset, PlatformLoginPresetConfig> = {
-  qwenCode: {
-    id: "qwenCode",
-    label: "Qwen Code",
-    description: "lib.models.provider.admin.k949dba29",
-    apiStandard: "openai",
-    baseUrl: "https://portal.qwen.ai/v1",
-    oauthPath: "~/.qwen/oauth_creds.json",
-    supportState: "stable",
-    helpText: ik("k55cf2fde08")
-  },
-  geminiCli: {
-    id: "geminiCli",
-    label: "Gemini CLI",
-    description: "lib.models.provider.admin.kf52f7884",
-    apiStandard: "gemini",
-    baseUrl: "https://cloudcode-pa.googleapis.com",
-    oauthPath: "~/.gemini/oauth_creds.json",
-    supportState: "stable",
-    helpText: ik("kfd667abf50")
-  },
   codex: {
     id: "codex",
     label: "Codex",
@@ -132,7 +112,7 @@ function maskPath(filepath: string): string {
   return `…/${parts.slice(-2).join("/")}`;
 }
 function usesLiveOauthSourcePreset(preset: PlatformLoginPreset): boolean {
-  return preset === "qwenCode" || preset === "geminiCli" || preset === "codex";
+  return preset === "codex";
 }
 function isCanonicalOauthRuntimePath(filepath: string): boolean {
   const normalized = sanitizeOauthPath(filepath).replace(/\\/g, "/").toLowerCase();
@@ -160,20 +140,13 @@ export function inferPlatformLoginPreset(params: {
   const normalizedOauthPath = sanitizeOauthPath(String(params.oauthPath || "")).replace(/\\/g, "/").toLowerCase();
   const normalizedCode = String(params.code || "").trim().toLowerCase();
   const normalizedName = String(params.name || "").trim().toLowerCase();
-  const apiStandard = String(params.apiStandard || "openai").toLowerCase();
   if (normalizedType !== "PLATFORM") {
-    return "geminiCli";
-  }
-  if (normalizedBaseUrl.includes("portal.qwen.ai") || normalizedOauthPath.includes("/.qwen/oauth_creds.json") || normalizedCode.includes("qwen") || normalizedName.includes("qwen")) {
-    return "qwenCode";
+    return "codex";
   }
   if (normalizedBaseUrl.includes("chatgpt.com/backend-api") || normalizedOauthPath.includes("/.codex/auth.json") || normalizedCode.includes("codex") || normalizedName.includes("codex")) {
     return "codex";
   }
-  if (normalizedBaseUrl.includes("cloudcode-pa.googleapis.com") || normalizedOauthPath.includes("/.gemini/oauth_creds.json") || normalizedCode.includes("gemini") || normalizedName.includes("gemini") || apiStandard === "gemini") {
-    return "geminiCli";
-  }
-  return "geminiCli";
+  return "codex";
 }
 export function getPlatformLoginPresetConfig(preset: PlatformLoginPreset): PlatformLoginPresetConfig {
   return PLATFORM_LOGIN_PRESETS[preset];

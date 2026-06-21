@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from erc.runtime_context import bind_runtime_context
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
+from unittest.mock import patch
 
 
 def test_fetch_skill_instructions_missing_skill_refreshes_workspace_root(tmp_path):
@@ -152,3 +153,56 @@ Read references/skill-template.md when creating artifacts.
     assert "=== SKILL FILE ===" in continuation
     assert "Relative Path: references/skill-template.md" in continuation
     assert "Required YAML frontmatter" in continuation
+
+
+def test_fetch_skill_instructions_list_mode_returns_clean_catalog():
+    inventory = {
+        "items": [
+            {
+                "skillId": "global:huashu-nuwa",
+                "skillName": "huashu-nuwa",
+                "name": "huashu-nuwa",
+                "folder": "huashu-nuwa",
+                "description": "深度调研并生成可运行的人物 Skill。",
+                "sourceType": "global",
+                "visibility": "global",
+                "skillRoot": r"C:\Users\sunny\.agents\skills\huashu-nuwa",
+            },
+            {
+                "skillId": "scoped:test2-demo",
+                "skillName": "test2-demo",
+                "name": "test2-demo",
+                "folder": "test2-demo",
+                "description": "当前工作区的演示技能。",
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspaceId": "test2",
+                "skillRoot": r"E:\Projects\test2\.agents\skills\test2-demo",
+            },
+        ],
+        "rootDescriptors": [
+            {
+                "sourceType": "scoped_workspace",
+                "visibility": "scoped",
+                "workspaceId": "test2",
+                "workspacePath": r"E:\Projects\test2",
+                "rootPath": r"E:\Projects\test2\.agents\skills",
+            }
+        ],
+    }
+
+    with patch.object(SkillLoader, "get_inventory", return_value=inventory):
+        output = fetch_skill_instructions.invoke({"mode": "list"})
+
+    assert output == (
+        "global:\n"
+        "huashu-nuwa\n"
+        "- 深度调研并生成可运行的人物 Skill。\n"
+        "scope: test2\n"
+        "test2-demo\n"
+        "- 当前工作区的演示技能。"
+    )
+    assert "Skill ID" not in output
+    assert "skillRoot" not in output
+    assert "C:\\" not in output
+    assert "E:\\" not in output

@@ -4176,20 +4176,87 @@ def _format_skill_continuation_manifest(manifest: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_skill_list_entry(item: dict[str, Any]) -> tuple[str, str]:
+    name = str(item.get("skillName") or item.get("name") or item.get("folder") or "").strip()
+    description = _TEXT_WHITESPACE_RE.sub(" ", str(item.get("description") or "")).strip() or "暂无简介。"
+    return name, description
+
+
+def _format_skill_list_catalog(
+    inventory: dict[str, Any],
+    *,
+    explicit_workspace_id: str | None = None,
+    explicit_workspace_path: str | None = None,
+    explicit_project_id: str | None = None,
+) -> str:
+    items = [
+        item
+        for item in list(inventory.get("items") or [])
+        if not bool((item.get("safety") or {}).get("disabled"))
+        and str(((item.get("safety") or {}).get("effectiveVerdict") or (item.get("safety") or {}).get("verdict") or "")).strip().lower() != "block"
+    ]
+    global_items: list[dict[str, Any]] = []
+    scoped_items: list[dict[str, Any]] = []
+    for item in items:
+        source_type = str(item.get("sourceType") or "global").strip().lower()
+        visibility = str(item.get("visibility") or "").strip().lower()
+        if source_type == "global" and visibility != "scoped":
+            global_items.append(item)
+        else:
+            scoped_items.append(item)
+
+    def _append_entries(lines: list[str], entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            lines.append("（无）")
+            return
+        seen: set[str] = set()
+        for entry in sorted(entries, key=lambda item: str(item.get("skillName") or item.get("name") or item.get("folder") or "").lower()):
+            name, description = _format_skill_list_entry(entry)
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            lines.append(name)
+            lines.append(f"- {description}")
+        if not seen:
+            lines.append("（无）")
+
+    scope_label = str(explicit_workspace_id or explicit_project_id or "").strip()
+    if not scope_label:
+        for descriptor in list(inventory.get("rootDescriptors") or []):
+            if str(descriptor.get("visibility") or "").strip().lower() == "scoped":
+                scope_label = str(descriptor.get("workspaceId") or descriptor.get("projectId") or "").strip()
+                if not scope_label:
+                    workspace_path = str(descriptor.get("workspacePath") or explicit_workspace_path or "").strip()
+                    scope_label = Path(workspace_path).name if workspace_path else "workspace"
+                break
+    if not scope_label and explicit_workspace_path:
+        scope_label = Path(str(explicit_workspace_path)).name
+
+    lines = ["global:"]
+    _append_entries(lines, global_items)
+    if scoped_items or scope_label:
+        lines.append(f"scope: {scope_label or 'workspace'}")
+        _append_entries(lines, scoped_items)
+    return "\n".join(lines)
+
+
 @tool
 def fetch_skill_instructions(
-    skill_name: str,
+    skill_name: str = "",
     detail_level: str = "full",
     section: str | None = None,
     relative_path: str | None = None,
     offset: int = 0,
+    mode: str = "read",
 ) -> str:
-    """Read complete SKILL.md workflow instructions by exact skill name/path, then continue skill-relative docs/scripts via relative_path.
+    """Read installed Skill instructions, or list visible Skill names.
 
-    Default detail_level='full' returns the approved SKILL.md instructions so delegated agents can follow the workflow.
-    Use detail_level='summary' only for browsing/discovery, or detail_level='section' with section='...' for a specific heading.
+    Tool arguments are structured fields; examples use JSON-style double quotes for consistency.
+    Use mode="list" to list visible global and current workspace Skills by name and description only.
+    Default detail_level="full" returns the approved SKILL.md instructions so delegated agents can follow the workflow.
+    Use detail_level="summary" only for browsing/discovery, or detail_level="section" with section="..." for a specific heading.
     If the conversation, route context, or delegated brief already names an exact installed Skill, call this tool directly with that skill_name even when the current prefilter did not select it.
-    Pass relative_path='references/foo.md' to continue reading a file inside that skill directory after inspecting the continuation manifest.
+    Pass relative_path="references/foo.md" to continue reading a file inside that skill directory after inspecting the continuation manifest.
     When a relative file is too long, pass offset=<next offset> to continue the same document without switching to raw workspace reads.
     """
 
@@ -4209,6 +4276,24 @@ def fetch_skill_instructions(
         explicit_project_id = str(runtime_context.get("project_id") or "").strip() or None
     except Exception:
         pass
+
+    normalized_mode = str(mode or "read").strip().lower()
+    if normalized_mode == "list":
+        inventory = SkillLoader.get_inventory(
+            force_refresh=False,
+            include_scoped=True,
+            runtime_kind=runtime_kind,
+            session_id=session_id,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
+        return _format_skill_list_catalog(
+            inventory,
+            explicit_workspace_id=explicit_workspace_id,
+            explicit_workspace_path=explicit_workspace_path,
+            explicit_project_id=explicit_project_id,
+        )
 
     matches = SkillLoader.resolve_skill_matches(
         skill_name,

@@ -571,6 +571,7 @@ def _should_use_spec_narrow_route(state) -> bool:
 
 
 def _attach_route_context_to_response(response, *, user_query: str, route_bundle, selected_tools) -> None:
+    prefilter_signature = _extensions_prefilter_signature(route_bundle)
     payload = {
         "query": user_query,
         "selectedSkillIds": list(route_bundle.selected_skill_ids or []),
@@ -579,6 +580,8 @@ def _attach_route_context_to_response(response, *, user_query: str, route_bundle
         "skillRootDescriptors": list(route_bundle.skill_root_descriptors or []),
         "selectedMcpTools": list(route_bundle.exposed_mcp_tool_names or []),
         "selectedPluginHostTools": list(route_bundle.candidate_summary.get("pluginHostTools") or []),
+        "extensionsPrefilterSignature": prefilter_signature,
+        "extensionsPrefilterQuery": str(user_query or "").strip(),
     }
     delegation_context = build_delegation_context(
         mode="route",
@@ -597,6 +600,65 @@ def _attach_route_context_to_response(response, *, user_query: str, route_bundle
     additional_kwargs["v8_route_context"] = payload
     additional_kwargs["v8_delegation_context"] = delegation_context
     response.additional_kwargs = additional_kwargs
+
+
+def _extensions_prefilter_signature(route_bundle) -> str:
+    summary = dict(getattr(route_bundle, "candidate_summary", None) or {})
+    parts = [
+        str(summary.get("skillInventoryRevision") or ""),
+        str(summary.get("visibleRootSignature") or ""),
+        str(summary.get("visibleRootRevisionKey") or ""),
+        str(summary.get("mcpInventoryRevision") or ""),
+        str(summary.get("lexiconSignature") or ""),
+        ",".join(str(item) for item in list(summary.get("changedRoots") or [])),
+        ",".join(str(key) for key in sorted(dict(summary.get("mcpChangedServers") or {}).keys())),
+    ]
+    return "|".join(parts)
+
+
+def _latest_message_is_true_user_input(messages) -> bool:
+    ordered = list(messages or [])
+    if not ordered:
+        return False
+    latest = ordered[-1]
+    if not isinstance(latest, HumanMessage):
+        return False
+    content = str(getattr(latest, "content", "") or "").strip()
+    if not content:
+        return False
+    internal_prefixes = (
+        "[Runtime Recoverable Failure]",
+        "[Runtime Episode Recoverable Failure]",
+        "[System Resume]",
+        "[Tool Observation]",
+    )
+    return not any(content.startswith(prefix) for prefix in internal_prefixes)
+
+
+def _should_include_extensions_prefilter_prompt(*, state, messages, user_query: str, route_bundle) -> bool:
+    if _latest_message_is_true_user_input(messages):
+        return True
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    previous_signature = str(route_context.get("extensionsPrefilterSignature") or "").strip()
+    current_signature = _extensions_prefilter_signature(route_bundle)
+    if not previous_signature:
+        return True
+    if current_signature and current_signature != previous_signature:
+        return True
+    previous_query = str(route_context.get("extensionsPrefilterQuery") or route_context.get("query") or "").strip()
+    return bool(str(user_query or "").strip() and previous_query and str(user_query or "").strip() != previous_query)
+
+
+def _suppress_extensions_prefilter_prompt(route_bundle, *, reason: str = "prefilter_static_until_next_user_message"):
+    try:
+        route_bundle.prompt_addition = ""
+        summary = dict(route_bundle.candidate_summary or {})
+        summary["promptSuppressedReason"] = reason
+        summary["prefilterPseudoStatic"] = True
+        route_bundle.candidate_summary = summary
+    except Exception:
+        pass
+    return route_bundle
 
 
 def _runtime_episode_handoff_ready(state) -> bool:
@@ -826,6 +888,14 @@ def execute_supervisor_turn(
                 loaded_agents=loaded_agents,
             )
             route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
+        include_extensions_prefilter_prompt = _should_include_extensions_prefilter_prompt(
+            state=state,
+            messages=messages,
+            user_query=user_query,
+            route_bundle=route_bundle,
+        )
+        if not include_extensions_prefilter_prompt:
+            route_bundle = _suppress_extensions_prefilter_prompt(route_bundle)
         filtered_supervisor_tools = route_bundle.filtered_tools
         filtered_supervisor_tools = _filter_spec_tools_for_mode(filtered_supervisor_tools, state)
         try:
@@ -834,7 +904,7 @@ def execute_supervisor_turn(
             pass
         if _should_hide_todo_tools_for_direct_writing(state, user_query):
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, _SUPERVISOR_TODO_TOOL_NAMES)
-        if not _is_network_supervisor_compat_transport(state):
+        if not _is_network_supervisor_compat_transport(state) and include_extensions_prefilter_prompt:
             extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
 
         reflex_decision = runtime_reflex_service.evaluate(
@@ -982,6 +1052,7 @@ def execute_supervisor_turn(
                 "selectedSkillCount": len(route_bundle.selected_skill_names or []),
                 "selectedMcpToolCount": len(route_bundle.exposed_mcp_tool_names or []),
                 "selectedPluginHostToolCount": len(route_bundle.candidate_summary.get("pluginHostTools") or []),
+                "extensionsPrefilterPromptIncluded": include_extensions_prefilter_prompt,
                 "fastFirstTurnRoute": fast_first_turn_route,
                 "routeReason": route_bundle.candidate_summary.get("reason"),
                 "scope": current_scope,

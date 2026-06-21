@@ -2,10 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireClientContext } from "@/lib/server/client-proxy";
 import {
-    buildAdminLinkManifest,
-    resolveAdminApiBaseUrl,
-    resolveDesktopLiveBridgeBaseUrl,
-    resolveEngineBaseUrl,
+    buildClientLinkManifest,
+    resolveRequestOrigin,
 } from "@/lib/server/runtime-config";
 
 export async function GET(req: NextRequest) {
@@ -14,17 +12,14 @@ export async function GET(req: NextRequest) {
         return context;
     }
 
-    const requestOrigin = new URL(req.url).origin;
-    const linkManifest = buildAdminLinkManifest(requestOrigin);
+    const requestOrigin = resolveRequestOrigin(req);
+    const linkManifest = buildClientLinkManifest(requestOrigin);
     return NextResponse.json({
         connection: {
             adminBaseUrl: requestOrigin,
             adminApiBaseUrl: `${requestOrigin}/api`,
-            configuredAdminApiBaseUrl: resolveAdminApiBaseUrl(),
             bridgeMode: "admin_only",
             reachable: true,
-            engineBaseUrl: resolveEngineBaseUrl(),
-            desktopLiveBridgeBaseUrl: resolveDesktopLiveBridgeBaseUrl(),
             transportKind: linkManifest.transportKind,
             transportProfileId: linkManifest.activeProfileId,
             linkManifest,

@@ -24,11 +24,12 @@ def test_registry_builds_current_native_tools_in_order() -> None:
 
     assert exported_names == list(NATIVE_TOOL_NAMES)
     assert exported_names == native_tool_names()
-    assert exported_names[:5] == [
+    assert exported_names[:6] == [
         "run_system_command",
         "command_session_broker",
         "runtime_broker",
         "delegation_broker",
+        "mcp_server_config",
         "spec_broker",
     ]
     assert exported_names[-4:] == ["ask_user", "write_todos", "update_todo", "vision_media_analyzer"]
@@ -130,6 +131,15 @@ def test_phase9_runtime_imports_remain_available() -> None:
     assert runtime_broker.name == "runtime_broker"
     assert runtime_broker_from_module.name == runtime_broker.name
     assert native_tool_family_for_name("runtime_broker") == "runtime"
+
+
+def test_mcp_config_imports_remain_available() -> None:
+    from core.tools.native.mcp import mcp_server_config as mcp_server_config_from_module
+    from core.native_tools import mcp_server_config
+
+    assert mcp_server_config.name == "mcp_server_config"
+    assert mcp_server_config_from_module.name == mcp_server_config.name
+    assert native_tool_family_for_name("mcp_server_config") == "extensions"
 
 
 def test_phase6_memory_runtime_legacy_patch_path(monkeypatch) -> None:

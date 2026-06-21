@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
 
         const user = findUserByIdentifier(identifier);
 
-        if (!user || !user.password) {
+        if (!user || user.role !== "ADMIN" || !user.password) {
             return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
         }
 

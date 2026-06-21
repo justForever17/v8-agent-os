@@ -13,8 +13,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { updateUserAvatar, updateUserNickname, updateUserPassword } from "@/lib/actions/user.actions";
-import { useSession } from "next-auth/react";
+import { updateUserAvatar, updateUserNickname } from "@/lib/actions/user.actions";
+import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { useEffect, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
 import { AdminConnectionManager } from "@/components/connection/AdminConnectionManager";
@@ -27,21 +27,23 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-    const { data: session, update } = useSession();
+    const { profile, refreshProfile, applyProfile } = useClientProfile();
     const t = useT();
-    const [nickname, setNickname] = useState(session?.user?.name || "");
-    const [avatarUrl, setAvatarUrl] = useState(session?.user?.image || "");
+    const [nickname, setNickname] = useState(profile?.name || "");
+    const [avatarUrl, setAvatarUrl] = useState(profile?.image || "");
     const [customAvatarUrl, setCustomAvatarUrl] = useState("");
-    const [oldPassword, setOldPassword] = useState("");
-    const [newPassword, setNewPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
     useEffect(() => {
-        setNickname(session?.user?.name || "");
-        setAvatarUrl(session?.user?.image || "");
-    }, [session?.user?.image, session?.user?.name]);
+        setNickname(profile?.name || "");
+        setAvatarUrl(profile?.image || "");
+    }, [profile?.image, profile?.name]);
+
+    useEffect(() => {
+        if (!open) return;
+        void refreshProfile();
+    }, [open, refreshProfile]);
 
     const handleUpdateNickname = async () => {
         setIsLoading(true);
@@ -49,7 +51,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         try {
             const result = await updateUserNickname(nickname);
             if (result.success) {
-                await update({ name: nickname });
+                await applyProfile(result.user || { ...(profile || {}), name: nickname });
                 setMessage({ type: 'success', text: t(lt("昵称更新成功", "Display name updated")) });
             } else {
                 setMessage({ type: 'error', text: result.error || t(lt("更新失败", "Update failed")) });
@@ -75,12 +77,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             if (!response.ok || !data.url) {
                 throw new Error(data.error || t(lt("头像上传失败", "Avatar upload failed")));
             }
-            const result = await updateUserAvatar(String(data.url));
+            const nextImage = String(data.path || data.url);
+            const result = await updateUserAvatar(nextImage);
             if (!result.success) {
                 throw new Error(result.error || t(lt("头像保存失败", "Failed to save avatar")));
             }
-            setAvatarUrl(String(data.url));
-            await update({ image: String(data.url) });
+            setAvatarUrl(nextImage);
+            await applyProfile(result.user || { ...(profile || {}), image: nextImage });
             setMessage({ type: "success", text: t(lt("头像更新成功", "Avatar updated")) });
         } catch (error) {
             setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("头像更新失败", "Avatar update failed")) });
@@ -103,35 +106,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 throw new Error(result.error || t(lt("头像保存失败", "Failed to save avatar")));
             }
             setAvatarUrl(nextUrl);
-            await update({ image: nextUrl });
+            await applyProfile(result.user || { ...(profile || {}), image: nextUrl });
             setCustomAvatarUrl("");
             setMessage({ type: "success", text: t(lt("头像更新成功", "Avatar updated")) });
         } catch (error) {
             setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("头像更新失败", "Avatar update failed")) });
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleUpdatePassword = async () => {
-        if (newPassword !== confirmPassword) {
-            setMessage({ type: 'error', text: t(lt("两次输入的密码不一致", "Passwords do not match")) });
-            return;
-        }
-        setIsLoading(true);
-        setMessage(null);
-        try {
-            const result = await updateUserPassword(oldPassword, newPassword);
-            if (result.success) {
-                setMessage({ type: 'success', text: t(lt("密码更新成功", "Password updated")) });
-                setOldPassword("");
-                setNewPassword("");
-                setConfirmPassword("");
-            } else {
-                setMessage({ type: 'error', text: result.error || t(lt("更新失败", "Update failed")) });
-            }
-        } catch {
-            setMessage({ type: 'error', text: t(lt("发生错误", "Something went wrong")) });
         } finally {
             setIsLoading(false);
         }
@@ -148,9 +127,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </DialogHeader>
 
                 <Tabs defaultValue="profile" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3">
-                        <TabsTrigger value="profile">{t(lt("个人资料", "Profile"))}</TabsTrigger>
-                        <TabsTrigger value="security">{t(lt("安全设置", "Security"))}</TabsTrigger>
+                    <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="profile">{t(lt("聊天资料", "Chat profile"))}</TabsTrigger>
                         <TabsTrigger value="connection">{t(lt("连接管理", "Connection"))}</TabsTrigger>
                     </TabsList>
 
@@ -159,14 +137,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                             <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center overflow-hidden text-2xl font-semibold text-muted-foreground">
                                 {avatarUrl ? (
                                     <Image
-                                        src={avatarUrl}
-                                        alt={session?.user?.name || t(lt("用户头像", "User avatar"))}
+                                        src={resolveProfileAvatarSrc(avatarUrl)}
+                                        alt={profile?.name || t(lt("用户头像", "User avatar"))}
                                         width={64}
                                         height={64}
                                         className="h-full w-full object-cover"
                                         unoptimized
                                     />
-                                ) : (session?.user?.name?.charAt(0).toUpperCase() || "U")}
+                                ) : (profile?.name?.charAt(0).toUpperCase() || "U")}
                             </div>
                             <div className="flex-1 space-y-3">
                                 <Label htmlFor="nickname">{t(lt("昵称", "Display name"))}</Label>
@@ -214,7 +192,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                                     const result = await updateUserAvatar("");
                                                     if (result.success) {
                                                         setAvatarUrl("");
-                                                        await update({ image: "" });
+                                                        await applyProfile(result.user || { ...(profile || {}), image: "" });
                                                         setMessage({ type: "success", text: t(lt("已恢复默认头像", "Default avatar restored")) });
                                                     } else {
                                                         setMessage({ type: "error", text: result.error || t(lt("恢复失败", "Restore failed")) });
@@ -236,39 +214,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 <ThemeToggle />
                             </div>
                         </div>
-                    </TabsContent>
-
-                    <TabsContent value="security" className="space-y-4 py-4">
-                        <div className="space-y-2">
-                            <Label htmlFor="old-password">{t(lt("当前密码", "Current password"))}</Label>
-                            <Input
-                                id="old-password"
-                                type="password"
-                                value={oldPassword}
-                                onChange={(e) => setOldPassword(e.target.value)}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="new-password">{t(lt("新密码", "New password"))}</Label>
-                            <Input
-                                id="new-password"
-                                type="password"
-                                value={newPassword}
-                                onChange={(e) => setNewPassword(e.target.value)}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="confirm-password">{t(lt("确认新密码", "Confirm new password"))}</Label>
-                            <Input
-                                id="confirm-password"
-                                type="password"
-                                value={confirmPassword}
-                                onChange={(e) => setConfirmPassword(e.target.value)}
-                            />
-                        </div>
-                        <Button className="w-full" onClick={handleUpdatePassword} disabled={isLoading}>
-                            {t(lt("修改密码", "Update password"))}
-                        </Button>
                     </TabsContent>
 
                     <TabsContent value="connection" className="space-y-4 py-4">

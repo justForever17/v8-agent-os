@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { hashPassword } from "@/lib/password";
-import { createUserRecord, hasUsers } from "@/lib/users";
+import { createUserRecord, hasOwner } from "@/lib/users";
 
 export async function POST(req: NextRequest) {
     try {
-        if (hasUsers()) {
+        if (hasOwner()) {
             return NextResponse.json({ error: "管理台已完成首次设置" }, { status: 409 });
         }
 

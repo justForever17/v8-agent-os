@@ -3,6 +3,7 @@ import {
     ActivityIndicator,
     Image,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     Pressable,
     StyleSheet,
@@ -10,7 +11,9 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { Redirect, router, type Href } from "expo-router";
+import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import * as Linking from "expo-linking";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -18,105 +21,45 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
-import {
-    type AdminConnectionProfile,
-    readActiveAdminConnectionProfileId,
-    readAdminConnectionProfiles,
-} from "@/src/lib/admin-connection-profiles";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
 const BRAND_MARK = require("../assets/images/brand-mark.png");
 
-type Mode = "login" | "register";
-
 export default function LoginScreen() {
-    const { status, adminBaseUrl, signIn, signUp, user } = useAppSession();
+    const { status, pairDevice } = useAppSession();
     const { t } = useUiPrefs();
-    const defaultWebBaseUrl = useMemo(() => {
-        if (Platform.OS !== "web" || typeof window === "undefined") {
-            return "";
-        }
-        const hostname = window.location.hostname || "";
-        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") {
-            return "http://127.0.0.1:9528";
-        }
-        return "";
-    }, []);
-    const [mode, setMode] = useState<Mode>("login");
-    const [baseUrl, setBaseUrl] = useState(adminBaseUrl || defaultWebBaseUrl);
-    const [login, setLogin] = useState("");
-    const [password, setPassword] = useState("");
-    const [name, setName] = useState("");
-    const [email, setEmail] = useState("");
+    const incomingUrl = Linking.useURL();
+    const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+    const { pairingUri: pairingUriParam } = useLocalSearchParams<{ pairingUri?: string }>();
+    const [pairingUri, setPairingUri] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
-    const [profiles, setProfiles] = useState<AdminConnectionProfile[]>([]);
-    const [activeProfileId, setActiveProfileId] = useState("");
+    const [scannerOpen, setScannerOpen] = useState(false);
+    const [scanLocked, setScanLocked] = useState(false);
 
     useEffect(() => {
-        if (adminBaseUrl) {
-            setBaseUrl(adminBaseUrl);
+        const nextPairingUri = String(pairingUriParam || incomingUrl || "");
+        if (!nextPairingUri.includes("://pair?")) {
             return;
         }
-        if (defaultWebBaseUrl) {
-            setBaseUrl((current) => current || defaultWebBaseUrl);
-        }
-    }, [adminBaseUrl, defaultWebBaseUrl]);
+        setPairingUri(nextPairingUri);
+        setError("");
+    }, [incomingUrl, pairingUriParam]);
 
-    useEffect(() => {
-        let cancelled = false;
-        const hydrateSavedConnection = async () => {
-            const [profiles, activeId] = await Promise.all([
-                readAdminConnectionProfiles(),
-                readActiveAdminConnectionProfileId(),
-            ]);
-            const activeProfile = profiles.find((profile) => profile.id === activeId) || profiles[0];
-            if (cancelled) {
-                return;
-            }
-            setProfiles(profiles);
-            setActiveProfileId(activeId || "");
-            if (!adminBaseUrl && !defaultWebBaseUrl && activeProfile?.adminBaseUrl) {
-                setBaseUrl((current) => current || activeProfile.adminBaseUrl);
-            }
-        };
-        void hydrateSavedConnection();
-        return () => {
-            cancelled = true;
-        };
-    }, [adminBaseUrl, defaultWebBaseUrl]);
-
-    const pageTitle = useMemo(
-        () => (mode === "login" ? t("app.login.welcome_back") : t("app.login.create_account")),
-        [mode, t],
-    );
-    const pageSubtitle = useMemo(
-        () =>
-            mode === "login"
-                ? t("app.login.sign_in_with_the_same_account_you_use_on_web_phone_connects_to_admin_as_the_user_surface_bff")
-                : t("app.login.this_mirrors_the_web_sign_up_flow_after_registration_you_will_be_signed_in_automatically_and_enter_the_same_user_runtime_lane_as_web"),
-        [mode, t],
-    );
+    const pageTitle = useMemo(() => t("app.login.connect_this_device"), [t]);
+    const pageSubtitle = useMemo(() => t("app.login.open_or_paste_the_single_use_link_created_by_your_v8_os_owner"), [t]);
 
     if (status === "authenticated") {
-        return <Redirect href={(user?.mustChangePassword ? "/settings" : "/chat") as Href} />;
+        return <Redirect href={"/chat" as Href} />;
     }
 
     const resetError = () => setError("");
 
     const validate = () => {
-        if (!baseUrl.trim()) {
-            setError(t("app.login.please_enter_a_reachable_admin_url"));
-            return false;
-        }
-        if (!login.trim() || !password.trim()) {
-            setError(t("app.login.please_enter_your_login_and_password"));
-            return false;
-        }
-        if (mode === "register" && !name.trim()) {
-            setError(t("app.login.display_name_is_required_when_registering"));
+        if (!pairingUri.trim()) {
+            setError(t("app.login.please_enter_a_pairing_link"));
             return false;
         }
         return true;
@@ -129,28 +72,42 @@ export default function LoginScreen() {
         setBusy(true);
         setError("");
         try {
-            if (mode === "login") {
-                await signIn({ adminBaseUrl: baseUrl, login, password });
-                return;
-            }
-            await signUp({
-                adminBaseUrl: baseUrl,
-                login,
-                password,
-                name,
-                email: email.trim() || undefined,
-            });
+            await pairDevice({ pairingUri });
         } catch (nextError) {
             setError(
                 nextError instanceof Error
                     ? nextError.message
-                    : mode === "login"
-                        ? t("app.login.sign_in_failed")
-                        : t("app.login.registration_failed"),
+                    : t("app.login.pairing_failed"),
             );
         } finally {
             setBusy(false);
         }
+    };
+
+    const openScanner = async () => {
+        resetError();
+        const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
+        if (!permission.granted) {
+            setError(t("app.login.camera_permission_required"));
+            return;
+        }
+        setScanLocked(false);
+        setScannerOpen(true);
+    };
+
+    const handlePairingQrScanned = (result: BarcodeScanningResult) => {
+        if (scanLocked) {
+            return;
+        }
+        setScanLocked(true);
+        const nextPairingUri = String(result.data || "").trim();
+        setScannerOpen(false);
+        if (!nextPairingUri.includes("://pair?")) {
+            setError(t("app.login.invalid_pairing_link"));
+            return;
+        }
+        setPairingUri(nextPairingUri);
+        setError("");
     };
 
     return (
@@ -171,7 +128,6 @@ export default function LoginScreen() {
                                 <Image source={BRAND_MARK} style={styles.brandMark} />
                                 <View style={styles.brandTextWrap}>
                                     <PhoneWordmark dark={false} />
-                                    <Text style={styles.brandSub}>Phone</Text>
                                 </View>
                             </View>
                             <LocaleMenu variant="default" />
@@ -181,108 +137,31 @@ export default function LoginScreen() {
                     </View>
 
                     <GlassCard>
-                        <View style={styles.modeSwitch}>
-                            <Pressable
-                                style={[styles.modeButton, mode === "login" && styles.modeButtonActive]}
-                                onPress={() => {
-                                    setMode("login");
-                                    resetError();
-                                }}
-                            >
-                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("app.login.sign_in")}</Text>
-                            </Pressable>
-                            <Pressable
-                                style={[styles.modeButton, mode === "register" && styles.modeButtonActive]}
-                                onPress={() => {
-                                    setMode("register");
-                                    resetError();
-                                }}
-                            >
-                                <Text style={[styles.modeText, mode === "register" && styles.modeTextActive]}>{t("app.login.register")}</Text>
-                            </Pressable>
-                        </View>
-
                         <View style={styles.form}>
                             <View style={styles.field}>
-                                <Text style={styles.label}>{t("app.login.admin_url")}</Text>
+                                <View style={styles.labelRow}>
+                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
+                                    {Platform.OS === "web" ? null : (
+                                        <Pressable style={styles.scanButton} onPress={() => void openScanner()}>
+                                            <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.primaryDeep} />
+                                            <Text style={styles.scanButtonText}>{t("app.login.scan_pairing_qr")}</Text>
+                                        </Pressable>
+                                    )}
+                                </View>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
-                                    value={baseUrl}
+                                    value={pairingUri}
                                     onChangeText={(next) => {
-                                        setBaseUrl(next);
+                                        setPairingUri(next);
                                         resetError();
                                     }}
-                                    placeholder={defaultWebBaseUrl || "http://192.168.x.x:9528"}
+                                    placeholder="v8agentosphone://pair?..."
                                     placeholderTextColor={colors.textSoft}
-                                    style={styles.input}
+                                    multiline
+                                    style={[styles.input, styles.pairingInput]}
                                 />
-                            </View>
-
-                            {mode === "register" ? (
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.display_name")}</Text>
-                                    <TextInput
-                                        value={name}
-                                        onChangeText={(next) => {
-                                            setName(next);
-                                            resetError();
-                                        }}
-                                        placeholder={t("app.login.how_should_we_address_you")}
-                                        placeholderTextColor={colors.textSoft}
-                                        style={styles.input}
-                                    />
-                                </View>
-                            ) : null}
-
-                            <View style={styles.field}>
-                                <Text style={styles.label}>{t("app.login.login")}</Text>
-                                <TextInput
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    value={login}
-                                    onChangeText={(next) => {
-                                        setLogin(next);
-                                        resetError();
-                                    }}
-                                    placeholder={mode === "login" ? t("app.login.use_the_same_login_or_email_as_web") : t("app.login.choose_a_login_name")}
-                                    placeholderTextColor={colors.textSoft}
-                                    style={styles.input}
-                                />
-                            </View>
-
-                            {mode === "register" ? (
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.email")}</Text>
-                                    <TextInput
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        keyboardType="email-address"
-                                        value={email}
-                                        onChangeText={(next) => {
-                                            setEmail(next);
-                                            resetError();
-                                        }}
-                                        placeholder={t("app.login.optional_useful_for_avatar_sync_and_notifications")}
-                                        placeholderTextColor={colors.textSoft}
-                                        style={styles.input}
-                                    />
-                                </View>
-                            ) : null}
-
-                            <View style={styles.field}>
-                                <Text style={styles.label}>{mode === "login" ? t("app.login.password") : t("app.login.set_password")}</Text>
-                                <TextInput
-                                    secureTextEntry
-                                    value={password}
-                                    onChangeText={(next) => {
-                                        setPassword(next);
-                                        resetError();
-                                    }}
-                                    placeholder="••••••"
-                                    placeholderTextColor={colors.textSoft}
-                                    style={styles.input}
-                                />
+                                <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
                             </View>
 
                             {error ? (
@@ -302,54 +181,12 @@ export default function LoginScreen() {
                                     {busy ? (
                                         <ActivityIndicator color="#FFFFFF" />
                                     ) : (
-                                        <Text style={styles.submitText}>
-                                            {mode === "login"
-                                                ? t("app.login.sign_in_to_v8_os_phone")
-                                                : t("app.login.create_account_and_enter_v8_os_phone")}
-                                        </Text>
+                                        <Text style={styles.submitText}>{t("app.login.connect_and_enter_v8_os_phone")}</Text>
                                     )}
                                 </LinearGradient>
                             </Pressable>
                         </View>
                     </GlassCard>
-
-                    {profiles.length > 0 ? (
-                        <GlassCard style={styles.savedConnectionsCard}>
-                            <View style={styles.savedHeaderRow}>
-                                <Text style={styles.savedTitle}>{t("src.screens.connectscreen.saved_targets")}</Text>
-                                <Text style={styles.savedHint}>{t("src.screens.connectscreen.reconnect")}</Text>
-                            </View>
-                            <View style={styles.savedProfilesList}>
-                                {profiles.slice(0, 3).map((profile) => {
-                                    const active = profile.id === activeProfileId || profile.adminBaseUrl === baseUrl;
-                                    return (
-                                        <Pressable
-                                            key={profile.id}
-                                            style={[styles.savedProfileCard, active && styles.savedProfileCardActive]}
-                                            onPress={() => {
-                                                setBaseUrl(profile.adminBaseUrl);
-                                                resetError();
-                                            }}
-                                        >
-                                            <View style={styles.savedProfileBody}>
-                                                <Text style={styles.savedProfileTitle} numberOfLines={1}>
-                                                    {profile.label || profile.adminBaseUrl}
-                                                </Text>
-                                                <Text style={styles.savedProfileUrl} numberOfLines={1}>
-                                                    {profile.adminBaseUrl}
-                                                </Text>
-                                            </View>
-                                            {active ? (
-                                                <View style={styles.savedCurrentBadge}>
-                                                    <Text style={styles.savedCurrentBadgeText}>{t("src.screens.connectscreen.current")}</Text>
-                                                </View>
-                                            ) : null}
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                        </GlassCard>
-                    ) : null}
 
                     <Pressable style={styles.connectHint} onPress={() => router.push("/connect" as Href)}>
                         <MaterialCommunityIcons name="lan-connect" size={16} color={colors.textMuted} />
@@ -357,6 +194,27 @@ export default function LoginScreen() {
                     </Pressable>
                 </KeyboardAvoidingView>
             </SafeAreaView>
+            <Modal visible={scannerOpen} animationType="slide" transparent onRequestClose={() => setScannerOpen(false)}>
+                <View style={styles.scannerOverlay}>
+                    <View style={styles.scannerCard}>
+                        <CameraView
+                            active={scannerOpen}
+                            facing="back"
+                            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                            onBarcodeScanned={scannerOpen && !scanLocked ? handlePairingQrScanned : undefined}
+                            style={styles.scannerCamera}
+                        />
+                        <View style={styles.scannerShade}>
+                            <View style={styles.scannerFrame} />
+                            <Text style={styles.scannerTitle}>{t("app.login.scan_pairing_qr_title")}</Text>
+                            <Text style={styles.scannerHint}>{t("app.login.point_camera_at_pairing_qr")}</Text>
+                            <Pressable style={styles.scannerCancel} onPress={() => setScannerOpen(false)}>
+                                <Text style={styles.scannerCancelText}>{t("app.login.cancel_scan")}</Text>
+                            </Pressable>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
         </LinearGradient>
     );
 }
@@ -402,11 +260,6 @@ const styles = StyleSheet.create({
         flexShrink: 1,
         minWidth: 0,
     },
-    brandSub: {
-        color: colors.textMuted,
-        fontSize: 16,
-        fontWeight: "800",
-    },
     title: {
         color: colors.text,
         fontSize: 28,
@@ -418,44 +271,38 @@ const styles = StyleSheet.create({
         fontSize: 15,
         lineHeight: 22,
     },
-    modeSwitch: {
-        flexDirection: "row",
-        alignSelf: "stretch",
-        borderRadius: radii.lg,
-        backgroundColor: colors.surfaceMuted,
-        borderWidth: 1,
-        borderColor: colors.border,
-        padding: 4,
-        marginBottom: spacing.lg,
-    },
-    modeButton: {
-        flex: 1,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: radii.md,
-        minHeight: 42,
-    },
-    modeButtonActive: {
-        backgroundColor: colors.surface,
-    },
-    modeText: {
-        color: colors.textMuted,
-        fontSize: 14,
-        fontWeight: "700",
-    },
-    modeTextActive: {
-        color: colors.text,
-    },
     form: {
         gap: spacing.lg,
     },
     field: {
         gap: 8,
     },
+    labelRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+    },
     label: {
         color: colors.text,
         fontSize: 14,
         fontWeight: "700",
+    },
+    scanButton: {
+        minHeight: 32,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+        borderColor: "rgba(124,58,237,0.22)",
+        backgroundColor: "rgba(124,58,237,0.06)",
+        paddingHorizontal: 10,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    scanButtonText: {
+        color: colors.primaryDeep,
+        fontSize: 12,
+        fontWeight: "900",
     },
     input: {
         borderWidth: 1,
@@ -466,6 +313,16 @@ const styles = StyleSheet.create({
         paddingVertical: 14,
         color: colors.text,
         fontSize: 16,
+    },
+    pairingInput: {
+        minHeight: 92,
+        textAlignVertical: "top",
+        paddingTop: spacing.md,
+    },
+    fieldHint: {
+        color: colors.textMuted,
+        fontSize: 12,
+        lineHeight: 18,
     },
     errorRow: {
         flexDirection: "row",
@@ -498,71 +355,6 @@ const styles = StyleSheet.create({
     disabled: {
         opacity: 0.7,
     },
-    savedConnectionsCard: {
-        gap: spacing.md,
-        backgroundColor: colors.surface,
-    },
-    savedHeaderRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: spacing.sm,
-    },
-    savedTitle: {
-        color: colors.text,
-        fontSize: 16,
-        fontWeight: "900",
-    },
-    savedHint: {
-        color: colors.textSoft,
-        fontSize: 12,
-        fontWeight: "800",
-    },
-    savedProfilesList: {
-        gap: spacing.sm,
-    },
-    savedProfileCard: {
-        minHeight: 68,
-        borderRadius: radii.md,
-        borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surface,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: spacing.sm,
-    },
-    savedProfileCardActive: {
-        borderColor: "rgba(124,58,237,0.34)",
-        backgroundColor: "rgba(124,58,237,0.035)",
-    },
-    savedProfileBody: {
-        flex: 1,
-        gap: 4,
-        minWidth: 0,
-    },
-    savedProfileTitle: {
-        color: colors.text,
-        fontSize: 14,
-        fontWeight: "900",
-    },
-    savedProfileUrl: {
-        color: colors.textMuted,
-        fontSize: 12,
-        fontWeight: "600",
-    },
-    savedCurrentBadge: {
-        borderRadius: radii.pill,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        backgroundColor: "rgba(16,185,129,0.12)",
-    },
-    savedCurrentBadgeText: {
-        color: colors.success,
-        fontSize: 10,
-        fontWeight: "900",
-    },
     connectHint: {
         flexDirection: "row",
         alignItems: "center",
@@ -573,5 +365,64 @@ const styles = StyleSheet.create({
         color: colors.textMuted,
         fontSize: 13,
         fontWeight: "700",
+    },
+    scannerOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(15,23,42,0.64)",
+        justifyContent: "center",
+        padding: spacing.xl,
+    },
+    scannerCard: {
+        minHeight: 480,
+        borderRadius: radii.xl,
+        overflow: "hidden",
+        backgroundColor: "#020617",
+    },
+    scannerCamera: {
+        ...StyleSheet.absoluteFillObject,
+    },
+    scannerShade: {
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        padding: spacing.xl,
+        backgroundColor: "rgba(2,6,23,0.22)",
+    },
+    scannerFrame: {
+        width: 238,
+        height: 238,
+        borderRadius: 26,
+        borderWidth: 3,
+        borderColor: "rgba(255,255,255,0.92)",
+        backgroundColor: "rgba(255,255,255,0.02)",
+    },
+    scannerTitle: {
+        marginTop: spacing.xl,
+        color: "#FFFFFF",
+        fontSize: 20,
+        fontWeight: "900",
+    },
+    scannerHint: {
+        marginTop: 8,
+        color: "rgba(255,255,255,0.78)",
+        fontSize: 13,
+        textAlign: "center",
+        lineHeight: 20,
+    },
+    scannerCancel: {
+        marginTop: spacing.xl,
+        minHeight: 42,
+        borderRadius: radii.pill,
+        paddingHorizontal: 20,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(255,255,255,0.16)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.24)",
+    },
+    scannerCancelText: {
+        color: "#FFFFFF",
+        fontSize: 14,
+        fontWeight: "900",
     },
 });

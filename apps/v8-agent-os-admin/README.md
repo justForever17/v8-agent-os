@@ -6,8 +6,10 @@
 #
 # 1. `cd apps/v8-agent-os-admin`
 # 2. `npm install`
-# 3. Copy `env.template` to `.env.local`
-# 4. `npm run dev`
+# 3. `npm run dev`
+#
+# The launcher stores the Auth.js signing secret under `~/.v8-agent-os/secrets/`
+# and injects it into the process. No project `.env` file is required.
 #
 # Default local address: `http://127.0.0.1:9528`
 #

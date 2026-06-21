@@ -14,7 +14,6 @@ import type {
     DesktopLiveOfferPayload,
     DesktopLiveSessionPayload,
     DesktopLiveStatus,
-    PasswordChangePayload,
     PendingApproval,
     PhoneUser,
     ProfileUpdatePayload,
@@ -23,7 +22,7 @@ import type {
     WorkspaceFolderNode,
     WorkspaceFolderTreeResponse,
     ScopeBindingView,
-    RegisterInput,
+    DevicePairingInput,
     RealtimeSessionSnapshot,
     RPAAvailability,
     RPADraftSummary,
@@ -86,20 +85,38 @@ async function authorizedJson<T>(
     return readJsonOrThrow<T>(response, fallbackMessage);
 }
 
-export async function signUp(adminBaseUrl: string, input: RegisterInput): Promise<AuthSessionPayload> {
-    const response = await fetch(buildAdminApiUrl(adminBaseUrl, "/api/client/auth/register"), {
+export function parseDevicePairingUri(pairingUri: string) {
+    const normalized = String(pairingUri || "").trim();
+    if (!normalized) {
+        throw new Error(translateCurrent("app.login.please_enter_a_pairing_link"));
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(normalized);
+    } catch {
+        throw new Error(translateCurrent("app.login.invalid_pairing_link"));
+    }
+    const adminBaseUrl = String(parsed.searchParams.get("admin") || "").trim();
+    const code = String(parsed.searchParams.get("code") || "").trim();
+    const instanceId = String(parsed.searchParams.get("instance") || "").trim();
+    if (!adminBaseUrl || !code) {
+        throw new Error(translateCurrent("app.login.invalid_pairing_link"));
+    }
+    return { adminBaseUrl, code, instanceId };
+}
+
+export async function pairDevice(input: DevicePairingInput): Promise<AuthSessionPayload> {
+    const pairing = parseDevicePairingUri(input.pairingUri);
+    const response = await fetch(buildAdminApiUrl(pairing.adminBaseUrl, "/api/client/pairing/consume"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            login: input.login,
-            password: input.password,
-            name: input.name,
-            email: input.email,
-            image: input.image,
-            deviceName: "v8-phone",
+            code: pairing.code,
+            instanceId: pairing.instanceId || undefined,
+            deviceName: input.deviceName || "v8-phone",
         }),
     });
-    return readJsonOrThrow<AuthSessionPayload>(response, translateCurrent("src.providers.app_session.text_4"));
+    return readJsonOrThrow<AuthSessionPayload>(response, translateCurrent("app.login.pairing_failed"));
 }
 
 export async function getConnectionSummary(authorizedFetch: AuthorizedFetch) {
@@ -130,22 +147,6 @@ export async function updateProfile(authorizedFetch: AuthorizedFetch, input: Pro
         },
     );
     return payload.user || null;
-}
-
-export async function updatePassword(authorizedFetch: AuthorizedFetch, input: PasswordChangePayload) {
-    return authorizedJson<Record<string, unknown>>(
-        authorizedFetch,
-        "/api/client/auth/password",
-        translateCurrent("src.lib.phone_api.text_5"),
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                currentPassword: input.currentPassword,
-                newPassword: input.nextPassword,
-            }),
-        },
-    );
 }
 
 export async function uploadUserAvatar(

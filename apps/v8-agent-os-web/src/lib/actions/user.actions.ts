@@ -25,6 +25,32 @@ async function createAdminRequest(path: string, init: RequestInit = {}) {
     });
 }
 
+export type SharedUserProfile = {
+    id?: string;
+    login?: string;
+    email?: string;
+    name?: string;
+    image?: string;
+    role?: string;
+    mustChangePassword?: boolean;
+};
+
+export async function getUserProfile() {
+    try {
+        const response = await createAdminRequest("/auth/profile", {
+            method: "GET",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            return { success: false, error: String(data.error || "资料读取失败") };
+        }
+        return { success: true, user: data as SharedUserProfile };
+    } catch (error) {
+        console.error("Failed to read profile:", error);
+        return { success: false, error: "资料读取失败" };
+    }
+}
+
 export async function updateUserNickname(nickname: string) {
     if (!nickname || nickname.trim().length < 2) {
         return { success: false, error: "昵称至少需要 2 个字符" };
@@ -60,26 +86,5 @@ export async function updateUserAvatar(image: string) {
     } catch (error) {
         console.error("Failed to update avatar:", error);
         return { success: false, error: "头像更新失败" };
-    }
-}
-
-export async function updateUserPassword(oldPassword: string, newPassword: string, forceMode = false) {
-    if (!newPassword || newPassword.length < 6) {
-        return { success: false, error: "新密码至少需要 6 位" };
-    }
-
-    try {
-        const response = await createAdminRequest("/auth/password", {
-            method: "POST",
-            body: JSON.stringify({ oldPassword, newPassword, forceMode }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            return { success: false, error: String(data.error || "密码更新失败") };
-        }
-        return { success: true };
-    } catch (error) {
-        console.error("Failed to update password:", error);
-        return { success: false, error: "密码更新失败" };
     }
 }

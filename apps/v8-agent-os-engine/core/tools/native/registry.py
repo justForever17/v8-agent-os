@@ -25,6 +25,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "delegation_broker",
         ),
     ),
+    ("extensions", ("mcp_server_config",)),
     ("spec", ("spec_broker",)),
     (
         "system_session",

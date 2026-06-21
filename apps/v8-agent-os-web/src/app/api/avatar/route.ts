@@ -5,7 +5,7 @@ import { resolveAdminRootUrl } from "@/lib/server/runtime-config";
 
 export const runtime = "nodejs";
 
-const AVATAR_PATH_PATTERN = /^\/Avatar\/[^?#]+$/i;
+const AVATAR_PATH_PATTERN = /^\/(?:Avatar|user)\/[^?#]+$/i;
 const LOOPBACK_HOST_PATTERN = /^(?:127(?:\.\d{1,3}){3}|localhost|\[::1\]|::1)$/i;
 
 function isAllowedAbsoluteAvatarUrl(target: URL, adminRoot: URL) {

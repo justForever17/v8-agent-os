@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 9527",
-    "build": "next build",
-    "start": "next start -p 9527",
+    "dev": "node ../../scripts/run-next-with-managed-auth.mjs --app web --mode dev --port 9527",
+    "build": "node ../../scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527",
+    "start": "node ../../scripts/run-next-with-managed-auth.mjs --app web --mode start --port 9527",
     "lint": "eslint"
   },
   "dependencies": {

@@ -8,6 +8,7 @@ import {
     resolveInternalSecret,
 } from "@/lib/server/runtime-config";
 import { resolveClientUser, unauthorizedClientJson } from "@/lib/server/client-request-auth";
+import { PERSONAL_OWNER_MODE } from "@/lib/users";
 import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 
 type ClientContext = {
@@ -52,6 +53,9 @@ function toClientProxyErrorResponse(error: unknown, fallbackMessage: string) {
 }
 
 export function forbidIfClientAdmin(user?: { role?: string | null }) {
+    if (PERSONAL_OWNER_MODE) {
+        return false;
+    }
     return String(user?.role || "").toUpperCase() === "ADMIN";
 }
 

@@ -2,7 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-export const getBaseDir = () => path.join(os.homedir(), '.v8-agent-os');
+export const getBaseDir = () => {
+    const configured = String(process.env.V8_AGENT_OS_HOME || '').trim();
+    return configured ? path.resolve(configured) : path.join(os.homedir(), '.v8-agent-os');
+};
 const LEGACY_STORAGE_FILES = ['sessions.json', 'files.json', 'codes.json'] as const;
 
 const ensureDir = (dir: string) => {

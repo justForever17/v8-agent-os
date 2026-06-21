@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-search";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
+import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminNavItem } from "@/lib/admin-navigation";
@@ -303,6 +304,7 @@ export function Topbar() {
                     <div className="text-sm text-slate-500">{t(current.description)}</div>
                 </div>
                 <div className="flex items-center gap-2">
+                    <DeviceConnectDialog />
                     <LocaleToggle />
                     <div ref={installContainerRef} className="relative">
                         <Button

@@ -405,6 +405,8 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
         "You are executing one bounded task from the supervisor's delegation/runtime pipeline.",
         "Use this local task contract as the routing truth; do not reinterpret the original user request as your primary scope.",
         "For code, file, command, test, or artifact work: treat taskBriefId, workspace, readSet/writeSet, acceptance, proofExpectations, and any Spec refs as your execution boundary. If required boundaries are missing, return a blocker instead of broadening the task.",
+        "If both built-in runtime capability and installed Skill/MCP tools appear relevant, obey the supervisor/user route first; when no route is specified and a selected installed Skill/MCP explicitly advertises 免费/free use, prefer that selected channel within your granted tools.",
+        "If the task is to configure MCP servers, use the supervisor-provided MCP config route/tool; do not call Admin login-only APIs or edit V8OS config files directly.",
     ]
     if isinstance(planner_context, dict) and planner_context:
         if planner_context.get("planId"):

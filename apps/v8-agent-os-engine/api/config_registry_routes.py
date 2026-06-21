@@ -51,10 +51,14 @@ def _get_project_registry_service():
 
 
 def _config_source(domain_path: str) -> str:
+    if domain_path == "mcp":
+        return "mcp.json"
     return f"config.json#{domain_path}"
 
 
 def _config_save_path(domain_path: str) -> list[str]:
+    if domain_path == "mcp":
+        return [str(storage.mcp_config_path)]
     return [f"{CONFIG_JSON_PATH}#{domain_path}"]
 
 

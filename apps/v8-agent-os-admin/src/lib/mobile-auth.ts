@@ -37,6 +37,7 @@ type MobileAccessClaims = {
     sid: string;
     login: string;
     role: string;
+    did?: string;
     iat: number;
     exp: number;
 };
@@ -61,6 +62,15 @@ type MobileTokenPair = {
     refreshToken: string;
     refreshTokenExpiresAt: string;
     user: MobileAuthUser;
+};
+
+export type MobileDeviceSession = {
+    id: string;
+    deviceName: string;
+    createdAt: string;
+    expiresAt: string;
+    lastUsedAt?: string;
+    active: boolean;
 };
 
 function base64UrlEncode(value: string | Buffer) {
@@ -131,7 +141,7 @@ function sanitizeMobileAuthUser(user: AdminUserRecord): MobileAuthUser {
     };
 }
 
-function createAccessToken(user: AdminUserRecord) {
+function createAccessToken(user: AdminUserRecord, deviceSessionId?: string) {
     const now = Math.floor(Date.now() / 1000);
     const claims: MobileAccessClaims = {
         type: "mobile_access",
@@ -139,6 +149,7 @@ function createAccessToken(user: AdminUserRecord) {
         sid: getSessionIdentifier(user),
         login: user.login,
         role: user.role,
+        did: deviceSessionId,
         iat: now,
         exp: now + ACCESS_TOKEN_TTL_SECONDS,
     };
@@ -165,8 +176,8 @@ function createRefreshTokenRecord(user: AdminUserRecord, deviceName?: string) {
 }
 
 function issueMobileTokenPair(user: AdminUserRecord, deviceName?: string): MobileTokenPair {
-    const access = createAccessToken(user);
     const refresh = createRefreshTokenRecord(user, deviceName);
+    const access = createAccessToken(user, refresh.record.id);
     const store = readRefreshTokenStore();
     store.refreshTokens = store.refreshTokens.filter((record) => {
         if (record.userId !== user.id) return true;
@@ -248,6 +259,13 @@ export async function resolveMobileAccessUser(req: Request): Promise<AdminUserRe
     if (sessionIdentifier !== payload.sid) {
         return null;
     }
+    if (payload.did) {
+        const store = readRefreshTokenStore();
+        const deviceSession = store.refreshTokens.find((record) => record.id === payload.did);
+        if (!deviceSession || deviceSession.revokedAt || new Date(deviceSession.expiresAt).getTime() <= Date.now()) {
+            return null;
+        }
+    }
     return user;
 }
 
@@ -258,6 +276,9 @@ export async function verifyMobileCredentials(login: string, password: string): 
     }
     const user = findUserByIdentifier(identifier);
     if (!user) {
+        return { ok: false, reason: "user_not_found" };
+    }
+    if (user.role !== "ADMIN") {
         return { ok: false, reason: "user_not_found" };
     }
     if (!user.password) {
@@ -287,7 +308,7 @@ export async function rotateMobileSession(refreshToken: string, deviceName?: str
     }
 
     const user = findUserById(record.userId);
-    if (!user || getSessionIdentifier(user) !== record.sessionIdentifier) {
+    if (!user || user.role !== "ADMIN" || getSessionIdentifier(user) !== record.sessionIdentifier) {
         return null;
     }
 
@@ -312,6 +333,32 @@ export function revokeMobileRefreshToken(refreshToken: string) {
         writeRefreshTokenStore(store);
     }
     return changed;
+}
+
+export function listMobileDeviceSessions(userId: string): MobileDeviceSession[] {
+    const now = Date.now();
+    return readRefreshTokenStore().refreshTokens
+        .filter((record) => record.userId === userId && !record.revokedAt && new Date(record.expiresAt).getTime() > now)
+        .map((record) => ({
+            id: record.id,
+            deviceName: record.deviceName || "V8 client",
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            lastUsedAt: record.lastUsedAt,
+            active: true,
+        }))
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+}
+
+export function revokeMobileDeviceSession(userId: string, deviceSessionId: string) {
+    const store = readRefreshTokenStore();
+    const record = store.refreshTokens.find((item) => item.id === deviceSessionId && item.userId === userId);
+    if (!record || record.revokedAt) {
+        return false;
+    }
+    record.revokedAt = new Date().toISOString();
+    writeRefreshTokenStore(store);
+    return true;
 }
 
 export function mobileAuthUserResponse(user: AdminUserRecord) {

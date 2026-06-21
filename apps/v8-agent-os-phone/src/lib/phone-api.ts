@@ -14,7 +14,6 @@ import type {
     DesktopLiveOfferPayload,
     DesktopLiveSessionPayload,
     DesktopLiveStatus,
-    PasswordChangePayload,
     PendingApproval,
     PhoneUser,
     ProfileUpdatePayload,
@@ -148,22 +147,6 @@ export async function updateProfile(authorizedFetch: AuthorizedFetch, input: Pro
         },
     );
     return payload.user || null;
-}
-
-export async function updatePassword(authorizedFetch: AuthorizedFetch, input: PasswordChangePayload) {
-    return authorizedJson<Record<string, unknown>>(
-        authorizedFetch,
-        "/api/client/auth/password",
-        translateCurrent("src.lib.phone_api.text_5"),
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                currentPassword: input.currentPassword,
-                newPassword: input.nextPassword,
-            }),
-        },
-    );
 }
 
 export async function uploadUserAvatar(

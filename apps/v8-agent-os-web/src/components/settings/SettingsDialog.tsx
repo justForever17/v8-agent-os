@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { updateUserAvatar, updateUserNickname, updateUserPassword } from "@/lib/actions/user.actions";
+import { updateUserAvatar, updateUserNickname } from "@/lib/actions/user.actions";
 import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
@@ -32,9 +32,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     const [nickname, setNickname] = useState(session?.user?.name || "");
     const [avatarUrl, setAvatarUrl] = useState(session?.user?.image || "");
     const [customAvatarUrl, setCustomAvatarUrl] = useState("");
-    const [oldPassword, setOldPassword] = useState("");
-    const [newPassword, setNewPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
@@ -113,30 +110,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         }
     };
 
-    const handleUpdatePassword = async () => {
-        if (newPassword !== confirmPassword) {
-            setMessage({ type: 'error', text: t(lt("两次输入的密码不一致", "Passwords do not match")) });
-            return;
-        }
-        setIsLoading(true);
-        setMessage(null);
-        try {
-            const result = await updateUserPassword(oldPassword, newPassword);
-            if (result.success) {
-                setMessage({ type: 'success', text: t(lt("密码更新成功", "Password updated")) });
-                setOldPassword("");
-                setNewPassword("");
-                setConfirmPassword("");
-            } else {
-                setMessage({ type: 'error', text: result.error || t(lt("更新失败", "Update failed")) });
-            }
-        } catch {
-            setMessage({ type: 'error', text: t(lt("发生错误", "Something went wrong")) });
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-[560px]">
@@ -148,9 +121,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </DialogHeader>
 
                 <Tabs defaultValue="profile" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3">
-                        <TabsTrigger value="profile">{t(lt("个人资料", "Profile"))}</TabsTrigger>
-                        <TabsTrigger value="security">{t(lt("安全设置", "Security"))}</TabsTrigger>
+                    <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="profile">{t(lt("聊天资料", "Chat profile"))}</TabsTrigger>
                         <TabsTrigger value="connection">{t(lt("连接管理", "Connection"))}</TabsTrigger>
                     </TabsList>
 
@@ -236,39 +208,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 <ThemeToggle />
                             </div>
                         </div>
-                    </TabsContent>
-
-                    <TabsContent value="security" className="space-y-4 py-4">
-                        <div className="space-y-2">
-                            <Label htmlFor="old-password">{t(lt("当前密码", "Current password"))}</Label>
-                            <Input
-                                id="old-password"
-                                type="password"
-                                value={oldPassword}
-                                onChange={(e) => setOldPassword(e.target.value)}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="new-password">{t(lt("新密码", "New password"))}</Label>
-                            <Input
-                                id="new-password"
-                                type="password"
-                                value={newPassword}
-                                onChange={(e) => setNewPassword(e.target.value)}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="confirm-password">{t(lt("确认新密码", "Confirm new password"))}</Label>
-                            <Input
-                                id="confirm-password"
-                                type="password"
-                                value={confirmPassword}
-                                onChange={(e) => setConfirmPassword(e.target.value)}
-                            />
-                        </div>
-                        <Button className="w-full" onClick={handleUpdatePassword} disabled={isLoading}>
-                            {t(lt("修改密码", "Update password"))}
-                        </Button>
                     </TabsContent>
 
                     <TabsContent value="connection" className="space-y-4 py-4">

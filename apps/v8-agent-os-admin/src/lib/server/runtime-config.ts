@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import {
     readCanonicalAdminRuntimeConfig,
@@ -406,6 +407,69 @@ export function resolveClientSurfaceOriginFromRequest(
 export function resolveReachableAdminPublicBaseUrl() {
     const publicBase = resolveAdminPublicBaseUrl();
     return resolveReachableClientSurfaceOrigin(publicBase);
+}
+
+function isPrivateIpv4(address: string) {
+    if (/^10\./.test(address) || /^192\.168\./.test(address)) {
+        return true;
+    }
+    const match = address.match(/^172\.(\d+)\./);
+    if (match) {
+        const second = Number(match[1]);
+        return second >= 16 && second <= 31;
+    }
+    return false;
+}
+
+function scoreLocalIpv4(address: string) {
+    if (isPrivateIpv4(address)) return 100;
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address)) return 80;
+    if (/^198\.(1[89])\./.test(address)) return 20;
+    return 50;
+}
+
+function resolveLocalNetworkAdminOrigin(requestOrigin?: string) {
+    let protocol = "http:";
+    let port = "9528";
+    try {
+        const parsed = new URL(String(requestOrigin || resolveAdminPublicBaseUrl() || ""));
+        protocol = parsed.protocol || protocol;
+        port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    } catch {
+        // Keep defaults.
+    }
+
+    const candidates = Object.values(os.networkInterfaces())
+        .flat()
+        .filter((entry): entry is os.NetworkInterfaceInfo => Boolean(entry))
+        .filter((entry) => entry.family === "IPv4" && !entry.internal)
+        .map((entry) => entry.address)
+        .filter((address) => address && !address.startsWith("169.254."))
+        .sort((left, right) => scoreLocalIpv4(right) - scoreLocalIpv4(left));
+
+    const selected = candidates[0];
+    if (!selected) {
+        return "";
+    }
+    const suffix = port && !["80", "443"].includes(port) ? `:${port}` : "";
+    return `${protocol}//${selected}${suffix}`;
+}
+
+export function resolvePairingAdminBaseUrlFromRequest(
+    request:
+        | {
+            headers?: Headers | HeadersInit | null;
+            url?: string | null;
+        }
+        | string,
+) {
+    const requestOrigin = resolveRequestOrigin(typeof request === "string" ? { url: request } : request);
+    return (
+        resolveClientSurfaceOriginFromRequest(request, { allowTrustedHeader: true })
+        || resolveReachableAdminPublicBaseUrl()
+        || resolveLocalNetworkAdminOrigin(requestOrigin)
+        || stripApiSuffix(requestOrigin || resolveAdminPublicBaseUrl())
+    ).replace(/\/$/, "");
 }
 
 export function resolveInternalSecret() {

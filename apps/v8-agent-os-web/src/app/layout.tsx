@@ -5,7 +5,6 @@ import { Topbar } from "@/components/layout/Topbar";
 import { SessionProvider } from "@/components/providers/SessionProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
-import { WebPasswordGate } from "@/components/auth/WebPasswordGate";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 
 
@@ -47,7 +46,6 @@ export default async function RootLayout({
                                 <main className="flex min-h-0 flex-1 overflow-hidden">
                                     {children}
                                 </main>
-                                <WebPasswordGate />
                             </div>
                         </ThemeProvider>
                     </SessionProvider>

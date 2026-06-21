@@ -22,12 +22,6 @@ import type { DevicePairingInput, PhoneUser } from "@/src/types/admin";
 
 type SessionStatus = "booting" | "anonymous" | "authenticated";
 
-type LoginInput = {
-    adminBaseUrl: string;
-    login: string;
-    password: string;
-};
-
 type SessionContextValue = {
     status: SessionStatus;
     user: PhoneUser | null;
@@ -36,7 +30,6 @@ type SessionContextValue = {
     activeConversationId: string | null;
     setAdminBaseUrl: (next: string) => Promise<void>;
     setActiveConversationId: (next: string | null) => Promise<void>;
-    signIn: (input: LoginInput) => Promise<void>;
     pairDevice: (input: DevicePairingInput) => Promise<void>;
     signOut: () => Promise<void>;
     refreshUser: () => Promise<PhoneUser | null>;
@@ -97,10 +90,6 @@ function getPreferredBrowserAdminBaseUrls(currentBaseUrl: string) {
         : [normalizedCurrent, ...browserFallbacks];
 
     return candidates.filter((candidate, index, all) => Boolean(candidate) && all.indexOf(candidate) === index);
-}
-
-async function readAuthPayload(response: Response) {
-    return parseJsonSafe<MobileAuthPayload & { error?: string }>(response);
 }
 
 const SessionContext = React.createContext<SessionContextValue | null>(null);
@@ -284,43 +273,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         } else {
             await removeStoredValue("activeConversationId");
         }
-    }, []);
-
-    const signIn = React.useCallback(async ({ adminBaseUrl: nextBaseUrl, login, password }: LoginInput) => {
-        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(nextBaseUrl);
-        let lastError = translateCurrent("src.providers.app_session.text");
-
-        for (const candidateBaseUrl of candidateBaseUrls) {
-            try {
-                const response = await fetch(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/login"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        login,
-                        password,
-                        deviceName: `v8-phone-${Platform.OS}`,
-                    }),
-                });
-
-                const payload = await readAuthPayload(response);
-                if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload.user) {
-                    lastError = payload?.error || translateCurrent("src.providers.app_session.text");
-                    continue;
-                }
-
-                setAdminBaseUrlState(candidateBaseUrl);
-                setAccessToken(payload.accessToken);
-                setRefreshToken(payload.refreshToken);
-                setUser(payload.user);
-                setStatus("authenticated");
-                await persistSession(candidateBaseUrl, payload);
-                return;
-            } catch (error) {
-                lastError = error instanceof Error ? error.message : translateCurrent("src.providers.app_session.text");
-            }
-        }
-
-        throw new Error(lastError);
     }, []);
 
     const pairDevice = React.useCallback(async (input: DevicePairingInput) => {
@@ -557,7 +509,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         activeConversationId,
         setAdminBaseUrl,
         setActiveConversationId,
-        signIn,
         pairDevice,
         signOut,
         refreshUser,
@@ -566,7 +517,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         authorizedRealtimeStream,
         engineClockOffsetMs,
         getEngineNowMs,
-    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, signIn, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
+    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
 
     return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
 }

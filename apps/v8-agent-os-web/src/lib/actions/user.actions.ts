@@ -62,24 +62,3 @@ export async function updateUserAvatar(image: string) {
         return { success: false, error: "头像更新失败" };
     }
 }
-
-export async function updateUserPassword(oldPassword: string, newPassword: string, forceMode = false) {
-    if (!newPassword || newPassword.length < 6) {
-        return { success: false, error: "新密码至少需要 6 位" };
-    }
-
-    try {
-        const response = await createAdminRequest("/auth/password", {
-            method: "POST",
-            body: JSON.stringify({ oldPassword, newPassword, forceMode }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            return { success: false, error: String(data.error || "密码更新失败") };
-        }
-        return { success: true };
-    } catch (error) {
-        console.error("Failed to update password:", error);
-        return { success: false, error: "密码更新失败" };
-    }
-}

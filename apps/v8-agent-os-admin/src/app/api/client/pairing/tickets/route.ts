@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { resolveClientUser } from "@/lib/server/client-request-auth";
 import { createDevicePairingTicket } from "@/lib/server/device-pairing";
-import { resolveClientSurfaceOriginFromRequest, resolveAdminPublicBaseUrl, resolveRequestOrigin } from "@/lib/server/runtime-config";
+import { resolvePairingAdminBaseUrlFromRequest } from "@/lib/server/runtime-config";
 
 export async function POST(req: NextRequest) {
     const owner = await resolveClientUser(req);
@@ -11,11 +11,7 @@ export async function POST(req: NextRequest) {
     }
 
     const payload = await req.json().catch(() => ({}));
-    const adminBaseUrl = (
-        resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false })
-        || resolveRequestOrigin(req)
-        || resolveAdminPublicBaseUrl()
-    ).replace(/\/$/, "");
+    const adminBaseUrl = resolvePairingAdminBaseUrlFromRequest(req);
     try {
         const ticket = createDevicePairingTicket({
             owner,

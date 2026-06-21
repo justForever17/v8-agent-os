@@ -108,12 +108,14 @@ async function main() {
     assert.equal(login.status, 200, JSON.stringify(loginPayload));
     assert.ok(loginPayload.accessToken);
 
-    const createTicket = async (surface) => {
+    const reachablePhoneOrigin = `http://192.168.50.7:${port}`;
+    const createTicket = async (surface, init = {}) => {
         const response = await request("/api/client/pairing/tickets", {
             method: "POST",
             headers: {
                 Authorization: `Bearer ${loginPayload.accessToken}`,
                 "Content-Type": "application/json",
+                ...(init.headers || {}),
             },
             body: JSON.stringify({ surface, deviceName: `test-${surface}` }),
         });
@@ -121,16 +123,17 @@ async function main() {
         assert.equal(response.status, 200, JSON.stringify(payload));
         assert.equal(payload.instanceId, initialManifest.instanceId);
         const pairedAdminUrl = new URL(payload.adminBaseUrl);
-        assert.equal(pairedAdminUrl.protocol, "http:");
-        assert.equal(pairedAdminUrl.port, String(port));
-        assert.ok(["localhost", "127.0.0.1", "::1", "[::1]"].includes(pairedAdminUrl.hostname));
         assert.ok(payload.pairingCode);
         assert.ok(!payload.pairingUri.includes(loginPayload.accessToken));
         assert.ok(!("refreshToken" in payload));
         return payload;
     };
 
-    const phoneTicket = await createTicket("phone");
+    const phoneTicket = await createTicket("phone", {
+        headers: { "x-v8-client-surface-origin": reachablePhoneOrigin },
+    });
+    assert.equal(phoneTicket.adminBaseUrl, reachablePhoneOrigin);
+    assert.ok(phoneTicket.pairingUri.includes(encodeURIComponent(reachablePhoneOrigin)));
     const phoneConsume = await request("/api/client/pairing/consume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

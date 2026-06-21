@@ -21,122 +21,45 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
-import {
-    type AdminConnectionProfile,
-    readActiveAdminConnectionProfileId,
-    readAdminConnectionProfiles,
-} from "@/src/lib/admin-connection-profiles";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
 const BRAND_MARK = require("../assets/images/brand-mark.png");
 
-type Mode = "pair" | "login";
-
 export default function LoginScreen() {
-    const { status, adminBaseUrl, signIn, pairDevice, user } = useAppSession();
+    const { status, pairDevice } = useAppSession();
     const { t } = useUiPrefs();
     const incomingUrl = Linking.useURL();
     const [cameraPermission, requestCameraPermission] = useCameraPermissions();
     const { pairingUri: pairingUriParam } = useLocalSearchParams<{ pairingUri?: string }>();
-    const defaultWebBaseUrl = useMemo(() => {
-        if (Platform.OS !== "web" || typeof window === "undefined") {
-            return "";
-        }
-        const hostname = window.location.hostname || "";
-        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") {
-            return "http://127.0.0.1:9528";
-        }
-        return "";
-    }, []);
-    const [mode, setMode] = useState<Mode>("pair");
     const [pairingUri, setPairingUri] = useState("");
-    const [baseUrl, setBaseUrl] = useState(adminBaseUrl || defaultWebBaseUrl);
-    const [login, setLogin] = useState("");
-    const [password, setPassword] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
-    const [profiles, setProfiles] = useState<AdminConnectionProfile[]>([]);
-    const [activeProfileId, setActiveProfileId] = useState("");
     const [scannerOpen, setScannerOpen] = useState(false);
     const [scanLocked, setScanLocked] = useState(false);
-
-    useEffect(() => {
-        if (adminBaseUrl) {
-            setBaseUrl(adminBaseUrl);
-            return;
-        }
-        if (defaultWebBaseUrl) {
-            setBaseUrl((current) => current || defaultWebBaseUrl);
-        }
-    }, [adminBaseUrl, defaultWebBaseUrl]);
 
     useEffect(() => {
         const nextPairingUri = String(pairingUriParam || incomingUrl || "");
         if (!nextPairingUri.includes("://pair?")) {
             return;
         }
-        setMode("pair");
         setPairingUri(nextPairingUri);
         setError("");
     }, [incomingUrl, pairingUriParam]);
 
-    useEffect(() => {
-        let cancelled = false;
-        const hydrateSavedConnection = async () => {
-            const [profiles, activeId] = await Promise.all([
-                readAdminConnectionProfiles(),
-                readActiveAdminConnectionProfileId(),
-            ]);
-            const activeProfile = profiles.find((profile) => profile.id === activeId) || profiles[0];
-            if (cancelled) {
-                return;
-            }
-            setProfiles(profiles);
-            setActiveProfileId(activeId || "");
-            if (!adminBaseUrl && !defaultWebBaseUrl && activeProfile?.adminBaseUrl) {
-                setBaseUrl((current) => current || activeProfile.adminBaseUrl);
-            }
-        };
-        void hydrateSavedConnection();
-        return () => {
-            cancelled = true;
-        };
-    }, [adminBaseUrl, defaultWebBaseUrl]);
-
-    const pageTitle = useMemo(
-        () => (mode === "pair" ? t("app.login.connect_this_device") : t("app.login.welcome_back")),
-        [mode, t],
-    );
-    const pageSubtitle = useMemo(
-        () =>
-            mode === "pair"
-                ? t("app.login.open_or_paste_the_single_use_link_created_by_your_v8_os_owner")
-                : t("app.login.advanced_password_login_description"),
-        [mode, t],
-    );
+    const pageTitle = useMemo(() => t("app.login.connect_this_device"), [t]);
+    const pageSubtitle = useMemo(() => t("app.login.open_or_paste_the_single_use_link_created_by_your_v8_os_owner"), [t]);
 
     if (status === "authenticated") {
-        return <Redirect href={(user?.mustChangePassword ? "/settings" : "/chat") as Href} />;
+        return <Redirect href={"/chat" as Href} />;
     }
 
     const resetError = () => setError("");
 
     const validate = () => {
-        if (mode === "pair") {
-            if (!pairingUri.trim()) {
-                setError(t("app.login.please_enter_a_pairing_link"));
-                return false;
-            }
-            return true;
-        }
-        if (!baseUrl.trim()) {
-            setError(t("app.login.please_enter_a_reachable_admin_url"));
-            return false;
-        }
-        if (!login.trim() || !password.trim()) {
-            setError(t("app.login.please_enter_your_login_and_password"));
+        if (!pairingUri.trim()) {
+            setError(t("app.login.please_enter_a_pairing_link"));
             return false;
         }
         return true;
@@ -149,18 +72,12 @@ export default function LoginScreen() {
         setBusy(true);
         setError("");
         try {
-            if (mode === "pair") {
-                await pairDevice({ pairingUri });
-                return;
-            }
-            await signIn({ adminBaseUrl: baseUrl, login, password });
+            await pairDevice({ pairingUri });
         } catch (nextError) {
             setError(
                 nextError instanceof Error
                     ? nextError.message
-                    : mode === "pair"
-                        ? t("app.login.pairing_failed")
-                        : t("app.login.sign_in_failed"),
+                    : t("app.login.pairing_failed"),
             );
         } finally {
             setBusy(false);
@@ -189,7 +106,6 @@ export default function LoginScreen() {
             setError(t("app.login.invalid_pairing_link"));
             return;
         }
-        setMode("pair");
         setPairingUri(nextPairingUri);
         setError("");
     };
@@ -212,7 +128,6 @@ export default function LoginScreen() {
                                 <Image source={BRAND_MARK} style={styles.brandMark} />
                                 <View style={styles.brandTextWrap}>
                                     <PhoneWordmark dark={false} />
-                                    <Text style={styles.brandSub}>Phone</Text>
                                 </View>
                             </View>
                             <LocaleMenu variant="default" />
@@ -222,106 +137,32 @@ export default function LoginScreen() {
                     </View>
 
                     <GlassCard>
-                        <View style={styles.modeSwitch}>
-                            <Pressable
-                                style={[styles.modeButton, mode === "pair" && styles.modeButtonActive]}
-                                onPress={() => {
-                                    setMode("pair");
-                                    resetError();
-                                }}
-                            >
-                                <Text style={[styles.modeText, mode === "pair" && styles.modeTextActive]}>{t("app.login.pair_device")}</Text>
-                            </Pressable>
-                            <Pressable
-                                style={[styles.modeButton, mode === "login" && styles.modeButtonActive]}
-                                onPress={() => {
-                                    setMode("login");
-                                    resetError();
-                                }}
-                            >
-                                <Text style={[styles.modeText, mode === "login" && styles.modeTextActive]}>{t("app.login.advanced_login")}</Text>
-                            </Pressable>
-                        </View>
-
                         <View style={styles.form}>
-                            {mode === "pair" ? (
-                                <View style={styles.field}>
-                                    <View style={styles.labelRow}>
-                                        <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
-                                        {Platform.OS === "web" ? null : (
-                                            <Pressable style={styles.scanButton} onPress={() => void openScanner()}>
-                                                <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.primaryDeep} />
-                                                <Text style={styles.scanButtonText}>{t("app.login.scan_pairing_qr")}</Text>
-                                            </Pressable>
-                                        )}
-                                    </View>
-                                    <TextInput
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        value={pairingUri}
-                                        onChangeText={(next) => {
-                                            setPairingUri(next);
-                                            resetError();
-                                        }}
-                                        placeholder="v8agentosphone://pair?..."
-                                        placeholderTextColor={colors.textSoft}
-                                        multiline
-                                        style={[styles.input, styles.pairingInput]}
-                                    />
-                                    <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
+                            <View style={styles.field}>
+                                <View style={styles.labelRow}>
+                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
+                                    {Platform.OS === "web" ? null : (
+                                        <Pressable style={styles.scanButton} onPress={() => void openScanner()}>
+                                            <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.primaryDeep} />
+                                            <Text style={styles.scanButtonText}>{t("app.login.scan_pairing_qr")}</Text>
+                                        </Pressable>
+                                    )}
                                 </View>
-                            ) : (
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.admin_url")}</Text>
-                                    <TextInput
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        value={baseUrl}
-                                        onChangeText={(next) => {
-                                            setBaseUrl(next);
-                                            resetError();
-                                        }}
-                                        placeholder={defaultWebBaseUrl || "http://192.168.x.x:9528"}
-                                        placeholderTextColor={colors.textSoft}
-                                        style={styles.input}
-                                    />
-                                </View>
-                            )}
-
-                            {mode === "login" ? (
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.login")}</Text>
                                 <TextInput
                                     autoCapitalize="none"
                                     autoCorrect={false}
-                                    value={login}
+                                    value={pairingUri}
                                     onChangeText={(next) => {
-                                        setLogin(next);
+                                        setPairingUri(next);
                                         resetError();
                                     }}
-                                    placeholder={t("app.login.owner_login")}
+                                    placeholder="v8agentosphone://pair?..."
                                     placeholderTextColor={colors.textSoft}
-                                    style={styles.input}
+                                    multiline
+                                    style={[styles.input, styles.pairingInput]}
                                 />
-                                </View>
-                            ) : null}
-
-                            {mode === "login" ? (
-                                <View style={styles.field}>
-                                    <Text style={styles.label}>{t("app.login.password")}</Text>
-                                    <TextInput
-                                        secureTextEntry
-                                        value={password}
-                                        onChangeText={(next) => {
-                                            setPassword(next);
-                                            resetError();
-                                        }}
-                                        placeholder="••••••"
-                                        placeholderTextColor={colors.textSoft}
-                                        style={styles.input}
-                                    />
-                                </View>
-                            ) : null}
+                                <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
+                            </View>
 
                             {error ? (
                                 <View style={styles.errorRow}>
@@ -340,54 +181,12 @@ export default function LoginScreen() {
                                     {busy ? (
                                         <ActivityIndicator color="#FFFFFF" />
                                     ) : (
-                                        <Text style={styles.submitText}>
-                                            {mode === "login"
-                                                ? t("app.login.sign_in_to_v8_os_phone")
-                                                : t("app.login.connect_and_enter_v8_os_phone")}
-                                        </Text>
+                                        <Text style={styles.submitText}>{t("app.login.connect_and_enter_v8_os_phone")}</Text>
                                     )}
                                 </LinearGradient>
                             </Pressable>
                         </View>
                     </GlassCard>
-
-                    {mode === "login" && profiles.length > 0 ? (
-                        <GlassCard style={styles.savedConnectionsCard}>
-                            <View style={styles.savedHeaderRow}>
-                                <Text style={styles.savedTitle}>{t("src.screens.connectscreen.saved_targets")}</Text>
-                                <Text style={styles.savedHint}>{t("src.screens.connectscreen.reconnect")}</Text>
-                            </View>
-                            <View style={styles.savedProfilesList}>
-                                {profiles.slice(0, 3).map((profile) => {
-                                    const active = profile.id === activeProfileId || profile.adminBaseUrl === baseUrl;
-                                    return (
-                                        <Pressable
-                                            key={profile.id}
-                                            style={[styles.savedProfileCard, active && styles.savedProfileCardActive]}
-                                            onPress={() => {
-                                                setBaseUrl(profile.adminBaseUrl);
-                                                resetError();
-                                            }}
-                                        >
-                                            <View style={styles.savedProfileBody}>
-                                                <Text style={styles.savedProfileTitle} numberOfLines={1}>
-                                                    {profile.label || profile.adminBaseUrl}
-                                                </Text>
-                                                <Text style={styles.savedProfileUrl} numberOfLines={1}>
-                                                    {profile.adminBaseUrl}
-                                                </Text>
-                                            </View>
-                                            {active ? (
-                                                <View style={styles.savedCurrentBadge}>
-                                                    <Text style={styles.savedCurrentBadgeText}>{t("src.screens.connectscreen.current")}</Text>
-                                                </View>
-                                            ) : null}
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                        </GlassCard>
-                    ) : null}
 
                     <Pressable style={styles.connectHint} onPress={() => router.push("/connect" as Href)}>
                         <MaterialCommunityIcons name="lan-connect" size={16} color={colors.textMuted} />
@@ -461,11 +260,6 @@ const styles = StyleSheet.create({
         flexShrink: 1,
         minWidth: 0,
     },
-    brandSub: {
-        color: colors.textMuted,
-        fontSize: 16,
-        fontWeight: "800",
-    },
     title: {
         color: colors.text,
         fontSize: 28,
@@ -476,34 +270,6 @@ const styles = StyleSheet.create({
         color: colors.textMuted,
         fontSize: 15,
         lineHeight: 22,
-    },
-    modeSwitch: {
-        flexDirection: "row",
-        alignSelf: "stretch",
-        borderRadius: radii.lg,
-        backgroundColor: colors.surfaceMuted,
-        borderWidth: 1,
-        borderColor: colors.border,
-        padding: 4,
-        marginBottom: spacing.lg,
-    },
-    modeButton: {
-        flex: 1,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: radii.md,
-        minHeight: 42,
-    },
-    modeButtonActive: {
-        backgroundColor: colors.surface,
-    },
-    modeText: {
-        color: colors.textMuted,
-        fontSize: 14,
-        fontWeight: "700",
-    },
-    modeTextActive: {
-        color: colors.text,
     },
     form: {
         gap: spacing.lg,
@@ -588,71 +354,6 @@ const styles = StyleSheet.create({
     },
     disabled: {
         opacity: 0.7,
-    },
-    savedConnectionsCard: {
-        gap: spacing.md,
-        backgroundColor: colors.surface,
-    },
-    savedHeaderRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: spacing.sm,
-    },
-    savedTitle: {
-        color: colors.text,
-        fontSize: 16,
-        fontWeight: "900",
-    },
-    savedHint: {
-        color: colors.textSoft,
-        fontSize: 12,
-        fontWeight: "800",
-    },
-    savedProfilesList: {
-        gap: spacing.sm,
-    },
-    savedProfileCard: {
-        minHeight: 68,
-        borderRadius: radii.md,
-        borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surface,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: spacing.sm,
-    },
-    savedProfileCardActive: {
-        borderColor: "rgba(124,58,237,0.34)",
-        backgroundColor: "rgba(124,58,237,0.035)",
-    },
-    savedProfileBody: {
-        flex: 1,
-        gap: 4,
-        minWidth: 0,
-    },
-    savedProfileTitle: {
-        color: colors.text,
-        fontSize: 14,
-        fontWeight: "900",
-    },
-    savedProfileUrl: {
-        color: colors.textMuted,
-        fontSize: 12,
-        fontWeight: "600",
-    },
-    savedCurrentBadge: {
-        borderRadius: radii.pill,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        backgroundColor: "rgba(16,185,129,0.12)",
-    },
-    savedCurrentBadgeText: {
-        color: colors.success,
-        fontSize: 10,
-        fontWeight: "900",
     },
     connectHint: {
         flexDirection: "row",

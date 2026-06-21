@@ -21,7 +21,6 @@ export type PhoneUser = {
     name?: string | null;
     image?: string;
     role: string;
-    mustChangePassword: boolean;
 };
 
 export type AuthSessionPayload = {
@@ -694,11 +693,6 @@ export type ProfileUpdatePayload = {
     name?: string;
     image?: string;
     email?: string;
-};
-
-export type PasswordChangePayload = {
-    currentPassword: string;
-    nextPassword: string;
 };
 
 export type ChatStreamEvent = {

@@ -249,6 +249,69 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "minimax_image",
+        "displayName": "MiniMax Image",
+        "logoAsset": "/model-assets/lobe/minimax-color.svg",
+        "modelIds": [
+          "image-01",
+          "image-01-live"
+        ],
+        "apiStandard": "minimax_image_generation",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "image.generate",
+          "image.edit"
+        ],
+        "baseUrlDefault": "https://api.minimaxi.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/v1/image_generation",
+          "bodyFields": [
+            "model",
+            "prompt",
+            "aspect_ratio",
+            "width",
+            "height",
+            "response_format",
+            "n",
+            "seed",
+            "prompt_optimizer"
+          ],
+          "sizeField": "aspect_ratio",
+          "sizeFormat": "RATIO_COLON",
+          "responseFormats": [
+            "url",
+            "base64"
+          ]
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "data.image_urls[]",
+            "data.b64_json",
+            "metadata.success_count"
+          ]
+        },
+        "statusMap": {
+          "http_2xx": "succeeded",
+          "http_error": "failed"
+        },
+        "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/image-generation-t2i",
+        "confidence": "provider_docs"
+      },
+      {
         "id": "stability_image",
         "displayName": "Stability AI Image",
         "logoAsset": "/model-assets/lobe/stability-color.svg",
@@ -912,11 +975,14 @@
         "displayName": "MiniMax Video",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
         "modelIds": [
+          "MiniMax-Hailuo-2.3",
+          "MiniMax-Hailuo-2.3-Fast",
+          "MiniMax-Hailuo-02",
           "video-01"
         ],
         "apiStandard": "minimax_task",
         "adapter": "catalog_only",
-        "baseUrlDefault": "https://api.minimax.io",
+        "baseUrlDefault": "https://api.minimaxi.com",
         "credentialHelp": {
           "label": "Get API key",
           "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
@@ -948,7 +1014,7 @@
             "download_url"
           ]
         },
-        "sourceUrl": "https://platform.minimaxi.com/document/video-generation",
+        "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v",
         "confidence": "provider_docs"
       },
       {
@@ -1756,11 +1822,16 @@
         "displayName": "MiniMax Speech",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
         "modelIds": [
-          "speech-02-hd"
+          "speech-2.8-hd",
+          "speech-2.8-turbo",
+          "speech-2.6-hd",
+          "speech-2.6-turbo",
+          "speech-02-hd",
+          "speech-02-turbo"
         ],
         "apiStandard": "minimax_tts",
         "adapter": "catalog_only",
-        "baseUrlDefault": "https://api.minimax.io",
+        "baseUrlDefault": "https://api.minimaxi.com",
         "credentialHelp": {
           "label": "Get API key",
           "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
@@ -1790,7 +1861,7 @@
             "binary_body"
           ]
         },
-        "sourceUrl": "https://platform.minimaxi.com/document/speech-synthesis",
+        "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http",
         "confidence": "provider_docs"
       },
       {

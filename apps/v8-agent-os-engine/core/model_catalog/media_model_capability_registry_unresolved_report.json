@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-06-03T10:42:16.159362+00:00",
+  "generatedAt": "2026-06-21T16:12:13.607278+00:00",
   "stats": {
-    "providers": 65,
-    "models": 133,
+    "providers": 66,
+    "models": 143,
     "byModality": {
-      "image": 26,
+      "image": 28,
       "model3d": 28,
       "music": 8,
-      "video": 40,
-      "voice": 31
+      "video": 43,
+      "voice": 36
     }
   },
   "missingProviderLogos": [],

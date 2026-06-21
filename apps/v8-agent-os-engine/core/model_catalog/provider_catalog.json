@@ -1653,7 +1653,7 @@
     },
     {
       "id": "minimax",
-      "name": "MiniMax",
+      "name": "MiniMax International",
       "apiStandard": "openai",
       "baseUrl": "https://api.minimax.io/v1",
       "auth": {
@@ -1661,8 +1661,8 @@
         "header": "Authorization",
         "scheme": "Bearer"
       },
-      "probeStrategy": "catalog_only",
-      "sourceUrl": "https://platform.minimax.io/docs/guides/text-generation",
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://platform.minimax.io/docs/api-reference/models/openai/list-models",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -1699,7 +1699,8 @@
             ],
             "displayKind": "provider_reasoning",
             "sourceRefs": [
-              "https://platform.minimax.io/docs/guides/text-m3-function-call"
+              "https://platform.minimax.io/docs/guides/text-m3-function-call",
+              "https://platform.minimaxi.com/docs/guides/text-m3-function-call"
             ],
             "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
           }
@@ -1795,7 +1796,8 @@
       "anthropicCompatible": {
         "baseUrl": "https://api.minimax.io/anthropic",
         "apiStandard": "anthropic",
-        "probeStrategy": "catalog_only",
+        "probeStrategy": "anthropic_models",
+        "modelsUrl": "https://api.minimax.io/anthropic/v1/models",
         "recommended": true,
         "notes": "MiniMax recommends the Anthropic-compatible endpoint for thinking blocks and interleaved tool use."
       },
@@ -1815,7 +1817,180 @@
         ],
         "displayKind": "provider_reasoning",
         "sourceRefs": [
-          "https://platform.minimax.io/docs/guides/text-m3-function-call"
+          "https://platform.minimax.io/docs/guides/text-m3-function-call",
+          "https://platform.minimaxi.com/docs/guides/text-m3-function-call"
+        ],
+        "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
+      }
+    },
+    {
+      "id": "minimax-cn",
+      "name": "MiniMax 中国站",
+      "apiStandard": "openai",
+      "baseUrl": "https://api.minimaxi.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/models/openai/list-models",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
+      },
+      "confidence": "official",
+      "models": [
+        {
+          "id": "MiniMax-M3",
+          "contextWindow": 1000000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal",
+            "coding",
+            "longContext"
+          ],
+          "reasoningSurface": {
+            "mode": "provider_reasoning",
+            "trust": "official",
+            "requestStyle": "minimax_interleaved_thinking",
+            "responseFields": [
+              "content[type=thinking]",
+              "thinking",
+              "thinking_delta",
+              "reasoning_details",
+              "additional_kwargs.reasoning_details",
+              "response_metadata.reasoning_details",
+              "generation_info.reasoning_details",
+              "additional_kwargs.thinking"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              "https://platform.minimax.io/docs/guides/text-m3-function-call",
+              "https://platform.minimaxi.com/docs/guides/text-m3-function-call"
+            ],
+            "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
+          }
+        },
+        {
+          "id": "MiniMax-M2.7",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.7-highspeed",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.5",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.5-highspeed",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.1",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2.1-highspeed",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "coding",
+            "longContext"
+          ]
+        },
+        {
+          "id": "MiniMax-M2",
+          "contextWindow": 204800,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "longContext"
+          ]
+        },
+        {
+          "id": "M2-her",
+          "contextWindow": 64000,
+          "capabilities": [
+            "chat",
+            "streaming"
+          ]
+        }
+      ],
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "anthropicCompatible": {
+        "baseUrl": "https://api.minimaxi.com/anthropic",
+        "apiStandard": "anthropic",
+        "probeStrategy": "anthropic_models",
+        "modelsUrl": "https://api.minimaxi.com/anthropic/v1/models",
+        "recommended": true,
+        "notes": "MiniMax recommends the Anthropic-compatible endpoint for thinking blocks and interleaved tool use."
+      },
+      "reasoningSurface": {
+        "mode": "provider_reasoning",
+        "trust": "official",
+        "requestStyle": "minimax_interleaved_thinking",
+        "responseFields": [
+          "content[type=thinking]",
+          "thinking",
+          "thinking_delta",
+          "reasoning_details",
+          "additional_kwargs.reasoning_details",
+          "response_metadata.reasoning_details",
+          "generation_info.reasoning_details",
+          "additional_kwargs.thinking"
+        ],
+        "displayKind": "provider_reasoning",
+        "sourceRefs": [
+          "https://platform.minimax.io/docs/guides/text-m3-function-call",
+          "https://platform.minimaxi.com/docs/guides/text-m3-function-call"
         ],
         "notes": "MiniMax-M3 officially exposes interleaved thinking as Anthropic thinking blocks or OpenAI-compatible reasoning_details; native OpenAI content may include <think> tags."
       }

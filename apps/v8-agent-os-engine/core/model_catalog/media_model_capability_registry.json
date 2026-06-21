@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-03T10:42:16.159362+00:00",
+  "generatedAt": "2026-06-21T16:12:13.607278+00:00",
   "notes": [
     "Media model facts are exact providerId + modelId records. Do not infer advanced capability from provider or family names.",
     "Provider/API wire format remains in media_provider_format_matrix.json.",
@@ -597,6 +597,22 @@
       "missingFields": []
     },
     {
+      "providerId": "minimax_image",
+      "displayName": "MiniMax Image",
+      "modalities": [
+        "image"
+      ],
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/image-generation-t2i"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
       "providerId": "minimax_music",
       "displayName": "MiniMax",
       "modalities": [
@@ -623,7 +639,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.minimaxi.com/document/speech-synthesis"
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
         },
         {
           "source": "multimedia_doc",
@@ -643,7 +659,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.minimaxi.com/document/video-generation"
+          "url": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v"
         }
       ],
       "confidence": "provider_docs",
@@ -1661,6 +1677,86 @@
         {
           "source": "media_provider_format_matrix",
           "url": "https://docs.leonardo.ai"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "image-01",
+      "displayName": "image-01",
+      "creator": "MiniMax Image",
+      "providerIds": [
+        "minimax_image"
+      ],
+      "aliases": [
+        "image-01"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate",
+        "image.edit"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/image-generation-t2i"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "image-01-live",
+      "displayName": "image-01-live",
+      "creator": "MiniMax Image",
+      "providerIds": [
+        "minimax_image"
+      ],
+      "aliases": [
+        "image-01-live"
+      ],
+      "modality": "image",
+      "operationKinds": [
+        "image.generate",
+        "image.edit"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "image"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/image-generation-t2i"
         }
       ],
       "confidence": "provider_docs",
@@ -4759,6 +4855,126 @@
       "missingFields": []
     },
     {
+      "canonicalModelId": "MiniMax-Hailuo-02",
+      "displayName": "MiniMax-Hailuo-02",
+      "creator": "MiniMax Video",
+      "providerIds": [
+        "minimax_video"
+      ],
+      "aliases": [
+        "MiniMax-Hailuo-02"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "MiniMax-Hailuo-2.3",
+      "displayName": "MiniMax-Hailuo-2.3",
+      "creator": "MiniMax Video",
+      "providerIds": [
+        "minimax_video"
+      ],
+      "aliases": [
+        "MiniMax-Hailuo-2.3"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "MiniMax-Hailuo-2.3-Fast",
+      "displayName": "MiniMax-Hailuo-2.3-Fast",
+      "creator": "MiniMax Video",
+      "providerIds": [
+        "minimax_video"
+      ],
+      "aliases": [
+        "MiniMax-Hailuo-2.3-Fast"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
       "canonicalModelId": "video-01",
       "displayName": "video-01",
       "creator": "MiniMax Video",
@@ -4792,7 +5008,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.minimaxi.com/document/video-generation"
+          "url": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v"
         }
       ],
       "confidence": "provider_docs",
@@ -7194,7 +7410,202 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.minimaxi.com/document/speech-synthesis"
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "speech-02-turbo",
+      "displayName": "speech-02-turbo",
+      "creator": "MiniMax Speech",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "speech-02-turbo"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "speech-2.6-hd",
+      "displayName": "speech-2.6-hd",
+      "creator": "MiniMax Speech",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "speech-2.6-hd"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "speech-2.6-turbo",
+      "displayName": "speech-2.6-turbo",
+      "creator": "MiniMax Speech",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "speech-2.6-turbo"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "speech-2.8-hd",
+      "displayName": "speech-2.8-hd",
+      "creator": "MiniMax Speech",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "speech-2.8-hd"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "speech-2.8-turbo",
+      "displayName": "speech-2.8-turbo",
+      "creator": "MiniMax Speech",
+      "providerIds": [
+        "minimax_tts"
+      ],
+      "aliases": [
+        "speech-2.8-turbo"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/minimax-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
         }
       ],
       "confidence": "provider_docs",

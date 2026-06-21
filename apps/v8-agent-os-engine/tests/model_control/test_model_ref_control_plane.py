@@ -126,6 +126,7 @@ def test_catalog_exposes_credential_help_for_quick_connect():
         "zai-coding",
         "xiaomi-mimo",
         "minimax",
+        "minimax-cn",
         "groq",
     ]:
         help_entry = providers[provider_id].get("credentialHelp") or {}
@@ -157,6 +158,7 @@ def test_catalog_bridges_creative_media_provider_matrix():
         "mureka_music": ("music", "MUSIC"),
         "fal_3d": ("model3d", "MODEL3D"),
         "tencent_hunyuan_3d": ("model3d", "MODEL3D"),
+        "minimax_image": ("image", "IMAGE"),
     }
     for provider_id, (modality, model_type) in expected.items():
         provider = providers[provider_id]
@@ -191,6 +193,8 @@ def test_catalog_bridges_creative_media_provider_matrix():
     assert "doubao-seed3d-2-0" in {item["id"] for item in providers["volcengine_3d_generation"]["models"]}
     hitem = next(item for item in providers["volcengine_3d_generation"]["models"] if item["id"] == "hitem3d-2-0")
     assert hitem["logoAsset"].endswith("hitem3d.svg")
+    assert providers["minimax_image"]["models"][0]["id"] == "image-01"
+    assert providers["minimax_image"]["models"][1]["id"] == "image-01-live"
 
 
 def test_catalog_only_probe_does_not_return_preset_models():
@@ -203,12 +207,19 @@ def test_catalog_only_probe_does_not_return_preset_models():
     assert result["rawCount"] >= 1
 
 
-def test_minimax_catalog_uses_official_models_and_reasoning_contract():
+def test_minimax_providers_use_official_models_endpoint_and_reasoning_contract():
     provider = model_provider_catalog.get_provider("minimax")
+    cn_provider = model_provider_catalog.get_provider("minimax-cn")
     assert provider
-    assert provider["probeStrategy"] == "catalog_only"
+    assert cn_provider
+    assert provider["probeStrategy"] == "openai_models"
+    assert cn_provider["probeStrategy"] == "openai_models"
     assert provider["baseUrl"] == "https://api.minimax.io/v1"
+    assert cn_provider["baseUrl"] == "https://api.minimaxi.com/v1"
     assert provider["anthropicCompatible"]["baseUrl"] == "https://api.minimax.io/anthropic"
+    assert cn_provider["anthropicCompatible"]["baseUrl"] == "https://api.minimaxi.com/anthropic"
+    assert provider["anthropicCompatible"]["modelsUrl"] == "https://api.minimax.io/anthropic/v1/models"
+    assert cn_provider["anthropicCompatible"]["modelsUrl"] == "https://api.minimaxi.com/anthropic/v1/models"
 
     model_ids = {item["id"] for item in provider["models"]}
     assert {"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "M2-her"}.issubset(model_ids)
@@ -220,6 +231,20 @@ def test_minimax_catalog_uses_official_models_and_reasoning_contract():
     assert normalized["reasoningSurface"]["mode"] == "provider_reasoning"
     assert normalized["reasoningSurface"]["trust"] == "official"
     assert "reasoning_details" in normalized["reasoningSurface"]["responseFields"]
+
+
+def test_minimax_model_list_probe_uses_site_specific_models_endpoint():
+    international = model_provider_catalog.probe_provider("minimax", credential="")
+    cn = model_provider_catalog.probe_provider("minimax-cn", credential="")
+
+    assert international["ok"] is False
+    assert international["reason"] == "credential_required"
+    assert international["models"] == []
+    assert international["resolvedModelsUrl"] == "https://api.minimax.io/v1/models"
+    assert cn["ok"] is False
+    assert cn["reason"] == "credential_required"
+    assert cn["models"] == []
+    assert cn["resolvedModelsUrl"] == "https://api.minimaxi.com/v1/models"
 
 
 def test_online_probe_strategy_requires_real_provider_list_not_catalog_fill():

@@ -17,6 +17,7 @@ from core.v8_agent_os_paths import (
     COMPUTER_USE_JSON_PATH,
     CONFIG_JSON_PATH,
     LEGACY_CONFIG_BACKUP_ROOT,
+    MCP_JSON_PATH,
     OPENCLAW_DEFAULT_STATE_ROOT,
     PLUGIN_INSTALL_LOG_ROOT,
     PLUGIN_JSON_PATH,
@@ -2009,10 +2010,15 @@ class StorageManager:
     # --- Specialized Accessors ---
     @property
     def mcp_config_path(self) -> Path:
-        return CONFIG_JSON_PATH
+        return MCP_JSON_PATH
 
     def get_mcp_config(self) -> Dict[str, Any]:
-        payload = self._read_config_payload().get("mcp") or {}
+        if MCP_JSON_PATH.exists():
+            payload = self._read_json_file(MCP_JSON_PATH)
+        else:
+            payload = self._read_config_payload().get("mcp") or {}
+            if payload:
+                self.save_mcp_config(payload if isinstance(payload, dict) else {})
         normalized = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["mcp"],
             payload if isinstance(payload, dict) else {},
@@ -2021,13 +2027,12 @@ class StorageManager:
         return normalized
 
     def save_mcp_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
-        payload["mcp"] = self._deep_merge(
+        payload = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["mcp"],
             dict(data or {}),
         )
-        payload["mcp"].setdefault("mcpServers", {})
-        self._write_config_payload(payload)
+        payload.setdefault("mcpServers", {})
+        self.write_json("mcp.json", payload)
         
     def get_models_config(self) -> Dict[str, Any]:
         """Reads the unified models.json (model catalog + role assignments)."""

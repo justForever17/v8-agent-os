@@ -18,11 +18,16 @@ import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { LoginDialog } from "@/components/auth/LoginDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
+import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 
 export function UserProfile() {
     const { data: session, status } = useSession();
+    const { profile } = useClientProfile();
     const [showSettings, setShowSettings] = useState(false);
     const t = useT();
+    const displayName = profile?.name || session?.user?.name || "";
+    const displayImage = profile?.image || session?.user?.image || "";
+    const displayLogin = profile?.login || session?.user?.login || session?.user?.email || "";
 
     const handleSignOut = async () => {
         const fallbackUrl =
@@ -83,9 +88,9 @@ export function UserProfile() {
                             )}
                         >
                             <Avatar className="h-8 w-8">
-                                <AvatarImage src={session.user.image || ""} alt={session.user.name || ""} />
+                                <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
                                 <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-white text-sm font-medium">
-                                    {session.user.name?.charAt(0).toUpperCase() || "U"}
+                                    {displayName.charAt(0).toUpperCase() || "U"}
                                 </AvatarFallback>
                             </Avatar>
                         </Button>
@@ -94,9 +99,9 @@ export function UserProfile() {
                 <DropdownMenuContent className="w-56" align="end" forceMount>
                     <DropdownMenuLabel className="font-normal">
                         <div className="flex flex-col space-y-1">
-                            <p className="text-sm font-medium leading-none">{session.user.name}</p>
+                            <p className="text-sm font-medium leading-none">{displayName || t(lt("聊天用户", "Chat user"))}</p>
                             <p className="text-xs leading-none text-muted-foreground">
-                                {session.user.login || session.user.email}
+                                {displayLogin}
                             </p>
                         </div>
                     </DropdownMenuLabel>

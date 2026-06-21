@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { updateUserAvatar, updateUserNickname } from "@/lib/actions/user.actions";
-import { useSession } from "next-auth/react";
+import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { useEffect, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
 import { AdminConnectionManager } from "@/components/connection/AdminConnectionManager";
@@ -27,18 +27,23 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
-    const { data: session, update } = useSession();
+    const { profile, refreshProfile, applyProfile } = useClientProfile();
     const t = useT();
-    const [nickname, setNickname] = useState(session?.user?.name || "");
-    const [avatarUrl, setAvatarUrl] = useState(session?.user?.image || "");
+    const [nickname, setNickname] = useState(profile?.name || "");
+    const [avatarUrl, setAvatarUrl] = useState(profile?.image || "");
     const [customAvatarUrl, setCustomAvatarUrl] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
     useEffect(() => {
-        setNickname(session?.user?.name || "");
-        setAvatarUrl(session?.user?.image || "");
-    }, [session?.user?.image, session?.user?.name]);
+        setNickname(profile?.name || "");
+        setAvatarUrl(profile?.image || "");
+    }, [profile?.image, profile?.name]);
+
+    useEffect(() => {
+        if (!open) return;
+        void refreshProfile();
+    }, [open, refreshProfile]);
 
     const handleUpdateNickname = async () => {
         setIsLoading(true);
@@ -46,7 +51,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         try {
             const result = await updateUserNickname(nickname);
             if (result.success) {
-                await update({ name: nickname });
+                await applyProfile(result.user || { ...(profile || {}), name: nickname });
                 setMessage({ type: 'success', text: t(lt("昵称更新成功", "Display name updated")) });
             } else {
                 setMessage({ type: 'error', text: result.error || t(lt("更新失败", "Update failed")) });
@@ -72,12 +77,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             if (!response.ok || !data.url) {
                 throw new Error(data.error || t(lt("头像上传失败", "Avatar upload failed")));
             }
-            const result = await updateUserAvatar(String(data.url));
+            const nextImage = String(data.path || data.url);
+            const result = await updateUserAvatar(nextImage);
             if (!result.success) {
                 throw new Error(result.error || t(lt("头像保存失败", "Failed to save avatar")));
             }
-            setAvatarUrl(String(data.url));
-            await update({ image: String(data.url) });
+            setAvatarUrl(nextImage);
+            await applyProfile(result.user || { ...(profile || {}), image: nextImage });
             setMessage({ type: "success", text: t(lt("头像更新成功", "Avatar updated")) });
         } catch (error) {
             setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("头像更新失败", "Avatar update failed")) });
@@ -100,7 +106,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 throw new Error(result.error || t(lt("头像保存失败", "Failed to save avatar")));
             }
             setAvatarUrl(nextUrl);
-            await update({ image: nextUrl });
+            await applyProfile(result.user || { ...(profile || {}), image: nextUrl });
             setCustomAvatarUrl("");
             setMessage({ type: "success", text: t(lt("头像更新成功", "Avatar updated")) });
         } catch (error) {
@@ -131,14 +137,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                             <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center overflow-hidden text-2xl font-semibold text-muted-foreground">
                                 {avatarUrl ? (
                                     <Image
-                                        src={avatarUrl}
-                                        alt={session?.user?.name || t(lt("用户头像", "User avatar"))}
+                                        src={resolveProfileAvatarSrc(avatarUrl)}
+                                        alt={profile?.name || t(lt("用户头像", "User avatar"))}
                                         width={64}
                                         height={64}
                                         className="h-full w-full object-cover"
                                         unoptimized
                                     />
-                                ) : (session?.user?.name?.charAt(0).toUpperCase() || "U")}
+                                ) : (profile?.name?.charAt(0).toUpperCase() || "U")}
                             </div>
                             <div className="flex-1 space-y-3">
                                 <Label htmlFor="nickname">{t(lt("昵称", "Display name"))}</Label>
@@ -186,7 +192,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                                     const result = await updateUserAvatar("");
                                                     if (result.success) {
                                                         setAvatarUrl("");
-                                                        await update({ image: "" });
+                                                        await applyProfile(result.user || { ...(profile || {}), image: "" });
                                                         setMessage({ type: "success", text: t(lt("已恢复默认头像", "Default avatar restored")) });
                                                     } else {
                                                         setMessage({ type: "error", text: result.error || t(lt("恢复失败", "Restore failed")) });

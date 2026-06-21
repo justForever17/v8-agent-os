@@ -1,23 +1,20 @@
-import fs from "fs";
-import path from "path";
-import { randomUUID } from "crypto";
-
-import sharp from "sharp";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
+import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 export const runtime = "nodejs";
-
-const USER_AVATAR_DIR = path.join(process.cwd(), "public", "user");
-const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
-const MAX_SIZE_BYTES = 8 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
     try {
         const session = await auth();
-        if (!session?.user?.id) {
+        const userIdentifier = String(session?.user?.email || session?.user?.login || "").trim();
+        if (!userIdentifier) {
             return NextResponse.json({ error: "未登录" }, { status: 401 });
+        }
+        const internalSecret = await resolveInternalSecret();
+        if (!internalSecret) {
+            return NextResponse.json({ error: "Admin bridge secret is not configured" }, { status: 500 });
         }
 
         const formData = await req.formData();
@@ -26,34 +23,23 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "没有找到上传文件" }, { status: 400 });
         }
 
-        if (!ALLOWED_TYPES.has(file.type)) {
-            return NextResponse.json({ error: "暂不支持这种图片格式" }, { status: 400 });
-        }
-        if (file.size > MAX_SIZE_BYTES) {
-            return NextResponse.json({ error: "图片过大，请换一张更小的图片" }, { status: 400 });
-        }
-
-        const buffer = Buffer.from(await file.arrayBuffer());
-        fs.mkdirSync(USER_AVATAR_DIR, { recursive: true });
-
-        const filename = `user-${Date.now()}-${randomUUID().slice(0, 8)}.webp`;
-        const targetPath = path.join(USER_AVATAR_DIR, filename);
-        const image = sharp(buffer, { animated: false }).rotate();
-        const metadata = await image.metadata();
-
-        await image
-            .resize(256, 256, { fit: "cover", position: "centre" })
-            .webp({ quality: 90 })
-            .toFile(targetPath);
-
-        return NextResponse.json({
-            url: `/user/${filename}`,
-            path: `/user/${filename}`,
-            width: 256,
-            height: 256,
-            originalWidth: metadata.width || null,
-            originalHeight: metadata.height || null,
+        const upstreamForm = new FormData();
+        upstreamForm.append("file", file);
+        const upstream = await fetch(`${await resolveAdminApiBaseUrl()}/avatar-upload`, {
+            method: "POST",
+            headers: {
+                "x-v8-agent-os-secret": internalSecret,
+                "x-v8-agent-os-user-email": userIdentifier,
+            },
+            body: upstreamForm,
+            cache: "no-store",
         });
+        const payload = await upstream.json().catch(() => ({}));
+        if (!upstream.ok) {
+            return NextResponse.json(payload, { status: upstream.status });
+        }
+
+        return NextResponse.json(payload, { status: upstream.status });
     } catch (error) {
         console.error("[user-avatar-upload] Upload failed:", error);
         return NextResponse.json({ error: "头像上传失败" }, { status: 500 });

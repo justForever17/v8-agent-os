@@ -138,8 +138,34 @@ def _validate_mcp_server_map(config: dict[str, Any]) -> dict[str, dict[str, Any]
             raise McpConfigValidationError("invalid_headers", f"MCP server `{server_name}` 的 headers 必须是对象。")
 
         disabled = bool(server.get("disabled", False))
+        raw_type = str(server.get("type") or server.get("transport") or "").strip().lower()
+        type_aliases = {
+            "stdio": "stdio",
+            "http": "http",
+            "streamable_http": "http",
+            "streamable-http": "http",
+            "sse": "sse",
+        }
+        transport_type = type_aliases.get(raw_type)
+        if not transport_type:
+            raise McpConfigValidationError(
+                "missing_or_invalid_type",
+                f"MCP server `{server_name}` 必须声明 type: stdio、http 或 sse。",
+            )
+        server["type"] = transport_type
+        server.pop("transport", None)
         command = str(server.get("command") or "").strip()
         url = str(server.get("url") or "").strip()
+        if not disabled and transport_type == "stdio" and not command:
+            raise McpConfigValidationError(
+                "missing_command",
+                f"MCP server `{server_name}` 使用 stdio 时必须提供 command。",
+            )
+        if not disabled and transport_type in {"http", "sse"} and not url:
+            raise McpConfigValidationError(
+                "missing_url",
+                f"MCP server `{server_name}` 使用 {transport_type} 时必须提供 url。",
+            )
         if not disabled and not command and not url:
             raise McpConfigValidationError(
                 "missing_target",

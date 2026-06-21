@@ -164,8 +164,7 @@ function normalizeTransportKind(value: unknown) {
         : "manual_url";
 }
 
-export function buildAdminLinkManifest(requestOrigin?: string) {
-    const identity = readOrCreateInstanceIdentity();
+function buildRemoteLinkContext(requestOrigin?: string) {
     const config = readCanonicalAdminRuntimeConfig();
     const systemBase = (config.systemBase || {}) as SystemBaseConfig;
     const remoteLink = systemBase.remoteLink || {};
@@ -195,6 +194,47 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
     const activeProfileId = String(remoteLink.activeProfileId || "manual-local");
     const activeProfile = profiles.find((profile) => profile.id === activeProfileId) || profiles[0] || {};
     const transportKind = normalizeTransportKind(activeProfile.kind);
+    return {
+        requestAdminBaseUrl: adminBaseUrl,
+        engineBaseUrl,
+        profiles,
+        activeProfile,
+        activeProfileId,
+        transportKind,
+        remoteLink,
+    };
+}
+
+function isTailscaleIpv4(address: string) {
+    return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address);
+}
+
+function resolveActiveRemoteLinkAdminBaseUrl(requestOrigin?: string) {
+    const context = buildRemoteLinkContext(requestOrigin);
+    const activeProfile = context.activeProfile || {};
+    if (activeProfile.enabled === false) {
+        return "";
+    }
+    const configured = resolveReachableClientSurfaceOrigin(stripApiSuffix(activeProfile.adminBaseUrl || ""));
+    if (configured) {
+        return configured;
+    }
+    const kind = normalizeTransportKind(activeProfile.kind);
+    if (kind === "lan" || kind === "wireguard" || kind === "tailscale" || kind === "headscale" || kind === "custom_vpn") {
+        return resolveLocalNetworkAdminOrigin(requestOrigin, kind);
+    }
+    return "";
+}
+
+export function buildAdminLinkManifest(requestOrigin?: string) {
+    const identity = readOrCreateInstanceIdentity();
+    const context = buildRemoteLinkContext(requestOrigin);
+    const adminBaseUrl = resolveActiveRemoteLinkAdminBaseUrl(requestOrigin) || context.requestAdminBaseUrl;
+    const engineBaseUrl = context.engineBaseUrl;
+    const profiles = context.profiles;
+    const activeProfile = context.activeProfile;
+    const activeProfileId = context.activeProfileId;
+    const transportKind = context.transportKind;
     const warnings = [
         adminBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "admin_loopback_not_reachable_from_phone" : "",
         engineBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "engine_loopback_not_reachable_from_phone" : "",
@@ -236,7 +276,7 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
             runtimeEvents: true,
             networkSupervisorPeers: true,
         },
-        meshProviders: (remoteLink.meshProviders || []).map((provider) => ({
+        meshProviders: (context.remoteLink.meshProviders || []).map((provider) => ({
             id: provider.id || provider.kind || "",
             kind: provider.kind || provider.id || "",
             enabled: provider.enabled !== false,
@@ -421,14 +461,21 @@ function isPrivateIpv4(address: string) {
     return false;
 }
 
-function scoreLocalIpv4(address: string) {
+function scoreLocalIpv4(address: string, preferredKind?: string) {
+    const normalizedKind = normalizeTransportKind(preferredKind);
+    if ((normalizedKind === "tailscale" || normalizedKind === "headscale") && isTailscaleIpv4(address)) {
+        return 200;
+    }
+    if (normalizedKind === "lan" && isPrivateIpv4(address)) {
+        return 200;
+    }
     if (isPrivateIpv4(address)) return 100;
-    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address)) return 80;
+    if (isTailscaleIpv4(address)) return 80;
     if (/^198\.(1[89])\./.test(address)) return 20;
     return 50;
 }
 
-function resolveLocalNetworkAdminOrigin(requestOrigin?: string) {
+function resolveLocalNetworkAdminOrigin(requestOrigin?: string, preferredKind?: string) {
     let protocol = "http:";
     let port = "9528";
     try {
@@ -445,7 +492,7 @@ function resolveLocalNetworkAdminOrigin(requestOrigin?: string) {
         .filter((entry) => entry.family === "IPv4" && !entry.internal)
         .map((entry) => entry.address)
         .filter((address) => address && !address.startsWith("169.254."))
-        .sort((left, right) => scoreLocalIpv4(right) - scoreLocalIpv4(left));
+        .sort((left, right) => scoreLocalIpv4(right, preferredKind) - scoreLocalIpv4(left, preferredKind));
 
     const selected = candidates[0];
     if (!selected) {
@@ -465,6 +512,8 @@ export function resolvePairingAdminBaseUrlFromRequest(
 ) {
     const requestOrigin = resolveRequestOrigin(typeof request === "string" ? { url: request } : request);
     return (
+        resolveActiveRemoteLinkAdminBaseUrl(requestOrigin)
+        ||
         resolveClientSurfaceOriginFromRequest(request, { allowTrustedHeader: true })
         || resolveReachableAdminPublicBaseUrl()
         || resolveLocalNetworkAdminOrigin(requestOrigin)

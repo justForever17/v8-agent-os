@@ -1,6 +1,12 @@
 from core.audio.audio_config import _normalize_audio_config
 from core.audio.stt_provider import CustomSTTProvider, ModelRefSTTProvider, STTManager
-from core.audio.tts_provider import CustomTTSProvider, ModelRefTTSProvider, TTSManager
+from core.audio.tts_provider import (
+    CustomTTSProvider,
+    ModelRefTTSProvider,
+    TTSManager,
+    _decode_audio_value,
+    _extract_json_path,
+)
 
 
 def test_audio_config_preserves_model_ref_sections():
@@ -169,3 +175,29 @@ def test_model_ref_audio_providers_are_explicit_not_mock(monkeypatch):
 
     assert isinstance(STTManager.get_provider(), ModelRefSTTProvider)
     assert isinstance(TTSManager.get_provider(), ModelRefTTSProvider)
+
+
+def test_minimax_tts_protocol_builds_official_payload_and_decodes_audio():
+    provider = CustomTTSProvider(
+        endpoint="https://api.minimaxi.com/v1/t2a_v2",
+        protocol="minimax_t2a_v2",
+        model="speech-2.8-turbo",
+        voice="Chinese (Mandarin)_News_Anchor",
+        audio_format="mp3",
+        speed="1.2",
+        response_audio_path="data.audio",
+    )
+
+    payload = provider._build_payload("你好，V8OS。")
+
+    assert payload["model"] == "speech-2.8-turbo"
+    assert payload["text"] == "你好，V8OS。"
+    assert payload["stream"] is False
+    assert payload["output_format"] == "hex"
+    assert payload["voice_setting"]["voice_id"] == "Chinese (Mandarin)_News_Anchor"
+    assert payload["voice_setting"]["speed"] == 1.2
+    assert payload["audio_setting"]["format"] == "mp3"
+
+    response_payload = {"data": {"audio": "000102ff"}}
+    assert _extract_json_path(response_payload, "data.audio") == "000102ff"
+    assert _decode_audio_value("000102ff") == b"\x00\x01\x02\xff"

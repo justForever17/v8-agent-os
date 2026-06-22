@@ -52,6 +52,19 @@ type MobileAuthPayload = {
 
 const MIN_BOOTING_SCREEN_MS = 900;
 
+function normalizeProfileValue(value?: string | null) {
+    return String(value || "").trim();
+}
+
+function phoneUsersMatch(left?: PhoneUser | null, right?: PhoneUser | null) {
+    return normalizeProfileValue(left?.id) === normalizeProfileValue(right?.id)
+        && normalizeProfileValue(left?.login) === normalizeProfileValue(right?.login)
+        && normalizeProfileValue(left?.email) === normalizeProfileValue(right?.email)
+        && normalizeProfileValue(left?.name) === normalizeProfileValue(right?.name)
+        && normalizeProfileValue(left?.image) === normalizeProfileValue(right?.image)
+        && normalizeProfileValue(left?.role) === normalizeProfileValue(right?.role);
+}
+
 function getBrowserAdminFallbackBaseUrls(currentBaseUrl: string) {
     if (Platform.OS !== "web" || typeof window === "undefined") {
         return [];
@@ -117,10 +130,15 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [engineClockOffsetMs, setEngineClockOffsetMs] = React.useState(0);
     const bootStartedAtRef = React.useRef(Date.now());
     const statusRef = React.useRef<SessionStatus>("booting");
+    const userRef = React.useRef<PhoneUser | null>(null);
 
     React.useEffect(() => {
         statusRef.current = status;
     }, [status]);
+
+    React.useEffect(() => {
+        userRef.current = user;
+    }, [user]);
 
     const awaitMinimumBootScreen = React.useCallback(async () => {
         if (statusRef.current !== "booting") {
@@ -333,7 +351,11 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     }, [accessToken, adminBaseUrl]);
 
     const updateCurrentUser = React.useCallback(async (next: PhoneUser | null) => {
-        setUser(next);
+        const current = userRef.current;
+        setUser((previous) => phoneUsersMatch(previous, next) ? previous : next);
+        if (phoneUsersMatch(current, next)) {
+            return;
+        }
         if (next) {
             await setStoredValue("user", JSON.stringify(next));
         } else {

@@ -70,6 +70,17 @@ class MockTTSProvider(TTSProvider):
         # Fallback， yield empty
         yield b""
 
+class ModelRefTTSProvider(TTSProvider):
+    def __init__(self, model_ref: str = ""):
+        self.model_ref = model_ref
+
+    async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
+        target = self.model_ref or "未选择模型"
+        raise RuntimeError(
+            f"TTS 已配置为使用已配置模型替代（{target}），但当前音频模型合成适配器尚未启用。"
+            "请改用 Edge TTS / 自建 TTS API，或补齐 model_ref TTS 适配器。"
+        )
+
 class TTSManager:
     @staticmethod
     def get_provider() -> TTSProvider:
@@ -93,5 +104,8 @@ class TTSManager:
                     api_key=cust_conf.get("api_key"),
                     voice=cust_conf.get("voice")
                 )
+        elif active == "model_ref":
+            model_ref = (tts_conf.get("model_ref") or {}).get("modelRef") or ""
+            return ModelRefTTSProvider(str(model_ref))
         
         return MockTTSProvider()

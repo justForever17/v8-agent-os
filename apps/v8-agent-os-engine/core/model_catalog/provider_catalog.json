@@ -292,6 +292,30 @@
       "models": [
         {
           "id": "gemini-3.1-pro-preview",
+          "type": "MULTIMODAL",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+          }
+        },
+        {
+          "id": "gemini-3.5-flash",
+          "type": "MULTIMODAL",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
           "capabilities": [
@@ -314,6 +338,30 @@
         },
         {
           "id": "gemini-3-flash-preview",
+          "type": "MULTIMODAL",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "capabilities": [
+            "chat",
+            "tools",
+            "vision",
+            "streaming",
+            "reasoning",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "unknown",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [],
+            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+          }
+        },
+        {
+          "id": "gemini-3.1-flash-lite",
+          "type": "MULTIMODAL",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
           "capabilities": [
@@ -336,6 +384,7 @@
         },
         {
           "id": "gemini-2.5-pro",
+          "type": "MULTIMODAL",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
           "capabilities": [
@@ -358,6 +407,7 @@
         },
         {
           "id": "gemini-2.5-flash",
+          "type": "MULTIMODAL",
           "contextWindow": 1000000,
           "maxOutputTokens": 64000,
           "capabilities": [

@@ -36,6 +36,12 @@ def test_llm_provider_catalog_contains_new_model_providers():
     assert "perplexity" in loaded_ids
     assert "fireworks" in loaded_ids
 
+    gemini = next(item for item in payload["providers"] if item["id"] == "gemini-api")
+    gemini_model_ids = {item["id"] for item in gemini["models"]}
+    assert {"gemini-3.5-flash", "gemini-3.1-flash-lite"}.issubset(gemini_model_ids)
+    assert "gemini-3.1-flash-preview" not in gemini_model_ids
+    assert "gemini-3.1-flash-lite-preview" not in gemini_model_ids
+
 
 def test_media_matrix_contains_requested_generation_providers():
     payload = json.loads(MEDIA_MATRIX.read_text(encoding="utf-8"))
@@ -63,6 +69,8 @@ def test_media_matrix_contains_requested_generation_providers():
         "playht_tts",
         "azure_speech_tts",
         "google_cloud_tts",
+        "google_gemini_tts",
+        "google_gemini_live_audio",
         "amazon_polly_tts",
     }.issubset(modality_ids["voice"])
     assert "udio_music" in modality_ids["music"]

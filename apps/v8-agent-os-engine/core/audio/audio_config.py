@@ -21,6 +21,12 @@ DEFAULT_AUDIO_CONFIG = {
                 "endpoint": "",
                 "api_key": ""
             }
+        },
+        "model_ref": {
+            "modelRef": "",
+            "mode": "audio_input",
+            "language": "zh-CN",
+            "prompt": ""
         }
     },
     "tts": {
@@ -34,6 +40,12 @@ DEFAULT_AUDIO_CONFIG = {
             "endpoint": "",
             "api_key": "",
             "voice": ""
+        },
+        "model_ref": {
+            "modelRef": "",
+            "voice": "",
+            "format": "mp3",
+            "speed": ""
         }
     }
 }
@@ -52,6 +64,11 @@ def _normalize_audio_config(config: dict | None) -> dict:
         if provider_name == "custom" and incoming.get("api_url") and not merged.get("endpoint"):
             merged["endpoint"] = incoming["api_url"]
         normalized["stt"]["providers"][provider_name] = merged
+    stt_model_ref_raw = stt_raw.get("model_ref") if isinstance(stt_raw.get("model_ref"), dict) else {}
+    normalized["stt"]["model_ref"] = {
+        **normalized["stt"]["model_ref"],
+        **stt_model_ref_raw,
+    }
 
     tts_raw = raw.get("tts") if isinstance(raw.get("tts"), dict) else {}
     normalized["tts"]["active_provider"] = tts_raw.get("active_provider", normalized["tts"]["active_provider"])
@@ -74,6 +91,11 @@ def _normalize_audio_config(config: dict | None) -> dict:
     }
     if legacy_custom.get("api_url") and not normalized["tts"]["custom"].get("endpoint"):
         normalized["tts"]["custom"]["endpoint"] = legacy_custom["api_url"]
+    tts_model_ref_raw = tts_raw.get("model_ref") if isinstance(tts_raw.get("model_ref"), dict) else {}
+    normalized["tts"]["model_ref"] = {
+        **normalized["tts"]["model_ref"],
+        **tts_model_ref_raw,
+    }
 
     return normalized
 

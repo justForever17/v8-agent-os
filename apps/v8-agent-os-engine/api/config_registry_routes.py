@@ -547,7 +547,7 @@ def _build_audio_domain() -> dict[str, Any]:
         "savePath": _config_save_path("audio"),
         "reloadRequired": True,
         "warnings": [],
-        "advancedFields": ["stt.providers", "tts.custom", "tts.edge_tts"],
+        "advancedFields": ["stt.providers", "stt.model_ref", "tts.custom", "tts.edge_tts", "tts.model_ref"],
     }
 
 

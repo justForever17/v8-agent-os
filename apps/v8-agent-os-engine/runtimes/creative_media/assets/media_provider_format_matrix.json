@@ -2202,6 +2202,98 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "google_gemini_tts",
+        "displayName": "Google Gemini TTS",
+        "logoAsset": "/model-assets/lobe/google-color.svg",
+        "modelIds": [
+          "gemini-3.1-flash-tts-preview",
+          "gemini-2.5-flash-preview-tts",
+          "gemini-2.5-pro-preview-tts"
+        ],
+        "apiStandard": "gemini_generate_content",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://generativelanguage.googleapis.com/v1beta",
+        "credentialHelp": {
+          "label": "Get Gemini API key",
+          "url": "https://aistudio.google.com/apikey"
+        },
+        "auth": {
+          "type": "api_key",
+          "query": "key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/models/{model}:generateContent",
+          "bodyFields": [
+            "contents",
+            "generationConfig.responseModalities",
+            "speechConfig"
+          ],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "candidates[].content.parts[].inlineData.data"
+          ]
+        },
+        "sourceUrl": "https://ai.google.dev/gemini-api/docs/speech-generation",
+        "confidence": "verified_official"
+      },
+      {
+        "id": "google_gemini_live_audio",
+        "displayName": "Google Gemini Live Audio",
+        "logoAsset": "/model-assets/lobe/google-color.svg",
+        "modelIds": [
+          "gemini-3.1-flash-live-preview",
+          "gemini-2.5-flash-live-preview"
+        ],
+        "apiStandard": "gemini_live_api",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "voice.realtime",
+          "voice.stt",
+          "voice.tts"
+        ],
+        "baseUrlDefault": "wss://generativelanguage.googleapis.com",
+        "credentialHelp": {
+          "label": "Get Gemini API key",
+          "url": "https://aistudio.google.com/apikey"
+        },
+        "auth": {
+          "type": "api_key",
+          "query": "key"
+        },
+        "request": {
+          "method": "WEBSOCKET",
+          "submitPath": "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+          "bodyFields": [
+            "setup.model",
+            "realtimeInput.audio",
+            "clientContent.turns"
+          ],
+          "sizeFormat": "REALTIME_AUDIO"
+        },
+        "polling": {
+          "mode": "stream"
+        },
+        "result": {
+          "paths": [
+            "serverContent.modelTurn.parts[].inlineData.data",
+            "serverContent.modelTurn.parts[].text"
+          ]
+        },
+        "sourceUrl": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview",
+        "confidence": "verified_official"
+      },
+      {
         "id": "amazon_polly_tts",
         "displayName": "Amazon Polly",
         "logoAsset": "/model-assets/providers/amazon-polly.ico",

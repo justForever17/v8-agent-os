@@ -1,7 +1,7 @@
 "use client";
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, Plus, RefreshCw, X } from "lucide-react";
+import { ExternalLink, Mic, Plus, RefreshCw, Save, Volume2, X } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -132,6 +132,23 @@ type CatalogProvider = {
 };
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
 type CatalogRuntimeProtocol = "default" | "anthropic";
+type AudioRuntimeConfig = {
+    stt: {
+        active_provider: string;
+        providers: {
+            custom: { endpoint?: string; api_key?: string };
+            baidu: { app_id?: string; api_key?: string; secret_key?: string };
+            volcengine?: { app_id?: string; access_token?: string; cluster?: string };
+        };
+        model_ref?: { modelRef?: string; mode?: string; language?: string; prompt?: string };
+    };
+    tts: {
+        active_provider: string;
+        edge_tts: { voice?: string; rate?: string; volume?: string };
+        custom: { endpoint?: string; api_key?: string; voice?: string };
+        model_ref?: { modelRef?: string; voice?: string; format?: string; speed?: string };
+    };
+};
 
 const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string; modelType: string; modality?: string }[] = [
     { id: "chat", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.chat", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.chatHint", modelType: "TEXT" },
@@ -145,6 +162,102 @@ const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string;
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
 const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
+const TTS_MODEL_TYPES = new Set<string>(["AUDIO", "VOICE"]);
+const DEFAULT_AUDIO_CONFIG: AudioRuntimeConfig = {
+    stt: {
+        active_provider: "baidu",
+        providers: {
+            custom: { endpoint: "", api_key: "" },
+            baidu: { app_id: "", api_key: "", secret_key: "" },
+            volcengine: { app_id: "", access_token: "", cluster: "" },
+        },
+        model_ref: { modelRef: "", mode: "audio_input", language: "zh-CN", prompt: "" },
+    },
+    tts: {
+        active_provider: "edge-tts",
+        edge_tts: { voice: "zh-CN-XiaoxiaoNeural", rate: "+0%", volume: "+0%" },
+        custom: { endpoint: "", api_key: "", voice: "" },
+        model_ref: { modelRef: "", voice: "", format: "mp3", speed: "" },
+    },
+};
+const EDGE_TTS_VOICES = [
+    { value: "zh-CN-XiaoxiaoNeural", labelKey: "app.admin.dashboard.model.hub.audio.voice.xiaoxiao" },
+    { value: "zh-CN-YunxiNeural", labelKey: "app.admin.dashboard.model.hub.audio.voice.yunxi" },
+    { value: "zh-CN-YunjianNeural", labelKey: "app.admin.dashboard.model.hub.audio.voice.yunjian" },
+    { value: "zh-CN-XiaoyiNeural", labelKey: "app.admin.dashboard.model.hub.audio.voice.xiaoyi" },
+];
+const OPENAI_TTS_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"].map((value) => ({ value, label: value }));
+const GEMINI_TTS_VOICES = [
+    "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+    "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome",
+    "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima",
+    "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+].map((value) => ({ value, label: value }));
+
+function mergeAudioConfig(value: unknown): AudioRuntimeConfig {
+    const incoming = value && typeof value === "object" ? value as Partial<AudioRuntimeConfig> : {};
+    const stt = incoming.stt || {};
+    const tts = incoming.tts || {};
+    return {
+        stt: {
+            ...DEFAULT_AUDIO_CONFIG.stt,
+            ...stt,
+            providers: {
+                ...DEFAULT_AUDIO_CONFIG.stt.providers,
+                ...(stt.providers || {}),
+            },
+            model_ref: {
+                ...DEFAULT_AUDIO_CONFIG.stt.model_ref,
+                ...(stt.model_ref || {}),
+            },
+        },
+        tts: {
+            ...DEFAULT_AUDIO_CONFIG.tts,
+            ...tts,
+            edge_tts: {
+                ...DEFAULT_AUDIO_CONFIG.tts.edge_tts,
+                ...(tts.edge_tts || {}),
+            },
+            custom: {
+                ...DEFAULT_AUDIO_CONFIG.tts.custom,
+                ...(tts.custom || {}),
+            },
+            model_ref: {
+                ...DEFAULT_AUDIO_CONFIG.tts.model_ref,
+                ...(tts.model_ref || {}),
+            },
+        },
+    };
+}
+
+function modelRefFor(model: AIModel): string {
+    return model.modelRef || `${model.providerId}::${model.modelId || model.id}`;
+}
+
+function modelLabel(model: AIModel): string {
+    return `${model.provider?.name || model.providerId} · ${model.modelId || model.id}`;
+}
+
+function modelLooksLikeProvider(modelRef: string | undefined, providerName: string): boolean {
+    return String(modelRef || "").toLowerCase().includes(providerName);
+}
+
+function hasAudioInputCapability(model: AIModel): boolean {
+    const ref = `${modelRefFor(model)} ${model.modelId || ""}`.toLowerCase();
+    return ref.includes("stt")
+        || ref.includes("asr")
+        || ref.includes("whisper")
+        || ref.includes("transcribe")
+        || ref.includes("speech-to-text")
+        || ref.includes("live-audio");
+}
+
+function hasAudioOutputCapability(model: AIModel, controlMeta?: ControlPlaneModel | null): boolean {
+    const type = normalizeModelType(model.type || controlMeta?.type);
+    const capabilities = controlMeta?.capabilities;
+    const ref = `${modelRefFor(model)} ${model.modelId || ""}`.toLowerCase();
+    return TTS_MODEL_TYPES.has(type) || Boolean(capabilities?.audio || capabilities?.voice) || ref.includes("tts") || ref.includes("live-audio");
+}
 
 function previewModelsUrl(provider?: CatalogProvider | null): string {
     if (!provider?.baseUrl) return "";
@@ -287,19 +400,23 @@ export default function ModelHubPage() {
     } | null>(null);
     const [manualModelEntryEnabled, setManualModelEntryEnabled] = useState(false);
     const [isCatalogBusy, setIsCatalogBusy] = useState(false);
+    const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(DEFAULT_AUDIO_CONFIG);
+    const [isAudioSaving, setIsAudioSaving] = useState(false);
     const fetchData = async () => {
         setIsLoading(true);
         try {
-            const [providersRes, modelsRes, hubRes, defaultRes, catalogRes] = await Promise.all([
+            const [providersRes, modelsRes, hubRes, defaultRes, catalogRes, audioRes] = await Promise.all([
                 fetch("/api/providers", { cache: "no-store" }),
                 fetch("/api/models", { cache: "no-store" }),
                 fetchConfigDomain<ModelHubPayload>("models"),
                 fetch("/api/settings/default-agent-model", { cache: "no-store" }),
                 fetch("/api/models/catalog", { cache: "no-store" }),
+                fetch("/api/audio/config", { cache: "no-store" }),
             ]);
             setProviders(providersRes.ok ? await providersRes.json() : []);
             setModels(modelsRes.ok ? await modelsRes.json() : []);
             setHubEnvelope(hubRes);
+            setAudioConfig(audioRes.ok ? mergeAudioConfig(await audioRes.json().catch(() => null)) : DEFAULT_AUDIO_CONFIG);
             if (defaultRes.ok) {
                 const defaultData = await defaultRes.json().catch(() => ({}));
                 setDefaultModelRef(defaultData.modelRef || defaultData.modelId || null);
@@ -350,6 +467,21 @@ export default function ModelHubPage() {
             .filter((model) => `${model.modelId || ""} ${model.id || ""}`.toLowerCase().includes(query))
             .slice(0, 80);
     }, [catalogModelFilter, catalogProbeModels]);
+    const sttModelCandidates = useMemo(
+        () => models.filter((model) => hasAudioInputCapability(model)),
+        [models],
+    );
+    const ttsModelCandidates = useMemo(
+        () => models.filter((model) => hasAudioOutputCapability(model, controlModelsById.get(modelRefFor(model)))),
+        [controlModelsById, models],
+    );
+    const selectedTtsModelRef = audioConfig.tts.model_ref?.modelRef || "";
+    const ttsVoicePresets = useMemo(() => {
+        if (audioConfig.tts.active_provider === "edge-tts") return EDGE_TTS_VOICES.map((voice) => ({ value: voice.value, label: t(voice.labelKey) }));
+        if (modelLooksLikeProvider(selectedTtsModelRef, "openai")) return OPENAI_TTS_VOICES;
+        if (modelLooksLikeProvider(selectedTtsModelRef, "gemini") || modelLooksLikeProvider(selectedTtsModelRef, "google")) return GEMINI_TTS_VOICES;
+        return [];
+    }, [audioConfig.tts.active_provider, selectedTtsModelRef, t]);
     useEffect(() => {
         if (apiCatalogProviders.some((item) => item.id === selectedCatalogProviderId) || selectedCatalogProviderId === "__custom__") return;
         setSelectedCatalogProviderId(apiCatalogProviders[0]?.id || "__custom__");
@@ -706,6 +838,76 @@ export default function ModelHubPage() {
         setProbedCatalogProviderId("");
         await fetchData();
     };
+    const handleSaveAudioConfig = async () => {
+        setIsAudioSaving(true);
+        try {
+            const response = await fetch("/api/audio/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(audioConfig),
+            });
+            if (!response.ok) {
+                const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.audio.saveFailed"));
+                toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.audio.saveFailed"), description: errorMessage });
+                return;
+            }
+            setAudioConfig(mergeAudioConfig(await response.json().catch(() => audioConfig)));
+            toast({ title: t("app.admin.dashboard.model.hub.audio.saved"), description: t("app.admin.dashboard.model.hub.audio.savedDescription") });
+        } finally {
+            setIsAudioSaving(false);
+        }
+    };
+    const setSttProviderValue = (provider: "custom" | "baidu", key: string, value: string) => {
+        setAudioConfig((current) => ({
+            ...current,
+            stt: {
+                ...current.stt,
+                providers: {
+                    ...current.stt.providers,
+                    [provider]: {
+                        ...current.stt.providers[provider],
+                        [key]: value,
+                    },
+                },
+            },
+        }));
+    };
+    const setSttModelRefValue = (key: string, value: string) => {
+        setAudioConfig((current) => ({
+            ...current,
+            stt: {
+                ...current.stt,
+                model_ref: {
+                    ...current.stt.model_ref,
+                    [key]: value,
+                },
+            },
+        }));
+    };
+    const setTtsValue = (provider: "edge_tts" | "custom", key: string, value: string) => {
+        setAudioConfig((current) => ({
+            ...current,
+            tts: {
+                ...current.tts,
+                [provider]: {
+                    ...current.tts[provider],
+                    [key]: value,
+                },
+            },
+        }));
+    };
+    const setTtsModelRefValue = (key: string, value: string) => {
+        setAudioConfig((current) => ({
+            ...current,
+            tts: {
+                ...current.tts,
+                model_ref: {
+                    ...current.tts.model_ref,
+                    [key]: value,
+                },
+            },
+        }));
+    };
     const handleTestConnection = async (modelRef: string) => {
         setConnectionStatusMap((current) => ({
             ...current,
@@ -844,6 +1046,143 @@ export default function ModelHubPage() {
             { label: t("app.admin.dashboard.model.hub.page.kc1128e3d"), value: hubEnvelope?.data.summary?.models || models.length, description: t("app.admin.dashboard.model.hub.page.k9196d416") },
             { label: t("app.admin.dashboard.model.hub.page.kf7cda39f"), value: hubEnvelope?.data.config?.governance?.enabled ? t("app.admin.dashboard.model.hub.page.kd945d5d0") : t("app.admin.dashboard.model.hub.page.k12b31ba6"), description: t("app.admin.dashboard.model.hub.page.k3a277197") },
         ]}/>
+
+            <ConfigCard title="STT / TTS" variant="list" allowOverflow>
+                <div className="grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-2xl border bg-card p-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                    <Mic className="h-4 w-4 text-slate-500" />
+                                    {t("app.admin.dashboard.model.hub.audio.sttTitle")}
+                                </div>
+                            </div>
+                            <Badge variant="secondary">{audioConfig.stt.active_provider}</Badge>
+                        </div>
+                        <div className="mt-4 space-y-3">
+                            <div className="space-y-1.5">
+                                <Label>{t("app.admin.dashboard.model.hub.audio.providerMode")}</Label>
+                                <Select value={audioConfig.stt.active_provider} onValueChange={(value) => setAudioConfig((current) => ({ ...current, stt: { ...current.stt, active_provider: value } }))}>
+                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="baidu">{t("app.admin.dashboard.model.hub.audio.baiduStt")}</SelectItem>
+                                        <SelectItem value="custom">{t("app.admin.dashboard.model.hub.audio.customStt")}</SelectItem>
+                                        <SelectItem value="model_ref">{t("app.admin.dashboard.model.hub.audio.modelRefProvider")}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            {audioConfig.stt.active_provider === "baidu" ? (
+                                <div className="grid gap-3 rounded-xl border border-dashed p-3">
+                                    <Input value={audioConfig.stt.providers.baidu.app_id || ""} onChange={(event) => setSttProviderValue("baidu", "app_id", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.appIdOptional")} />
+                                    <Input value={audioConfig.stt.providers.baidu.api_key || ""} onChange={(event) => setSttProviderValue("baidu", "api_key", event.target.value)} placeholder="API Key" />
+                                    <Input type="password" value={audioConfig.stt.providers.baidu.secret_key || ""} onChange={(event) => setSttProviderValue("baidu", "secret_key", event.target.value)} placeholder="Secret Key" />
+                                </div>
+                            ) : null}
+                            {audioConfig.stt.active_provider === "custom" ? (
+                                <div className="grid gap-3 rounded-xl border border-dashed p-3">
+                                    <Input value={audioConfig.stt.providers.custom.endpoint || ""} onChange={(event) => setSttProviderValue("custom", "endpoint", event.target.value)} placeholder="https://example.com/transcribe" />
+                                    <Input type="password" value={audioConfig.stt.providers.custom.api_key || ""} onChange={(event) => setSttProviderValue("custom", "api_key", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.apiKeyOptional")} />
+                                </div>
+                            ) : null}
+                            {audioConfig.stt.active_provider === "model_ref" ? (
+                                <div className="grid gap-3 rounded-xl border border-dashed p-3">
+                                    <Select value={audioConfig.stt.model_ref?.modelRef || ""} onValueChange={(value) => setSttModelRefValue("modelRef", value)}>
+                                        <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.selectSttModel")} /></SelectTrigger>
+                                        <SelectContent>
+                                            {sttModelCandidates.map((model) => {
+                                                const ref = modelRefFor(model);
+                                                return <SelectItem key={ref} value={ref}>{modelLabel(model)}</SelectItem>;
+                                            })}
+                                        </SelectContent>
+                                    </Select>
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                        <Input value={audioConfig.stt.model_ref?.language || ""} onChange={(event) => setSttModelRefValue("language", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.languagePlaceholder")} />
+                                        <Input value={audioConfig.stt.model_ref?.mode || ""} onChange={(event) => setSttModelRefValue("mode", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.modePlaceholder")} />
+                                    </div>
+                                    <Input value={audioConfig.stt.model_ref?.prompt || ""} onChange={(event) => setSttModelRefValue("prompt", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.promptPlaceholder")} />
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                    <div className="rounded-2xl border bg-card p-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                    <Volume2 className="h-4 w-4 text-slate-500" />
+                                    {t("app.admin.dashboard.model.hub.audio.ttsTitle")}
+                                </div>
+                            </div>
+                            <Badge variant="secondary">{audioConfig.tts.active_provider}</Badge>
+                        </div>
+                        <div className="mt-4 space-y-3">
+                            <div className="space-y-1.5">
+                                <Label>{t("app.admin.dashboard.model.hub.audio.providerMode")}</Label>
+                                <Select value={audioConfig.tts.active_provider} onValueChange={(value) => setAudioConfig((current) => ({ ...current, tts: { ...current.tts, active_provider: value } }))}>
+                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="edge-tts">Edge TTS</SelectItem>
+                                        <SelectItem value="custom">{t("app.admin.dashboard.model.hub.audio.customTts")}</SelectItem>
+                                        <SelectItem value="model_ref">{t("app.admin.dashboard.model.hub.audio.modelRefProvider")}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            {audioConfig.tts.active_provider === "edge-tts" ? (
+                                <div className="grid gap-3 rounded-xl border border-dashed p-3">
+                                    <Select value={audioConfig.tts.edge_tts.voice || "zh-CN-XiaoxiaoNeural"} onValueChange={(value) => setTtsValue("edge_tts", "voice", value)}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            {EDGE_TTS_VOICES.map((voice) => <SelectItem key={voice.value} value={voice.value}>{voice.label}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                        <Input value={audioConfig.tts.edge_tts.rate || ""} onChange={(event) => setTtsValue("edge_tts", "rate", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.ratePlaceholder")} />
+                                        <Input value={audioConfig.tts.edge_tts.volume || ""} onChange={(event) => setTtsValue("edge_tts", "volume", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.volumePlaceholder")} />
+                                    </div>
+                                </div>
+                            ) : null}
+                            {audioConfig.tts.active_provider === "custom" ? (
+                                <div className="grid gap-3 rounded-xl border border-dashed p-3">
+                                    <Input value={audioConfig.tts.custom.endpoint || ""} onChange={(event) => setTtsValue("custom", "endpoint", event.target.value)} placeholder="https://example.com/tts" />
+                                    <Input type="password" value={audioConfig.tts.custom.api_key || ""} onChange={(event) => setTtsValue("custom", "api_key", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.apiKeyOptional")} />
+                                    <Input value={audioConfig.tts.custom.voice || ""} onChange={(event) => setTtsValue("custom", "voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voicePlaceholder")} />
+                                </div>
+                            ) : null}
+                            {audioConfig.tts.active_provider === "model_ref" ? (
+                                <div className="grid gap-3 rounded-xl border border-dashed p-3">
+                                    <Select value={audioConfig.tts.model_ref?.modelRef || ""} onValueChange={(value) => setTtsModelRefValue("modelRef", value)}>
+                                        <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.selectTtsModel")} /></SelectTrigger>
+                                        <SelectContent>
+                                            {ttsModelCandidates.map((model) => {
+                                                const ref = modelRefFor(model);
+                                                return <SelectItem key={ref} value={ref}>{modelLabel(model)}</SelectItem>;
+                                            })}
+                                        </SelectContent>
+                                    </Select>
+                                    {ttsVoicePresets.length > 0 ? (
+                                        <Select value={ttsVoicePresets.some((item) => item.value === audioConfig.tts.model_ref?.voice) ? audioConfig.tts.model_ref?.voice : undefined} onValueChange={(value) => setTtsModelRefValue("voice", value)}>
+                                            <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.selectVoice")} /></SelectTrigger>
+                                            <SelectContent>
+                                                {ttsVoicePresets.map((voice) => <SelectItem key={voice.value} value={voice.value}>{voice.label}</SelectItem>)}
+                                            </SelectContent>
+                                        </Select>
+                                    ) : null}
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                        <Input value={audioConfig.tts.model_ref?.voice || ""} onChange={(event) => setTtsModelRefValue("voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.customVoicePlaceholder")} />
+                                        <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
+                                    </div>
+                                    <Input value={audioConfig.tts.model_ref?.speed || ""} onChange={(event) => setTtsModelRefValue("speed", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.speedPlaceholder")} />
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                </div>
+                <div className="mt-4 flex justify-end">
+                    <Button size="sm" onClick={() => void handleSaveAudioConfig()} disabled={isAudioSaving}>
+                        <Save className="mr-2 h-4 w-4" />
+                        {isAudioSaving ? t("app.admin.dashboard.model.hub.audio.saving") : t("app.admin.dashboard.model.hub.audio.save")}
+                    </Button>
+                </div>
+            </ConfigCard>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.catalog.title")} description={t("app.admin.dashboard.model.hub.catalog.description")} variant="list" allowOverflow>
                 <div className="rounded-2xl border bg-card p-4">

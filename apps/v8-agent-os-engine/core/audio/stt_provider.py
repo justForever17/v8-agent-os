@@ -118,6 +118,17 @@ class MockSTTProvider(STTProvider):
     async def transcribe(self, audio_bytes: bytes, audio_format: str = "wav") -> str:
         return "语音识别模块暂未配置有效的 API Key。"
 
+class ModelRefSTTProvider(STTProvider):
+    def __init__(self, model_ref: str = ""):
+        self.model_ref = model_ref
+
+    async def transcribe(self, audio_bytes: bytes, audio_format: str = "wav") -> str:
+        target = self.model_ref or "未选择模型"
+        raise RuntimeError(
+            f"STT 已配置为使用已配置模型替代（{target}），但当前音频模型转写适配器尚未启用。"
+            "多模态音频理解不能直接当作标准 STT；请改用自建/第三方转写 API，或补齐 model_ref STT 转换适配器。"
+        )
+
 class STTManager:
     @staticmethod
     def get_provider() -> STTProvider:
@@ -135,6 +146,9 @@ class STTManager:
             b_conf = providers_conf.get("baidu", {})
             if b_conf.get("api_key") and b_conf.get("secret_key"):
                 return BaiduSTTProvider(b_conf["api_key"], b_conf["secret_key"])
+        elif active == "model_ref":
+            model_ref = (stt_conf.get("model_ref") or {}).get("modelRef") or ""
+            return ModelRefSTTProvider(str(model_ref))
                 
         # 返回 Mock 防止抛错导致崩溃
         return MockSTTProvider()

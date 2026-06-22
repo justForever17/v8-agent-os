@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-21T16:12:13.607278+00:00",
+  "generatedAt": "2026-06-22T00:07:11.764570+00:00",
   "notes": [
     "Media model facts are exact providerId + modelId records. Do not infer advanced capability from provider or family names.",
     "Provider/API wire format remains in media_provider_format_matrix.json.",
@@ -370,6 +370,38 @@
       "confidence": "community_or_inferred",
       "missingFields": [],
       "catalogOnly": true
+    },
+    {
+      "providerId": "google_gemini_live_audio",
+      "displayName": "Google Gemini Live Audio",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "providerId": "google_gemini_tts",
+      "displayName": "Google Gemini TTS",
+      "modalities": [
+        "voice"
+      ],
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/speech-generation"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
     },
     {
       "providerId": "google_lyria_music",
@@ -7328,6 +7360,205 @@
         }
       ],
       "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gemini-2.5-flash-live-preview",
+      "displayName": "gemini-2.5-flash-live-preview",
+      "creator": "Google Gemini Live Audio",
+      "providerIds": [
+        "google_gemini_live_audio"
+      ],
+      "aliases": [
+        "gemini-2.5-flash-live-preview"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.realtime",
+        "voice.stt",
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gemini-3.1-flash-live-preview",
+      "displayName": "gemini-3.1-flash-live-preview",
+      "creator": "Google Gemini Live Audio",
+      "providerIds": [
+        "google_gemini_live_audio"
+      ],
+      "aliases": [
+        "gemini-3.1-flash-live-preview"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.realtime",
+        "voice.stt",
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gemini-2.5-flash-preview-tts",
+      "displayName": "gemini-2.5-flash-preview-tts",
+      "creator": "Google Gemini TTS",
+      "providerIds": [
+        "google_gemini_tts"
+      ],
+      "aliases": [
+        "gemini-2.5-flash-preview-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/speech-generation"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gemini-2.5-pro-preview-tts",
+      "displayName": "gemini-2.5-pro-preview-tts",
+      "creator": "Google Gemini TTS",
+      "providerIds": [
+        "google_gemini_tts"
+      ],
+      "aliases": [
+        "gemini-2.5-pro-preview-tts"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/speech-generation"
+        }
+      ],
+      "confidence": "verified_official",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "gemini-3.1-flash-tts-preview",
+      "displayName": "gemini-3.1-flash-tts-preview",
+      "creator": "Google Gemini TTS",
+      "providerIds": [
+        "google_gemini_tts"
+      ],
+      "aliases": [
+        "gemini-3.1-flash-tts-preview"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/google-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://ai.google.dev/gemini-api/docs/speech-generation"
+        }
+      ],
+      "confidence": "verified_official",
       "missingFields": []
     },
     {

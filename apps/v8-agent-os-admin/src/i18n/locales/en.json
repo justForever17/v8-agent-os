@@ -4560,6 +4560,8 @@
   "app.admin.dashboard.model.hub.audio.selectVoice": "Choose common voice",
   "app.admin.dashboard.model.hub.audio.speedPlaceholder": "Optional speed parameter",
   "app.admin.dashboard.model.hub.audio.sttTitle": "STT",
+  "app.admin.dashboard.model.hub.audio.systemDescription": "Configure V8OS speech recognition and speech synthesis in one place; use dedicated services or reuse configured voice models.",
+  "app.admin.dashboard.model.hub.audio.systemTitle": "System STT/TTS",
   "app.admin.dashboard.model.hub.audio.ttsTitle": "TTS",
   "app.admin.dashboard.model.hub.audio.voice.xiaoxiao": "Xiaoxiao · Chinese female",
   "app.admin.dashboard.model.hub.audio.voice.xiaoyi": "Xiaoyi · Chinese child",

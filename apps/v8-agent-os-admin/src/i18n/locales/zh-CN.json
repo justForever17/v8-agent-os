@@ -4560,6 +4560,8 @@
   "app.admin.dashboard.model.hub.audio.selectVoice": "选择常见音色",
   "app.admin.dashboard.model.hub.audio.speedPlaceholder": "可选语速参数",
   "app.admin.dashboard.model.hub.audio.sttTitle": "STT 语音识别",
+  "app.admin.dashboard.model.hub.audio.systemDescription": "统一配置 V8OS 的语音识别与语音合成；可直接接入专用服务，也可复用已配置的语音模型。",
+  "app.admin.dashboard.model.hub.audio.systemTitle": "系统 STT/TTS",
   "app.admin.dashboard.model.hub.audio.ttsTitle": "TTS 语音合成",
   "app.admin.dashboard.model.hub.audio.voice.xiaoxiao": "晓晓 · 中文女声",
   "app.admin.dashboard.model.hub.audio.voice.xiaoyi": "晓伊 · 中文女声",

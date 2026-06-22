@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "providers": {
+    "edge-tts": {
+      "voices": [
+        { "value": "zh-CN-XiaoxiaoNeural", "labelKey": "app.admin.dashboard.model.hub.audio.voice.xiaoxiao" },
+        { "value": "zh-CN-YunxiNeural", "labelKey": "app.admin.dashboard.model.hub.audio.voice.yunxi" },
+        { "value": "zh-CN-YunjianNeural", "labelKey": "app.admin.dashboard.model.hub.audio.voice.yunjian" },
+        { "value": "zh-CN-XiaoyiNeural", "labelKey": "app.admin.dashboard.model.hub.audio.voice.xiaoyi" }
+      ]
+    },
+    "openai": {
+      "match": ["openai", "gpt-4o", "tts-1"],
+      "voices": [
+        { "value": "alloy", "label": "alloy" },
+        { "value": "ash", "label": "ash" },
+        { "value": "ballad", "label": "ballad" },
+        { "value": "coral", "label": "coral" },
+        { "value": "echo", "label": "echo" },
+        { "value": "fable", "label": "fable" },
+        { "value": "nova", "label": "nova" },
+        { "value": "onyx", "label": "onyx" },
+        { "value": "sage", "label": "sage" },
+        { "value": "shimmer", "label": "shimmer" },
+        { "value": "verse", "label": "verse" },
+        { "value": "marin", "label": "marin" },
+        { "value": "cedar", "label": "cedar" }
+      ]
+    },
+    "gemini": {
+      "match": ["gemini", "google", "google_gemini_tts"],
+      "voices": [
+        { "value": "Zephyr", "label": "Zephyr" },
+        { "value": "Puck", "label": "Puck" },
+        { "value": "Charon", "label": "Charon" },
+        { "value": "Kore", "label": "Kore" },
+        { "value": "Fenrir", "label": "Fenrir" },
+        { "value": "Leda", "label": "Leda" },
+        { "value": "Orus", "label": "Orus" },
+        { "value": "Aoede", "label": "Aoede" },
+        { "value": "Callirrhoe", "label": "Callirrhoe" },
+        { "value": "Autonoe", "label": "Autonoe" },
+        { "value": "Enceladus", "label": "Enceladus" },
+        { "value": "Iapetus", "label": "Iapetus" },
+        { "value": "Umbriel", "label": "Umbriel" },
+        { "value": "Algieba", "label": "Algieba" },
+        { "value": "Despina", "label": "Despina" },
+        { "value": "Erinome", "label": "Erinome" },
+        { "value": "Algenib", "label": "Algenib" },
+        { "value": "Rasalgethi", "label": "Rasalgethi" },
+        { "value": "Laomedeia", "label": "Laomedeia" },
+        { "value": "Achernar", "label": "Achernar" },
+        { "value": "Alnilam", "label": "Alnilam" },
+        { "value": "Schedar", "label": "Schedar" },
+        { "value": "Gacrux", "label": "Gacrux" },
+        { "value": "Pulcherrima", "label": "Pulcherrima" },
+        { "value": "Achird", "label": "Achird" },
+        { "value": "Zubenelgenubi", "label": "Zubenelgenubi" },
+        { "value": "Vindemiatrix", "label": "Vindemiatrix" },
+        { "value": "Sadachbia", "label": "Sadachbia" },
+        { "value": "Sadaltager", "label": "Sadaltager" },
+        { "value": "Sulafat", "label": "Sulafat" }
+      ]
+    },
+    "minimax": {
+      "match": ["minimax", "speech-02", "speech-2", "t2a"],
+      "supportsRemoteVoiceList": true,
+      "remoteVoiceListPath": "/v1/get_voice",
+      "voices": [
+        { "value": "Chinese (Mandarin)_News_Anchor", "label": "News Anchor (Female)" },
+        { "value": "Chinese (Mandarin)_Reliable_Executive", "label": "Steady Executive" }
+      ]
+    }
+  }
+}

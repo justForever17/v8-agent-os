@@ -1702,6 +1702,46 @@
       "logoAsset": "/model-assets/lobe/hunyuan-color.svg"
     },
     {
+      "id": "agnes",
+      "name": "Agnes AI",
+      "apiStandard": "openai",
+      "baseUrl": "https://apihub.agnes-ai.com/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "probeModelAllowlist": [
+        "agnes-2.0-flash",
+        "agnes-image-2.1-flash",
+        "agnes-video-v2.0"
+      ],
+      "sourceUrl": "https://agnes-ai.com/doc/agnes-20-flash",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.agnes-ai.com"
+      },
+      "confidence": "official",
+      "models": [
+        {
+          "id": "agnes-2.0-flash",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal",
+            "coding"
+          ]
+        }
+      ],
+      "providerKind": "chat",
+      "logoAsset": "/model-assets/providers/agnes.png"
+    },
+    {
       "id": "minimax",
       "name": "MiniMax International",
       "apiStandard": "openai",

@@ -1,13 +1,13 @@
 {
-  "generatedAt": "2026-06-22T00:07:11.764570+00:00",
+  "generatedAt": "2026-06-22T17:22:56.202927+00:00",
   "stats": {
-    "providers": 68,
-    "models": 148,
+    "providers": 70,
+    "models": 159,
     "byModality": {
-      "image": 28,
+      "image": 29,
       "model3d": 28,
-      "music": 8,
-      "video": 43,
+      "music": 12,
+      "video": 49,
       "voice": 41
     }
   },

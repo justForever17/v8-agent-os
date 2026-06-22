@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -238,6 +238,66 @@ def _build_openai_image_payload(*, model: str, prompt: str, size: str, response_
     }
 
 
+def _build_agnes_image_payload(
+    *,
+    model: str,
+    prompt: str,
+    size: str,
+    response_format: str = "url",
+    image_urls: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    normalized_format = "b64_json" if response_format in {"base64", "b64_json"} else "url"
+    payload: dict[str, Any] = {"model": model, "prompt": prompt, "size": size}
+    if image_urls:
+        payload["extra_body"] = {"image": image_urls, "response_format": normalized_format}
+    elif normalized_format == "b64_json":
+        payload["return_base64"] = True
+    else:
+        payload["extra_body"] = {"response_format": "url"}
+    return payload
+
+
+def _build_agnes_video_payload(
+    *,
+    model: str,
+    prompt: str,
+    operation_kind: str,
+    image_urls: Optional[list[str]] = None,
+    width: int = 1152,
+    height: int = 768,
+    num_frames: int = 121,
+    frame_rate: int = 24,
+    seed: int | None = None,
+    negative_prompt: str = "",
+    num_inference_steps: int | None = None,
+) -> dict[str, Any]:
+    safe_frames = max(1, min(int(num_frames), 441))
+    if (safe_frames - 1) % 8:
+        safe_frames = max(1, min(441, ((safe_frames - 1) // 8) * 8 + 1))
+    payload: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "width": max(1, int(width)),
+        "height": max(1, int(height)),
+        "num_frames": safe_frames,
+        "frame_rate": max(1, min(int(frame_rate), 60)),
+    }
+    references = [str(item).strip() for item in list(image_urls or []) if str(item).strip()]
+    if operation_kind == "video.image_to_video" and references:
+        payload["image"] = references[0]
+    elif references:
+        payload["extra_body"] = {"image": references}
+        if operation_kind == "video.first_last_frame":
+            payload["extra_body"]["mode"] = "keyframes"
+    if seed is not None:
+        payload["seed"] = int(seed)
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
+    if num_inference_steps is not None:
+        payload["num_inference_steps"] = int(num_inference_steps)
+    return payload
+
+
 def _build_volcengine_image_payload(
     *,
     model: str,
@@ -365,6 +425,8 @@ class CreativeMediaRuntime:
             "modelCapabilityOverrides": load_media_model_capability_overrides(),
             "runtimeAdapters": [
                 {"id": "openai_images", "modalities": ["image"], "executable": True},
+                {"id": "agnes_images", "modalities": ["image"], "executable": True},
+                {"id": "agnes_video", "modalities": ["video"], "executable": True},
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
                 {"id": "dashscope", "modalities": ["image", "video"], "executable": True},
                 {"id": "v8_audio_tts", "modalities": ["voice"], "executable": True},
@@ -402,6 +464,10 @@ class CreativeMediaRuntime:
             return "volcengine_ark"
         if modality in {"image", "video"} and any(token in haystack for token in ("dashscope", "bailian", "aliyun", "alibaba", "qwen", "wan2", "wanx")):
             return "dashscope"
+        if modality == "image" and "agnes" in haystack:
+            return "agnes_images"
+        if modality == "video" and "agnes" in haystack:
+            return "agnes_video"
         if modality == "image":
             return "openai_images"
         if modality == "voice":
@@ -493,13 +559,15 @@ class CreativeMediaRuntime:
         return f"{modality}.generate"
 
     def _is_operation_executable(self, *, adapter: str, operation_kind: str) -> bool:
-        if operation_kind == "image.generate" and adapter in {"openai_images", "volcengine_ark", "dashscope"}:
+        if operation_kind == "image.generate" and adapter in {"openai_images", "agnes_images", "volcengine_ark", "dashscope"}:
             return True
-        if operation_kind == "image.edit" and adapter in {"openai_images", "dashscope"}:
+        if operation_kind == "image.edit" and adapter in {"openai_images", "agnes_images", "dashscope"}:
             return True
         if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
             return True
         if operation_kind in DASHSCOPE_VIDEO_OPERATION_KINDS and adapter == "dashscope":
+            return True
+        if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"} and adapter == "agnes_video":
             return True
         if operation_kind == "voice.tts" and adapter == "v8_audio_tts":
             return True
@@ -2200,6 +2268,8 @@ class CreativeMediaRuntime:
             return job
         if job.get("adapter") == "volcengine_ark" and job.get("modality") == "video":
             return await self._poll_volcengine_video_job(job)
+        if job.get("adapter") == "agnes_video" and job.get("providerTaskId"):
+            return await self._poll_agnes_video_job(job)
         if job.get("adapter") == "dashscope" and job.get("providerTaskId"):
             return await self._poll_dashscope_task(job)
         return job
@@ -2348,7 +2418,9 @@ class CreativeMediaRuntime:
         adapter = str(request.get("adapter") or "").strip().lower()
         provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip()
         if not adapter:
-            if any(token in provider_id.lower() for token in ("dashscope", "aliyun", "bailian")):
+            if "agnes" in provider_id.lower():
+                adapter = "agnes_images"
+            elif any(token in provider_id.lower() for token in ("dashscope", "aliyun", "bailian")):
                 adapter = "dashscope"
             else:
                 adapter = "volcengine_ark" if "volc" in provider_id.lower() or str(request.get("provider") or "").lower() in {"volcengine", "seedream"} else "openai_images"
@@ -2368,6 +2440,8 @@ class CreativeMediaRuntime:
                 if operation_kind == "image.edit":
                     return await self._run_openai_image_edit_job(job, prepared_request)
                 return await self._run_openai_image_job(job, prepared_request)
+            if adapter == "agnes_images":
+                return await self._run_agnes_image_job(job, prepared_request)
             raise ValueError(f"Unsupported image adapter: {adapter}")
         except Exception as exc:
             job["status"] = "failed"
@@ -2385,7 +2459,8 @@ class CreativeMediaRuntime:
             job["error"] = f"Creative Media P4 has not implemented executable video operationKind={operation_kind}; keep it as recipe/catalog planning until an adapter is added."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
-        adapter = str(request.get("adapter") or "volcengine_ark").strip().lower()
+        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
+        adapter = str(request.get("adapter") or ("agnes_video" if "agnes" in requested_provider_id else "volcengine_ark")).strip().lower()
         if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
             adapter = "dashscope"
         provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="video")
@@ -2402,6 +2477,8 @@ class CreativeMediaRuntime:
                 job = await self._submit_volcengine_video_job(job, prepared_request)
             elif adapter == "dashscope":
                 job = await self._submit_dashscope_video_job(job, prepared_request)
+            elif adapter == "agnes_video":
+                job = await self._submit_agnes_video_job(job, prepared_request)
             else:
                 raise ValueError(f"Unsupported video adapter: {adapter}")
             if bool(request.get("wait", False)):
@@ -2572,11 +2649,11 @@ class CreativeMediaRuntime:
                         return str(item.get("image") or item.get("video"))
         return ""
 
-    def _openai_image_provider(self, request: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
+    def _configured_provider_for_model(self, request: dict[str, Any], *, default_model: str) -> tuple[str, dict[str, Any], str]:
         config = model_control_plane.get_config()
         providers = dict(config.get("providers") or {})
         requested_provider = str(request.get("providerId") or request.get("provider_id") or "").strip()
-        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or "gpt-image-2").strip()
+        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or default_model).strip()
         candidates: Iterable[tuple[str, dict[str, Any]]] = providers.items()
         if requested_provider:
             provider = providers.get(requested_provider)
@@ -2595,9 +2672,12 @@ class CreativeMediaRuntime:
             target.append((provider_id, provider_data))
         selected = (preferred or fallback)
         if not selected:
-            raise ValueError(f"No configured provider exposes image model: {requested_model}")
+            raise ValueError(f"No configured provider exposes model: {requested_model}")
         provider_id, provider_data = selected[0]
         return provider_id, dict((provider_data or {}).get("provider") or {}), requested_model
+
+    def _openai_image_provider(self, request: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
+        return self._configured_provider_for_model(request, default_model="gpt-image-2")
 
     async def _run_openai_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         provider_id, provider_meta, model = self._openai_image_provider(request)
@@ -2626,6 +2706,67 @@ class CreativeMediaRuntime:
         )
         artifact = await self._artifact_from_image_response(response, job=job, provider=provider_id, model=model, mime_hint="image/png")
         job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": provider_id, "model": model, "size": size, "usage": response.get("usage") or {}}, "completedAt": utc_now_iso()})
+        return self._save_job(job)
+
+    async def _run_agnes_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, model = self._configured_provider_for_model(
+            request,
+            default_model="agnes-image-2.1-flash",
+        )
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        prompt = str(request.get("prompt") or "").strip()
+        if not prompt:
+            raise ValueError("Agnes image job requires prompt")
+        operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("image", request))
+        image_urls = self._image_urls_from_request(request)
+        if operation_kind == "image.edit" and not image_urls:
+            raise ValueError("Agnes image.edit requires a public imageUrls/referenceImageUrl input")
+        size = resolve_image_size(
+            ratio=str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio") or "1:1"),
+            preset=str(request.get("preset") or "1K"),
+            adapter="openai_images",
+            explicit_size=request.get("size"),
+        )
+        response_format = str(request.get("responseFormat") or request.get("response_format") or "url").strip().lower()
+        payload = _build_agnes_image_payload(
+            model=model,
+            prompt=prompt,
+            size=size,
+            response_format=response_format,
+            image_urls=image_urls or None,
+        )
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        endpoint = f"{base_url}/images/generations" if base_url.endswith("/v1") else f"{base_url}/v1/images/generations"
+        response = await self._request_json(
+            "POST",
+            endpoint,
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=180,
+        )
+        artifact = await self._artifact_from_image_response(
+            response,
+            job=job,
+            provider=provider_id,
+            model=model,
+            mime_hint="image/png",
+        )
+        job.update(
+            {
+                "status": "succeeded",
+                "artifacts": [artifact],
+                "providerResponse": {
+                    "providerId": provider_id,
+                    "model": model,
+                    "size": size,
+                    "operationKind": operation_kind,
+                },
+                "completedAt": utc_now_iso(),
+            }
+        )
         return self._save_job(job)
 
     async def _run_openai_image_edit_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
@@ -2737,6 +2878,143 @@ class CreativeMediaRuntime:
         )
         artifact = await self._artifact_from_image_response(response, job=job, provider="volcengine_seedream", model=model, mime_hint="image/png")
         job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": "volcengine_seedream", "model": model, "size": size, "usage": response.get("usage") or {}}, "completedAt": utc_now_iso()})
+        return self._save_job(job)
+
+    async def _submit_agnes_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, model = self._configured_provider_for_model(
+            request,
+            default_model="agnes-video-v2.0",
+        )
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        api_root = base_url[:-3] if base_url.endswith("/v1") else base_url
+        operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
+        prompt = str(request.get("prompt") or "").strip()
+        if not prompt:
+            raise ValueError("Agnes video job requires prompt")
+        image_urls = self._image_urls_from_request(request)
+        if operation_kind == "video.image_to_video" and not image_urls:
+            raise ValueError("Agnes video.image_to_video requires an image URL")
+        if operation_kind == "video.first_last_frame" and len(image_urls) < 2:
+            raise ValueError("Agnes video.first_last_frame requires at least two image URLs")
+        if operation_kind == "video.reference_to_video" and not image_urls:
+            raise ValueError("Agnes video.reference_to_video requires one or more image URLs")
+        duration = float(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5)
+        frame_rate = max(1, min(int(request.get("frameRate") or request.get("frame_rate") or 24), 60))
+        requested_frames = request.get("numFrames") or request.get("num_frames")
+        num_frames = int(requested_frames) if requested_frames is not None else min(441, max(1, int(round(duration * frame_rate))))
+        payload = _build_agnes_video_payload(
+            model=model,
+            prompt=prompt,
+            operation_kind=operation_kind,
+            image_urls=image_urls or None,
+            width=int(request.get("width") or 1152),
+            height=int(request.get("height") or 768),
+            num_frames=num_frames,
+            frame_rate=frame_rate,
+            seed=int(request["seed"]) if request.get("seed") is not None else None,
+            negative_prompt=str(request.get("negativePrompt") or request.get("negative_prompt") or ""),
+            num_inference_steps=int(request.get("numInferenceSteps") or request.get("num_inference_steps"))
+            if request.get("numInferenceSteps") is not None or request.get("num_inference_steps") is not None
+            else None,
+        )
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            f"{api_root}/v1/videos",
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=180,
+        )
+        task_id = str(response.get("task_id") or response.get("id") or "").strip()
+        video_id = str(response.get("video_id") or "").strip()
+        if not task_id and not video_id:
+            raise RuntimeError(f"Agnes video response did not include task_id or video_id: {response}")
+        raw_status = str(response.get("status") or "queued").strip().lower()
+        job["status"] = "running" if raw_status in {"processing", "running"} else "queued"
+        job["providerTaskId"] = task_id or video_id
+        job["providerResponse"] = {
+            "providerId": provider_id,
+            "taskId": task_id,
+            "videoId": video_id,
+            "model": model,
+            "operationKind": operation_kind,
+            "seconds": response.get("seconds"),
+            "size": response.get("size"),
+        }
+        return self._save_job(job)
+
+    async def _poll_agnes_video_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        request = dict(job.get("request") or {})
+        provider_id, provider_meta, model = self._configured_provider_for_model(
+            request,
+            default_model=str((job.get("providerResponse") or {}).get("model") or "agnes-video-v2.0"),
+        )
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        api_root = base_url[:-3] if base_url.endswith("/v1") else base_url
+        provider_response = dict(job.get("providerResponse") or {})
+        video_id = str(provider_response.get("videoId") or "").strip()
+        task_id = str(provider_response.get("taskId") or job.get("providerTaskId") or "").strip()
+        if video_id:
+            response = await self._request_json(
+                "GET",
+                f"{api_root}/agnesapi?video_id={quote(video_id)}",
+                headers=self._bearer_headers(api_key),
+                timeout=60,
+            )
+        elif task_id:
+            response = await self._request_json(
+                "GET",
+                f"{api_root}/v1/videos/{quote(task_id)}",
+                headers=self._bearer_headers(api_key),
+                timeout=60,
+            )
+        else:
+            job["status"] = "failed"
+            job["error"] = "Missing Agnes video_id/task_id"
+            return self._save_job(job)
+        raw_status = str(response.get("status") or "").strip().lower()
+        status = {
+            "queued": "queued",
+            "pending": "queued",
+            "processing": "running",
+            "running": "running",
+            "completed": "succeeded",
+            "success": "succeeded",
+            "succeeded": "succeeded",
+            "failed": "failed",
+            "error": "failed",
+        }.get(raw_status, "running")
+        job["status"] = status
+        job["providerResponse"] = {
+            **provider_response,
+            "lastStatus": raw_status,
+            "progress": response.get("progress"),
+            "seconds": response.get("seconds") or provider_response.get("seconds"),
+            "size": response.get("size") or provider_response.get("size"),
+        }
+        if status == "succeeded":
+            video_url = str(response.get("video_url") or response.get("remixed_from_video_id") or "").strip()
+            if not video_url:
+                job["status"] = "failed"
+                job["error"] = "Agnes video task completed without a video URL"
+            else:
+                artifact = await self._artifact_from_url(
+                    video_url,
+                    job=job,
+                    kind="video",
+                    provider=provider_id,
+                    mime_hint="video/mp4",
+                    metadata={"model": model, "nativeAudio": False, "audioMode": "silent_or_external_audio"},
+                )
+                job["artifacts"] = [artifact]
+                job["completedAt"] = utc_now_iso()
+        elif status == "failed":
+            job["error"] = str(response.get("error") or "Agnes video task failed")
+            job["completedAt"] = utc_now_iso()
         return self._save_job(job)
 
     async def _submit_volcengine_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:

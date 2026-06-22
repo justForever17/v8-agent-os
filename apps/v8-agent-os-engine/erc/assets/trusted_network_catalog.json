@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-05-03",
+  "updatedAt": "2026-06-23",
   "entries": [
     {
       "id": "openai",
@@ -20,6 +20,27 @@
         "POST"
       ],
       "sourceUrl": "https://platform.openai.com/docs/api-reference",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "agnes",
+      "category": "ai",
+      "displayName": "Agnes AI",
+      "officialHosts": [
+        "apihub.agnes-ai.com"
+      ],
+      "allowedBaseUrls": [
+        "https://apihub.agnes-ai.com",
+        "https://apihub.agnes-ai.com/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://agnes-ai.com/doc/agnes-20-flash",
       "confidence": "verified_official"
     },
     {

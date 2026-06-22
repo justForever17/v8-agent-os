@@ -55,7 +55,7 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "google_veo": ["veo-3.1-generate-preview"],
     "runway_video": ["gen4_turbo"],
     "luma_video": ["ray-2"],
-    "minimax_video": ["video-01"],
+    "minimax_video": ["MiniMax-Hailuo-2.3"],
     "kling_video": ["kling-v2-1"],
     "v8_audio_tts": ["v8-audio-tts"],
     "openai_audio_speech": ["gpt-4o-mini-tts"],
@@ -351,6 +351,7 @@ class ModelProviderCatalog:
             "logoAsset": logo_asset,
             "auth": auth,
             "probeStrategy": entry.get("probeStrategy") or "catalog_only",
+            "modelsPath": entry.get("modelsPath") or entry.get("models_path") or "",
             "sourceUrl": entry.get("sourceUrl") or "",
             "credentialHelp": entry.get("credentialHelp") or {},
             "lastCheckedAt": entry.get("lastCheckedAt") or "",
@@ -696,6 +697,11 @@ class ModelProviderCatalog:
                     "error": "The response did not contain a data/models array.",
                 }
             models: List[Dict[str, Any]] = []
+            allowed_model_ids = {
+                str(item or "").strip()
+                for item in _as_list(provider.get("probeModelAllowlist"))
+                if str(item or "").strip()
+            }
             for item in data:
                 if isinstance(item, str):
                     model_id = item.strip()
@@ -706,6 +712,8 @@ class ModelProviderCatalog:
                 if model_id.startswith("models/"):
                     model_id = model_id.split("/", 1)[1]
                 if not model_id:
+                    continue
+                if allowed_model_ids and model_id not in allowed_model_ids:
                     continue
                 models.append(self.normalize_model(provider, model_id, online_metadata=online_metadata))
             return {

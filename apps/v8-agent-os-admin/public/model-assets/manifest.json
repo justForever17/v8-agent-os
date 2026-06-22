@@ -14,6 +14,12 @@
       "sourceUrl": "https://www.ai21.com/wp-content/uploads/2026/01/favicon.png",
       "sha256": "09DE5A8F7755FAA91C1E23919143EC06C546EA6AE6EE50560B41AA488898387B"
     },
+    "agnes": {
+      "asset": "/model-assets/providers/agnes.png",
+      "source": "official-favicon",
+      "sourceUrl": "https://agnes-ai.com/images/biglogo.png",
+      "sha256": "7176E9463992C3A43387019B43AA69BF9DEADAD144BFCEC97510107A49B886F9"
+    },
     "amazon-polly": {
       "asset": "/model-assets/providers/amazon-polly.ico",
       "source": "official-favicon",

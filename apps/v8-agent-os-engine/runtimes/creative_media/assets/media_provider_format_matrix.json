@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-04-27",
+  "updatedAt": "2026-06-23",
   "statusLevels": [
     "verified_official",
     "provider_docs",
@@ -249,6 +249,64 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "agnes_image",
+        "displayName": "Agnes Image",
+        "logoAsset": "/model-assets/providers/agnes.png",
+        "modelIds": [
+          "agnes-image-2.1-flash"
+        ],
+        "apiStandard": "agnes_images",
+        "adapter": "agnes_images",
+        "probeStrategy": "openai_models",
+        "operationKinds": [
+          "image.generate",
+          "image.edit"
+        ],
+        "baseUrlDefault": "https://apihub.agnes-ai.com/v1",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://platform.agnes-ai.com"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/images/generations",
+          "bodyFields": [
+            "model",
+            "prompt",
+            "size",
+            "return_base64",
+            "extra_body.image",
+            "extra_body.response_format"
+          ],
+          "sizeField": "size",
+          "sizeFormat": "WIDTHxHEIGHT",
+          "responseFormats": [
+            "url",
+            "b64_json"
+          ]
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "data[0].url",
+            "data[0].b64_json"
+          ]
+        },
+        "statusMap": {
+          "http_2xx": "succeeded",
+          "http_error": "failed"
+        },
+        "sourceUrl": "https://agnes-ai.com/doc/agnes-image-21-flash",
+        "confidence": "verified_official"
+      },
+      {
         "id": "minimax_image",
         "displayName": "MiniMax Image",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
@@ -279,13 +337,16 @@
           "bodyFields": [
             "model",
             "prompt",
+            "subject_reference",
+            "style",
             "aspect_ratio",
             "width",
             "height",
             "response_format",
             "n",
             "seed",
-            "prompt_optimizer"
+            "prompt_optimizer",
+            "aigc_watermark"
           ],
           "sizeField": "aspect_ratio",
           "sizeFormat": "RATIO_COLON",
@@ -300,7 +361,7 @@
         "result": {
           "paths": [
             "data.image_urls[]",
-            "data.b64_json",
+            "data.image_base64[]",
             "metadata.success_count"
           ]
         },
@@ -971,6 +1032,76 @@
         "confidence": "provider_docs"
       },
       {
+        "id": "agnes_video",
+        "displayName": "Agnes Video",
+        "logoAsset": "/model-assets/providers/agnes.png",
+        "modelIds": [
+          "agnes-video-v2.0"
+        ],
+        "apiStandard": "agnes_video_task",
+        "adapter": "agnes_video",
+        "probeStrategy": "openai_models",
+        "modelsPath": "/v1/models",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video",
+          "video.first_last_frame",
+          "video.reference_to_video"
+        ],
+        "baseUrlDefault": "https://apihub.agnes-ai.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://platform.agnes-ai.com"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/v1/videos",
+          "bodyFields": [
+            "model",
+            "prompt",
+            "image",
+            "mode",
+            "height",
+            "width",
+            "num_frames",
+            "frame_rate",
+            "num_inference_steps",
+            "seed",
+            "negative_prompt",
+            "extra_body.image",
+            "extra_body.mode"
+          ],
+          "sizeFormat": "WIDTHxHEIGHT"
+        },
+        "polling": {
+          "mode": "task",
+          "statusPath": "/agnesapi?video_id={video_id}",
+          "legacyStatusPath": "/v1/videos/{task_id}",
+          "recommendedIntervalSeconds": 5
+        },
+        "result": {
+          "paths": [
+            "video_id",
+            "status",
+            "remixed_from_video_id",
+            "video_url"
+          ]
+        },
+        "statusMap": {
+          "queued": "queued",
+          "processing": "running",
+          "completed": "succeeded",
+          "failed": "failed"
+        },
+        "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+        "confidence": "verified_official"
+      },
+      {
         "id": "minimax_video",
         "displayName": "MiniMax Video",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
@@ -978,10 +1109,22 @@
           "MiniMax-Hailuo-2.3",
           "MiniMax-Hailuo-2.3-Fast",
           "MiniMax-Hailuo-02",
-          "video-01"
+          "T2V-01-Director",
+          "T2V-01",
+          "I2V-01-Director",
+          "I2V-01-live",
+          "I2V-01",
+          "S2V-01"
         ],
         "apiStandard": "minimax_task",
         "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "video.text_to_video",
+          "video.image_to_video",
+          "video.first_last_frame",
+          "video.reference_to_video"
+        ],
         "baseUrlDefault": "https://api.minimaxi.com",
         "credentialHelp": {
           "label": "Get API key",
@@ -999,7 +1142,14 @@
             "model",
             "prompt",
             "first_frame_image",
-            "duration"
+            "last_frame_image",
+            "subject_reference",
+            "prompt_optimizer",
+            "fast_pretreatment",
+            "duration",
+            "resolution",
+            "callback_url",
+            "aigc_watermark"
           ],
           "sizeFormat": "MODEL_SPECIFIC"
         },
@@ -1010,8 +1160,10 @@
         },
         "result": {
           "paths": [
+            "task_id",
+            "status",
             "file_id",
-            "download_url"
+            "file.download_url"
           ]
         },
         "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v",
@@ -2342,6 +2494,70 @@
       }
     ],
     "music": [
+      {
+        "id": "minimax_music",
+        "displayName": "MiniMax Music",
+        "logoAsset": "/model-assets/lobe/minimax-color.svg",
+        "modelIds": [
+          "music-2.6",
+          "music-2.6-free",
+          "music-cover",
+          "music-cover-free"
+        ],
+        "apiStandard": "minimax_music_generation",
+        "adapter": "catalog_only",
+        "probeStrategy": "catalog_only",
+        "operationKinds": [
+          "music.generate",
+          "music.cover"
+        ],
+        "baseUrlDefault": "https://api.minimaxi.com",
+        "credentialHelp": {
+          "label": "Get API key",
+          "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/v1/music_generation",
+          "bodyFields": [
+            "model",
+            "prompt",
+            "lyrics",
+            "stream",
+            "output_format",
+            "audio_setting",
+            "aigc_watermark",
+            "lyrics_optimizer",
+            "is_instrumental",
+            "audio_url",
+            "audio_base64",
+            "cover_feature_id"
+          ],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "data.audio",
+            "data.status",
+            "extra_info.music_duration",
+            "extra_info.music_sample_rate"
+          ]
+        },
+        "statusMap": {
+          "2": "succeeded",
+          "http_error": "failed"
+        },
+        "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/music-generation",
+        "confidence": "verified_official"
+      },
       {
         "id": "mureka_music",
         "displayName": "Mureka Music API",

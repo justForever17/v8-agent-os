@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from core.model_provider_catalog import model_provider_catalog
 
@@ -27,6 +28,7 @@ def test_llm_provider_catalog_contains_new_model_providers():
         "nvidia-nim",
         "cohere",
         "ai21",
+        "agnes",
         "baidu-qianfan",
         "stepfun",
         "baichuan",
@@ -42,6 +44,15 @@ def test_llm_provider_catalog_contains_new_model_providers():
     assert "gemini-3.1-flash-preview" not in gemini_model_ids
     assert "gemini-3.1-flash-lite-preview" not in gemini_model_ids
 
+    agnes = next(item for item in payload["providers"] if item["id"] == "agnes")
+    assert agnes["baseUrl"] == "https://apihub.agnes-ai.com/v1"
+    assert agnes["probeStrategy"] == "openai_models"
+    assert agnes["probeModelAllowlist"] == [
+        "agnes-2.0-flash",
+        "agnes-image-2.1-flash",
+        "agnes-video-v2.0",
+    ]
+
 
 def test_media_matrix_contains_requested_generation_providers():
     payload = json.loads(MEDIA_MATRIX.read_text(encoding="utf-8"))
@@ -51,6 +62,7 @@ def test_media_matrix_contains_requested_generation_providers():
     }
 
     assert {"black_forest_labs_image", "ideogram_image", "leonardo_image"}.issubset(modality_ids["image"])
+    assert "agnes_image" in modality_ids["image"]
     assert {
         "vidu_video",
         "pika_video",
@@ -63,6 +75,7 @@ def test_media_matrix_contains_requested_generation_providers():
         "shotstack_video",
         "creatomate_video",
     }.issubset(modality_ids["video"])
+    assert "agnes_video" in modality_ids["video"]
     assert {
         "fish_audio_tts",
         "cartesia_tts",
@@ -73,7 +86,7 @@ def test_media_matrix_contains_requested_generation_providers():
         "google_gemini_live_audio",
         "amazon_polly_tts",
     }.issubset(modality_ids["voice"])
-    assert "udio_music" in modality_ids["music"]
+    assert {"minimax_music", "udio_music"}.issubset(modality_ids["music"])
     assert {"meshy_3d", "hitem3d", "hyper3d_rodin", "csm_3d", "3d_ai_studio"}.issubset(modality_ids["model3d"])
 
 
@@ -123,7 +136,35 @@ def test_new_provider_hosts_are_in_trusted_network_catalog():
         "azure-speech",
         "amazon-polly",
         "udio",
+        "agnes",
     }.issubset(entry_ids)
+
+
+def test_agnes_online_probe_keeps_current_chat_image_and_video_models(monkeypatch):
+    response = SimpleNamespace(
+        ok=True,
+        status_code=200,
+        text="",
+        json=lambda: {
+            "data": [
+                {"id": "agnes-2.0-flash"},
+                {"id": "agnes-image-2.1-flash"},
+                {"id": "agnes-video-v2.0"},
+                {"id": "agnes-image-2.0-flash"},
+            ]
+        },
+    )
+    monkeypatch.setattr("core.model_provider_catalog.requests.get", lambda *args, **kwargs: response)
+
+    result = model_provider_catalog.probe_provider("agnes", credential="sk-test")
+
+    assert result["ok"] is True
+    assert [item["id"] for item in result["models"]] == [
+        "agnes-2.0-flash",
+        "agnes-image-2.1-flash",
+        "agnes-video-v2.0",
+    ]
+    assert [item["type"] for item in result["models"]] == ["MULTIMODAL", "IMAGE", "VIDEO"]
 
 
 def test_research_source_quality_catalog_contains_authority_and_video_popularity_sources():

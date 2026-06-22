@@ -48,3 +48,17 @@ def test_catalog_only_doc_models_are_visible_without_api_wire_claims():
     assert provider["probeStrategy"] == "catalog_only"
     model_ids = {item["id"] for item in provider["models"]}
     assert "flux.2" in model_ids
+
+
+def test_agnes_and_minimax_media_capabilities_keep_model_specific_operations():
+    agnes_image = media_model_capability_registry.find("agnes_image", "agnes-image-2.1-flash", "image.edit")
+    agnes_video = media_model_capability_registry.find("agnes_video", "agnes-video-v2.0", "video.first_last_frame")
+    minimax_s2v = media_model_capability_registry.find("minimax_video", "S2V-01", "video.reference_to_video")
+    minimax_fast = media_model_capability_registry.find("minimax_video", "MiniMax-Hailuo-2.3-Fast", "video.image_to_video")
+    minimax_music = media_model_capability_registry.find("minimax_music", "music-2.6", "music.generate")
+
+    assert agnes_image and agnes_image["inputModalities"] == ["text", "image"]
+    assert agnes_video and agnes_video["duration"]["numFramesRule"] == "8n+1"
+    assert minimax_s2v and minimax_s2v["operationKinds"] == ["video.reference_to_video"]
+    assert minimax_fast and minimax_fast["operationKinds"] == ["video.image_to_video"]
+    assert minimax_music and minimax_music["outputStreams"] == ["audio"]

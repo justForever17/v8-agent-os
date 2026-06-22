@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-04-29",
+  "updatedAt": "2026-06-23",
   "matchPolicy": "exact providerId + exact modelId + operationKind; no provider-level inheritance",
   "notes": [
     "This file stores model-version media capability overlays that are too specific for provider-level metadata.",
@@ -110,6 +110,168 @@
       },
       "sourceUrl": "https://klingai.com/",
       "confidence": "community_or_inferred"
+    },
+    {
+      "providerId": "agnes_image",
+      "modelId": "agnes-image-2.1-flash",
+      "operationKinds": ["image.generate", "image.edit"],
+      "capabilityProfile": {
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["image"],
+        "referenceInputs": {
+          "image": {
+            "roles": ["source_image", "composition_reference"]
+          }
+        },
+        "formats": {
+          "response": ["url", "b64_json"],
+          "imageInput": ["public_url", "data_uri"]
+        }
+      },
+      "sourceUrl": "https://agnes-ai.com/doc/agnes-image-21-flash",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "agnes_video",
+      "modelId": "agnes-video-v2.0",
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "audioModes": [],
+        "audioPreservationPolicy": "silent_or_external_audio",
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "referenceInputs": {
+          "image": {
+            "roles": ["first_frame", "last_frame", "keyframe", "visual_reference"]
+          }
+        },
+        "duration": {
+          "control": "num_frames_divided_by_frame_rate",
+          "numFramesMax": 441,
+          "numFramesRule": "8n+1",
+          "frameRateMin": 1,
+          "frameRateMax": 60
+        },
+        "resolution": {
+          "presets": ["480p", "720p", "1080p"],
+          "providerMayNormalize": true
+        }
+      },
+      "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
+      "modelIds": ["MiniMax-Hailuo-2.3"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "duration": {"seconds": [6, 10]},
+        "resolution": {"presets": ["768P", "1080P"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
+      "modelIds": ["MiniMax-Hailuo-2.3-Fast"],
+      "operationKinds": ["video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "duration": {"seconds": [6, 10]},
+        "resolution": {"presets": ["768P", "1080P"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-i2v",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
+      "modelIds": ["MiniMax-Hailuo-02"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "duration": {"seconds": [6, 10]},
+        "resolution": {"presets": ["512P", "768P", "1080P"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-fl2v",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
+      "modelIds": ["T2V-01-Director", "T2V-01"],
+      "operationKinds": ["video.text_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "inputModalities": ["text"],
+        "outputStreams": ["video"],
+        "duration": {"seconds": [6]},
+        "resolution": {"presets": ["720P", "1080P"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-t2v",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
+      "modelIds": ["I2V-01-Director", "I2V-01-live", "I2V-01"],
+      "operationKinds": ["video.image_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "duration": {"seconds": [6]},
+        "resolution": {"presets": ["720P", "1080P"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-i2v",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
+      "modelId": "S2V-01",
+      "operationKinds": ["video.reference_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "inputModalities": ["text", "image"],
+        "outputStreams": ["video"],
+        "referenceInputs": {
+          "image": {"maxCount": 1, "roles": ["character"]}
+        }
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-s2v",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_music",
+      "modelIds": ["music-2.6", "music-2.6-free"],
+      "operationKinds": ["music.generate"],
+      "capabilityProfile": {
+        "inputModalities": ["text"],
+        "outputStreams": ["audio"],
+        "formats": {"output": ["url", "hex"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/music-generation",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_music",
+      "modelIds": ["music-cover", "music-cover-free"],
+      "operationKinds": ["music.cover"],
+      "capabilityProfile": {
+        "inputModalities": ["text", "audio"],
+        "outputStreams": ["audio"],
+        "referenceInputs": {
+          "audio": {"maxCount": 1, "roles": ["cover_reference"]}
+        },
+        "formats": {"input": ["audio_url", "audio_base64", "cover_feature_id"], "output": ["url", "hex"]}
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/music-generation",
+      "confidence": "verified_official"
     },
     {
       "providerId": "happyhorse_video",

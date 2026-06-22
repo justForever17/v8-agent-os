@@ -19,6 +19,8 @@ from runtimes.creative_media.catalog import (
 )
 from runtimes.creative_media.recipe import CreativeRecipeCompiler, prepare_provider_prompt_policy
 from runtimes.creative_media.runtime import (
+    _build_agnes_image_payload,
+    _build_agnes_video_payload,
     _build_openai_image_payload,
     _build_volcengine_image_payload,
     _build_volcengine_video_payload,
@@ -73,8 +75,8 @@ def test_media_provider_matrix_has_required_contract_fields():
     matrix = load_provider_matrix()
     assert matrix["version"] == 1
     modalities = matrix["modalities"]
-    assert {"aliyun_bailian_image", "volcengine_seedream", "zhipu_bigmodel_image"}.issubset({entry["id"] for entry in modalities["image"]})
-    assert {"aliyun_bailian_video", "volcengine_seedance", "zhipu_bigmodel_video", "openai_sora_video", "happyhorse_video"}.issubset({entry["id"] for entry in modalities["video"]})
+    assert {"agnes_image", "aliyun_bailian_image", "volcengine_seedream", "zhipu_bigmodel_image"}.issubset({entry["id"] for entry in modalities["image"]})
+    assert {"agnes_video", "aliyun_bailian_video", "volcengine_seedance", "zhipu_bigmodel_video", "openai_sora_video", "happyhorse_video"}.issubset({entry["id"] for entry in modalities["video"]})
     assert {"aliyun_bailian_cosyvoice", "minimax_tts", "zhipu_bigmodel_voice", "volcengine_doubao_voice", "xiaomi_mimo_tts"}.issubset({entry["id"] for entry in modalities["voice"]})
     assert {"tencent_hunyuan_3d", "volcengine_3d_generation"}.issubset({entry["id"] for entry in modalities["model3d"]})
     for modality in ("image", "video", "voice", "music", "model3d"):
@@ -96,6 +98,12 @@ def test_media_provider_matrix_has_required_contract_fields():
     assert "hunyuan-3d-pro" in model3d_entries["tencent_hunyuan_3d"]["modelIds"]
     assert "video.action_transfer" in video_entries["aliyun_bailian_video"]["operationKinds"]
     assert "video.first_last_frame" in video_entries["volcengine_seedance"]["operationKinds"]
+    assert video_entries["agnes_video"]["adapter"] == "agnes_video"
+    assert video_entries["agnes_video"]["polling"]["statusPath"] == "/agnesapi?video_id={video_id}"
+    assert "S2V-01" in video_entries["minimax_video"]["modelIds"]
+    assert "subject_reference" in video_entries["minimax_video"]["request"]["bodyFields"]
+    assert image_entries["agnes_image"]["adapter"] == "agnes_images"
+    assert "data.image_base64[]" in image_entries["minimax_image"]["result"]["paths"]
     assert "capabilityProfile" not in video_entries["volcengine_seedance"]
     assert "capabilityProfile" not in video_entries["openai_sora_video"]
 
@@ -159,6 +167,34 @@ def test_media_payload_rendering_keeps_provider_specific_fields_separate():
         "size": "1024x1024",
         "response_format": "b64_json",
     }
+
+    agnes_image_payload = _build_agnes_image_payload(
+        model="agnes-image-2.1-flash",
+        prompt="a small red house",
+        size="1024x768",
+        response_format="url",
+        image_urls=["https://example.com/source.png"],
+    )
+    assert "response_format" not in agnes_image_payload
+    assert agnes_image_payload["extra_body"] == {
+        "image": ["https://example.com/source.png"],
+        "response_format": "url",
+    }
+
+    agnes_video_payload = _build_agnes_video_payload(
+        model="agnes-video-v2.0",
+        prompt="a short camera move",
+        operation_kind="video.first_last_frame",
+        image_urls=["https://example.com/first.png", "https://example.com/last.png"],
+        num_frames=120,
+        frame_rate=24,
+    )
+    assert agnes_video_payload["num_frames"] == 113
+    assert agnes_video_payload["extra_body"]["mode"] == "keyframes"
+    assert agnes_video_payload["extra_body"]["image"] == [
+        "https://example.com/first.png",
+        "https://example.com/last.png",
+    ]
 
     volc_image_payload = _build_volcengine_image_payload(
         model="doubao-seedream-4-0-250828",
@@ -291,6 +327,80 @@ def test_volcengine_status_is_normalized():
     assert normalize_provider_status("running", provider="volcengine_seedance") == "running"
     assert normalize_provider_status("succeeded", provider="volcengine_seedance") == "succeeded"
     assert normalize_provider_status("failed", provider="volcengine_seedance") == "failed"
+
+
+def test_agnes_video_adapter_maps_submit_and_poll_contract(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "agnes": {
+                    "provider": {
+                        "name": "Agnes AI",
+                        "base_url": "https://apihub.agnes-ai.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "agnes-2.0-flash": {"type": "MULTIMODAL"},
+                        "agnes-image-2.1-flash": {"type": "IMAGE"},
+                        "agnes-video-v2.0": {"type": "VIDEO"},
+                    },
+                }
+            }
+        },
+    )
+    responses = iter(
+        [
+            {
+                "id": "task_123",
+                "task_id": "task_123",
+                "video_id": "video_123",
+                "status": "queued",
+                "seconds": "5.0",
+                "size": "1152x768",
+            },
+            {
+                "id": "task_123",
+                "video_id": "video_123",
+                "status": "completed",
+                "progress": 100,
+                "remixed_from_video_id": "https://example.com/result.mp4",
+            },
+        ]
+    )
+    requested_urls: list[str] = []
+
+    async def fake_request_json(method, url, **kwargs):
+        requested_urls.append(url)
+        return next(responses)
+
+    async def fake_artifact_from_url(url, **kwargs):
+        return {"artifactId": "artifact_video", "url": url, "mimeType": "video/mp4"}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact_from_url)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    request = {
+        "modality": "video",
+        "operationKind": "video.text_to_video",
+        "providerId": "agnes",
+        "model": "agnes-video-v2.0",
+        "prompt": "A short studio product shot",
+        "duration": 5,
+    }
+    job = creative_media_runtime._new_job(modality="video", adapter="agnes_video", request=request)
+
+    submitted = asyncio.run(creative_media_runtime._submit_agnes_video_job(job, request))
+    completed = asyncio.run(creative_media_runtime._poll_agnes_video_job(submitted))
+
+    assert submitted["providerResponse"]["videoId"] == "video_123"
+    assert submitted["providerResponse"]["providerId"] == "agnes"
+    assert completed["status"] == "succeeded"
+    assert completed["artifacts"][0]["url"] == "https://example.com/result.mp4"
+    assert requested_urls == [
+        "https://apihub.agnes-ai.com/v1/videos",
+        "https://apihub.agnes-ai.com/agnesapi?video_id=video_123",
+    ]
 
 
 def test_model_preferences_are_scoped_by_operation_kind(monkeypatch):

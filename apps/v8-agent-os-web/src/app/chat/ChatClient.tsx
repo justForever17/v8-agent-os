@@ -33,6 +33,7 @@ import { CreateConversationPayload, useConversationContext } from "@/context/Con
 import { useSession } from "next-auth/react";
 import { LoginDialog } from "@/components/auth/LoginDialog";
 import { Bot, FolderTree, Route } from "lucide-react";
+import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { TodosHUD } from "@/components/chat/TodosHUD";
 import { ProcessesHUD } from "@/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/components/chat/RunControlBar";
@@ -397,6 +398,7 @@ export default function ChatClient() {
     const t = useT();
     const { locale } = useLocale();
     const { status, data: session } = useSession();
+    const { profile: clientProfile } = useClientProfile();
     const searchParams = useSearchParams();
     const urlId = searchParams.get("id");
     const newConversationIntent = searchParams.get("new") === "1";
@@ -456,6 +458,18 @@ export default function ChatClient() {
     const [localHour, setLocalHour] = useState<number>(9);
     const viewportBaselineRef = useRef(0);
     const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
+    const chatUserName = useMemo(
+        () => clientProfile?.name
+            || session?.user?.name
+            || session?.user?.login
+            || session?.user?.email
+            || "",
+        [clientProfile?.name, session?.user?.email, session?.user?.login, session?.user?.name],
+    );
+    const chatUserAvatar = useMemo(
+        () => resolveProfileAvatarSrc(clientProfile?.image || session?.user?.image || ""),
+        [clientProfile?.image, session?.user?.image],
+    );
 
     useEffect(() => {
         if (typeof window === "undefined") {
@@ -1936,7 +1950,8 @@ export default function ChatClient() {
                             contextReferences={projectionContextReferences}
                             conversationId={activeConversationId}
                             isLoading={isLoading}
-                            userAvatar={session?.user?.image}
+                            userAvatar={chatUserAvatar}
+                            userName={chatUserName}
                             shellClassName="w-full"
                             runtimeActivities={runtimeStageModel.activities}
                             onDeleteMessage={(messageId) => {

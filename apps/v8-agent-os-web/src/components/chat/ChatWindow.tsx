@@ -30,11 +30,12 @@ interface ChatWindowProps {
     onDeleteMessage?: (id: string) => void;
     isLoading?: boolean;
     userAvatar?: string | null;
+    userName?: string | null;
     shellClassName?: string;
     runtimeActivities?: RuntimeStageActivity[];
 }
 
-export function ChatWindow({ messages, processes, contextReferences, conversationId, onDeleteMessage, isLoading, userAvatar, shellClassName, runtimeActivities = [] }: ChatWindowProps) {
+export function ChatWindow({ messages, processes, contextReferences, conversationId, onDeleteMessage, isLoading, userAvatar, userName, shellClassName, runtimeActivities = [] }: ChatWindowProps) {
     const t = useT();
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -209,6 +210,7 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
                                         onDelete={setDeleteId}
                                         isLast={index === messages.length - 1}
                                         userAvatar={userAvatar}
+                                        userName={userName}
                                         runtimeActivities={runtimeActivities}
                                     />
                                 ))

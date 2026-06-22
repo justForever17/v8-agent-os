@@ -5,6 +5,8 @@ import { useSession } from "next-auth/react";
 
 import { getUserProfile, type SharedUserProfile } from "@/lib/actions/user.actions";
 
+const PROFILE_UPDATED_EVENT = "v8-client-profile-updated";
+
 function normalizeProfileValue(value?: string | null) {
     return String(value || "").trim();
 }
@@ -24,6 +26,11 @@ export function resolveProfileAvatarSrc(image?: string | null) {
         return `/api/avatar?src=${encodeURIComponent(raw)}`;
     }
     return raw;
+}
+
+function emitProfileUpdate(profile: SharedUserProfile | null) {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent<SharedUserProfile | null>(PROFILE_UPDATED_EVENT, { detail: profile }));
 }
 
 export function useClientProfile() {
@@ -52,14 +59,17 @@ export function useClientProfile() {
 
     const applyProfile = useCallback(async (next: SharedUserProfile | null) => {
         setProfile((current) => profilesMatch(current, next) ? current : next);
+        emitProfileUpdate(next);
         if (!next) return;
         if (profilesMatch(next, sessionProfile)) return;
-        await update({
+        void update({
             login: next.login,
             role: next.role,
             email: next.email,
             name: next.name,
             image: next.image,
+        }).catch((error) => {
+            console.warn("[useClientProfile] Failed to sync NextAuth session profile:", error);
         });
     }, [sessionProfile, update]);
 
@@ -88,6 +98,18 @@ export function useClientProfile() {
         }
         void refreshProfile();
     }, [refreshProfile, status]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        const handleProfileUpdate = (event: Event) => {
+            const next = (event as CustomEvent<SharedUserProfile | null>).detail || null;
+            setProfile((current) => profilesMatch(current, next) ? current : next);
+        };
+        window.addEventListener(PROFILE_UPDATED_EVENT, handleProfileUpdate);
+        return () => window.removeEventListener(PROFILE_UPDATED_EVENT, handleProfileUpdate);
+    }, []);
 
     return {
         status,

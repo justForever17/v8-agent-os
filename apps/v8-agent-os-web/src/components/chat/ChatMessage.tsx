@@ -34,6 +34,7 @@ interface ChatMessageProps {
     onDelete: (id: string) => void;
     isLast?: boolean;
     userAvatar?: string | null;
+    userName?: string | null;
     runtimeActivities?: RuntimeStageActivity[];
 }
 
@@ -99,6 +100,35 @@ function isMicroStageSupersededTimelineNode(node: UiTimelineNode, microStageVisi
 
     return (node.executionType === "tool_call" || node.executionType === "tool_result")
         && MICRO_STAGE_TOOL_NAMES.has(getExecutionToolName(node));
+}
+
+function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
+    if (node.kind === "narrative") {
+        return String(node.content || "").trim().length > 0;
+    }
+
+    if (node.kind === "execution") {
+        if (node.executionType === "reasoning") {
+            return isStreaming
+                || String(node.content || "").trim().length > 0
+                || Number(node.time || 0) > 0
+                || Boolean(node.reasoningKind || node.data?.reasoningKind);
+        }
+        if (node.executionType === "tool_call" || node.executionType === "tool_result") {
+            const toolName = getExecutionToolName(node);
+            return toolName !== "write_todos" && toolName !== "update_todo";
+        }
+        if (node.executionType === "runtime_progress") {
+            return Boolean(String(node.label || node.topic || "").trim());
+        }
+        return true;
+    }
+
+    if (node.kind === "governance" && node.governanceType === "ask_user") {
+        return false;
+    }
+
+    return true;
 }
 
 function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[]) {
@@ -205,7 +235,7 @@ function MessageActionButtons({
     );
 }
 
-function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, runtimeActivities = [] }: ChatMessageProps) {
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [] }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const setActiveArtifactId = useChatStore((state) => state.setActiveArtifactId);
@@ -216,6 +246,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
     const copyLabel = t(lt("复制消息", "Copy message"));
     const deleteLabel = t(lt("删除消息", "Delete message"));
+    const userDisplayName = String(userName || "").trim() || t(lt("聊天用户", "Chat user"));
 
     const handleCopy = (content: string) => {
         navigator.clipboard.writeText(content);
@@ -301,12 +332,35 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             return !toolCallIds.has(node.toolCallId.trim());
         });
     }, [message.nodes, microStageVisible, toolCallIds]);
+    const renderableNodes = useMemo(
+        () => visibleNodes.filter((node) => isRenderableTimelineNode(node, Boolean(isLoading && isLast))),
+        [isLast, isLoading, visibleNodes],
+    );
     const handleOpenMicroStageDetailRef = (target: CollaborationMicroStageDetailTarget) => {
         if (typeof window === "undefined") {
             return;
         }
         window.dispatchEvent(new CustomEvent("v8:micro-stage-detail", { detail: target }));
     };
+    const hasAssistantNarrativeNode = renderableNodes.some((node) =>
+        node.kind === "narrative"
+        && node.role === "assistant"
+        && String(node.content || "").trim().length > 0,
+    );
+    const assistantContentFallbackVisible = message.role === "assistant"
+        && normalizedContent.trim().length > 0
+        && !hasAssistantNarrativeNode;
+    const assistantHasVisibleSurface = message.role === "assistant" && (
+        visibleBubbleMicroStages.length > 0
+        || renderableNodes.length > 0
+        || assistantContentFallbackVisible
+        || imagesArray.length > 0
+        || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
+    );
+
+    if (message.role === "assistant" && !assistantHasVisibleSurface && !(isLoading && isLast)) {
+        return null;
+    }
 
     // USER MESSAGE
     if (message.role === 'user' || message.role === 'tool') {
@@ -324,15 +378,20 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                     {isTool ? (
                         <TerminalSquare className="w-5 h-5" />
                     ) : userAvatar ? (
-                        <img src={userAvatar} alt="User" className="w-full h-full object-cover" />
+                        <img src={userAvatar} alt={userDisplayName} className="w-full h-full object-cover" />
                     ) : (
-                        <User className="w-5 h-5" />
+                        <span className="text-sm font-bold">{userDisplayName.charAt(0).toUpperCase() || <User className="w-5 h-5" />}</span>
                     )}
                 </div>
 
                 <div className="flex min-w-0 max-w-[88%] flex-col items-end gap-1.5 sm:max-w-[85%]">
                     {/* Tool specific label */}
                     {isTool && <span className="text-[11px] uppercase tracking-wider text-muted-foreground/60 font-semibold mb-1 mr-1">{t(lt("系统输出", "System output"))}</span>}
+                    {!isTool && (
+                        <span className="mr-1 max-w-full truncate text-[12px] font-semibold text-muted-foreground/80">
+                            {userDisplayName}
+                        </span>
+                    )}
 
                     <div className={cn(
                         "relative min-w-[60px] px-4 py-3.5 text-[14px] shadow-lg transition-all duration-300 sm:px-5 sm:py-4 sm:text-[15px]",
@@ -501,7 +560,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         />
                     )}
 
-                    {visibleNodes.map((node, i) => (
+                    {renderableNodes.map((node, i) => (
                         <ContentDispatcher 
                             key={node.id || i}
                             node={node}
@@ -513,6 +572,11 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                             processes={processes}
                         />
                     ))}
+                    {assistantContentFallbackVisible && (
+                        <div className="prose prose-sm max-w-none dark:prose-invert">
+                            <MarkdownRenderer content={normalizedContent} />
+                        </div>
+                    )}
 
                     <div className="space-y-4">
                         {Array.isArray(message.artifacts) && message.artifacts.length > 0 && (

@@ -137,7 +137,16 @@ type AudioRuntimeConfig = {
     stt: {
         active_provider: string;
         providers: {
-            custom: { endpoint?: string; api_key?: string };
+            custom: {
+                endpoint?: string;
+                api_key?: string;
+                protocol?: string;
+                model?: string;
+                language?: string;
+                fileField?: string;
+                responseTextPath?: string;
+                headers?: string | Record<string, string>;
+            };
             baidu: { app_id?: string; api_key?: string; secret_key?: string };
             volcengine?: { app_id?: string; access_token?: string; cluster?: string };
         };
@@ -146,7 +155,17 @@ type AudioRuntimeConfig = {
     tts: {
         active_provider: string;
         edge_tts: { voice?: string; rate?: string; volume?: string };
-        custom: { endpoint?: string; api_key?: string; voice?: string };
+        custom: {
+            endpoint?: string;
+            api_key?: string;
+            voice?: string;
+            protocol?: string;
+            model?: string;
+            format?: string;
+            speed?: string;
+            responseAudioPath?: string;
+            headers?: string | Record<string, string>;
+        };
         model_ref?: { modelRef?: string; voice?: string; format?: string; speed?: string };
     };
 };
@@ -155,8 +174,14 @@ type AudioVoicePreset = {
     label?: string;
     labelKey?: string;
 };
+type AudioVoiceOption = {
+    value: string;
+    label: string;
+};
 type AudioVoicePresetProvider = {
     match?: string[];
+    protocol?: string;
+    defaultEndpoint?: string;
     voices?: AudioVoicePreset[];
     supportsRemoteVoiceList?: boolean;
     remoteVoiceListPath?: string;
@@ -182,7 +207,7 @@ const DEFAULT_AUDIO_CONFIG: AudioRuntimeConfig = {
     stt: {
         active_provider: "baidu",
         providers: {
-            custom: { endpoint: "", api_key: "" },
+            custom: { endpoint: "", api_key: "", protocol: "multipart", model: "", language: "zh-CN", fileField: "file", responseTextPath: "text", headers: "" },
             baidu: { app_id: "", api_key: "", secret_key: "" },
             volcengine: { app_id: "", access_token: "", cluster: "" },
         },
@@ -191,7 +216,7 @@ const DEFAULT_AUDIO_CONFIG: AudioRuntimeConfig = {
     tts: {
         active_provider: "edge-tts",
         edge_tts: { voice: "zh-CN-XiaoxiaoNeural", rate: "+0%", volume: "+0%" },
-        custom: { endpoint: "", api_key: "", voice: "" },
+        custom: { endpoint: "", api_key: "", voice: "", protocol: "json_audio_stream", model: "", format: "mp3", speed: "", responseAudioPath: "", headers: "" },
         model_ref: { modelRef: "", voice: "", format: "mp3", speed: "" },
     },
 };
@@ -214,6 +239,30 @@ function resolveAudioVoicePresetKey(modelRef: string): string {
         }
     }
     return "";
+}
+
+function voicePresetsForCustomTtsProtocol(protocol: string, t: (key: string) => string): { value: string; label: string }[] {
+    if (protocol === "openai_speech") return localizeAudioVoicePresets("openai", t);
+    if (protocol === "minimax_t2a_v2") return localizeAudioVoicePresets("minimax", t);
+    return [];
+}
+
+function headerValueForInput(value: string | Record<string, string> | undefined): string {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    return JSON.stringify(value);
+}
+
+function sttEndpointPlaceholder(protocol: string): string {
+    if (protocol === "openai_transcription") return "https://api.openai.com/v1/audio/transcriptions";
+    if (protocol === "json_base64") return "https://example.com/transcribe-json";
+    return "https://example.com/transcribe";
+}
+
+function ttsEndpointPlaceholder(protocol: string): string {
+    if (protocol === "openai_speech") return "https://api.openai.com/v1/audio/speech";
+    if (protocol === "minimax_t2a_v2") return "https://api.minimaxi.com/v1/t2a_v2";
+    return "https://example.com/tts";
 }
 
 function mergeAudioConfig(value: unknown): AudioRuntimeConfig {
@@ -420,6 +469,8 @@ export default function ModelHubPage() {
     const [isCatalogBusy, setIsCatalogBusy] = useState(false);
     const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(DEFAULT_AUDIO_CONFIG);
     const [isAudioSaving, setIsAudioSaving] = useState(false);
+    const [customTtsRemoteVoices, setCustomTtsRemoteVoices] = useState<AudioVoiceOption[]>([]);
+    const [isCustomTtsVoiceLoading, setIsCustomTtsVoiceLoading] = useState(false);
     const fetchData = async () => {
         setIsLoading(true);
         try {
@@ -494,11 +545,15 @@ export default function ModelHubPage() {
         [controlModelsById, models],
     );
     const selectedTtsModelRef = audioConfig.tts.model_ref?.modelRef || "";
+    const customSttProtocol = audioConfig.stt.providers.custom.protocol || "multipart";
+    const customTtsProtocol = audioConfig.tts.custom.protocol || "json_audio_stream";
     const ttsVoicePresets = useMemo(() => {
         if (audioConfig.tts.active_provider === "edge-tts") return localizeAudioVoicePresets("edge-tts", t);
         const presetKey = resolveAudioVoicePresetKey(selectedTtsModelRef);
         return presetKey ? localizeAudioVoicePresets(presetKey, t) : [];
     }, [audioConfig.tts.active_provider, selectedTtsModelRef, t]);
+    const customTtsVoicePresets = useMemo(() => voicePresetsForCustomTtsProtocol(customTtsProtocol, t), [customTtsProtocol, t]);
+    const customTtsVoiceOptions = customTtsRemoteVoices.length > 0 ? customTtsRemoteVoices : customTtsVoicePresets;
     useEffect(() => {
         if (apiCatalogProviders.some((item) => item.id === selectedCatalogProviderId) || selectedCatalogProviderId === "__custom__") return;
         setSelectedCatalogProviderId(apiCatalogProviders[0]?.id || "__custom__");
@@ -874,6 +929,36 @@ export default function ModelHubPage() {
             setIsAudioSaving(false);
         }
     };
+    const handleFetchCustomTtsVoices = async () => {
+        setIsCustomTtsVoiceLoading(true);
+        try {
+            const response = await fetch("/api/audio/voices", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    protocol: customTtsProtocol,
+                    endpoint: audioConfig.tts.custom.endpoint || "",
+                    apiKey: audioConfig.tts.custom.api_key || "",
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                toast({
+                    variant: "destructive",
+                    title: t("app.admin.dashboard.model.hub.audio.voiceFetchFailed"),
+                    description: extractErrorText(payload.error, t("app.admin.dashboard.model.hub.audio.voiceFetchFailed")),
+                });
+                return;
+            }
+            const voices = Array.isArray(payload.voices) ? payload.voices : [];
+            setCustomTtsRemoteVoices(voices);
+            toast({
+                title: voices.length > 0 ? t("app.admin.dashboard.model.hub.audio.voiceFetchSuccess") : t("app.admin.dashboard.model.hub.audio.voiceFetchEmpty"),
+            });
+        } finally {
+            setIsCustomTtsVoiceLoading(false);
+        }
+    };
     const setSttProviderValue = (provider: "custom" | "baidu", key: string, value: string) => {
         setAudioConfig((current) => ({
             ...current,
@@ -1064,8 +1149,25 @@ export default function ModelHubPage() {
                         ) : null}
                         {audioConfig.stt.active_provider === "custom" ? (
                             <div className="grid gap-3 rounded-xl border border-dashed p-3">
-                                <Input value={audioConfig.stt.providers.custom.endpoint || ""} onChange={(event) => setSttProviderValue("custom", "endpoint", event.target.value)} placeholder="https://example.com/transcribe" />
+                                <Select value={customSttProtocol} onValueChange={(value) => setSttProviderValue("custom", "protocol", value)}>
+                                    <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.protocol")} /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="multipart">{t("app.admin.dashboard.model.hub.audio.protocol.multipart")}</SelectItem>
+                                        <SelectItem value="openai_transcription">{t("app.admin.dashboard.model.hub.audio.protocol.openaiTranscription")}</SelectItem>
+                                        <SelectItem value="json_base64">{t("app.admin.dashboard.model.hub.audio.protocol.jsonBase64")}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <Input value={audioConfig.stt.providers.custom.endpoint || ""} onChange={(event) => setSttProviderValue("custom", "endpoint", event.target.value)} placeholder={sttEndpointPlaceholder(customSttProtocol)} />
                                 <Input type="password" value={audioConfig.stt.providers.custom.api_key || ""} onChange={(event) => setSttProviderValue("custom", "api_key", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.apiKeyOptional")} />
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <Input value={audioConfig.stt.providers.custom.model || ""} onChange={(event) => setSttProviderValue("custom", "model", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.modelPlaceholder")} />
+                                    <Input value={audioConfig.stt.providers.custom.language || ""} onChange={(event) => setSttProviderValue("custom", "language", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.languagePlaceholder")} />
+                                </div>
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <Input value={audioConfig.stt.providers.custom.fileField || ""} onChange={(event) => setSttProviderValue("custom", "fileField", event.target.value)} placeholder={customSttProtocol === "json_base64" ? t("app.admin.dashboard.model.hub.audio.audioFieldPlaceholder") : t("app.admin.dashboard.model.hub.audio.fileFieldPlaceholder")} />
+                                    <Input value={audioConfig.stt.providers.custom.responseTextPath || ""} onChange={(event) => setSttProviderValue("custom", "responseTextPath", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.responseTextPathPlaceholder")} />
+                                </div>
+                                <Input value={headerValueForInput(audioConfig.stt.providers.custom.headers)} onChange={(event) => setSttProviderValue("custom", "headers", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.headersPlaceholder")} />
                             </div>
                         ) : null}
                         {audioConfig.stt.active_provider === "model_ref" ? (
@@ -1126,9 +1228,38 @@ export default function ModelHubPage() {
                         ) : null}
                         {audioConfig.tts.active_provider === "custom" ? (
                             <div className="grid gap-3 rounded-xl border border-dashed p-3">
-                                <Input value={audioConfig.tts.custom.endpoint || ""} onChange={(event) => setTtsValue("custom", "endpoint", event.target.value)} placeholder="https://example.com/tts" />
+                                <Select value={customTtsProtocol} onValueChange={(value) => { setCustomTtsRemoteVoices([]); setTtsValue("custom", "protocol", value); }}>
+                                    <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.protocol")} /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="json_audio_stream">{t("app.admin.dashboard.model.hub.audio.protocol.jsonAudioStream")}</SelectItem>
+                                        <SelectItem value="openai_speech">{t("app.admin.dashboard.model.hub.audio.protocol.openaiSpeech")}</SelectItem>
+                                        <SelectItem value="minimax_t2a_v2">{t("app.admin.dashboard.model.hub.audio.protocol.minimaxT2a")}</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <Input value={audioConfig.tts.custom.endpoint || ""} onChange={(event) => setTtsValue("custom", "endpoint", event.target.value)} placeholder={ttsEndpointPlaceholder(customTtsProtocol)} />
                                 <Input type="password" value={audioConfig.tts.custom.api_key || ""} onChange={(event) => setTtsValue("custom", "api_key", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.apiKeyOptional")} />
+                                {customTtsProtocol === "minimax_t2a_v2" ? (
+                                    <Button type="button" variant="outline" size="sm" onClick={() => void handleFetchCustomTtsVoices()} disabled={isCustomTtsVoiceLoading || !audioConfig.tts.custom.api_key}>
+                                        <RefreshCw className={`mr-2 h-4 w-4 ${isCustomTtsVoiceLoading ? "animate-spin" : ""}`} />
+                                        {t("app.admin.dashboard.model.hub.audio.fetchVoices")}
+                                    </Button>
+                                ) : null}
+                                {customTtsVoiceOptions.length > 0 ? (
+                                    <Select value={customTtsVoiceOptions.some((item) => item.value === audioConfig.tts.custom.voice) ? audioConfig.tts.custom.voice : undefined} onValueChange={(value) => setTtsValue("custom", "voice", value)}>
+                                        <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.selectVoice")} /></SelectTrigger>
+                                        <SelectContent>
+                                            {customTtsVoiceOptions.map((voice) => <SelectItem key={voice.value} value={voice.value}>{voice.label}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
+                                ) : null}
                                 <Input value={audioConfig.tts.custom.voice || ""} onChange={(event) => setTtsValue("custom", "voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voicePlaceholder")} />
+                                <div className="grid gap-3 md:grid-cols-3">
+                                    <Input value={audioConfig.tts.custom.model || ""} onChange={(event) => setTtsValue("custom", "model", event.target.value)} placeholder={customTtsProtocol === "minimax_t2a_v2" ? "speech-2.8-turbo" : t("app.admin.dashboard.model.hub.audio.modelPlaceholder")} />
+                                    <Input value={audioConfig.tts.custom.format || ""} onChange={(event) => setTtsValue("custom", "format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
+                                    <Input value={audioConfig.tts.custom.speed || ""} onChange={(event) => setTtsValue("custom", "speed", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.speedPlaceholder")} />
+                                </div>
+                                <Input value={audioConfig.tts.custom.responseAudioPath || ""} onChange={(event) => setTtsValue("custom", "responseAudioPath", event.target.value)} placeholder={customTtsProtocol === "minimax_t2a_v2" ? "data.audio" : t("app.admin.dashboard.model.hub.audio.responseAudioPathPlaceholder")} />
+                                <Input value={headerValueForInput(audioConfig.tts.custom.headers)} onChange={(event) => setTtsValue("custom", "headers", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.headersPlaceholder")} />
                             </div>
                         ) : null}
                         {audioConfig.tts.active_provider === "model_ref" ? (

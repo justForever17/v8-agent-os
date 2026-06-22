@@ -11,6 +11,8 @@
     },
     "openai": {
       "match": ["openai", "gpt-4o", "tts-1"],
+      "protocol": "openai_speech",
+      "defaultEndpoint": "https://api.openai.com/v1/audio/speech",
       "voices": [
         { "value": "alloy", "label": "alloy" },
         { "value": "ash", "label": "ash" },
@@ -64,8 +66,10 @@
     },
     "minimax": {
       "match": ["minimax", "speech-02", "speech-2", "t2a"],
+      "protocol": "minimax_t2a_v2",
+      "defaultEndpoint": "https://api.minimaxi.com/v1/t2a_v2",
       "supportsRemoteVoiceList": true,
-      "remoteVoiceListPath": "/v1/get_voice",
+      "remoteVoiceListPath": "https://api.minimaxi.com/v1/get_voice",
       "voices": [
         { "value": "Chinese (Mandarin)_News_Anchor", "label": "News Anchor (Female)" },
         { "value": "Chinese (Mandarin)_Reliable_Executive", "label": "Steady Executive" }

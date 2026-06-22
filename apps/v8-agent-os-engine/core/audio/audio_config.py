@@ -19,7 +19,13 @@ DEFAULT_AUDIO_CONFIG = {
             },
             "custom": {
                 "endpoint": "",
-                "api_key": ""
+                "api_key": "",
+                "protocol": "multipart",
+                "model": "",
+                "language": "zh-CN",
+                "fileField": "file",
+                "responseTextPath": "text",
+                "headers": {}
             }
         },
         "model_ref": {
@@ -39,7 +45,13 @@ DEFAULT_AUDIO_CONFIG = {
         "custom": {
             "endpoint": "",
             "api_key": "",
-            "voice": ""
+            "voice": "",
+            "protocol": "json_audio_stream",
+            "model": "",
+            "format": "mp3",
+            "speed": "",
+            "responseAudioPath": "",
+            "headers": {}
         },
         "model_ref": {
             "modelRef": "",

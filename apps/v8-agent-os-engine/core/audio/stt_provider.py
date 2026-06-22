@@ -1,6 +1,7 @@
 import aiohttp
 from abc import ABC, abstractmethod
 import base64
+import json
 import time
 
 from .audio_config import AudioConfigManager
@@ -23,24 +24,62 @@ class CustomSTTProvider(STTProvider):
     """
     用于对接用户在使用 HuggingFace / ModelScope / 本地服务等部署的自建 STT
     """
-    def __init__(self, endpoint: str, api_key: str = None):
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str = None,
+        protocol: str = "multipart",
+        model: str = "",
+        language: str = "",
+        file_field: str = "file",
+        response_text_path: str = "text",
+        headers: dict | str | None = None,
+    ):
         self.endpoint = endpoint
         self.api_key = api_key
+        self.protocol = protocol or "multipart"
+        self.model = model or ""
+        self.language = language or ""
+        self.file_field = file_field or "file"
+        self.response_text_path = response_text_path or "text"
+        self.extra_headers = _coerce_headers(headers)
 
     async def transcribe(self, audio_bytes: bytes, audio_format: str = "wav") -> str:
-        headers = {}
+        headers = dict(self.extra_headers)
         if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-            
-        data = aiohttp.FormData()
-        data.add_field('file', audio_bytes, filename=f"audio.{audio_format}", content_type=f'audio/{audio_format}')
+            headers.setdefault("Authorization", f"Bearer {self.api_key}")
+
+        if self.protocol == "json_base64":
+            payload = {
+                self.file_field: base64.b64encode(audio_bytes).decode("utf-8"),
+                "format": audio_format,
+            }
+            if self.model:
+                payload["model"] = self.model
+            if self.language:
+                payload["language"] = self.language
+            request_kwargs = {"json": payload}
+        else:
+            data = aiohttp.FormData()
+            data.add_field(self.file_field, audio_bytes, filename=f"audio.{audio_format}", content_type=f"audio/{audio_format}")
+            if self.protocol == "openai_transcription":
+                data.add_field("model", self.model or "whisper-1")
+                if self.language:
+                    data.add_field("language", self.language)
+            else:
+                if self.model:
+                    data.add_field("model", self.model)
+                if self.language:
+                    data.add_field("language", self.language)
+            request_kwargs = {"data": data}
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.endpoint, data=data, headers=headers) as response:
+                async with session.post(self.endpoint, headers=headers, **request_kwargs) as response:
                     if response.status == 200:
-                        res_json = await response.json()
-                        return res_json.get("text", "")
+                        res_json = await response.json(content_type=None)
+                        value = _extract_json_path(res_json, self.response_text_path)
+                        return str(value or "").strip()
                     else:
                         error_text = await response.text()
                         print(f"[CustomSTT] Request failed: {response.status} - {error_text}")
@@ -48,6 +87,36 @@ class CustomSTTProvider(STTProvider):
         except Exception as e:
             print(f"[CustomSTT] Exception: {e}")
             return ""
+
+
+def _coerce_headers(value: dict | str | None) -> dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key): str(val) for key, val in value.items() if key and val is not None}
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return {str(key): str(val) for key, val in parsed.items() if key and val is not None}
+    return {}
+
+
+def _extract_json_path(payload: object, path: str | None) -> object:
+    current = payload
+    for part in (path or "text").split("."):
+        key = part.strip()
+        if not key:
+            continue
+        if isinstance(current, dict):
+            current = current.get(key)
+            continue
+        if isinstance(current, list) and key.isdigit():
+            index = int(key)
+            current = current[index] if 0 <= index < len(current) else None
+            continue
+        return None
+    return current
 
 class BaiduSTTProvider(STTProvider):
     """
@@ -141,7 +210,16 @@ class STTManager:
             c_conf = providers_conf.get("custom", {})
             ep = c_conf.get("endpoint")
             if ep:
-                return CustomSTTProvider(ep, c_conf.get("api_key"))
+                return CustomSTTProvider(
+                    ep,
+                    c_conf.get("api_key"),
+                    protocol=c_conf.get("protocol") or "multipart",
+                    model=c_conf.get("model") or "",
+                    language=c_conf.get("language") or "",
+                    file_field=c_conf.get("fileField") or c_conf.get("file_field") or "file",
+                    response_text_path=c_conf.get("responseTextPath") or c_conf.get("response_text_path") or "text",
+                    headers=c_conf.get("headers"),
+                )
         elif active == "baidu":
             b_conf = providers_conf.get("baidu", {})
             if b_conf.get("api_key") and b_conf.get("secret_key"):

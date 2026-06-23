@@ -95,6 +95,8 @@ def test_fetch_skill_instructions_exposes_manifest_and_reads_relative_file(tmp_p
     skill_root = workspace / ".agents" / "skills" / skill_name
     refs = skill_root / "references"
     refs.mkdir(parents=True)
+    scripts = skill_root / "scripts"
+    scripts.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(
         f"""---
 name: {skill_name}
@@ -108,6 +110,7 @@ Read references/skill-template.md when creating artifacts.
         encoding="utf-8",
     )
     (refs / "skill-template.md").write_text("# Template\n\nRequired YAML frontmatter.", encoding="utf-8")
+    (scripts / "check-quality.py").write_text("print('ok')\n", encoding="utf-8")
 
     SkillLoader.resolve_skill_matches(
         skill_name,
@@ -153,6 +156,29 @@ Read references/skill-template.md when creating artifacts.
     assert "=== SKILL FILE ===" in continuation
     assert "Relative Path: references/skill-template.md" in continuation
     assert "Required YAML frontmatter" in continuation
+
+    with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+        script = fetch_skill_instructions.invoke(
+            {
+                "skill_name": skill_name,
+                "relative_path": "scripts/check-quality.py",
+            }
+        )
+    assert "=== SKILL FILE ===" in script
+    assert "Relative Path: scripts/check-quality.py" in script
+    assert "Execution Boundary:" in script
+    assert "execute only through governed command/runtime tools" in script
+    assert "print('ok')" in script
+
+    with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+        escaped = fetch_skill_instructions.invoke(
+            {
+                "skill_name": skill_name,
+                "relative_path": "../SKILL.md",
+            }
+        )
+    assert "=== SKILL FILE ERROR ===" in escaped
+    assert "relative_path must stay inside the skill directory" in escaped
 
 
 def test_fetch_skill_instructions_list_mode_returns_clean_catalog():

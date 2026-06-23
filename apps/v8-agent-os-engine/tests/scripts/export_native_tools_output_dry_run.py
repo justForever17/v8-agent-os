@@ -424,17 +424,32 @@ def _text_value(value: Any) -> str:
 
 
 def _compact_text(value: Any, limit: int = 180) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", _redact_client_text(str(value or ""))).strip()
     if not text:
         return ""
     return text if len(text) <= limit else f"{text[: max(1, limit - 3)].rstrip()}..."
+
+
+def _redact_client_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(
+        r"\b[A-Za-z]:\\(?:Users|Projects|ProgramData|Windows|temp|Temp)[^\s,，;；)）\]}]*",
+        "[local path]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\bactiveWorkspaceRoot=\[local path\]", "activeWorkspaceRoot=[hidden]", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bworkspacePath=\[local path\]", "workspacePath=[hidden]", text, flags=re.IGNORECASE)
+    return text
 
 
 def _visible_lines(text: str) -> list[str]:
     return [
         line
         for line in (line.strip() for line in str(text or "").splitlines())
-        if line and not re.match(r"^(```|---)$", line)
+        if line
+        and not re.match(r"^(```|---)$", line)
+        and not re.match(r"^\[scenario:[^\]]+\]$", line, re.IGNORECASE)
     ]
 
 
@@ -447,6 +462,15 @@ def _pick_line(text: str, patterns: list[re.Pattern[str]]) -> str:
     return lines[0] if lines else ""
 
 
+def _pick_matching_line(text: str, patterns: list[re.Pattern[str]]) -> str:
+    lines = _visible_lines(text)
+    for pattern in patterns:
+        for line in lines:
+            if pattern.search(line):
+                return line
+    return ""
+
+
 def _pick_record_text(record: dict[str, Any] | None, keys: list[str]) -> str:
     if not record:
         return ""
@@ -455,6 +479,19 @@ def _pick_record_text(record: dict[str, Any] | None, keys: list[str]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _has_failure_line(result_text: str) -> bool:
+    for line in _visible_lines(result_text):
+        if re.match(r"^[-*]\s+", line):
+            continue
+        if (
+            re.search(r"^(status|result)[:：]\s*(failed|failure|error|exception)\b(?!\s*[=:])", line, re.IGNORECASE)
+            or re.search(r"^(failed|failure|error|exception)[:：\s]", line, re.IGNORECASE)
+            or re.search(r"^(失败|错误)[:：\s]", line)
+        ):
+            return True
+    return False
 
 
 def _client_summary(result: Any) -> str:
@@ -484,7 +521,7 @@ def _client_actionable(result_text: str, record: dict[str, Any] | None) -> str |
     direct = _pick_record_text(record, ["recommendedNextAction", "nextAction", "actionable"])
     if direct:
         return _compact_text(direct, 160)
-    line = _pick_line(result_text, [re.compile(r"^(下一步|Next|Action)[:：]", re.IGNORECASE)])
+    line = _pick_matching_line(result_text, [re.compile(r"^(下一步|Next|Action)[:：]", re.IGNORECASE)])
     return _compact_text(line, 160) if line else None
 
 
@@ -523,17 +560,21 @@ def _client_ref_ids(result_text: str, max_refs: int = 4) -> list[str]:
 
 
 def _client_status(state: str, result_text: str, record: dict[str, Any] | None) -> str:
+    normalized_state = str(state or "").lower()
     status_text = str((record or {}).get("status") or (record or {}).get("state") or "").lower()
     combined = f"{status_text}\n{result_text[:2000]}".lower()
-    if re.search(r"(blocked|safety_blocked|拒绝|阻断)", combined):
+    if re.search(r"(unsafe_unobserved|blocked|safety_blocked|拒绝|阻断)", combined):
         return "blocked"
-    if re.search(r"(failed|failure|error|exception|失败|错误)", combined):
-        return "failed"
-    if re.search(r"(waiting|approval|ask_user|等待|审批)", combined):
+    if re.search(r"(stateful_unobserved|waiting|approval|ask_user|等待|审批)", combined):
         return "waiting"
-    if state in {"result", "completed", "invoked"}:
+    if (
+        re.search(r"^(failed|failure|error|exception)$", status_text)
+        or _has_failure_line(result_text)
+    ):
+        return "failed"
+    if normalized_state in {"result", "completed", "invoked"}:
         return "completed"
-    if state in {"call", "running"}:
+    if normalized_state in {"call", "running"}:
         return "running"
     return "unknown"
 
@@ -718,7 +759,7 @@ def _make_record(
     surface_visibility: dict[str, Any] | None = None,
 ) -> ToolCalibrationRecord:
     diagnostics = analyze_output(output)
-    client_surface = build_client_tool_surface(name, output, state="result")
+    client_surface = build_client_tool_surface(name, output, state=status)
     return ToolCalibrationRecord(
         name=name,
         status=status,

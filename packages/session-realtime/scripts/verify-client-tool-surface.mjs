@@ -47,4 +47,32 @@ const runningSurface = buildClientToolSurface({
 assert(runningSurface.status === "running", "call state should be running");
 assert(runningSurface.title === "run_system_command", "title should be tool name");
 
+const aggregateStatusSurface = buildClientToolSurface({
+  toolName: "creative_media_list_jobs",
+  state: "result",
+  result: "Creative Media jobs (showing 3 of 17)\nStatus: failed=8, succeeded=9",
+});
+
+assert(aggregateStatusSurface.status === "completed", "failed counts should not mark the whole tool failed");
+
+const unsafeSurface = buildClientToolSurface({
+  toolName: "write_native_file",
+  state: "unsafe_unobserved",
+  result: "unsafe_unobserved: would write to the filesystem.",
+});
+
+assert(unsafeSurface.status === "blocked", "unsafe dry-run output should be blocked, not completed");
+
+const pathSurface = buildClientToolSurface({
+  toolName: "read_native_file",
+  state: "result",
+  result: [
+    "Summary: 路径不在当前 Active Workspace Root 内，已按硬工作区边界拒绝。 activeWorkspaceRoot=C:\\Users\\sunny\\.v8-agent-os\\workspace",
+    "Next: 使用当前 Active Workspace Root 内的相对路径。",
+  ].join("\n"),
+});
+
+assert(!pathSurface.summary.includes("C:\\Users"), "client summary should not expose local user paths");
+assert(pathSurface.summary.includes("activeWorkspaceRoot=[hidden]"), "client summary should keep the boundary reason");
+
 console.log("client tool surface contract verified");

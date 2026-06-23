@@ -4311,7 +4311,7 @@ def fetch_skill_instructions(
         for skill in matches[:12]:
             lines.append(
                 f"- {skill.get('skillName')} | id={skill.get('skillId')} | "
-                f"source={skill.get('sourceType')} | root={skill.get('skillRoot')}"
+                f"source={skill.get('sourceType')}"
             )
         return "\n".join(lines)
     if not matches:

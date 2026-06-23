@@ -1360,6 +1360,9 @@ description: 女娲造人：输入人名/主题/甚至只是模糊需求，自�
         self.assertIn("Error: 找到了多个同名或同引用的 skill", result)
         self.assertIn("elon-musk-perspective", result)
         self.assertIn("munger-perspective", result)
+        self.assertIn("id=global:elon", result)
+        self.assertNotIn("root=", result)
+        self.assertNotIn("C:/skills", result)
 
     def test_fetch_skill_instructions_description_allows_exact_known_skill_name(self):
         description = str(getattr(fetch_skill_instructions, "description", "") or "")

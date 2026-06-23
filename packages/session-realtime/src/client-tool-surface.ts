@@ -44,11 +44,18 @@ function toText(value: unknown): string {
 }
 
 function compactText(value: unknown, limit = 180): string {
-    const text = String(value ?? "").replace(/\s+/g, " ").trim();
+    const text = redactClientText(String(value ?? "")).replace(/\s+/g, " ").trim();
     if (!text) {
         return "";
     }
     return text.length > limit ? `${text.slice(0, Math.max(1, limit - 3)).trimEnd()}...` : text;
+}
+
+function redactClientText(value: string): string {
+    return String(value ?? "")
+        .replace(/\b[A-Za-z]:\\(?:Users|Projects|ProgramData|Windows|temp|Temp)[^\s,，;；)）\]}]*/gi, "[local path]")
+        .replace(/\bactiveWorkspaceRoot=\[local path\]/gi, "activeWorkspaceRoot=[hidden]")
+        .replace(/\bworkspacePath=\[local path\]/gi, "workspacePath=[hidden]");
 }
 
 function visibleLines(text: string): string[] {
@@ -56,7 +63,8 @@ function visibleLines(text: string): string[] {
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean)
-        .filter((line) => !/^(```|---)$/.test(line));
+        .filter((line) => !/^(```|---)$/.test(line))
+        .filter((line) => !/^\[scenario:[^\]]+\]$/i.test(line));
 }
 
 function pickLine(text: string, patterns: RegExp[]): string {
@@ -70,6 +78,17 @@ function pickLine(text: string, patterns: RegExp[]): string {
     return lines[0] || "";
 }
 
+function pickMatchingLine(text: string, patterns: RegExp[]): string {
+    const lines = visibleLines(text);
+    for (const pattern of patterns) {
+        const match = lines.find((line) => pattern.test(line));
+        if (match) {
+            return match;
+        }
+    }
+    return "";
+}
+
 function pickRecordText(record: Record<string, unknown> | null, keys: string[]): string {
     if (!record) {
         return "";
@@ -81,6 +100,19 @@ function pickRecordText(record: Record<string, unknown> | null, keys: string[]):
         }
     }
     return "";
+}
+
+function hasFailureLine(resultText: string): boolean {
+    return visibleLines(resultText).some((line) => {
+        if (/^[-*]\s+/.test(line)) {
+            return false;
+        }
+        return (
+            /^(status|result)[:：]\s*(failed|failure|error|exception)\b(?!\s*[=:])/i.test(line)
+            || /^(failed|failure|error|exception)[:：\s]/i.test(line)
+            || /^(失败|错误)[:：\s]/.test(line)
+        );
+    });
 }
 
 function extractSummary(result: unknown): string {
@@ -116,7 +148,7 @@ function extractActionable(resultText: string, record: Record<string, unknown> |
     if (direct) {
         return compactText(direct, 160);
     }
-    const line = pickLine(resultText, [/^(下一步|Next|Action)[:：]/i]);
+    const line = pickMatchingLine(resultText, [/^(下一步|Next|Action)[:：]/i]);
     return line ? compactText(line, 160) : undefined;
 }
 
@@ -157,14 +189,17 @@ function resolveStatus(state: string | undefined, resultText: string, record: Re
     const normalizedState = String(state || "").toLowerCase();
     const statusText = String(record?.status || record?.state || "").toLowerCase();
     const combined = `${statusText}\n${resultText.slice(0, 2000)}`.toLowerCase();
-    if (/(blocked|safety_blocked|拒绝|阻断)/.test(combined)) {
+    if (/(unsafe_unobserved|blocked|safety_blocked|拒绝|阻断)/.test(combined)) {
         return "blocked";
     }
-    if (/(failed|failure|error|exception|失败|错误)/.test(combined)) {
-        return "failed";
-    }
-    if (/(waiting|approval|ask_user|等待|审批)/.test(combined)) {
+    if (/(stateful_unobserved|waiting|approval|ask_user|等待|审批)/.test(combined)) {
         return "waiting";
+    }
+    if (
+        /^(failed|failure|error|exception)$/.test(statusText)
+        || hasFailureLine(resultText)
+    ) {
+        return "failed";
     }
     if (normalizedState === "result" || normalizedState === "completed") {
         return "completed";

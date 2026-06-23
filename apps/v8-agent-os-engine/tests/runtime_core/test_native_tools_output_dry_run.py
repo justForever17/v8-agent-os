@@ -136,6 +136,78 @@ def test_client_surface_ref_ids_trim_wrapping_punctuation() -> None:
     assert record.client_surface["refIds"] == ["toolobs://toolobs_clean_ref"]
 
 
+def test_client_surface_skips_calibration_scenario_labels() -> None:
+    record = native_tools_dry_run._make_record(
+        name="run_system_command",
+        status="invoked",
+        args={},
+        description="calibration",
+        output=(
+            "[scenario:session]\n"
+            "$ powershell -NoProfile -Command \"Write-Output hello\"\n"
+            "[completed with no output]\n"
+        ),
+        representative=True,
+        representative_reason="test",
+        scenario_name="test",
+    )
+
+    assert record.client_surface["summary"].startswith("$ powershell")
+    assert record.client_surface["actionable"] is None
+
+
+def test_client_surface_status_counts_do_not_mark_whole_tool_failed() -> None:
+    record = native_tools_dry_run._make_record(
+        name="creative_media_list_jobs",
+        status="invoked",
+        args={},
+        description="calibration",
+        output="Creative Media jobs (showing 3 of 17)\nStatus: failed=8, succeeded=9\nNext: inspect job details",
+        representative=True,
+        representative_reason="test",
+        scenario_name="test",
+    )
+
+    assert record.client_surface["status"] == "completed"
+    assert record.client_surface["summary"] == "Status: failed=8, succeeded=9"
+
+
+def test_client_surface_unsafe_unobserved_is_blocked() -> None:
+    record = native_tools_dry_run._make_record(
+        name="write_native_file",
+        status="unsafe_unobserved",
+        args=None,
+        description="calibration",
+        output="unsafe_unobserved: would write to the filesystem.",
+        representative=False,
+        representative_reason="unsafe",
+        scenario_name="unsafe_unobserved",
+    )
+
+    assert record.client_surface["status"] == "blocked"
+
+
+def test_client_surface_redacts_local_paths_from_summary() -> None:
+    record = native_tools_dry_run._make_record(
+        name="read_native_file",
+        status="invoked",
+        args={},
+        description="calibration",
+        output=(
+            "Summary: 路径不在当前 Active Workspace Root 内，已按硬工作区边界拒绝。 "
+            "activeWorkspaceRoot=C:\\Users\\sunny\\.v8-agent-os\\workspace\n"
+            "Next: 使用当前 Active Workspace Root 内的相对路径。"
+        ),
+        representative=True,
+        representative_reason="test",
+        scenario_name="safe_observe",
+    )
+
+    assert "C:\\Users" not in record.client_surface["summary"]
+    assert "activeWorkspaceRoot=[hidden]" in record.client_surface["summary"]
+    assert "C:\\Users" not in (record.client_surface["actionable"] or "")
+
+
 def test_command_embedded_tool_messages_are_truncated() -> None:
     from graph.tool_routing import MAX_TOOL_OUTPUT_LENGTH, _truncate_agent_visible_result
 

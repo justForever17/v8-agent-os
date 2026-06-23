@@ -172,7 +172,7 @@ function RuntimeDockItem({
                 inputRange: [-4, 4],
                 outputRange: ["-4deg", "4deg"],
             }) : "0deg" }] }}>
-                <Icon size={13} color={tone.icon} strokeWidth={2.2} />
+                <Icon size={20} color={tone.icon} strokeWidth={2.2} />
             </Animated.View>
             <View style={[styles.dot, { backgroundColor: tone.dot, borderColor: dark ? "rgba(24,24,27,0.92)" : "#FFFFFF" }]} />
             {item.eventCount > 0 ? (
@@ -215,8 +215,8 @@ export const RuntimeDock = memo(function RuntimeDock({
         }
         const selectedItem = items[selectedIndex];
         const measuredLayout = selectedItem ? itemLayoutsRef.current[selectedItem.id] : undefined;
-        const estimatedItemWidth = 22;
-        const estimatedOffset = Math.max(0, (selectedIndex * estimatedItemWidth) - 18);
+        const estimatedItemWidth = 33;
+        const estimatedOffset = Math.max(0, (selectedIndex * estimatedItemWidth) - 27);
         const nextOffset = measuredLayout && containerWidth > 0
             ? Math.max(0, measuredLayout.x - ((containerWidth - measuredLayout.width) / 2))
             : estimatedOffset;
@@ -277,10 +277,10 @@ export const RuntimeDock = memo(function RuntimeDock({
 const styles = StyleSheet.create({
     wrap: {
         borderWidth: 1,
-        borderRadius: 6,
-        paddingHorizontal: 4,
+        borderRadius: 9,
+        paddingHorizontal: 6,
         paddingVertical: 0,
-        height: 22,
+        height: 33,
         alignSelf: "center",
         minWidth: 0,
         shadowColor: "#0F172A",
@@ -290,9 +290,9 @@ const styles = StyleSheet.create({
     scrollContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        paddingLeft: 1,
-        paddingRight: 3,
+        gap: 9,
+        paddingLeft: 1.5,
+        paddingRight: 4.5,
     },
     scroll: {
         width: "100%",
@@ -302,9 +302,9 @@ const styles = StyleSheet.create({
         flexShrink: 0,
     },
     item: {
-        width: 22,
-        height: 22,
-        borderRadius: 6,
+        width: 33,
+        height: 33,
+        borderRadius: 9,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -313,41 +313,41 @@ const styles = StyleSheet.create({
     itemSelected: {
         shadowColor: "#F59E0B",
         shadowOpacity: 0.18,
-        shadowRadius: 14,
+        shadowRadius: 21,
         shadowOffset: { width: 0, height: 0 },
         elevation: 2,
     },
     pulseFill: {
         ...StyleSheet.absoluteFillObject,
-        borderRadius: 6,
+        borderRadius: 9,
     },
     dot: {
         position: "absolute",
-        top: -2,
-        right: -2,
-        width: 4,
-        height: 4,
+        top: -3,
+        right: -3,
+        width: 6,
+        height: 6,
         borderRadius: 999,
         borderWidth: 1,
     },
     badge: {
         position: "absolute",
-        right: -3,
-        bottom: -3,
-        minWidth: 12,
-        height: 12,
+        right: -4.5,
+        bottom: -4.5,
+        minWidth: 18,
+        height: 18,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
-        paddingHorizontal: 1.5,
+        paddingHorizontal: 2.25,
         borderWidth: 1,
         zIndex: 5,
         elevation: 5,
     },
     badgeText: {
         color: "#FFFFFF",
-        fontSize: 7,
+        fontSize: 10.5,
         fontWeight: "800",
-        lineHeight: 9,
+        lineHeight: 13.5,
     },
 });

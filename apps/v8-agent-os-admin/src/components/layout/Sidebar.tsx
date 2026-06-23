@@ -68,10 +68,12 @@ export function Sidebar() {
                     </div>
                     {!isCollapsed && (
                         <div className="transition-opacity duration-300">
-                            <div className="text-base font-semibold text-slate-900 notranslate" translate="no">
-                                V8 Agent OS
-                            </div>
-                            <div className="text-xs text-slate-500">{t("components.layout.Sidebar.k8021804f")}</div>
+                            <h1 className="v8os-wordmark notranslate" aria-label="V8 Agent OS" translate="no">
+                                <span className="v8os-wordmark__glow" aria-hidden="true">V8 Agent OS</span>
+                                <span className="v8os-wordmark__shine" aria-hidden="true">V8 Agent OS</span>
+                                <span className="v8os-wordmark__text">V8 Agent OS</span>
+                            </h1>
+                            <div className="text-xs text-slate-500 mt-0.5">{t("components.layout.Sidebar.k8021804f")}</div>
                         </div>
                     )}
                 </div>

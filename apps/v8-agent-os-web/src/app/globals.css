@@ -189,7 +189,7 @@
         position: relative;
         display: inline-flex;
         align-items: center;
-        line-height: 1;
+        line-height: 1.35;
         flex-shrink: 0;
         isolation: isolate;
     }
@@ -199,10 +199,12 @@
     .v8os-wordmark__text {
         position: relative;
         display: inline-block;
-        min-width: 5.25rem;
+        min-width: 8.5rem;
         font-size: 1.05rem;
         font-weight: 900;
         letter-spacing: -0.06em;
+        line-height: 1.35;
+        padding-bottom: 0.15em;
     }
 
     .v8os-wordmark__text {

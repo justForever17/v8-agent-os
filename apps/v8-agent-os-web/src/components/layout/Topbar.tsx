@@ -30,9 +30,9 @@ export function Topbar() {
                     />
                 </div>
                 <h1 className="v8os-wordmark notranslate" aria-label={t(lt("V8 代理操作系统", "V8 Agent OS"))} translate="no">
-                    <span className="v8os-wordmark__glow" aria-hidden="true">V8 OS</span>
-                    <span className="v8os-wordmark__shine" aria-hidden="true">V8 OS</span>
-                    <span className="v8os-wordmark__text">V8 OS</span>
+                    <span className="v8os-wordmark__glow" aria-hidden="true">V8 Agent OS</span>
+                    <span className="v8os-wordmark__shine" aria-hidden="true">V8 Agent OS</span>
+                    <span className="v8os-wordmark__text">V8 Agent OS</span>
                 </h1>
             </div>
 

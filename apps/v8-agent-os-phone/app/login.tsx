@@ -187,11 +187,6 @@ export default function LoginScreen() {
                             </Pressable>
                         </View>
                     </GlassCard>
-
-                    <Pressable style={styles.connectHint} onPress={() => router.push("/connect" as Href)}>
-                        <MaterialCommunityIcons name="lan-connect" size={16} color={colors.textMuted} />
-                        <Text style={styles.connectHintText}>{t("app.login.check_the_connection_first")}</Text>
-                    </Pressable>
                 </KeyboardAvoidingView>
             </SafeAreaView>
             <Modal visible={scannerOpen} animationType="slide" transparent onRequestClose={() => setScannerOpen(false)}>

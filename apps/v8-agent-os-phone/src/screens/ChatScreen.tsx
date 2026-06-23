@@ -2023,6 +2023,12 @@ export default function ChatScreen() {
     const [rpaMenuVisible, setRpaMenuVisible] = useState(false);
     const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
+    useEffect(() => {
+        if (status === "anonymous") {
+            router.replace("/login");
+        }
+    }, [status]);
+
     const [input, setInput] = useState("");
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
@@ -5893,12 +5899,8 @@ export default function ChatScreen() {
         upsertQueuedMessage,
     ]);
 
-    if (status === "booting") {
+    if (status === "booting" || status === "anonymous") {
         return <LoadingScreen label={t("src.screens.chatscreen.loading_the_conversation_lane")} />;
-    }
-
-    if (status === "anonymous") {
-        return <Redirect href="/login" />;
     }
 
     const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");

@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -10,6 +10,7 @@ import {
     TextInput,
     View,
 } from "react-native";
+import { router } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 
@@ -141,6 +142,16 @@ export function ProfileMenuOverlay({
         }
     };
 
+    const handleSignOut = async () => {
+        try {
+            await signOut();
+            onClose();
+            router.replace("/login");
+        } catch (error) {
+            Alert.alert("退出失败", error instanceof Error ? error.message : "无法退出登录");
+        }
+    };
+
     if (!visible) return null;
 
     return (
@@ -214,16 +225,11 @@ export function ProfileMenuOverlay({
                                         />
                                     </View>
                                     <View style={styles.field}>
-                                        <Text style={styles.fieldLabel}>{t("src.screens.settingsscreen.email")}</Text>
+                                        <Text style={styles.fieldLabel}>初始身份</Text>
                                         <TextInput
                                             value={email}
-                                            onChangeText={setEmail}
-                                            autoCapitalize="none"
-                                            autoCorrect={false}
-                                            keyboardType="email-address"
-                                            placeholder="name@example.com"
-                                            placeholderTextColor={colors.textSoft}
-                                            style={styles.input}
+                                            editable={false}
+                                            style={[styles.input, { backgroundColor: "rgba(148, 163, 184, 0.08)", color: colors.textMuted }]}
                                         />
                                     </View>
                                 </View>
@@ -237,7 +243,7 @@ export function ProfileMenuOverlay({
                         </View>
 
                         {/* 退出登录按钮 */}
-                        <Pressable style={styles.logoutButton} onPress={() => void signOut()}>
+                        <Pressable style={styles.logoutButton} onPress={() => void handleSignOut()}>
                             <MaterialCommunityIcons name="logout" size={16} color={colors.danger} />
                             <Text style={styles.logoutButtonText}>{t("src.screens.settingsscreen.sign_out")}</Text>
                         </Pressable>

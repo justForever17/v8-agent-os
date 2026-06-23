@@ -32,7 +32,7 @@ from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
 from erc.session_realtime_contract import (
     augment_workflow_projection,
-    build_processes_snapshot,
+    build_lightweight_processes_snapshot,
     resolve_authoritative_session_runtime_state,
 )
 from erc.session_history_contract import (
@@ -832,32 +832,36 @@ async def get_session_processes(session_id: str):
             raise HTTPException(status_code=404, detail="Session not found")
 
         step_started = _now_perf_ms()
-        snapshot_payload = snapshot_service.build_chat_projection_payload(session_id)
-        timings["snapshotBuildMs"] = _elapsed_ms(step_started)
-        snapshot = snapshot_payload.get("snapshot") or {}
-        current_run = snapshot_payload.get("currentRun") if isinstance(snapshot_payload.get("currentRun"), dict) else {}
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        timings["workflowViewMs"] = _elapsed_ms(step_started)
+
+        step_started = _now_perf_ms()
+        lane_view = session_admission_service.get_lane_view(session_id)
+        timings["laneViewMs"] = _elapsed_ms(step_started)
+
         current_run_id = str(
-            current_run.get("id")
-            or snapshot_payload.get("currentRunId")
-            or (snapshot_payload.get("workflow") or {}).get("rootRunId")
+            (lane_view or {}).get("activeRunId")
+            or (lane_view or {}).get("queuedRunId")
+            or (workflow_view or {}).get("rootRunId")
             or ""
         ).strip() or None
+        latest_seq = db.get_latest_runtime_seq(session_id)
         step_started = _now_perf_ms()
-        processes = build_processes_snapshot(
+        processes = build_lightweight_processes_snapshot(
             session_id=session_id,
-            snapshot=snapshot if isinstance(snapshot, dict) else {},
             run_id=current_run_id,
         )
         timings["processProjectionMs"] = _elapsed_ms(step_started)
         return _attach_profile({
             "sessionId": session_id,
             "currentRunId": current_run_id,
-            "latestSeq": int(snapshot_payload.get("latestSeq") or 0),
+            "latestSeq": int(latest_seq or 0),
             "processes": processes,
         }, route="engine.sessions.processes", started_at_ms=started_at_ms, extra={
             **timings,
             "processCount": len(processes) if isinstance(processes, list) else 0,
-            "latestSeq": int(snapshot_payload.get("latestSeq") or 0),
+            "latestSeq": int(latest_seq or 0),
+            "processSurfaceMode": "lightweight",
         })
     except HTTPException:
         raise

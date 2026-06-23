@@ -18,6 +18,17 @@ type CachedProcessSurface = {
 
 const processSurfaceCache = new Map<string, CachedProcessSurface>();
 
+function isAbortError(error: unknown) {
+    return Boolean(
+        error
+        && typeof error === "object"
+        && (
+            (error as { name?: unknown }).name === "AbortError"
+            || (error as { code?: unknown }).code === 20
+        ),
+    );
+}
+
 function staleProcessSurface(sessionId: string, reason: string) {
     const cached = processSurfaceCache.get(sessionId);
     const now = Date.now();
@@ -127,7 +138,11 @@ export async function GET(
         if (timeout) {
             clearTimeout(timeout);
         }
-        console.error("[Client Session Processes] Engine communication failed:", error);
+        if (isAbortError(error)) {
+            console.warn("[Client Session Processes] Engine process surface timed out; returning stale cache.");
+        } else {
+            console.error("[Client Session Processes] Engine communication failed:", error);
+        }
         const responsePayload = staleProcessSurface(id, "engine_process_surface_timeout");
         const elapsedMs = Date.now() - startedAt;
         recordAdminApiMetric({

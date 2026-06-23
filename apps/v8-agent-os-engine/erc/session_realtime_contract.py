@@ -307,6 +307,50 @@ def build_processes_snapshot(*, session_id: Optional[str], snapshot: Dict[str, A
         return []
 
 
+def build_lightweight_processes_snapshot(*, session_id: Optional[str], run_id: Optional[str]) -> list[Dict[str, Any]]:
+    """Build process HUD data without loading or refreshing the full chat projection.
+
+    The full process surface can link processes back to historical tool-call messages,
+    but that requires scanning the chat snapshot. Phone/Web polling needs a stable,
+    cheap endpoint first: current session/run bound command sessions are enough for
+    the HUD, and unbound legacy processes are intentionally ignored here.
+    """
+
+    from core.native_tools import list_background_process_snapshots
+
+    normalized_session_id = _string(session_id) or None
+    normalized_run_id = _string(run_id) or None
+    try:
+        processes: list[Dict[str, Any]] = []
+        for item in list_background_process_snapshots(session_id=None, run_id=None):
+            process_session_id = _string(item.get("sessionId"))
+            process_run_id = _string(item.get("runId"))
+            if normalized_session_id and process_session_id != normalized_session_id:
+                if not (normalized_run_id and process_run_id == normalized_run_id):
+                    continue
+            elif not normalized_session_id and normalized_run_id and process_run_id != normalized_run_id:
+                continue
+            elif not normalized_session_id and not normalized_run_id:
+                continue
+            command_id = _string(item.get("commandId") or item.get("processId"))
+            process = {
+                **item,
+                "sessionId": process_session_id or normalized_session_id,
+                "processId": command_id or _string(item.get("processId")),
+                "commandId": command_id or _string(item.get("processId")),
+                "toolCallId": item.get("toolCallId"),
+                "sourceMessageId": item.get("sourceMessageId"),
+            }
+            processes.append(process)
+        return processes
+    except Exception:
+        logger.exception(
+            "Failed to build lightweight process snapshot; degrading to empty process surface",
+            extra={"run_id": run_id},
+        )
+        return []
+
+
 def build_context_references(snapshot: Dict[str, Any]) -> list[Dict[str, Any]]:
     references: Dict[str, Dict[str, Any]] = {}
     messages = _as_record_list(snapshot.get("messages"))

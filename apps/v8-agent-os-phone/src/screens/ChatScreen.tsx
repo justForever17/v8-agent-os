@@ -48,6 +48,8 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
+import { RpaMenuOverlay } from "@/src/components/chat/RpaMenuOverlay";
+import { ProfileMenuOverlay } from "@/src/components/chat/ProfileMenuOverlay";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
@@ -2018,6 +2020,8 @@ export default function ChatScreen() {
     const [transcribing, setTranscribing] = useState(false);
     const [speakingId, setSpeakingId] = useState("");
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [rpaMenuVisible, setRpaMenuVisible] = useState(false);
+    const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
     const [input, setInput] = useState("");
     const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -2860,7 +2864,7 @@ export default function ChatScreen() {
             indicatorColor: desktopLiveConnected ? "#10B981" : undefined,
             disabled: desktopPreviewBusy || (desktopLiveStatus?.bridgeStartable === false && !desktopLiveConnecting && !desktopLiveConnected && !desktopLiveReady),
         },
-        { key: "rpa", onPress: () => router.push("/rpa" as Href) },
+        { key: "rpa", onPress: () => setRpaMenuVisible(true) },
         { key: "voice", onPress: () => void toggleVoiceEnabled() },
         { key: "theme", onPress: () => void toggleThemeMode() },
     ], [desktopLiveConnected, desktopLiveConnecting, desktopLiveReady, desktopLiveStatus?.bridgeStartable, desktopPreviewBusy, openDesktopPreview, toggleThemeMode, toggleVoiceEnabled]);
@@ -6194,7 +6198,7 @@ export default function ChatScreen() {
                     actions={topbarActions}
                     userImageUri={profileImageUri || undefined}
                     onBrandPress={() => void handleBrandPress()}
-                    onProfilePress={() => router.push("/settings" as Href)}
+                    onProfilePress={() => setProfileMenuVisible(true)}
                 />
 
                 <View style={styles.chatShell}>
@@ -6756,6 +6760,9 @@ export default function ChatScreen() {
                     onDeleteConversation={(item) => handleDeleteConversation(item)}
                 />
             </SafeAreaView>
+
+            <RpaMenuOverlay visible={rpaMenuVisible} onClose={() => setRpaMenuVisible(false)} />
+            <ProfileMenuOverlay visible={profileMenuVisible} onClose={() => setProfileMenuVisible(false)} />
         </LinearGradient>
     );
 }

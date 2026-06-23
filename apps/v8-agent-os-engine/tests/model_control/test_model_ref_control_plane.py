@@ -203,15 +203,40 @@ def test_root_provider_accepts_prefixed_media_model_ids():
     assert agnes
     assert minimax_cn
 
-    agnes_video = model_provider_catalog.normalize_model(agnes, "video/agnes-video-v2.0")
+    agnes_image = model_provider_catalog.normalize_model(agnes, "images/generations/agnes-image-2.1-flash")
+    assert agnes_image["type"] == "IMAGE"
+    assert agnes_image["modelId"] == "images/generations/agnes-image-2.1-flash"
+    assert agnes_image["mediaLimits"]["adapter"] == "agnes_images"
+    assert agnes_image["mediaLimits"]["providerModelId"] == "agnes-image-2.1-flash"
+    assert "image.generate" in agnes_image["mediaLimits"]["operationKinds"]
+
+    agnes_video = model_provider_catalog.normalize_model(agnes, "videos/agnes-video-v2.0")
     assert agnes_video["type"] == "VIDEO"
-    assert agnes_video["modelId"] == "video/agnes-video-v2.0"
+    assert agnes_video["modelId"] == "videos/agnes-video-v2.0"
     assert agnes_video["mediaLimits"]["adapter"] == "agnes_video"
     assert agnes_video["mediaLimits"]["adapterProviderId"] == "agnes_video"
     assert agnes_video["mediaLimits"]["providerModelId"] == "agnes-video-v2.0"
     assert "video.first_last_frame" in agnes_video["mediaLimits"]["operationKinds"]
 
-    minimax_music = model_provider_catalog.normalize_model(minimax_cn, "music/music-2.6")
+    minimax_image = model_provider_catalog.normalize_model(minimax_cn, "image_generation/image-01")
+    assert minimax_image["type"] == "IMAGE"
+    assert minimax_image["mediaLimits"]["adapterProviderId"] == "minimax_image"
+    assert minimax_image["mediaLimits"]["providerModelId"] == "image-01"
+    assert "image.generate" in minimax_image["mediaLimits"]["operationKinds"]
+
+    minimax_video = model_provider_catalog.normalize_model(minimax_cn, "video_generation/MiniMax-Hailuo-02")
+    assert minimax_video["type"] == "VIDEO"
+    assert minimax_video["mediaLimits"]["adapterProviderId"] == "minimax_video"
+    assert minimax_video["mediaLimits"]["providerModelId"] == "MiniMax-Hailuo-02"
+    assert "video.text_to_video" in minimax_video["mediaLimits"]["operationKinds"]
+
+    minimax_tts = model_provider_catalog.normalize_model(minimax_cn, "t2a_v2/speech-02-hd")
+    assert minimax_tts["type"] == "VOICE"
+    assert minimax_tts["mediaLimits"]["adapterProviderId"] == "minimax_tts"
+    assert minimax_tts["mediaLimits"]["providerModelId"] == "speech-02-hd"
+    assert "voice.tts" in minimax_tts["mediaLimits"]["operationKinds"]
+
+    minimax_music = model_provider_catalog.normalize_model(minimax_cn, "music_generation/music-2.6")
     assert minimax_music["type"] == "MUSIC"
     assert minimax_music["mediaLimits"]["adapterProviderId"] == "minimax_music"
     assert minimax_music["mediaLimits"]["providerModelId"] == "music-2.6"

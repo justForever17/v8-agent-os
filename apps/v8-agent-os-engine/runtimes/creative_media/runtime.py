@@ -2674,13 +2674,15 @@ class CreativeMediaRuntime:
         if not selected:
             raise ValueError(f"No configured provider exposes model: {requested_model}")
         provider_id, provider_data = selected[0]
-        return provider_id, dict((provider_data or {}).get("provider") or {}), self._provider_model_id(requested_model)
+        model_data = dict(((provider_data or {}).get("models") or {}).get(requested_model) or {})
+        return provider_id, dict((provider_data or {}).get("provider") or {}), self._provider_model_id(requested_model, model_data)
 
     @staticmethod
-    def _provider_model_id(model_id: str) -> str:
-        prefix, sep, remainder = str(model_id or "").partition("/")
-        if sep and prefix in {"image", "video", "voice", "music", "workflow", "model3d"} and remainder:
-            return remainder
+    def _provider_model_id(model_id: str, model_data: dict[str, Any] | None = None) -> str:
+        media_limits = dict((model_data or {}).get("mediaLimits") or {})
+        provider_model_id = str(media_limits.get("providerModelId") or "").strip()
+        if provider_model_id:
+            return provider_model_id
         return str(model_id or "")
 
     def _openai_image_provider(self, request: dict[str, Any]) -> tuple[str, dict[str, Any], str]:

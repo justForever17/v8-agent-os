@@ -6,6 +6,7 @@ import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Set
+from urllib.parse import urlparse
 
 import requests
 
@@ -78,8 +79,6 @@ _MEDIA_ADAPTER_ROOT_PROVIDERS = {
     "minimax_music": "minimax-cn",
 }
 
-_MEDIA_MODEL_PREFIXES = {"image", "video", "voice", "music", "workflow", "model3d"}
-
 _VOICE_MODEL_TOKENS = {
     "tts",
     "speech",
@@ -103,6 +102,45 @@ def _normalized_modality(value: Any) -> str:
     if raw in {"3d", "model_3d", "model-3d"}:
         return "model3d"
     return raw
+
+
+def _url_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    path = parsed.path if parsed.scheme or parsed.netloc else raw
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return path.rstrip("/")
+
+
+def _media_relative_submit_path(root_base_url: Any, source_base_url: Any, submit_path: Any) -> str:
+    submit = _url_path(submit_path)
+    if not submit:
+        return ""
+    source_base = _url_path(source_base_url)
+    root_base = _url_path(root_base_url)
+    if source_base and not submit.startswith(f"{source_base}/") and submit != source_base:
+        full_path = f"{source_base}/{submit.lstrip('/')}"
+    else:
+        full_path = submit
+    if root_base and (full_path == root_base or full_path.startswith(f"{root_base}/")):
+        return full_path[len(root_base):].strip("/")
+    return submit.strip("/")
+
+
+def _media_endpoint_model_id(root_provider: Dict[str, Any], media_provider: Dict[str, Any], provider_model_id: str) -> str:
+    request = dict(media_provider.get("request") or {})
+    relative_path = _media_relative_submit_path(
+        root_provider.get("baseUrl") or root_provider.get("base_url") or "",
+        media_provider.get("baseUrl") or media_provider.get("base_url") or "",
+        request.get("submitPath") or "",
+    )
+    clean_model_id = str(provider_model_id or "").strip()
+    if relative_path and clean_model_id:
+        return f"{relative_path}/{clean_model_id}"
+    return clean_model_id
 
 
 def _load_media_capability_overrides() -> List[Dict[str, Any]]:
@@ -568,29 +606,28 @@ class ModelProviderCatalog:
                 return dict(item)
         return {"id": model_id}
 
-    def _media_model_from_root_provider(self, provider_id: str, model_id: str) -> Dict[str, Any] | None:
+    def _media_model_from_root_provider(self, provider: Dict[str, Any], model_id: str) -> Dict[str, Any] | None:
         if "/" not in model_id:
             return None
-        prefix, actual_model_id = model_id.split("/", 1)
-        modality = _normalized_modality(prefix)
-        if modality not in _MEDIA_MODEL_PREFIXES or not actual_model_id:
+        provider_id = str(provider.get("id") or "").strip()
+        display_model_id = str(model_id or "").strip()
+        if not provider_id or not display_model_id:
             return None
         for media_provider in self._creative_media_matrix_providers():
             media_provider_id = str(media_provider.get("id") or "")
             if _MEDIA_ADAPTER_ROOT_PROVIDERS.get(media_provider_id) != provider_id:
                 continue
-            if _normalized_modality(media_provider.get("mediaModality")) != modality:
-                continue
             for item in _as_list(media_provider.get("models")):
-                if str(item.get("id") or "") != actual_model_id:
+                actual_model_id = str(item.get("id") or "").strip()
+                if _media_endpoint_model_id(provider, media_provider, actual_model_id) != display_model_id:
                     continue
                 model = dict(item)
                 media_limits = dict(model.get("mediaLimits") or {})
                 media_limits.setdefault("adapterProviderId", media_provider_id)
                 media_limits.setdefault("providerModelId", actual_model_id)
-                media_limits.setdefault("displayModelId", model_id)
-                model["id"] = model_id
-                model["modelId"] = model_id
+                media_limits.setdefault("displayModelId", display_model_id)
+                model["id"] = display_model_id
+                model["modelId"] = display_model_id
                 model["adapter"] = media_limits.get("adapter") or media_provider.get("adapter") or model.get("adapter") or ""
                 model["mediaLimits"] = media_limits
                 model["sourceProviderId"] = media_provider_id
@@ -1005,7 +1042,7 @@ class ModelProviderCatalog:
     def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         online_metadata = dict(online_metadata or {})
         provider_id = str(provider.get("id") or "").strip()
-        model = self._media_model_from_root_provider(provider_id, model_id) or self._model_from_catalog(provider, model_id)
+        model = self._media_model_from_root_provider(provider, model_id) or self._model_from_catalog(provider, model_id)
         provider_kind = str(provider.get("providerKind") or "chat")
         registry_entry = model_capability_registry.find(model_id)
         explicit_provider_override = bool(

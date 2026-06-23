@@ -113,6 +113,7 @@ type CatalogProvider = {
     baseUrl?: string;
     modelsUrl?: string;
     modelsPath?: string;
+    request?: { submitPath?: string };
     credentialRealm?: string;
     anthropicCompatible?: {
         apiStandard?: string;
@@ -211,14 +212,6 @@ const MEDIA_ADAPTER_ROOT_PROVIDER_IDS: Record<string, string> = {
     minimax_video: "minimax-cn",
     minimax_tts: "minimax-cn",
     minimax_music: "minimax-cn",
-};
-const MEDIA_PURPOSE_MODEL_PREFIX: Partial<Record<CatalogPurpose, string>> = {
-    image: "image",
-    video: "video",
-    voice: "voice",
-    music: "music",
-    workflow: "workflow",
-    model3d: "model3d",
 };
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
@@ -372,9 +365,36 @@ function isFoldableMediaAdapterProvider(provider: Pick<CatalogProvider, "id" | "
     return Boolean(mediaRootProviderId(id));
 }
 
-function prefixedMediaCatalogModel(model: CatalogModel, sourceProvider: CatalogProvider, prefix: string): CatalogModel {
+function urlPath(value: string | undefined) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+        const parsed = new URL(raw);
+        return parsed.pathname.replace(/\/$/, "");
+    } catch {
+        const path = raw.startsWith("/") ? raw : `/${raw}`;
+        return path.replace(/\/$/, "");
+    }
+}
+
+function mediaRelativeSubmitPath(rootBaseUrl: string | undefined, sourceBaseUrl: string | undefined, submitPath: string | undefined) {
+    const submit = urlPath(submitPath);
+    if (!submit) return "";
+    const sourceBase = urlPath(sourceBaseUrl);
+    const rootBase = urlPath(rootBaseUrl);
+    const fullPath = sourceBase && !submit.startsWith(`${sourceBase}/`) && submit !== sourceBase
+        ? `${sourceBase}/${submit.replace(/^\//, "")}`
+        : submit;
+    if (rootBase && (fullPath === rootBase || fullPath.startsWith(`${rootBase}/`))) {
+        return fullPath.slice(rootBase.length).replace(/^\//, "");
+    }
+    return submit.replace(/^\//, "");
+}
+
+function endpointMediaCatalogModel(model: CatalogModel, sourceProvider: CatalogProvider, rootProvider: CatalogProvider): CatalogModel {
     const providerModelId = model.modelId || model.id;
-    const displayModelId = providerModelId.includes("/") ? providerModelId : `${prefix}/${providerModelId}`;
+    const relativePath = mediaRelativeSubmitPath(rootProvider.baseUrl, sourceProvider.baseUrl, sourceProvider.request?.submitPath);
+    const displayModelId = relativePath && providerModelId ? `${relativePath}/${providerModelId}` : providerModelId;
     return {
         ...model,
         id: displayModelId,
@@ -395,7 +415,6 @@ function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], pu
         return catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
     }
     const expected = getCatalogPurposeConfig(purpose).modality || purpose;
-    const prefix = MEDIA_PURPOSE_MODEL_PREFIX[purpose] || expected;
     const providerById = new Map(catalogProviders.map((item) => [item.id, item]));
     const projected = new Map<string, CatalogProvider>();
     const direct = catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
@@ -411,7 +430,7 @@ function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], pu
             continue;
         }
         const existing = projected.get(rootId);
-        const nextModels = (provider.models || []).map((model) => prefixedMediaCatalogModel(model, provider, prefix));
+        const nextModels = (provider.models || []).map((model) => endpointMediaCatalogModel(model, provider, rootProvider));
         projected.set(rootId, {
             ...rootProvider,
             providerKind: rootProvider.providerKind || "chat",

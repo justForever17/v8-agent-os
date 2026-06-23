@@ -31,9 +31,11 @@ if ($ProfileMode -eq "standard") {
 if ($ProfileMode -notin @("minimal", "desktop")) {
     throw "Unsupported --profile value: $ProfileMode"
 }
-if ($ServicesMode -notin @("engine", "engine+admin")) {
+if ($ServicesMode -notin @("engine", "engine+admin", "engine+admin+web")) {
     throw "Unsupported --services value: $ServicesMode"
 }
+$StartAdmin = $ServicesMode -in @("engine+admin", "engine+admin+web")
+$StartWeb = $ServicesMode -eq "engine+admin+web"
 
 function Resolve-Platform([string]$Requested) {
     if ($Requested -and $Requested -ne "auto") {
@@ -54,7 +56,8 @@ $ScriptRoot = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { $null }
 $UsingCurrentCheckout =
     $ScriptRoot -and
     (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-engine")) -and
-    (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-admin"))
+    (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-admin")) -and
+    ((-not $StartWeb) -or (Test-Path (Join-Path $ScriptRoot "apps\v8-agent-os-web")))
 $Workspace =
     if ($UsingCurrentCheckout) {
         Join-Path $ScriptRoot ".bootstrap-workspace"
@@ -239,7 +242,7 @@ if (-not $UsingCurrentCheckout) {
     Ensure-Command git "Install Git first: https://git-scm.com/downloads"
 }
 Ensure-Command python "Install Python 3.11+ first."
-if ($ServicesMode -eq "engine+admin") {
+if ($StartAdmin -or $StartWeb) {
     Ensure-Command npm "Install Node.js 20+ first."
 }
 
@@ -252,6 +255,7 @@ if ($UsingCurrentCheckout) {
 
 $EngineDir = Join-Path $RepoDir "apps\v8-agent-os-engine"
 $AdminDir = Join-Path $RepoDir "apps\v8-agent-os-admin"
+$WebDir = Join-Path $RepoDir "apps\v8-agent-os-web"
 
 if ($env:V8_AGENT_OS_BOOTSTRAP_DRY_RUN -eq "1") {
     Write-Host ""
@@ -263,6 +267,9 @@ if ($env:V8_AGENT_OS_BOOTSTRAP_DRY_RUN -eq "1") {
     Write-Host "Profile    : $ProfileMode"
     Write-Host "Services   : $ServicesMode"
     Write-Host "Platform   : $PlatformMode"
+    if ($StartWeb) {
+        Write-Host "Web dir    : $WebDir"
+    }
     Write-Host "Requirements:"
     Get-RequirementsForProfile $EngineDir | ForEach-Object { Write-Host " - $_" }
     exit 0
@@ -285,16 +292,20 @@ Ensure-RpaNativeInspector $EngineDir $PythonExe
 $BootstrapManagedMode = $env:V8_AGENT_OS_BOOTSTRAP_MANAGED -ne "0"
 Sync-RuntimeRegistry $EngineDir $PythonExe $ProfileMode $PlatformMode $BootstrapManagedMode
 
-if ($ServicesMode -eq "engine+admin") {
+if ($StartAdmin) {
     Write-Step "Preparing admin"
     npm --prefix $AdminDir install | Out-Host
     Ensure-AdminAuthSecret $AdminDir
+}
+if ($StartWeb) {
+    Write-Step "Preparing web"
+    npm --prefix $WebDir install | Out-Host
 }
 
 Write-Step "Starting services"
 if ($env:V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY -eq "1") {
     Write-Host ""
-    Write-Host "Install-only mode complete. Please restart the engine manually." -ForegroundColor Yellow
+    Write-Host "Install-only mode complete. Please start the selected services manually." -ForegroundColor Yellow
     exit 0
 }
 if ($env:V8_AGENT_OS_BOOTSTRAP_RESTART_ENGINE -eq "1") {
@@ -305,8 +316,11 @@ Start-Detached $EngineDir $PythonExe @("main.py") "engine" @{
     ENGINE_INSTALL_PROFILE = $ProfileMode
     ENGINE_INSTALL_PLATFORM = $PlatformMode
 }
-if ($ServicesMode -eq "engine+admin") {
+if ($StartAdmin) {
     Start-Detached $AdminDir "npm.cmd" @("run", "dev") "admin"
+}
+if ($StartWeb) {
+    Start-Detached $WebDir "npm.cmd" @("run", "dev") "web"
 }
 
 Write-Host ""
@@ -315,10 +329,14 @@ Write-Host "Source  : $RepoSource"
 Write-Host "Profile : $ProfileMode"
 Write-Host "Platform: $PlatformMode"
 Write-Host "Engine  : http://127.0.0.1:9530"
-if ($ServicesMode -eq "engine+admin") {
+if ($StartAdmin) {
     Write-Host "Admin   : http://127.0.0.1:9528"
 } else {
     Write-Host "Admin   : skipped"
 }
-Write-Host "Web     : install and package separately from apps/v8-agent-os-web"
+if ($StartWeb) {
+    Write-Host "Web     : http://127.0.0.1:9527"
+} else {
+    Write-Host "Web     : skipped (use --services engine+admin+web for local os-web regression)"
+}
 Write-Host "Logs    : $LogDir"

@@ -72,11 +72,21 @@
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.ps1 | iex"
 ```
 
+默认 bootstrap 会启动 Engine `9530` 与 Admin `9528`。如果要做本地 `os-web` pairing / login / profile 回归，可在已 clone 的仓库根目录显式启动 Web：
+
+```powershell
+.\bootstrap.ps1 --services engine+admin+web
+```
+
+启动后 Web 入口为 `http://127.0.0.1:9527`，Admin 仍为 `http://127.0.0.1:9528`。
+
+可先运行 `node scripts/verify-bootstrap-web-mode.mjs` 做 bootstrap dry-run 校验；该脚本不会安装依赖或启动服务。
+
 ### macOS / Linux (Bash)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.sh | bash
 ```
-> *(注：若已 clone 到本地目录，只需直接运行目录下的 `./bootstrap.ps1` 或 `./bootstrap.sh` 即可构建。Web UI需独立发版启动)*
+> *(注：若已 clone 到本地目录，只需直接运行目录下的 `./bootstrap.ps1` 或 `./bootstrap.sh` 即可构建。默认不启动 Web；本地 Web 回归请用 `.\bootstrap.ps1 --services engine+admin+web`。)*
 
 ---
 

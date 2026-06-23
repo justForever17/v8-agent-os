@@ -62,3 +62,49 @@
         @apply bg-background text-foreground;
     }
 }
+
+/* ==========================================
+   极简悬浮式滚动条美化 (Minimal Hover Scrollbars)
+   ========================================== */
+@layer utilities {
+    /* 1. 统一定制滚动条的宽度与高度 */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+
+    /* 2. 轨道保持完全透明 */
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    /* 3. 滑块默认完全透明（隐藏） */
+    ::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: 9999px;
+        transition: background-color 0.2s ease;
+    }
+
+    /* 4. 鼠标放置在容器上时，或者放置在滚动条本身上时，滑块显现为纤细半透明浅灰色 */
+    *:hover::-webkit-scrollbar-thumb,
+    ::-webkit-scrollbar-thumb:hover {
+        background: rgba(100, 116, 139, 0.18); /* slate-500/18 */
+    }
+
+    /* 5. 鼠标直接在滑块上 hover 时，颜色略微加深以增加焦点感 */
+    *:hover::-webkit-scrollbar-thumb:hover,
+    ::-webkit-scrollbar-thumb:hover {
+        background: rgba(100, 116, 139, 0.4); /* slate-500/40 */
+    }
+
+    /* 6. 兼容暗色模式 */
+    .dark *:hover::-webkit-scrollbar-thumb,
+    .dark ::-webkit-scrollbar-thumb:hover {
+        background: rgba(148, 163, 184, 0.15); /* slate-400/15 */
+    }
+
+    .dark *:hover::-webkit-scrollbar-thumb:hover,
+    .dark ::-webkit-scrollbar-thumb:hover {
+        background: rgba(148, 163, 184, 0.35); /* slate-400/35 */
+    }
+}

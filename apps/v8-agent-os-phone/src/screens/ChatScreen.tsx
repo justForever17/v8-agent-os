@@ -6409,7 +6409,7 @@ export default function ChatScreen() {
                                         ["failed", "cancelled", "paused"].includes(leftRunStatus))
                                 );
                                 const hasLeftRunAction = leftShowApprovalAction || leftShowInterruptAction || leftShowRetryAction;
-                                const leftExpandedWidth = hasLeftRunAction ? 112 : 88;
+                                const leftExpandedWidth = hasLeftRunAction ? 168 : 132;
 
                                 return (
                                     <EdgeActionRail
@@ -6431,7 +6431,7 @@ export default function ChatScreen() {
                                                     setHistoryOpen(true);
                                                 }}
                                             >
-                                                <MaterialCommunityIcons name="view-headline" size={13} color={palette.textMuted} />
+                                                <MaterialCommunityIcons name="view-headline" size={20} color={palette.textMuted} />
                                             </Pressable>
                                             <Pressable
                                                 accessibilityRole="button"
@@ -6458,7 +6458,7 @@ export default function ChatScreen() {
                                                 ) : (
                                                     <MaterialCommunityIcons
                                                         name="file-tree-outline"
-                                                        size={13}
+                                                        size={20}
                                                         color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
                                                     />
                                                 )}
@@ -6484,7 +6484,7 @@ export default function ChatScreen() {
                             <EdgeActionRail
                                 side="right"
                                 open={rightRailOpen}
-                                expandedWidth={356}
+                                expandedWidth={534}
                                 top={4}
                                 onOpen={() => {
                                     setRightRailOpen(true);
@@ -6846,26 +6846,26 @@ const styles = StyleSheet.create({
     leftEdgeRailContent: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        height: 22,
-        borderRadius: 6,
+        gap: 9,
+        height: 33,
+        borderRadius: 9,
         borderWidth: 1,
-        paddingHorizontal: 4,
+        paddingHorizontal: 6,
     },
     edgeIconButton: {
-        width: 22,
-        height: 22,
+        width: 33,
+        height: 33,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 6,
+        borderRadius: 9,
         borderWidth: 1,
     },
     executionMapButton: {
-        width: 22,
-        height: 22,
+        width: 33,
+        height: 33,
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 6,
+        borderRadius: 9,
         borderWidth: 1,
     },
     scopeTrigger: {

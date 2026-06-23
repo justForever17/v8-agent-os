@@ -1639,6 +1639,16 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
         return visible
     if text.startswith("=== SKILL FILE ==="):
         return _render_skill_relative_file_surface(text, raw_ref, budget=budget)
+    if text.startswith("=== SKILL SCRIPT RESULT ==="):
+        rendered = "\n".join(
+            [
+                text,
+                *_surface_ref_lines(raw_ref, include_raw=True),
+            ]
+        ).strip()
+        if len(rendered) > budget:
+            return _head_tail_truncate_text(rendered, budget, f"skill script output truncated; rawRef={raw_ref}")
+        return rendered
 
     skill_name = ""
     for pattern in (
@@ -1701,7 +1711,7 @@ def _render_skill_instructions_surface(content: str, raw_ref: str, *, budget: in
         lines.append(cleaned)
     lines.append("Relative path continuation:")
     lines.append("- When the instructions mention a relative Markdown/template/script path, read it with fetch_skill_instructions(skill_name=..., relative_path='...').")
-    lines.append("- Reading scripts/ assets does not grant execution permission; run scripts only through governed command/runtime tools when the task explicitly requires it.")
+    lines.append('- When SKILL.md instructs you to run a bundled script, use fetch_skill_instructions(mode="run_script", relative_path="scripts/...", script_args=[...]); reading the full script source is optional.')
     base_lines = [*lines, *_surface_ref_lines(raw_ref, include_raw=True)]
     base_rendered = "\n".join(line for line in base_lines if line).strip()
     if len(base_rendered) > budget:

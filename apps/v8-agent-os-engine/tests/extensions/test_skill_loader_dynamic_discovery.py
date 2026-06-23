@@ -110,7 +110,10 @@ Read references/skill-template.md when creating artifacts.
         encoding="utf-8",
     )
     (refs / "skill-template.md").write_text("# Template\n\nRequired YAML frontmatter.", encoding="utf-8")
-    (scripts / "check-quality.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts / "check-quality.py").write_text(
+        "import sys\nprint('ok:' + '|'.join(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
 
     SkillLoader.resolve_skill_matches(
         skill_name,
@@ -167,8 +170,36 @@ Read references/skill-template.md when creating artifacts.
     assert "=== SKILL FILE ===" in script
     assert "Relative Path: scripts/check-quality.py" in script
     assert "Execution Boundary:" in script
-    assert "execute only through governed command/runtime tools" in script
-    assert "print('ok')" in script
+    assert 'mode="run_script"' in script
+    assert "print('ok:'" in script
+
+    # Large scripts do not need to be read in full before a governed run. The
+    # selected SKILL.md contract is the authority for whether the script is used.
+    with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+        script_result = fetch_skill_instructions.invoke(
+            {
+                "skill_name": skill_name,
+                "mode": "run_script",
+                "relative_path": "scripts/check-quality.py",
+                "script_args": ["alpha", "beta"],
+            }
+        )
+    assert "=== SKILL SCRIPT RESULT ===" in script_result
+    assert "Status: completed" in script_result
+    assert "Script: scripts/check-quality.py" in script_result
+    assert "ok:alpha|beta" in script_result
+    assert str(skill_root) not in script_result
+
+    with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+        non_script_result = fetch_skill_instructions.invoke(
+            {
+                "skill_name": skill_name,
+                "mode": "run_script",
+                "relative_path": "references/skill-template.md",
+            }
+        )
+    assert "Status: failed" in non_script_result
+    assert "only accepts" in non_script_result
 
     with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
         escaped = fetch_skill_instructions.invoke(
@@ -232,3 +263,61 @@ def test_fetch_skill_instructions_list_mode_returns_clean_catalog():
     assert "skillRoot" not in output
     assert "C:\\" not in output
     assert "E:\\" not in output
+
+
+def test_run_skill_script_allows_selected_global_skill_but_blocks_unrelated_external_input(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    global_skill_root = tmp_path / "global-skills" / "external-script-skill"
+    scripts = global_skill_root / "scripts"
+    scripts.mkdir(parents=True)
+    instruction_path = global_skill_root / "SKILL.md"
+    instruction_path.write_text(
+        "---\nname: external-script-skill\ndescription: Run a governed helper.\n---\n\n"
+        "# External Script Skill\n\nRun `scripts/report.py` when a report is needed.\n",
+        encoding="utf-8",
+    )
+    (scripts / "report.py").write_text(
+        "import sys\nprint('report:' + '|'.join(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / "outside-secret.txt"
+    unrelated.write_text("not available to the skill command", encoding="utf-8")
+    skill = {
+        "skillId": "global:external-script-skill",
+        "skillName": "external-script-skill",
+        "name": "external-script-skill",
+        "path": str(global_skill_root),
+        "skillRoot": str(global_skill_root),
+        "instructionPath": str(instruction_path),
+        "instructions": instruction_path.read_text(encoding="utf-8"),
+        "availableFiles": ["scripts/report.py"],
+        "sourceType": "global",
+    }
+
+    with patch.object(SkillLoader, "resolve_skill_matches", return_value=[skill]):
+        with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+            success = fetch_skill_instructions.invoke(
+                {
+                    "skill_name": "external-script-skill",
+                    "mode": "run_script",
+                    "relative_path": "scripts/report.py",
+                    "script_args": ["ok"],
+                }
+            )
+        with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+            blocked = fetch_skill_instructions.invoke(
+                {
+                    "skill_name": "external-script-skill",
+                    "mode": "run_script",
+                    "relative_path": "scripts/report.py",
+                    "script_args": [str(unrelated)],
+                }
+            )
+
+    assert "Status: completed" in success
+    assert "report:ok" in success
+    assert str(global_skill_root) not in success
+    assert "Status: failed" in blocked
+    assert "Active Workspace Root" in blocked or "工作区" in blocked
+    assert str(unrelated) not in blocked

@@ -562,6 +562,35 @@ def test_fetch_skill_relative_file_keeps_resource_document_content():
     assert "Continuation manifest" not in visible
 
 
+def test_fetch_skill_script_result_keeps_actionable_output_and_hides_runtime_shape():
+    message = ToolMessage(
+        content=(
+            "=== SKILL SCRIPT RESULT ===\n"
+            "Status: completed\n"
+            "Script: scripts/check-quality.py\n"
+            "Exit Code: 0\n"
+            "Summary: 脚本执行成功。\n\n"
+            "Output:\nquality score: 98\n\n"
+            "Next Action: 继续按 SKILL.md 验证后续产物。"
+        ),
+        name="fetch_skill_instructions",
+        tool_call_id="call-fetch-skill-script",
+    )
+    visible = str(
+        apply_tool_surface_budget(
+            message,
+            {"agentVisibleBudget": 1400},
+            tool_name="fetch_skill_instructions",
+        ).content
+    )
+
+    assert visible.startswith("=== SKILL SCRIPT RESULT ===")
+    assert "quality score: 98" in visible
+    assert "Next Action:" in visible
+    assert "Skill instructions\n" not in visible
+    assert "toolobs://" in visible
+
+
 def test_fetch_skill_relative_file_truncates_with_same_document_offset():
     body = "Resource contract line.\n" * 80
     message = ToolMessage(

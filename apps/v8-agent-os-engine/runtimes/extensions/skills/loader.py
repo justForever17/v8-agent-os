@@ -4101,7 +4101,7 @@ def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[st
     script_hints = []
     for item in scripts[:12]:
         name = Path(item).name
-        purpose = "supporting script; read before executing and run only through governed tools"
+        purpose = "supporting script; follow the SKILL.md usage contract and run through fetch_skill_instructions(mode=\"run_script\")"
         lower = name.lower()
         if "subtitle" in lower:
             purpose = "subtitle/media transcript helper; execute only when the task has media evidence and permission"
@@ -4129,7 +4129,7 @@ def _skill_continuation_manifest(skill: dict[str, Any], available_files: list[st
         "frameworks": frameworks[:12],
         "scripts": script_hints,
         "examples": examples[:12],
-        "scriptExecutionBoundary": "Scripts are method assets, not permissions. Read them first; any execution must use existing governed command/runtime tools.",
+        "scriptExecutionBoundary": "Follow the SKILL.md usage contract. Script source may be inspected when needed, but large scripts do not need a full read before governed execution. Run scripts with fetch_skill_instructions(mode=\"run_script\", relative_path=\"scripts/...\", script_args=[...]).",
     }
 
 
@@ -4248,12 +4248,16 @@ def fetch_skill_instructions(
     relative_path: str | None = None,
     offset: int = 0,
     mode: str = "read",
+    script_args: list[str] | None = None,
+    timeout_seconds: int = 120,
 ) -> str:
-    """Read installed Skill instructions, or list visible Skill names.
+    """Read/list installed Skills, or run a declared Skill script under workspace and Safety checks.
 
     Tool arguments are structured fields; examples use JSON-style double quotes for consistency.
+    Use an exact skill name/path when it is already known; prefilter selection is helpful but not required.
     Use mode="list" to list visible global and current workspace Skills by name and description only.
-    Default detail_level="full" returns the approved SKILL.md instructions so delegated agents can follow the workflow.
+    Use mode="run_script" with relative_path="scripts/..." and script_args=[...] when SKILL.md tells you to run a bundled script. Large script source does not need to be read in full first.
+    Default detail_level="full" returns the complete SKILL.md instructions so delegated agents can follow the selected workflow.
     Use detail_level="summary" only for browsing/discovery, or detail_level="section" with section="..." for a specific heading.
     If the conversation, route context, or delegated brief already names an exact installed Skill, call this tool directly with that skill_name even when the current prefilter did not select it.
     Pass relative_path="references/foo.md" to continue reading a file inside that skill directory after inspecting the continuation manifest.
@@ -4261,6 +4265,7 @@ def fetch_skill_instructions(
     """
 
     runtime_kind = "chat"
+    runtime_context: dict[str, Any] = {}
     session_id = None
     explicit_workspace_id = None
     explicit_workspace_path = None
@@ -4294,6 +4299,8 @@ def fetch_skill_instructions(
             explicit_workspace_path=explicit_workspace_path,
             explicit_project_id=explicit_project_id,
         )
+    if normalized_mode not in {"read", "run_script"}:
+        return 'Error: mode must be "read", "list", or "run_script".'
 
     matches = SkillLoader.resolve_skill_matches(
         skill_name,
@@ -4485,6 +4492,32 @@ def fetch_skill_instructions(
 
     available_files = list(skill.get("availableFiles") or [])
     manifest = _skill_continuation_manifest(skill, available_files)
+    if normalized_mode == "run_script":
+        try:
+            normalized_relative_path = _normalize_skill_relative_path(str(relative_path or ""))
+            from runtimes.extensions.skills.script_runner import run_skill_script
+
+            return run_skill_script(
+                skill=skill,
+                relative_path=normalized_relative_path,
+                script_args=script_args,
+                timeout_seconds=timeout_seconds,
+                runtime_context=runtime_context,
+            )
+        except Exception as exc:
+            try:
+                from core.tools.native.tool_governance import _raise_runtime_governance_exception_if_needed
+
+                _raise_runtime_governance_exception_if_needed(exc)
+            except ImportError:
+                pass
+            return (
+                "=== SKILL SCRIPT RESULT ===\n"
+                "Status: failed\n"
+                f"Script: {relative_path or ''}\n"
+                f"Summary: {exc}\n\n"
+                "Next Action: 按 SKILL.md 确认 scripts/ 相对路径、参数和本机解释器后重试。"
+            )
     if str(relative_path or "").strip():
         try:
             normalized_relative_path = _normalize_skill_relative_path(str(relative_path or ""))
@@ -4502,8 +4535,8 @@ def fetch_skill_instructions(
             execution_hint = ""
             if normalized_relative_path.startswith("scripts/"):
                 execution_hint = (
-                    "\nExecution Boundary: This is a script asset. Reading it does not grant permission to run it; "
-                    "execute only through governed command/runtime tools when the task explicitly requires it."
+                    "\nExecution Boundary: Follow the SKILL.md usage contract. A full source read is optional; "
+                    "run this asset with fetch_skill_instructions(mode=\"run_script\", relative_path=\"scripts/...\", script_args=[...])."
                 )
             next_offset = read_offset + len(content)
             continuation_api = (

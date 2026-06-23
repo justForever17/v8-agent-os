@@ -50,7 +50,7 @@ Use this skill to verify that fetch_skill_instructions exposes the full SKILL.md
 
 1. Read this SKILL.md from top to bottom before starting work.
 2. When the workflow mentions references/research/01-writings.md, continue through fetch_skill_instructions(relative_path=...).
-3. Read scripts/check-quality.py before running it; script availability does not bypass command governance.
+3. Run scripts/check-quality.py when quality validation is required. Large script source does not need to be loaded into model context first.
 
 ## Output
 
@@ -63,7 +63,7 @@ Return a concise result, evidence used, risks, and next action.
         encoding="utf-8",
     )
     (root / "scripts" / "check-quality.py").write_text(
-        "print('quality ok')\n",
+        "import sys\nprint('quality ok: ' + '|'.join(sys.argv[1:]))\n",
         encoding="utf-8",
     )
     return skill_name
@@ -86,6 +86,15 @@ def build_matrix() -> dict[str, Any]:
                     "detail_level": "full",
                 }
             )
+        with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+            raw_script_output = fetch_skill_instructions.invoke(
+                {
+                    "skill_name": skill_name,
+                    "mode": "run_script",
+                    "relative_path": "scripts/check-quality.py",
+                    "script_args": ["artifact.md"],
+                }
+            )
         agent_message = apply_tool_surface_budget(
             ToolMessage(
                 content=str(raw_output),
@@ -96,6 +105,16 @@ def build_matrix() -> dict[str, Any]:
             tool_name="fetch_skill_instructions",
         )
         agent_visible_output = str(agent_message.content)
+        agent_script_message = apply_tool_surface_budget(
+            ToolMessage(
+                content=str(raw_script_output),
+                name="fetch_skill_instructions",
+                tool_call_id="call_skill_script_surface_dry_run",
+            ),
+            {"agentVisibleBudget": 3000},
+            tool_name="fetch_skill_instructions",
+        )
+        agent_script_output = str(agent_script_message.content)
         manifest_text = str(raw_output).split("=== CONTINUATION MANIFEST ===", 1)[1].split("=== INSTRUCTIONS", 1)[0]
 
     forbidden = [
@@ -153,13 +172,29 @@ def build_matrix() -> dict[str, Any]:
             )
         ),
         "agent_surface_hides_loader_noise": _contains_none(agent_visible_output, forbidden),
+        "script_runs_without_source_read": "Status: completed" in raw_script_output
+        and "quality ok: artifact.md" in raw_script_output,
+        "script_agent_surface_is_actionable": all(
+            item in agent_script_output
+            for item in (
+                "=== SKILL SCRIPT RESULT ===",
+                "Script: scripts/check-quality.py",
+                "quality ok: artifact.md",
+                "Next Action:",
+                "toolobs://",
+            )
+        ),
+        "script_surface_hides_absolute_paths": str(workspace) not in raw_script_output
+        and str(workspace) not in agent_script_output,
     }
     return {
-        "description": "Dry-run export for fetch_skill_instructions output surfaces. No model call, no DB write, no repo mutation.",
+        "description": "Dry-run export for fetch_skill_instructions read and governed script surfaces. No model/network call or repository mutation; script execution is limited to a temporary workspace.",
         "passed": all(validations.values()),
         "validations": validations,
         "rawOutput": raw_output,
         "agentVisibleOutput": agent_visible_output,
+        "rawScriptOutput": raw_script_output,
+        "agentScriptOutput": agent_script_output,
     }
 
 
@@ -175,7 +210,7 @@ def write_report(matrix: dict[str, Any]) -> dict[str, str]:
     )
     md = f"""# Skill Tool Output Surface Dry Run
 
-No model call, no database write, no repository mutation.
+No model/network call or repository mutation. The script runs only inside a temporary workspace.
 
 ## Result
 
@@ -193,6 +228,18 @@ Overall: **{'PASS' if matrix['passed'] else 'FAIL'}**
 
 ```text
 {matrix['agentVisibleOutput']}
+```
+
+## Raw Script Output
+
+```text
+{matrix['rawScriptOutput']}
+```
+
+## Agent Script Output
+
+```text
+{matrix['agentScriptOutput']}
 ```
 """
     md_path.write_text(md, encoding="utf-8")

@@ -54,6 +54,7 @@ from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 
 __all__ = [
+    "execute_governed_argv",
     "_suggest_npx_yes_command",
     "_normalize_background_input",
     "_decode_background_input_escapes",
@@ -136,6 +137,138 @@ __all__ = [
     "send_background_input",
     "terminate_background_command",
 ]
+
+
+def execute_governed_argv(
+    argv: list[str],
+    *,
+    cwd: str = "",
+    allowed_extra_roots: list[str] | tuple[str, ...] = (),
+    tool_call_id: str = "",
+    timeout_seconds: int = 120,
+    action_family: str = "command",
+    action_subject: str = "",
+) -> dict[str, Any]:
+    """Execute a pre-resolved argv without a shell while preserving command governance."""
+    normalized_argv = [str(item) for item in list(argv or [])]
+    if not normalized_argv or not normalized_argv[0].strip():
+        return {
+            "ok": False,
+            "kind": "command_invalid_argv",
+            "summary": "缺少可执行程序。",
+            "recommendedNextAction": "提供由 Engine 解析后的程序和参数列表。",
+        }
+
+    timeout_seconds = max(1, min(int(timeout_seconds or 120), 900))
+    command = subprocess.list2cmdline(normalized_argv) if os.name == "nt" else shlex.join(normalized_argv)
+    runtime_context = get_runtime_context()
+    existing_extra_roots = runtime_context.get("allowed_extra_roots") or runtime_context.get("allowedExtraRoots") or []
+    if isinstance(existing_extra_roots, str):
+        existing_extra_roots = [existing_extra_roots]
+    governed_context = dict(runtime_context)
+    governed_context["allowed_extra_roots"] = [
+        *[str(item) for item in list(existing_extra_roots or []) if str(item or "").strip()],
+        *[str(item) for item in list(allowed_extra_roots or []) if str(item or "").strip()],
+    ]
+
+    workspace_preflight = preflight_command_workspace(
+        command,
+        cwd=cwd or None,
+        runtime_context=governed_context,
+    )
+    if not workspace_preflight.get("ok"):
+        return {
+            "ok": False,
+            "kind": "workspace_boundary_block",
+            "summary": workspace_preflight.get("summary"),
+            "error": workspace_preflight.get("error"),
+            "violations": workspace_preflight.get("violations") or [],
+            "recommendedNextAction": "仅使用当前工作区文件作为脚本输入，或由用户显式授予额外 workspace/root。",
+        }
+
+    inventory_status = _workspace_inventory_status(governed_context)
+    if (
+        not inventory_status.get("hasInventoryToken")
+        and inventory_status.get("nonEmpty")
+        and _workspace_inventory_gate_required(command, workspace_root=str(inventory_status.get("workspaceRoot") or ""))
+    ):
+        return _workspace_inventory_block_payload(governed_context, operation="command", subject=command)
+
+    allowed, error_message = _enforce_safety_decision(
+        safety_guardian.assess_system_command(command, runtime_context=governed_context),
+        tool_call_id=tool_call_id,
+        question=f"Safety Guardian 检测到脚本执行存在风险，是否继续？\n\n命令：{command}",
+    )
+    if not allowed:
+        return {
+            "ok": False,
+            "kind": "safety_blocked",
+            "summary": error_message or "Safety Guardian 已阻止脚本执行。",
+            "recommendedNextAction": "按 Safety Guardian 的原因调整输入，或改用已批准的方法。",
+        }
+
+    resolved_cwd = str(workspace_preflight.get("cwd") or "").strip() or None
+    deadline_ms = timeout_seconds * 1000
+    with ToolExecutionEnvelope(
+        tool_name="run_skill_script" if action_family == "skill_script" else "run_system_command",
+        family="command",
+        deadline_ms=deadline_ms,
+        retry_limit=1,
+    ) as envelope:
+        try:
+            result = subprocess.run(
+                normalized_argv,
+                shell=False,
+                capture_output=True,
+                cwd=resolved_cwd,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return envelope.failure_payload(
+                summary=f"脚本执行超过 {timeout_seconds} 秒上限。",
+                failure_class="deadline_exceeded",
+                error="script execution timed out",
+                retryable=False,
+                recommended_next_action="缩小脚本任务，或改用具备可恢复会话的专项 runtime。",
+            )
+
+    stdout, stdout_encoding = _decode_completed_process_bytes(result.stdout or b"", stream_name="stdout")
+    stderr, stderr_encoding = _decode_completed_process_bytes(result.stderr or b"", stream_name="stderr")
+    output_limit = 220_000
+    stdout_truncated = len(stdout) > output_limit
+    stderr_truncated = len(stderr) > output_limit
+    visible_stdout = stdout[:output_limit]
+    visible_stderr = stderr[:output_limit]
+
+    safety_guardian.observe_post_action(
+        action_family=action_family,
+        summary=f"已执行受治理脚本：{action_subject or Path(normalized_argv[-1]).name}",
+        details={
+            "command": command,
+            "cwd": resolved_cwd,
+            "workspaceBinding": workspace_preflight.get("binding"),
+            "return_code": result.returncode,
+            "encodingDiagnostics": {"stdout": stdout_encoding, "stderr": stderr_encoding},
+        },
+        runtime_context=governed_context,
+    )
+    mark_workspace_state_stale(governed_context, reason=action_family, subject=command)
+    if result.returncode == 0:
+        _notify_skills_inventory_command_completed(command)
+
+    return {
+        "ok": result.returncode == 0,
+        "kind": "skill_script_result" if action_family == "skill_script" else "command_result",
+        "summary": "脚本执行成功。" if result.returncode == 0 else f"脚本执行失败，退出码 {result.returncode}。",
+        "returnCode": result.returncode,
+        "stdout": visible_stdout,
+        "stderr": visible_stderr,
+        "stdoutChars": len(stdout),
+        "stderrChars": len(stderr),
+        "stdoutTruncated": stdout_truncated,
+        "stderrTruncated": stderr_truncated,
+        "recommendedNextAction": "继续按 SKILL.md 验证后续产物。" if result.returncode == 0 else "根据错误输出修复输入或环境后再运行。",
+    }
 
 
 def _agent_preview_text(value: Any, *, limit: int = 700) -> str | None:

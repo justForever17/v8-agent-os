@@ -747,7 +747,7 @@ export default function SafetyControlPage() {
                         <CardTitle className="text-base">{t("app.admin.dashboard.safety.control.page.section.recentSkillScans")}</CardTitle>
                         <CardDescription>{ti(t, "k3b8428667f")}</CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-3">
+                    <CardContent className="space-y-3 max-h-[380px] overflow-y-auto pr-2 scrollbar-thin">
                         {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k906ff562fc")}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
                                     <div className="flex flex-wrap items-center gap-3">
                                         <div className="text-sm font-medium text-slate-900">{item.skillName || ti(t, "k233cfa7db1")}</div>

@@ -1552,7 +1552,7 @@ export default function SubagentsPage() {
                             </div>
 
                             <div className="grid gap-5 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,1.35fr)]">
-                                <div className="space-y-3">
+                                <div className="space-y-3 max-h-[360px] overflow-y-auto pr-2 scrollbar-thin">
                                     {externalWorkers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-5 text-sm text-slate-500">
                                             {tg(t, "bbb79e84")}
                                         </div> : null}

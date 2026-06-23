@@ -540,7 +540,7 @@ export default function SupervisorPage() {
                             {/* 锁定工具 */}
                             <div className="space-y-2">
                                 <Label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">{t("app.admin.dashboard.supervisor.page.k6e509c9a")}</Label>
-                                <div className="rounded-md border bg-muted/20 p-3">
+                                <div className="rounded-md border bg-muted/20 p-3 max-h-[280px] overflow-y-auto scrollbar-thin">
                                     {lockedNativeTools.length > 0 ? <div className="grid grid-cols-1 gap-3">
                                             {lockedNativeTools.map(tool => <div key={tool.name} className="rounded border bg-background px-3 py-2">
                                                     <div className="flex items-start gap-2">
@@ -560,7 +560,7 @@ export default function SupervisorPage() {
                             {/* 受管工具 */}
                             <div className="space-y-2">
                                 <Label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">{t("app.admin.dashboard.supervisor.page.k988cfeb5")}</Label>
-                                <div className="rounded-md border border-dashed border-border/70 bg-background/70 p-3 text-xs text-muted-foreground">
+                                <div className="rounded-md border border-dashed border-border/70 bg-background/70 p-3 text-xs text-muted-foreground max-h-[280px] overflow-y-auto scrollbar-thin">
                                     {runtimeManagedTools.length > 0 ? <div className="grid grid-cols-1 gap-2">
                                             {runtimeManagedTools.map(tool => <div key={tool.name} className="rounded border border-border/60 px-3 py-2 bg-background">
                                                     <div className="flex items-start gap-2">

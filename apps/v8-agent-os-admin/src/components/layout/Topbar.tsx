@@ -3,6 +3,7 @@
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Loader2, Monitor, Search, Server } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
+import Image from "next/image";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -299,9 +300,30 @@ export function Topbar() {
     return (
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
             <div className="flex min-h-20 items-center justify-between gap-4 px-6 py-4">
-                <div className="space-y-1">
-                    <div className="text-sm font-medium text-slate-900">{t(current.title)}</div>
-                    <div className="text-sm text-slate-500">{t(current.description)}</div>
+                <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
+                        <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+                            <Image
+                                src="/brand-mark.png"
+                                alt="V8 Agent OS"
+                                fill
+                                sizes="40px"
+                                className="object-cover notranslate"
+                                priority
+                                translate="no"
+                            />
+                        </div>
+                        <h1 className="v8os-wordmark notranslate" aria-label="V8 Agent OS" translate="no">
+                            <span className="v8os-wordmark__glow" aria-hidden="true">V8 Agent OS</span>
+                            <span className="v8os-wordmark__shine" aria-hidden="true">V8 Agent OS</span>
+                            <span className="v8os-wordmark__text">V8 Agent OS</span>
+                        </h1>
+                    </div>
+                    <span className="text-slate-300 text-lg font-light select-none">/</span>
+                    <div className="space-y-0.5">
+                        <div className="text-sm font-semibold text-slate-900 leading-tight">{t(current.title)}</div>
+                        <div className="text-xs text-slate-500 leading-tight">{t(current.description)}</div>
+                    </div>
                 </div>
                 <div className="flex items-center gap-2">
                     <DeviceConnectDialog />

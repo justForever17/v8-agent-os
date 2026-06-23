@@ -25,7 +25,47 @@ def test_native_tools_dry_run_export_covers_registered_tools() -> None:
     assert "ask_user" in native_tools_dry_run.EXCLUDED_TOOLS
     assert "ask_user" not in exported_names
     assert native_tools_dry_run.missing_invocation_names() == []
+    assert native_tools_dry_run.missing_high_risk_replay_names() == []
     assert "dry-run-missing" not in json.dumps(native_tools_dry_run.BASE_SAFE_INVOCATIONS)
+
+
+def test_high_risk_replay_fixtures_cover_unsafe_and_stateful_tools() -> None:
+    fixtures = native_tools_dry_run.load_high_risk_replays()
+    required = set(native_tools_dry_run.UNSAFE_REASONS) | set(native_tools_dry_run.STATEFUL_UNOBSERVED_REASONS)
+
+    assert required <= set(fixtures)
+    for name, fixture in fixtures.items():
+        assert name in native_tools_dry_run.native_tool_names_to_export()
+        assert fixture["group"]
+        assert isinstance(fixture["payload"], dict)
+        assert fixture["forbiddenVisibleMarkers"]
+
+
+def test_high_risk_replay_agent_and_client_surfaces_are_clean() -> None:
+    fixtures = native_tools_dry_run.load_high_risk_replays()
+    tools = native_tools_dry_run._all_export_tools()
+    by_name = {str(getattr(tool_ref, "name", "")): tool_ref for tool_ref in tools}
+
+    for name, fixture in fixtures.items():
+        tool_ref = by_name[name]
+        record = native_tools_dry_run._replay_agent_visible_surface(
+            name=name,
+            fixture=fixture,
+            description=str(getattr(tool_ref, "description", "") or ""),
+            visibility=native_tools_dry_run._visibility_for_tool(name, tools),
+        )
+        client_surface_text = json.dumps(record.client_surface, ensure_ascii=False)
+
+        assert record.status == "fixture_replayed"
+        assert record.representative is True
+        assert record.runtime_capture_kind == "sanitized_contract_replay"
+        assert record.diagnostics["jsonLikeVisible"] is False
+        assert record.diagnostics["runtimeOnlyLeakMarkers"] == []
+        assert record.client_surface["title"] == name
+        assert record.client_surface["summary"]
+        for marker in fixture["forbiddenVisibleMarkers"]:
+            assert marker not in record.output
+            assert marker not in client_surface_text
 
 
 def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
@@ -44,6 +84,7 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     assert {"rawChars", "visibleChars", "truncatedByToolNode", "dirtySignals", "scenarioName"} <= set(
         loaded_index["tools"][0]
     )
+    assert {"runtimeCaptureKind"} <= set(loaded_index["tools"][0])
     assert {"clientSurface", "clientSummary", "clientStatus", "clientRefIds"} <= set(loaded_index["tools"][0])
     assert loaded_index["topGiantReport"] == "_top10_giant_tool_outputs.md"
     by_name = {item["name"]: item for item in loaded_index["tools"]}

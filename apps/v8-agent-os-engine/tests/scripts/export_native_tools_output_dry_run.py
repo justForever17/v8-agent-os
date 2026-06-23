@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import traceback
 from dataclasses import dataclass
@@ -17,6 +18,9 @@ from typing import Any
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = ENGINE_ROOT.parents[1]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "docs" / "tools"
+REPLAY_FIXTURE_PATH = ENGINE_ROOT / "tests" / "fixtures" / "tool_output_surface" / "high_risk_replays.json"
+CLIENT_SURFACE_REPLAY_SCRIPT = PROJECT_ROOT / "packages" / "session-realtime" / "scripts" / "replay-client-tool-surfaces.mjs"
+CLIENT_SURFACE_DIST = PROJECT_ROOT / "packages" / "session-realtime" / "dist" / "index.js"
 
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
@@ -30,6 +34,7 @@ from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_f
 from core.tool_surface import (  # noqa: E402
     MAX_TOOL_OUTPUT_LENGTH,
     TOOL_OUTPUT_TARGET_CHARS,
+    apply_tool_surface_budget,
     record_raw_observation,
     runtime_kind_for_tool,
 )
@@ -305,6 +310,85 @@ class ToolCalibrationRecord:
     skip_reason: str | None = None
     agent_visible: bool = True
     surface_visibility: dict[str, Any] | None = None
+    runtime_output: str = ""
+    runtime_capture_kind: str = "tool_node_visible_only"
+
+
+def load_high_risk_replays() -> dict[str, dict[str, Any]]:
+    payload = json.loads(REPLAY_FIXTURE_PATH.read_text(encoding="utf-8"))
+    if str(payload.get("schema") or "") != "v8.tool_output_surface_replay.v1":
+        raise ValueError(f"unsupported replay fixture schema: {payload.get('schema')}")
+    forbidden = [str(item) for item in list(payload.get("forbiddenVisibleMarkers") or []) if str(item).strip()]
+    by_tool: dict[str, dict[str, Any]] = {}
+    for group in list(payload.get("groups") or []):
+        if not isinstance(group, dict):
+            continue
+        group_name = str(group.get("name") or "").strip()
+        raw_payload = group.get("payload")
+        if not group_name or not isinstance(raw_payload, dict):
+            raise ValueError("each replay group requires name and object payload")
+        for raw_name in list(group.get("tools") or []):
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if name in by_tool:
+                raise ValueError(f"duplicate high-risk replay fixture: {name}")
+            by_tool[name] = {
+                "group": group_name,
+                "payload": json.loads(json.dumps(raw_payload, ensure_ascii=False)),
+                "forbiddenVisibleMarkers": forbidden,
+                "provenance": str(payload.get("provenance") or "").strip(),
+            }
+    return by_tool
+
+
+def missing_high_risk_replay_names() -> list[str]:
+    replay_names = set(load_high_risk_replays())
+    required = set(UNSAFE_REASONS) | set(STATEFUL_UNOBSERVED_REASONS)
+    return sorted(required - replay_names)
+
+
+def _replay_agent_visible_surface(
+    *,
+    name: str,
+    fixture: dict[str, Any],
+    description: str,
+    visibility: dict[str, Any],
+) -> ToolCalibrationRecord:
+    runtime_output = _json_dumps(fixture["payload"])
+    message = apply_tool_surface_budget(
+        ToolMessage(
+            content=runtime_output,
+            name=name,
+            tool_call_id=f"replay-{name}",
+        ),
+        {"agentVisibleBudget": int(visibility.get("agentVisibleBudget") or DEFAULT_VISIBLE_BUDGET)},
+        tool_name=name,
+        runtime_kind=str(visibility.get("runtimeKind") or runtime_kind_for_tool(name)),
+        surface="fixture_replay",
+    )
+    output = str(message.content)
+    leaked = [marker for marker in fixture.get("forbiddenVisibleMarkers") or [] if marker in output]
+    record = _make_record(
+        name=name,
+        status="fixture_replayed",
+        args=None,
+        description=description,
+        output=output,
+        representative=not leaked,
+        representative_reason=(
+            f"sanitized contract-shape replay through production Engine surface ({fixture['group']})"
+            if not leaked
+            else "runtime-only replay markers leaked into the agent surface: " + ", ".join(leaked)
+        ),
+        scenario_name=f"fixture_replay:{fixture['group']}",
+        surface_visibility=visibility,
+        runtime_output=runtime_output,
+        runtime_capture_kind="sanitized_contract_replay",
+    )
+    record.diagnostics["runtimeOnlyLeakMarkers"] = leaked
+    record.diagnostics["fixtureProvenance"] = fixture.get("provenance")
+    return record
 
 
 def _all_export_tools() -> list[Any]:
@@ -757,9 +841,12 @@ def _make_record(
     scenario_name: str,
     skip_reason: str | None = None,
     surface_visibility: dict[str, Any] | None = None,
+    runtime_output: str | None = None,
+    runtime_capture_kind: str = "tool_node_visible_only",
 ) -> ToolCalibrationRecord:
     diagnostics = analyze_output(output)
-    client_surface = build_client_tool_surface(name, output, state=status)
+    client_surface = build_client_tool_surface(name, output, state="result" if representative else status)
+    effective_runtime_output = str(runtime_output if runtime_output is not None else output)
     return ToolCalibrationRecord(
         name=name,
         status=status,
@@ -771,11 +858,13 @@ def _make_record(
         representative=representative,
         representative_reason=representative_reason,
         scenario_name=scenario_name,
-        raw_chars=_raw_chars_from_visible(output),
+        raw_chars=len(effective_runtime_output),
         visible_chars=len(output),
         truncated_by_tool_node="...[OUTPUT TRUNCATED BY SYSTEM." in output,
         skip_reason=skip_reason,
         surface_visibility=surface_visibility,
+        runtime_output=effective_runtime_output,
+        runtime_capture_kind=runtime_capture_kind,
     )
 
 
@@ -1000,11 +1089,23 @@ async def _collect_ledger_id_scenario(name: str, tool_ref: Any, by_name: dict[st
 async def _collect_records_async(*, invoke: bool = True) -> list[ToolCalibrationRecord]:
     all_tools = _all_export_tools()
     by_name = {str(getattr(tool_ref, "name", "")): tool_ref for tool_ref in all_tools}
+    high_risk_replays = load_high_risk_replays() if invoke else {}
     records: list[ToolCalibrationRecord] = []
     for name in native_tool_names_to_export():
         tool_ref = by_name[name]
         description = str(getattr(tool_ref, "description", "") or "").strip()
         visibility = _visibility_for_tool(name, all_tools)
+
+        if name in high_risk_replays:
+            records.append(
+                _replay_agent_visible_surface(
+                    name=name,
+                    fixture=high_risk_replays[name],
+                    description=description,
+                    visibility=visibility,
+                )
+            )
+            continue
 
         if name in UNSAFE_REASONS:
             reason = UNSAFE_REASONS[name]
@@ -1119,6 +1220,55 @@ def collect_records(*, invoke: bool = True) -> list[ToolCalibrationRecord]:
     return asyncio.run(_collect_records_async(invoke=invoke))
 
 
+def apply_production_client_surfaces(records: list[ToolCalibrationRecord]) -> tuple[str, str | None]:
+    node = shutil.which("node")
+    if not node:
+        return "python_compat_fallback", "node executable is unavailable"
+    if not CLIENT_SURFACE_DIST.exists():
+        return "python_compat_fallback", f"missing built package: {CLIENT_SURFACE_DIST}"
+    if not CLIENT_SURFACE_REPLAY_SCRIPT.exists():
+        return "python_compat_fallback", f"missing replay script: {CLIENT_SURFACE_REPLAY_SCRIPT}"
+    replay_input = [
+        {
+            "name": record.name,
+            "state": "result" if record.representative else record.status,
+            "result": record.output,
+        }
+        for record in records
+    ]
+    try:
+        completed = subprocess.run(
+            [node, str(CLIENT_SURFACE_REPLAY_SCRIPT)],
+            input=json.dumps(replay_input, ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            cwd=str(PROJECT_ROOT),
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - exporter reports an explicit fallback
+        return "python_compat_fallback", str(exc)
+    if completed.returncode != 0:
+        return "python_compat_fallback", (completed.stderr or completed.stdout or "client replay failed").strip()
+    try:
+        values = json.loads(completed.stdout)
+        by_name = {
+            str(item.get("name") or ""): dict(item.get("surface") or {})
+            for item in list(values or [])
+            if isinstance(item, dict)
+        }
+    except Exception as exc:  # noqa: BLE001
+        return "python_compat_fallback", f"invalid client replay output: {exc}"
+    missing = [record.name for record in records if record.name not in by_name]
+    if missing:
+        return "python_compat_fallback", "missing client replay surfaces: " + ", ".join(missing)
+    for record in records:
+        record.client_surface = by_name[record.name]
+    return "packages/session-realtime", None
+
+
 def _markdown_code(value: str, *, language: str = "") -> str:
     safe = value.replace("```", "`\u200b``")
     return f"```{language}\n{safe}\n```"
@@ -1137,6 +1287,7 @@ def render_tool_markdown(record: ToolCalibrationRecord, *, generated_at: str) ->
         "skipReason": record.skip_reason,
         "args": record.args,
         "rawChars": record.raw_chars,
+        "runtimeCaptureKind": record.runtime_capture_kind,
         "visibleChars": record.visible_chars,
         "truncatedByToolNode": record.truncated_by_tool_node,
         "maxToolOutputLength": MAX_TOOL_OUTPUT_LENGTH,
@@ -1162,6 +1313,10 @@ def render_tool_markdown(record: ToolCalibrationRecord, *, generated_at: str) ->
         "## Client-Visible Surface",
         "",
         _markdown_code(_json_dumps(record.client_surface), language="json"),
+        "",
+        "## Runtime Fixture / Captured Output",
+        "",
+        _markdown_code(record.runtime_output, language="json" if str(record.runtime_output).lstrip().startswith(("{", "[")) else ""),
         "",
         "## Agent-Visible Output",
         "",
@@ -1264,6 +1419,7 @@ def export_records(
     output_dir: Path,
     *,
     allow_non_default_output: bool = False,
+    require_production_client_surface: bool = False,
 ) -> dict[str, Any]:
     previous_visible_by_name: dict[str, int] = {}
     prior_index_path = output_dir.resolve() / "_index.json"
@@ -1275,6 +1431,9 @@ def export_records(
                     previous_visible_by_name[str(item.get("name"))] = int(item.get("visibleChars") or 0)
         except Exception:
             previous_visible_by_name = {}
+    client_surface_implementation, client_surface_error = apply_production_client_surfaces(records)
+    if require_production_client_surface and client_surface_implementation != "packages/session-realtime":
+        raise RuntimeError(f"production client surface replay unavailable: {client_surface_error}")
     resolved_output_dir = _prepare_output_dir(output_dir, allow_non_default_output=allow_non_default_output)
     generated_at = datetime.now(timezone.utc).isoformat()
     for record in records:
@@ -1291,6 +1450,8 @@ def export_records(
         "generatedAt": generated_at,
         "outputDir": str(resolved_output_dir),
         "agentVisible": True,
+        "clientSurfaceImplementation": client_surface_implementation,
+        "clientSurfaceFallbackReason": client_surface_error,
         "maxToolOutputLength": MAX_TOOL_OUTPUT_LENGTH,
         "toolOutputTargets": TOOL_OUTPUT_TARGET_CHARS,
         "surfaces": [
@@ -1344,6 +1505,7 @@ def export_records(
                 "representative": record.representative,
                 "representativeReason": record.representative_reason,
                 "rawChars": record.raw_chars,
+                "runtimeCaptureKind": record.runtime_capture_kind,
                 "visibleChars": record.visible_chars,
                 "clientSurface": record.client_surface,
                 "clientSummary": record.client_surface.get("summary"),
@@ -1448,6 +1610,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-non-default-output", action="store_true", help="Allow writing to a non-default output directory for local validation.")
     parser.add_argument("--fail-on-dirty", action="store_true", help="Exit non-zero when invoked outputs contain dirty signals.")
     parser.add_argument("--fail-on-over-limit", action="store_true", help="Exit non-zero when any visible output exceeds ToolNode max output length.")
+    parser.add_argument("--require-high-risk-replays", action="store_true", help="Fail unless every unsafe/stateful tool has a sanitized replay fixture.")
+    parser.add_argument("--require-production-client-surface", action="store_true", help="Fail unless Client Surface is built by packages/session-realtime.")
     return parser.parse_args()
 
 
@@ -1455,10 +1619,11 @@ def _dirty_invoked_records(records: list[ToolCalibrationRecord]) -> list[ToolCal
     return [
         record
         for record in records
-        if record.status == "invoked"
+        if record.status in {"invoked", "fixture_replayed"}
         and (
             bool(record.diagnostics.get("dirtySignals"))
             or bool(record.diagnostics.get("jsonLikeVisible"))
+            or bool(record.diagnostics.get("runtimeOnlyLeakMarkers"))
         )
     ]
 
@@ -1473,10 +1638,19 @@ def main() -> int:
     if missing:
         print(f"Missing calibration coverage entries: {', '.join(missing)}", file=sys.stderr)
         return 2
+    missing_replays = missing_high_risk_replay_names()
+    if args.require_high_risk_replays and missing_replays:
+        print("Missing high-risk replay fixtures: " + ", ".join(missing_replays), file=sys.stderr)
+        return 2
 
     records = collect_records(invoke=not args.no_invoke)
     try:
-        index = export_records(records, args.output_dir, allow_non_default_output=bool(args.allow_non_default_output))
+        index = export_records(
+            records,
+            args.output_dir,
+            allow_non_default_output=bool(args.allow_non_default_output),
+            require_production_client_surface=bool(args.require_production_client_surface),
+        )
     except Exception as exc:
         print(f"Failed to export calibration outputs: {exc}", file=sys.stderr)
         return 2
@@ -1494,7 +1668,7 @@ def main() -> int:
         budget_over = [
             (record, _record_budget(record))
             for record in records
-            if record.status == "invoked"
+            if record.status in {"invoked", "fixture_replayed"}
             and bool(_record_visible_surfaces(record))
             and record.visible_chars > _record_budget(record)
         ]

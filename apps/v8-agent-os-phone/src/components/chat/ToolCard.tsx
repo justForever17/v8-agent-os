@@ -27,6 +27,34 @@ type ToolCardProps = {
     hideResult?: boolean;
 };
 
+function looksLikeRawStructuredOutput(value: unknown) {
+    if (value === null || value === undefined) {
+        return false;
+    }
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+    return typeof value === "object";
+}
+
+function buildReadableResult(toolInvocation: ToolInvocation) {
+    const result = toolInvocation.result ?? "";
+    const surface = toolInvocation.clientSurface;
+    if (looksLikeRawStructuredOutput(result) && surface) {
+        const lines = [
+            surface.summary,
+            surface.progress ? `进度：${surface.progress}` : "",
+            surface.actionable ? `下一步：${surface.actionable}` : "",
+            surface.refIds.length ? `续读引用：${surface.refIds.join(", ")}` : "",
+        ].filter(Boolean);
+        if (lines.length) {
+            return lines.join("\n");
+        }
+    }
+    return stringifyPayload(result);
+}
+
 function stringifyPayload(value: unknown) {
     if (typeof value === "string") {
         return value;
@@ -94,6 +122,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
 
     const accent = isComplete ? "#14B8A6" : "#3B82F6";
     const iconName = resolveToolIconName(toolInvocation.toolName);
+    const readableResult = buildReadableResult(toolInvocation);
 
     return (
         <View style={styles.wrap}>
@@ -192,8 +221,8 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                                     {t("src.components.chat.toolcard.output")}
                                 </Text>
                                 <CodeBlock
-                                    language={payloadLanguage(toolInvocation.result)}
-                                    value={stringifyPayload(toolInvocation.result ?? "")}
+                                    language={payloadLanguage(readableResult)}
+                                    value={readableResult}
                                 />
                             </View>
                         ) : null}

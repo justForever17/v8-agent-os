@@ -7326,7 +7326,36 @@ class ChatRuntime:
             if isinstance(compact_result, str):
                 return compact_result
             return str(compact_result or "")
+        if normalized_tool_name == "web_broker" or normalized_tool_name.startswith("web_"):
+            return cls._render_agent_visible_tool_surface_for_event(
+                tool_name=normalized_tool_name,
+                value=compact_result,
+                fallback=cls._extract_agent_visible_tool_result(output),
+            )
         return cls._extract_agent_visible_tool_result(output)
+
+    @classmethod
+    def _render_agent_visible_tool_surface_for_event(cls, *, tool_name: str, value: Any, fallback: str) -> str:
+        try:
+            from core.tool_surface import apply_tool_surface_budget
+
+            content = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            rendered = apply_tool_surface_budget(
+                ToolMessage(
+                    content=content,
+                    name=tool_name,
+                    tool_call_id=f"surface_{uuid.uuid4().hex}",
+                ),
+                {"agentVisibleBudget": 6000},
+                tool_name=tool_name,
+                surface="chat_runtime_event",
+            ).content
+            rendered_text = str(rendered or "").strip()
+            if rendered_text and not rendered_text.lstrip().startswith(("{", "[")):
+                return rendered_text
+        except Exception:
+            pass
+        return str(fallback or "")
 
     @classmethod
     def _extract_mcp_app_resource_uri_from_result(cls, value: Any) -> str:

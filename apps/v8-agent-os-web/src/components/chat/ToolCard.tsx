@@ -19,12 +19,40 @@ interface ToolCardProps {
     hideResult?: boolean;
 }
 
+function looksLikeRawStructuredOutput(value: unknown) {
+    if (value === null || value === undefined) {
+        return false;
+    }
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+    return typeof value === "object";
+}
+
+function buildReadableResult(toolInvocation: ToolInvocation) {
+    const result = 'result' in toolInvocation ? toolInvocation.result : null;
+    const surface = toolInvocation.clientSurface;
+    if (looksLikeRawStructuredOutput(result) && surface) {
+        const lines = [
+            surface.summary,
+            surface.progress ? `进度：${surface.progress}` : "",
+            surface.actionable ? `下一步：${surface.actionable}` : "",
+            surface.refIds.length ? `续读引用：${surface.refIds.join(", ")}` : "",
+        ].filter(Boolean);
+        if (lines.length) {
+            return lines.join("\n");
+        }
+    }
+    return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+}
+
 export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const { toolName, state } = toolInvocation;
     const isComplete = state === 'result';
-    const result = 'result' in toolInvocation ? toolInvocation.result : null;
     const args = 'args' in toolInvocation ? toolInvocation.args : {};
+    const readableResult = buildReadableResult(toolInvocation);
 
     return (
         <div className="group relative my-1 w-full">
@@ -136,7 +164,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                                         <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Agent 可见输出</div>
                                         <div className="custom-scrollbar max-h-56 overflow-x-auto rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20">
                                             <pre className="text-[11px] font-mono text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-all">
-                                                {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
+                                                {readableResult}
                                             </pre>
                                         </div>
                                     </motion.div>

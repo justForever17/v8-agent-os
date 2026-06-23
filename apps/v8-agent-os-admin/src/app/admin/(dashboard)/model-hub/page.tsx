@@ -97,7 +97,11 @@ type CatalogModel = {
     contextWindow?: number | null;
     maxTokens?: number | null;
     logoAsset?: string | null;
-    capabilities?: Record<string, boolean>;
+    capabilities?: Record<string, boolean> | string[];
+    mediaLimits?: Record<string, unknown>;
+    operationKinds?: string[];
+    sourceProviderId?: string;
+    sourceProviderName?: string;
 };
 type CatalogProvider = {
     id: string;
@@ -199,6 +203,23 @@ const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string;
     { id: "workflow", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.workflow", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.workflowHint", modelType: "WORKFLOW", modality: "workflow" },
     { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.model3d", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.model3dHint", modelType: "MODEL3D", modality: "model3d" },
 ];
+
+const MEDIA_ADAPTER_ROOT_PROVIDER_IDS: Record<string, string> = {
+    agnes_image: "agnes",
+    agnes_video: "agnes",
+    minimax_image: "minimax-cn",
+    minimax_video: "minimax-cn",
+    minimax_tts: "minimax-cn",
+    minimax_music: "minimax-cn",
+};
+const MEDIA_PURPOSE_MODEL_PREFIX: Partial<Record<CatalogPurpose, string>> = {
+    image: "image",
+    video: "video",
+    voice: "voice",
+    music: "music",
+    workflow: "workflow",
+    model3d: "model3d",
+};
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
 const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
@@ -340,6 +361,69 @@ function isXiaomiAnthropicBaseUrl(value: string | null | undefined) {
 
 function getCatalogPurposeConfig(purpose: CatalogPurpose) {
     return CATALOG_PURPOSES.find((item) => item.id === purpose) || CATALOG_PURPOSES[0];
+}
+
+function mediaRootProviderId(providerId: string | undefined) {
+    return MEDIA_ADAPTER_ROOT_PROVIDER_IDS[String(providerId || "")] || "";
+}
+
+function isFoldableMediaAdapterProvider(provider: Pick<CatalogProvider, "id" | "providerKind"> | Pick<AIProvider, "id" | "code">) {
+    const id = "code" in provider ? provider.code || provider.id : provider.id;
+    return Boolean(mediaRootProviderId(id));
+}
+
+function prefixedMediaCatalogModel(model: CatalogModel, sourceProvider: CatalogProvider, prefix: string): CatalogModel {
+    const providerModelId = model.modelId || model.id;
+    const displayModelId = providerModelId.includes("/") ? providerModelId : `${prefix}/${providerModelId}`;
+    return {
+        ...model,
+        id: displayModelId,
+        modelId: displayModelId,
+        mediaLimits: {
+            ...(model.mediaLimits || {}),
+            adapterProviderId: sourceProvider.id,
+            providerModelId,
+            displayModelId,
+        },
+        sourceProviderId: sourceProvider.id,
+        sourceProviderName: sourceProvider.name,
+    };
+}
+
+function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], purpose: CatalogPurpose): CatalogProvider[] {
+    if (purpose === "chat") {
+        return catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
+    }
+    const expected = getCatalogPurposeConfig(purpose).modality || purpose;
+    const prefix = MEDIA_PURPOSE_MODEL_PREFIX[purpose] || expected;
+    const providerById = new Map(catalogProviders.map((item) => [item.id, item]));
+    const projected = new Map<string, CatalogProvider>();
+    const direct = catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
+    for (const provider of direct) {
+        const rootId = mediaRootProviderId(provider.id);
+        if (!rootId) {
+            projected.set(provider.id, provider);
+            continue;
+        }
+        const rootProvider = providerById.get(rootId);
+        if (!rootProvider) {
+            projected.set(provider.id, provider);
+            continue;
+        }
+        const existing = projected.get(rootId);
+        const nextModels = (provider.models || []).map((model) => prefixedMediaCatalogModel(model, provider, prefix));
+        projected.set(rootId, {
+            ...rootProvider,
+            providerKind: rootProvider.providerKind || "chat",
+            mediaModality: expected,
+            models: [...(existing?.models || []), ...nextModels],
+        });
+    }
+    const customProviders = catalogProviders.filter((item) => item.isCustom && providerMatchesPurpose(item, purpose));
+    for (const provider of customProviders) {
+        projected.set(provider.id, provider);
+    }
+    return Array.from(projected.values());
 }
 
 function normalizeModelType(value: string | null | undefined) {
@@ -504,7 +588,11 @@ export default function ModelHubPage() {
     }, []);
     const controlModelsById = useMemo(() => new Map((hubEnvelope?.data.models || []).map((item) => [item.modelRef || item.id, item])), [hubEnvelope]);
     const providerOverviewById = useMemo(() => new Map((hubEnvelope?.data.providersOverview || []).map((item) => [item.providerId, item])), [hubEnvelope]);
-    const selectedCatalogProvider = useMemo(() => catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null, [catalogProviders, selectedCatalogProviderId]);
+    const apiCatalogProviders = useMemo(() => buildCatalogProvidersForPurpose(catalogProviders, catalogPurpose), [catalogProviders, catalogPurpose]);
+    const selectedCatalogProvider = useMemo(
+        () => apiCatalogProviders.find((item) => item.id === selectedCatalogProviderId) || catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null,
+        [apiCatalogProviders, catalogProviders, selectedCatalogProviderId],
+    );
     const catalogPurposeConfig = useMemo(() => getCatalogPurposeConfig(catalogPurpose), [catalogPurpose]);
     const selectedCatalogRuntime = useMemo(() => {
         if (catalogPurpose === "chat" && catalogRuntimeProtocol === "anthropic" && selectedCatalogProvider?.anthropicCompatible?.baseUrl) {
@@ -528,7 +616,13 @@ export default function ModelHubPage() {
         if (help.urlFrom === "baseUrl") return selectedCatalogProvider?.baseUrl || "";
         return help.url || "";
     }, [selectedCatalogProvider]);
-    const apiCatalogProviders = useMemo(() => catalogProviders.filter((item) => providerMatchesPurpose(item, catalogPurpose)), [catalogProviders, catalogPurpose]);
+    const visibleProviders = useMemo(() => {
+        const configuredProviderIds = new Set(providers.map((provider) => provider.code || provider.id));
+        return providers.filter((provider) => {
+            const rootId = mediaRootProviderId(provider.code || provider.id);
+            return !isFoldableMediaAdapterProvider(provider) || !configuredProviderIds.has(rootId);
+        });
+    }, [providers]);
     const visibleCatalogModels = useMemo(() => {
         const query = catalogModelFilter.trim().toLowerCase();
         if (!query) return catalogProbeModels.slice(0, 80);
@@ -757,6 +851,20 @@ export default function ModelHubPage() {
             });
             return;
         }
+        if (!isCustomProvider && isMediaPurpose && selectedCatalogProvider?.models?.length) {
+            const catalogModels = selectedCatalogProvider.models;
+            setProbedCatalogProviderId(selectedCatalogProvider.id);
+            setCatalogProbeModels(catalogModels);
+            setCatalogModelFilter("");
+            setSelectedCatalogModelId(catalogModels[0]?.modelId || catalogModels[0]?.id || "");
+            setManualModelEntryEnabled(false);
+            setCatalogProbeStatus({
+                ok: true,
+                message: t("app.admin.dashboard.model.hub.catalog.catalogLoaded", { count: catalogModels.length }),
+                source: "catalog",
+            });
+            return;
+        }
         if (!isCustomProvider && selectedCatalogProvider && (selectedCatalogProvider.auth?.type === "oauth_file" || selectedCatalogProvider.probeStrategy === "catalog_only")) {
             const catalogModels = Array.isArray(selectedCatalogProvider.models) ? selectedCatalogProvider.models : [];
             setProbedCatalogProviderId(selectedCatalogProvider.id);
@@ -851,7 +959,7 @@ export default function ModelHubPage() {
         if (!providerId || !modelId) return;
         setIsCatalogBusy(true);
         try {
-            const provider = catalogProviders.find((item) => item.id === providerId);
+            const provider = apiCatalogProviders.find((item) => item.id === providerId) || catalogProviders.find((item) => item.id === providerId);
             const isCustomProvider = providerId === "__custom__" || selectedCatalogProviderId === "__custom__";
             const baseUrl = isCustomProvider ? customProviderBaseUrl.trim() : selectedCatalogRuntime.baseUrl || provider?.baseUrl || "";
             const isMediaPurpose = catalogPurpose !== "chat";
@@ -1532,8 +1640,8 @@ export default function ModelHubPage() {
             </ConfigCard>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.kd0251a96")} description={t("app.admin.dashboard.model.hub.page.k79d4e8e7")} variant="list" allowOverflow>
-                {providers.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k8d04b4ed")} description={t("app.admin.dashboard.model.hub.page.k9e469730")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">
-                        {providers.map((provider) => (<ProviderCard key={provider.id} provider={provider} health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null} onEdit={() => {
+                {visibleProviders.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k8d04b4ed")} description={t("app.admin.dashboard.model.hub.page.k9e469730")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">
+                        {visibleProviders.map((provider) => (<ProviderCard key={provider.id} provider={provider} health={providerOverviewById.get(provider.code) || providerOverviewById.get(provider.id) || null} onEdit={() => {
                     const inferredPreset = inferPlatformLoginPreset({
                         providerType: provider.type,
                         apiStandard: provider.apiStandard,

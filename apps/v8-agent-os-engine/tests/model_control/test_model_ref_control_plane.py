@@ -197,6 +197,27 @@ def test_catalog_bridges_creative_media_provider_matrix():
     assert providers["minimax_image"]["models"][1]["id"] == "image-01-live"
 
 
+def test_root_provider_accepts_prefixed_media_model_ids():
+    agnes = model_provider_catalog.get_provider("agnes")
+    minimax_cn = model_provider_catalog.get_provider("minimax-cn")
+    assert agnes
+    assert minimax_cn
+
+    agnes_video = model_provider_catalog.normalize_model(agnes, "video/agnes-video-v2.0")
+    assert agnes_video["type"] == "VIDEO"
+    assert agnes_video["modelId"] == "video/agnes-video-v2.0"
+    assert agnes_video["mediaLimits"]["adapter"] == "agnes_video"
+    assert agnes_video["mediaLimits"]["adapterProviderId"] == "agnes_video"
+    assert agnes_video["mediaLimits"]["providerModelId"] == "agnes-video-v2.0"
+    assert "video.first_last_frame" in agnes_video["mediaLimits"]["operationKinds"]
+
+    minimax_music = model_provider_catalog.normalize_model(minimax_cn, "music/music-2.6")
+    assert minimax_music["type"] == "MUSIC"
+    assert minimax_music["mediaLimits"]["adapterProviderId"] == "minimax_music"
+    assert minimax_music["mediaLimits"]["providerModelId"] == "music-2.6"
+    assert "music.generate" in minimax_music["mediaLimits"]["operationKinds"]
+
+
 def test_catalog_only_probe_does_not_return_preset_models():
     result = model_provider_catalog.probe_provider("suno_placeholder", credential="")
 

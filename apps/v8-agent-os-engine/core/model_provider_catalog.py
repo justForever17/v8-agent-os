@@ -69,6 +69,17 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "tripo3d_placeholder": ["tripo3d-model"],
 }
 
+_MEDIA_ADAPTER_ROOT_PROVIDERS = {
+    "agnes_image": "agnes",
+    "agnes_video": "agnes",
+    "minimax_image": "minimax-cn",
+    "minimax_video": "minimax-cn",
+    "minimax_tts": "minimax-cn",
+    "minimax_music": "minimax-cn",
+}
+
+_MEDIA_MODEL_PREFIXES = {"image", "video", "voice", "music", "workflow", "model3d"}
+
 _VOICE_MODEL_TOKENS = {
     "tts",
     "speech",
@@ -557,6 +568,36 @@ class ModelProviderCatalog:
                 return dict(item)
         return {"id": model_id}
 
+    def _media_model_from_root_provider(self, provider_id: str, model_id: str) -> Dict[str, Any] | None:
+        if "/" not in model_id:
+            return None
+        prefix, actual_model_id = model_id.split("/", 1)
+        modality = _normalized_modality(prefix)
+        if modality not in _MEDIA_MODEL_PREFIXES or not actual_model_id:
+            return None
+        for media_provider in self._creative_media_matrix_providers():
+            media_provider_id = str(media_provider.get("id") or "")
+            if _MEDIA_ADAPTER_ROOT_PROVIDERS.get(media_provider_id) != provider_id:
+                continue
+            if _normalized_modality(media_provider.get("mediaModality")) != modality:
+                continue
+            for item in _as_list(media_provider.get("models")):
+                if str(item.get("id") or "") != actual_model_id:
+                    continue
+                model = dict(item)
+                media_limits = dict(model.get("mediaLimits") or {})
+                media_limits.setdefault("adapterProviderId", media_provider_id)
+                media_limits.setdefault("providerModelId", actual_model_id)
+                media_limits.setdefault("displayModelId", model_id)
+                model["id"] = model_id
+                model["modelId"] = model_id
+                model["adapter"] = media_limits.get("adapter") or media_provider.get("adapter") or model.get("adapter") or ""
+                model["mediaLimits"] = media_limits
+                model["sourceProviderId"] = media_provider_id
+                model["sourceProviderName"] = media_provider.get("name") or media_provider_id
+                return model
+        return None
+
     def _headers_for_probe(self, provider: Dict[str, Any], credential: str) -> Dict[str, str]:
         auth = dict(provider.get("auth") or {})
         headers: Dict[str, str] = {"Accept": "application/json"}
@@ -963,8 +1004,8 @@ class ModelProviderCatalog:
 
     def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         online_metadata = dict(online_metadata or {})
-        model = self._model_from_catalog(provider, model_id)
         provider_id = str(provider.get("id") or "").strip()
+        model = self._media_model_from_root_provider(provider_id, model_id) or self._model_from_catalog(provider, model_id)
         provider_kind = str(provider.get("providerKind") or "chat")
         registry_entry = model_capability_registry.find(model_id)
         explicit_provider_override = bool(

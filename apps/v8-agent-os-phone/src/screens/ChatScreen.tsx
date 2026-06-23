@@ -6492,15 +6492,17 @@ export default function ChatScreen() {
                                 }}
                                 onClose={() => setRightRailOpen(false)}
                             >
-                                <RuntimeDock
-                                    items={projection.runtimeStageModel.items}
-                                    selectedRuntimeId={projection.selectedRuntimeId}
-                                    panelOpen={runtimePanelOpen}
-                                    onSelectRuntime={(runtimeId) => {
-                                        setSelectedRuntimeId(runtimeId);
-                                        setRuntimePanelOpen(true);
-                                    }}
-                                />
+                                <View style={styles.rightEdgeRailContent}>
+                                    <RuntimeDock
+                                        items={projection.runtimeStageModel.items}
+                                        selectedRuntimeId={projection.selectedRuntimeId}
+                                        panelOpen={runtimePanelOpen}
+                                        onSelectRuntime={(runtimeId) => {
+                                            setSelectedRuntimeId(runtimeId);
+                                            setRuntimePanelOpen(true);
+                                        }}
+                                    />
+                                </View>
                             </EdgeActionRail>
                         </View>
                     </View>
@@ -6842,6 +6844,11 @@ const styles = StyleSheet.create({
         flex: 1,
         minWidth: 0,
         justifyContent: "center",
+    },
+    rightEdgeRailContent: {
+        height: 33,
+        width: 356,
+        alignSelf: "flex-end",
     },
     leftEdgeRailContent: {
         flexDirection: "row",

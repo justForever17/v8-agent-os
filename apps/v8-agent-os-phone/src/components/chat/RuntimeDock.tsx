@@ -281,8 +281,6 @@ const styles = StyleSheet.create({
         paddingHorizontal: 6,
         paddingVertical: 0,
         height: 33,
-        alignSelf: "center",
-        minWidth: 0,
         shadowColor: "#0F172A",
         shadowOpacity: 0,
         elevation: 0,

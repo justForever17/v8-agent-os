@@ -89,13 +89,18 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/engineering-lane",
                 icon: Code2,
                 description: "lib.admin.navigation.engineeringLaneDescription",
-                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
                 title: "lib.admin.navigation.k4a6c7a20",
                 href: "/admin/extensions",
                 icon: Blocks,
                 description: "lib.admin.navigation.kc841e62a",
+            },
+            {
+                title: "lib.admin.navigation.researchRuntimeTitle",
+                href: "/admin/research-runtime",
+                icon: Search,
+                description: "lib.admin.navigation.researchRuntimeDescription",
             },
             {
                 title: "lib.admin.navigation.k64a90628",
@@ -130,13 +135,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/creative-media",
                 icon: Sparkles,
                 description: "lib.admin.navigation.creativeMediaDescription",
-                badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
-            },
-            {
-                title: "lib.admin.navigation.researchRuntimeTitle",
-                href: "/admin/research-runtime",
-                icon: Search,
-                description: "lib.admin.navigation.researchRuntimeDescription",
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
         ],

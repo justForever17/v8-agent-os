@@ -143,7 +143,7 @@ def mcp_server_config(
     name: str = "",
     type: str = "",
     command: str = "",
-    args: Any = None,
+    command_args: Any = None,
     url: str = "",
     env: Any = None,
     headers: Any = None,
@@ -156,7 +156,7 @@ def mcp_server_config(
 
     Modes:
     - `mcp_install`: add or replace one MCP server. Required: `name`, `type`.
-      For `type='stdio'`, provide `command` and optional `args` / `env`.
+      For `type='stdio'`, provide `command` and optional `command_args` / `env`.
       For `type='http'` or `type='sse'`, provide `url` and optional `headers`.
     - `mcp_list`: list configured MCP servers without exposing secret values.
     - `mcp_remove`: remove one server by `name`.
@@ -184,7 +184,7 @@ def mcp_server_config(
                 name=name,
                 type=type,
                 command=command,
-                args=args,
+                args=command_args,
                 url=url,
                 env=env,
                 headers=headers,

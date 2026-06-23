@@ -294,6 +294,7 @@ class ToolCalibrationRecord:
     args: dict[str, Any] | None
     description: str
     output: str
+    client_surface: dict[str, Any]
     diagnostics: dict[str, Any]
     representative: bool
     representative_reason: str
@@ -402,6 +403,152 @@ def missing_invocation_names() -> list[str]:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _as_record(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _text_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return _json_dumps(value)
+
+
+def _compact_text(value: Any, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    return text if len(text) <= limit else f"{text[: max(1, limit - 3)].rstrip()}..."
+
+
+def _visible_lines(text: str) -> list[str]:
+    return [
+        line
+        for line in (line.strip() for line in str(text or "").splitlines())
+        if line and not re.match(r"^(```|---)$", line)
+    ]
+
+
+def _pick_line(text: str, patterns: list[re.Pattern[str]]) -> str:
+    lines = _visible_lines(text)
+    for pattern in patterns:
+        for line in lines:
+            if pattern.search(line):
+                return line
+    return lines[0] if lines else ""
+
+
+def _pick_record_text(record: dict[str, Any] | None, keys: list[str]) -> str:
+    if not record:
+        return ""
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _client_summary(result: Any) -> str:
+    if isinstance(result, str):
+        return _compact_text(
+            _pick_line(
+                result,
+                [
+                    re.compile(
+                        r"^(摘要|结果|答案|关键发现|正文内容|输出|状态|风险|限制|下一步|Summary|Result|Answer|Key findings|Content|Output|Status|Risk|Limitations|Next)[:：]",
+                        re.IGNORECASE,
+                    )
+                ],
+            )
+        )
+    record = _as_record(result)
+    picked = _pick_record_text(record, ["summary", "message", "statusMessage", "answer", "result", "error", "status"])
+    if picked:
+        return _compact_text(picked)
+    fallback = _text_value(result)
+    if fallback.startswith("{") or fallback.startswith("["):
+        return ""
+    return _compact_text(fallback)
+
+
+def _client_actionable(result_text: str, record: dict[str, Any] | None) -> str | None:
+    direct = _pick_record_text(record, ["recommendedNextAction", "nextAction", "actionable"])
+    if direct:
+        return _compact_text(direct, 160)
+    line = _pick_line(result_text, [re.compile(r"^(下一步|Next|Action)[:：]", re.IGNORECASE)])
+    return _compact_text(line, 160) if line else None
+
+
+def _client_progress(record: dict[str, Any] | None) -> str | None:
+    if not record:
+        return None
+    progress = record.get("progress")
+    if isinstance(progress, str) and progress.strip():
+        return _compact_text(progress, 80)
+    completed = record.get("completed", record.get("done", record.get("completedCount")))
+    total = record.get("total", record.get("totalCount", record.get("targetCount")))
+    if completed is not None and total is not None:
+        return f"{completed}/{total}"
+    return None
+
+
+def _client_ref_ids(result_text: str, max_refs: int = 4) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    patterns = [
+        re.compile(
+            r"['\"]?\b(?:rawRef|detailRef|sectionRef|skillRef|relativeFileRef|memoryRef|answerPackRef|chunkRef|fileRef|episodeId|handoffId|jobId|artifactId)\b['\"]?\s*[:=]\s*['\"]?([^\"'`,\s，)）\]}]+)",
+            re.IGNORECASE,
+        ),
+        re.compile(r"\btoolobs://[^\"'`,\s，)）\]}]+", re.IGNORECASE),
+    ]
+    for pattern in patterns:
+        for match in pattern.finditer(result_text):
+            value = match.group(1) if match.groups() else match.group(0)
+            if value and value not in seen:
+                refs.append(value)
+                seen.add(value)
+            if len(refs) >= max_refs:
+                return refs
+    return refs
+
+
+def _client_status(state: str, result_text: str, record: dict[str, Any] | None) -> str:
+    status_text = str((record or {}).get("status") or (record or {}).get("state") or "").lower()
+    combined = f"{status_text}\n{result_text[:2000]}".lower()
+    if re.search(r"(blocked|safety_blocked|拒绝|阻断)", combined):
+        return "blocked"
+    if re.search(r"(failed|failure|error|exception|失败|错误)", combined):
+        return "failed"
+    if re.search(r"(waiting|approval|ask_user|等待|审批)", combined):
+        return "waiting"
+    if state in {"result", "completed", "invoked"}:
+        return "completed"
+    if state in {"call", "running"}:
+        return "running"
+    return "unknown"
+
+
+def build_client_tool_surface(tool_name: str, result: Any, *, state: str = "result") -> dict[str, Any]:
+    result_text = _text_value(result)
+    record = _as_record(result)
+    return {
+        "title": str(tool_name or "tool").strip() or "tool",
+        "status": _client_status(state, result_text, record),
+        "summary": _client_summary(result),
+        "progress": _client_progress(record),
+        "actionable": _client_actionable(result_text, record),
+        "refIds": _client_ref_ids(result_text),
+    }
 
 
 def _message_content(message: Any) -> str | None:
@@ -571,12 +718,14 @@ def _make_record(
     surface_visibility: dict[str, Any] | None = None,
 ) -> ToolCalibrationRecord:
     diagnostics = analyze_output(output)
+    client_surface = build_client_tool_surface(name, output, state="result")
     return ToolCalibrationRecord(
         name=name,
         status=status,
         args=args,
         description=description,
         output=output,
+        client_surface=client_surface,
         diagnostics=diagnostics,
         representative=representative,
         representative_reason=representative_reason,
@@ -955,6 +1104,7 @@ def render_tool_markdown(record: ToolCalibrationRecord, *, generated_at: str) ->
         "toolFamily": surface_visibility.get("toolFamily"),
         "rawRefPolicy": surface_visibility.get("rawRefPolicy"),
         "agentVisibleBudget": surface_visibility.get("agentVisibleBudget"),
+        "clientSurface": record.client_surface,
         "diagnostics": record.diagnostics,
     }
     parts = [
@@ -968,6 +1118,10 @@ def render_tool_markdown(record: ToolCalibrationRecord, *, generated_at: str) ->
         "",
         record.description or "(no description)",
         "",
+        "## Client-Visible Surface",
+        "",
+        _markdown_code(_json_dumps(record.client_surface), language="json"),
+        "",
         "## Agent-Visible Output",
         "",
         _markdown_code(record.output),
@@ -978,6 +1132,72 @@ def render_tool_markdown(record: ToolCalibrationRecord, *, generated_at: str) ->
 
 def _same_path(left: Path, right: Path) -> bool:
     return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+
+
+def _excerpt(text: str, limit: int = 2400) -> str:
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    head = max(1, int(limit * 0.62))
+    tail = max(1, limit - head - 120)
+    return (
+        text[:head].rstrip()
+        + f"\n\n...[{len(text) - head - tail} chars omitted in top-10 report; see per-tool file for full output]...\n\n"
+        + text[-tail:].lstrip()
+    )
+
+
+def render_top_giant_outputs_markdown(records: list[ToolCalibrationRecord], *, generated_at: str) -> str:
+    top_records = sorted(records, key=lambda record: int(record.visible_chars or 0), reverse=True)[:10]
+    rows = [
+        "| Rank | Tool | Status | Agent chars | Client summary | Dirty |",
+        "|---:|---|---|---:|---|---|",
+    ]
+    for rank, record in enumerate(top_records, start=1):
+        dirty = ", ".join(record.diagnostics.get("dirtySignals") or [])
+        if record.diagnostics.get("jsonLikeVisible"):
+            dirty = f"{dirty}, jsonLikeVisible".strip(", ")
+        rows.append(
+            "| {rank} | `{name}` | {status} | {chars} | {summary} | {dirty} |".format(
+                rank=rank,
+                name=record.name,
+                status=record.status,
+                chars=record.visible_chars,
+                summary=_compact_text(record.client_surface.get("summary"), 120).replace("|", "\\|") or "(empty)",
+                dirty=dirty.replace("|", "\\|") or "-",
+            )
+        )
+    parts = [
+        "# Top 10 Giant Tool Outputs",
+        "",
+        f"Generated at: `{generated_at}`",
+        "",
+        "This report ranks tools by agent-visible output size. Client-visible surface should stay short; runtime-only JSON remains in raw/detail surfaces.",
+        "",
+        *rows,
+        "",
+    ]
+    for rank, record in enumerate(top_records, start=1):
+        parts.extend(
+            [
+                f"## {rank}. {record.name}",
+                "",
+                f"- Status: `{record.status}`",
+                f"- Agent-visible chars: `{record.visible_chars}`",
+                f"- Raw chars estimate: `{record.raw_chars}`",
+                f"- Representative: `{record.representative}` — {record.representative_reason}",
+                "",
+                "### Client-Visible Surface",
+                "",
+                _markdown_code(_json_dumps(record.client_surface), language="json"),
+                "",
+                "### Agent-Visible Output Excerpt",
+                "",
+                _markdown_code(_excerpt(record.output)),
+                "",
+            ]
+        )
+    return "\n".join(parts)
 
 
 def _prepare_output_dir(output_dir: Path, *, allow_non_default_output: bool) -> Path:
@@ -1021,6 +1241,10 @@ def export_records(
             render_tool_markdown(record, generated_at=generated_at),
             encoding="utf-8",
         )
+    (resolved_output_dir / "_top10_giant_tool_outputs.md").write_text(
+        render_top_giant_outputs_markdown(records, generated_at=generated_at),
+        encoding="utf-8",
+    )
 
     index: dict[str, Any] = {
         "generatedAt": generated_at,
@@ -1045,6 +1269,7 @@ def export_records(
         "dirtySignalCounts": {},
         "jsonLikeVisibleCount": 0,
         "topVisibleChars": [],
+        "topGiantReport": "_top10_giant_tool_outputs.md",
         "surfaceTopVisibleChars": {},
         "topRegressions": [],
         "unrepresentativeTools": [],
@@ -1079,6 +1304,10 @@ def export_records(
                 "representativeReason": record.representative_reason,
                 "rawChars": record.raw_chars,
                 "visibleChars": record.visible_chars,
+                "clientSurface": record.client_surface,
+                "clientSummary": record.client_surface.get("summary"),
+                "clientStatus": record.client_surface.get("status"),
+                "clientRefIds": record.client_surface.get("refIds") or [],
                 "previousVisibleChars": previous_visible_chars,
                 "reductionPercent": reduction_percent,
                 "truncatedByToolNode": record.truncated_by_tool_node,
@@ -1194,6 +1423,10 @@ def _dirty_invoked_records(records: list[ToolCalibrationRecord]) -> list[ToolCal
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     args = parse_args()
     missing = missing_invocation_names()
     if missing:

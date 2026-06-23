@@ -35,6 +35,7 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     assert index["toolCount"] == len(native_tools_dry_run.native_tool_names_to_export())
     assert index["agentVisible"] is True
     assert (tmp_path / "_index.json").exists()
+    assert (tmp_path / "_top10_giant_tool_outputs.md").exists()
     assert (tmp_path / "run_system_command.md").exists()
     assert not (tmp_path / "ask_user.md").exists()
 
@@ -43,8 +44,11 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     assert {"rawChars", "visibleChars", "truncatedByToolNode", "dirtySignals", "scenarioName"} <= set(
         loaded_index["tools"][0]
     )
+    assert {"clientSurface", "clientSummary", "clientStatus", "clientRefIds"} <= set(loaded_index["tools"][0])
+    assert loaded_index["topGiantReport"] == "_top10_giant_tool_outputs.md"
     by_name = {item["name"]: item for item in loaded_index["tools"]}
     assert by_name["runtime_broker"]["toolFamily"] == "runtime"
+    assert by_name["runtime_broker"]["clientSurface"]["title"] == "runtime_broker"
 
 
 def test_native_tools_dry_run_detail_scenario_is_representative(tmp_path, monkeypatch) -> None:
@@ -87,6 +91,49 @@ def test_fail_on_dirty_includes_json_like_agent_visible_output() -> None:
     )
 
     assert native_tools_dry_run._dirty_invoked_records([record]) == [record]
+
+
+def test_client_surface_extracts_text_summary_without_runtime_json() -> None:
+    record = native_tools_dry_run._make_record(
+        name="web_broker",
+        status="invoked",
+        args={},
+        description="calibration",
+        output=(
+            "Web broker (search)\n"
+            "Summary: Found two useful sources.\n"
+            "Sources:\n"
+            "- Official docs — https://example.com/docs\n"
+            "Next: read the official docs first.\n"
+            "Raw ref: toolobs://abc"
+        ),
+        representative=True,
+        representative_reason="test",
+        scenario_name="test",
+    )
+
+    assert record.client_surface["summary"] == "Summary: Found two useful sources."
+    assert record.client_surface["actionable"] == "Next: read the official docs first."
+    assert record.client_surface["refIds"] == ["toolobs://abc"]
+
+
+def test_client_surface_ref_ids_trim_wrapping_punctuation() -> None:
+    record = native_tools_dry_run._make_record(
+        name="research_broker",
+        status="invoked",
+        args={},
+        description="calibration",
+        output=(
+            "Research plan\n"
+            "Detail: tool_observation_detail(raw_ref='toolobs://toolobs_clean_ref')\n"
+            "Raw: toolobs://toolobs_clean_ref\n"
+        ),
+        representative=True,
+        representative_reason="test",
+        scenario_name="test",
+    )
+
+    assert record.client_surface["refIds"] == ["toolobs://toolobs_clean_ref"]
 
 
 def test_command_embedded_tool_messages_are_truncated() -> None:

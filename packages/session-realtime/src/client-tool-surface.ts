@@ -87,7 +87,7 @@ function extractSummary(result: unknown): string {
     if (typeof result === "string") {
         return compactText(
             pickLine(result, [
-                /^(结果|答案|关键发现|正文内容|输出|状态|风险|限制|下一步|Result|Answer|Key findings|Content|Output|Status|Risk|Limitations|Next)[:：]/i,
+                /^(摘要|结果|答案|关键发现|正文内容|输出|状态|风险|限制|下一步|Summary|Result|Answer|Key findings|Content|Output|Status|Risk|Limitations|Next)[:：]/i,
             ]),
         );
     }
@@ -139,8 +139,8 @@ function extractProgress(record: Record<string, unknown> | null): string | undef
 export function extractClientToolRefIds(resultText: string, maxRefs = 4): string[] {
     const refs = new Set<string>();
     const patterns = [
-        /["']?\b(?:rawRef|detailRef|sectionRef|skillRef|relativeFileRef|memoryRef|answerPackRef|chunkRef|fileRef|episodeId|handoffId|jobId|artifactId)\b["']?\s*[:=]\s*["']?([^"',\s，)）\]]+)/gi,
-        /\btoolobs:\/\/[^\s,，)）\]]+/gi,
+        /["']?\b(?:rawRef|detailRef|sectionRef|skillRef|relativeFileRef|memoryRef|answerPackRef|chunkRef|fileRef|episodeId|handoffId|jobId|artifactId)\b["']?\s*[:=]\s*["']?([^"'`,\s，)）\]}]+)/gi,
+        /\btoolobs:\/\/[^"'`,\s，)）\]}]+/gi,
     ];
     for (const pattern of patterns) {
         for (const match of resultText.matchAll(pattern)) {

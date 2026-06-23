@@ -43,7 +43,7 @@ def test_mcp_server_config_install_list_remove(monkeypatch) -> None:
         name="demo",
         type="stdio",
         command="npx",
-        args=["-y", "@demo/server"],
+        command_args=["-y", "@demo/server"],
         env={"API_KEY": "secret-value"},
     )
 

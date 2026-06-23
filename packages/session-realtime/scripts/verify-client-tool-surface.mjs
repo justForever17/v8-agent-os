@@ -21,6 +21,7 @@ const researchSurface = buildClientToolSurface({
 assert(researchSurface.status === "completed", "completed result should be completed");
 assert(researchSurface.summary.includes("答案：优先使用官方文档"), "should pick answer line");
 assert(researchSurface.refIds.includes("toolobs://research/abc123"), "should extract rawRef URI");
+assert(!researchSurface.refIds.some((ref) => ref.includes("'")), "rawRef URI should not include wrapping quotes");
 
 const blockedSurface = buildClientToolSurface({
   toolName: "write_native_file",

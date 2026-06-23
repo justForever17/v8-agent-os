@@ -1,3 +1,5 @@
+import inspect
+
 from core.audio.audio_config import _normalize_audio_config
 from core.audio.stt_provider import CustomSTTProvider, ModelRefSTTProvider, STTManager
 from core.audio.tts_provider import (
@@ -6,6 +8,7 @@ from core.audio.tts_provider import (
     TTSManager,
     _decode_audio_value,
     _extract_json_path,
+    _model_ref_tts_provider_from_config,
 )
 
 
@@ -175,6 +178,55 @@ def test_model_ref_audio_providers_are_explicit_not_mock(monkeypatch):
 
     assert isinstance(STTManager.get_provider(), ModelRefSTTProvider)
     assert isinstance(TTSManager.get_provider(), ModelRefTTSProvider)
+
+
+def test_model_ref_minimax_tts_resolves_to_system_tts_provider():
+    provider = _model_ref_tts_provider_from_config(
+        model_ref="minimax-cn::t2a_v2%2Fspeech-2.8-hd",
+        voice="female-shaonv",
+        audio_format="mp3",
+        config={
+            "providers": {
+                "minimax-cn": {
+                    "provider": {
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "t2a_v2/speech-2.8-hd": {
+                            "modelType": "VOICE",
+                            "parameterProfile": "minimax_tts",
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_tts",
+                                "apiStandard": "minimax_tts",
+                                "providerModelId": "speech-2.8-hd",
+                                "operationKinds": ["voice.tts"],
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    assert isinstance(provider, CustomTTSProvider)
+    assert provider.endpoint == "https://api.minimaxi.com/v1/t2a_v2"
+    assert provider.protocol == "minimax_t2a_v2"
+    assert provider.model == "speech-2.8-hd"
+    assert provider.voice == "female-shaonv"
+    assert provider.audio_format == "mp3"
+
+
+def test_model_ref_tts_stream_is_async_generator():
+    provider = ModelRefTTSProvider(
+        "minimax-cn::t2a_v2%2Fspeech-2.8-hd",
+        voice="female-shaonv",
+        audio_format="mp3",
+    )
+
+    stream = provider.synthesize_stream("你好")
+
+    assert inspect.isasyncgen(stream)
 
 
 def test_minimax_tts_protocol_builds_official_payload_and_decodes_audio():

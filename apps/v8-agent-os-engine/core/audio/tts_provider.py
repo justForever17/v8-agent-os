@@ -4,6 +4,8 @@ import json
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
 
+from core.model_ref import parse_model_ref
+
 from .audio_config import AudioConfigManager
 
 class TTSProvider(ABC):
@@ -196,15 +198,88 @@ class MockTTSProvider(TTSProvider):
         yield b""
 
 class ModelRefTTSProvider(TTSProvider):
-    def __init__(self, model_ref: str = ""):
+    def __init__(self, model_ref: str = "", voice: str = "", audio_format: str = "mp3", speed: str = ""):
         self.model_ref = model_ref
+        self.voice = voice
+        self.audio_format = audio_format or "mp3"
+        self.speed = speed or ""
 
     async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
-        target = self.model_ref or "未选择模型"
-        raise RuntimeError(
-            f"TTS 已配置为使用已配置模型替代（{target}），但当前音频模型合成适配器尚未启用。"
-            "请改用 Edge TTS / 自建 TTS API，或补齐 model_ref TTS 适配器。"
+        provider = _model_ref_tts_provider_from_config(
+            model_ref=self.model_ref,
+            voice=self.voice,
+            audio_format=self.audio_format,
+            speed=self.speed,
         )
+        async for chunk in provider.synthesize_stream(text):
+            yield chunk
+
+
+def _model_ref_tts_provider_from_config(
+    *,
+    model_ref: str,
+    voice: str = "",
+    audio_format: str = "mp3",
+    speed: str = "",
+    config: dict | None = None,
+) -> TTSProvider:
+    parsed = parse_model_ref(model_ref)
+    if not parsed:
+        target = model_ref or "未选择模型"
+        raise RuntimeError(f"TTS model_ref 无效：{target}")
+    provider_id, model_id = parsed
+    if config is None:
+        from core.model_control_plane import model_control_plane
+
+        config = model_control_plane.get_config()
+    provider_entry = ((config or {}).get("providers") or {}).get(provider_id) or {}
+    provider_meta = provider_entry.get("provider") or {}
+    model_entry = (provider_entry.get("models") or {}).get(model_id) or {}
+    if not provider_entry or not model_entry:
+        raise RuntimeError(f"TTS model_ref 未在 Model Hub 中找到：{model_ref}")
+
+    base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").strip().rstrip("/")
+    api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+    media_limits = model_entry.get("mediaLimits") or {}
+    adapter_provider_id = str(media_limits.get("adapterProviderId") or "").strip()
+    api_standard = str(media_limits.get("apiStandard") or "").strip()
+    parameter_profile = str(model_entry.get("parameterProfile") or "").strip()
+    provider_model_id = str(media_limits.get("providerModelId") or "").strip() or model_id.rsplit("/", 1)[-1]
+
+    if adapter_provider_id == "minimax_tts" or api_standard == "minimax_tts" or parameter_profile == "minimax_tts":
+        if not base_url:
+            raise RuntimeError("MiniMax TTS 模型缺少 baseURL，无法合成语音。")
+        path_prefix = model_id.rsplit("/", 1)[0] if "/" in model_id else "t2a_v2"
+        endpoint = f"{base_url}/{path_prefix.strip('/')}"
+        return CustomTTSProvider(
+            endpoint=endpoint,
+            api_key=api_key,
+            voice=voice,
+            protocol="minimax_t2a_v2",
+            model=provider_model_id,
+            audio_format=audio_format or "mp3",
+            speed=speed,
+            response_audio_path="data.audio",
+        )
+
+    if adapter_provider_id == "openai_tts" or api_standard in {"openai_speech", "openai_audio_speech"}:
+        if not base_url:
+            raise RuntimeError("OpenAI-compatible TTS 模型缺少 baseURL，无法合成语音。")
+        endpoint = base_url if base_url.endswith("/audio/speech") else f"{base_url}/audio/speech"
+        return CustomTTSProvider(
+            endpoint=endpoint,
+            api_key=api_key,
+            voice=voice,
+            protocol="openai_speech",
+            model=provider_model_id,
+            audio_format=audio_format or "mp3",
+            speed=speed,
+        )
+
+    raise RuntimeError(
+        f"TTS 已配置为使用已配置模型替代（{model_ref}），但该模型没有可用的系统 TTS 适配器。"
+        "请改用 Edge TTS / 自建 TTS API，或选择 MiniMax/OpenAI-compatible TTS 模型。"
+    )
 
 class TTSManager:
     @staticmethod
@@ -236,7 +311,13 @@ class TTSManager:
                     headers=cust_conf.get("headers"),
                 )
         elif active == "model_ref":
-            model_ref = (tts_conf.get("model_ref") or {}).get("modelRef") or ""
-            return ModelRefTTSProvider(str(model_ref))
+            model_ref_conf = tts_conf.get("model_ref") or {}
+            model_ref = model_ref_conf.get("modelRef") or ""
+            return ModelRefTTSProvider(
+                str(model_ref),
+                voice=str(model_ref_conf.get("voice") or ""),
+                audio_format=str(model_ref_conf.get("format") or "mp3"),
+                speed=str(model_ref_conf.get("speed") or ""),
+            )
         
         return MockTTSProvider()

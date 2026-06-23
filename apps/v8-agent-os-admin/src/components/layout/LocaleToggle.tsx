@@ -16,36 +16,32 @@ import { cn } from "@/lib/utils";
 
 function CNFlag() {
     return (
-        <svg viewBox="0 0 30 20" className="h-3.5 w-5 rounded-sm shadow-sm overflow-hidden flex-shrink-0 border border-slate-200/10">
-            <rect width="30" height="20" fill="#de2110" />
-            <polygon points="3,2 4,5 1,3 5,3 2,5" fill="#f8e31b" transform="translate(1.5, 3) scale(0.6)" />
-            <polygon points="3,2 4,5 1,3 5,3 2,5" fill="#f8e31b" transform="translate(7.5, 1.5) rotate(30) scale(0.18)" />
-            <polygon points="3,2 4,5 1,3 5,3 2,5" fill="#f8e31b" transform="translate(9, 3.5) rotate(45) scale(0.18)" />
-            <polygon points="3,2 4,5 1,3 5,3 2,5" fill="#f8e31b" transform="translate(9, 6.5) rotate(0) scale(0.18)" />
-            <polygon points="3,2 4,5 1,3 5,3 2,5" fill="#f8e31b" transform="translate(7.5, 8.5) rotate(30) scale(0.18)" />
+        <svg id="flag-icons-cn" viewBox="0 0 640 480" className="h-3.5 w-5 rounded-sm shadow-sm overflow-hidden flex-shrink-0 border border-slate-200/10">
+            <defs>
+                <path id="cn-a" fill="#ff0" d="M-.6.8 0-1 .6.8-1-.3h2z"/>
+            </defs>
+            <path fill="#ee1c25" d="M0 0h640v480H0z"/>
+            <use xlinkHref="#cn-a" width="30" height="20" transform="matrix(71.9991 0 0 72 120 120)"/>
+            <use xlinkHref="#cn-a" width="30" height="20" transform="matrix(-12.33562 -20.5871 20.58684 -12.33577 240.3 48)"/>
+            <use xlinkHref="#cn-a" width="30" height="20" transform="matrix(-3.38573 -23.75998 23.75968 -3.38578 288 95.8)"/>
+            <use xlinkHref="#cn-a" width="30" height="20" transform="matrix(6.5991 -23.0749 23.0746 6.59919 288 168)"/>
+            <use xlinkHref="#cn-a" width="30" height="20" transform="matrix(14.9991 -18.73557 18.73533 14.99929 240 216)"/>
         </svg>
     );
 }
 
 function USFlag() {
     return (
-        <svg viewBox="0 0 7410 3900" className="h-3.5 w-5 rounded-sm shadow-sm overflow-hidden flex-shrink-0 border border-slate-200/10">
-            <rect width="7410" height="3900" fill="#b22234" />
-            <path d="M0,300H7410M0,900H7410M0,1500H7410M0,2100H7410M0,2700H7410M0,3300H7410" stroke="#fff" strokeWidth="300" />
-            <rect width="2964" height="2100" fill="#3c3b6e" />
-            <g fill="#fff">
-                <circle cx="247" cy="175" r="45"/><circle cx="741" cy="175" r="45"/><circle cx="1235" cy="175" r="45"/><circle cx="1729" cy="175" r="45"/><circle cx="2223" cy="175" r="45"/><circle cx="2717" cy="175" r="45"/>
-                <circle cx="494" cy="350" r="45"/><circle cx="988" cy="350" r="45"/><circle cx="1482" cy="350" r="45"/><circle cx="1976" cy="350" r="45"/><circle cx="2470" cy="350" r="45"/>
-                <circle cx="247" cy="525" r="45"/><circle cx="741" cy="525" r="45"/><circle cx="1235" cy="525" r="45"/><circle cx="1729" cy="525" r="45"/><circle cx="2223" cy="525" r="45"/><circle cx="2717" cy="525" r="45"/>
-                <circle cx="494" cy="700" r="45"/><circle cx="988" cy="700" r="45"/><circle cx="1482" cy="700" r="45"/><circle cx="1976" cy="700" r="45"/><circle cx="2470" cy="700" r="45"/>
-                <circle cx="247" cy="875" r="45"/><circle cx="741" cy="875" r="45"/><circle cx="1235" cy="875" r="45"/><circle cx="1729" cy="875" r="45"/><circle cx="2223" cy="875" r="45"/><circle cx="2717" cy="875" r="45"/>
-                <circle cx="494" cy="1050" r="45"/><circle cx="988" cy="1050" r="45"/><circle cx="1482" cy="1050" r="45"/><circle cx="1976" cy="1050" r="45"/><circle cx="2470" cy="1050" r="45"/>
-                <circle cx="247" cy="1225" r="45"/><circle cx="741" cy="1225" r="45"/><circle cx="1235" cy="1225" r="45"/><circle cx="1729" cy="1225" r="45"/><circle cx="2223" cy="1225" r="45"/><circle cx="2717" cy="1225" r="45"/>
-                <circle cx="494" cy="1400" r="45"/><circle cx="988" cy="1400" r="45"/><circle cx="1482" cy="1400" r="45"/><circle cx="1976" cy="1400" r="45"/><circle cx="2470" cy="1400" r="45"/>
-                <circle cx="247" cy="1575" r="45"/><circle cx="741" cy="1575" r="45"/><circle cx="1235" cy="1575" r="45"/><circle cx="1729" cy="1575" r="45"/><circle cx="2223" cy="1575" r="45"/><circle cx="2717" cy="1575" r="45"/>
-                <circle cx="494" cy="1750" r="45"/><circle cx="988" cy="1750" r="45"/><circle cx="1482" cy="1750" r="45"/><circle cx="1976" cy="1750" r="45"/><circle cx="2470" cy="1750" r="45"/>
-                <circle cx="247" cy="1925" r="45"/><circle cx="741" cy="1925" r="45"/><circle cx="1235" cy="1925" r="45"/><circle cx="1729" cy="1925" r="45"/><circle cx="2223" cy="1925" r="45"/><circle cx="2717" cy="1925" r="45"/>
-            </g>
+        <svg id="flag-icons-us" viewBox="0 0 640 480" className="h-3.5 w-5 rounded-sm shadow-sm overflow-hidden flex-shrink-0 border border-slate-200/10">
+            <path fill="#bd3d44" d="M0 0h640v480H0"/>
+            <path stroke="#fff" strokeWidth="37" d="M0 55.3h640M0 129h640M0 203h640M0 277h640M0 351h640M0 425h640"/>
+            <path fill="#192f5d" d="M0 0h364.8v258.5H0"/>
+            <defs>
+                <marker id="us-a" markerHeight="30" markerWidth="30">
+                    <path fill="#fff" d="m14 0 9 27L0 10h28L5 27z"/>
+                </marker>
+            </defs>
+            <path fill="none" markerMid="url(#us-a)" d="m0 0 16 11h61 61 61 61 60L47 37h61 61 60 61L16 63h61 61 61 61 60L47 89h61 61 60 61L16 115h61 61 61 61 60L47 141h61 61 60 61L16 166h61 61 61 61 60L47 192h61 61 60 61L16 218h61 61 61 61 60z"/>
         </svg>
     );
 }

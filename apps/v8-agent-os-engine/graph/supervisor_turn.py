@@ -694,14 +694,57 @@ def _runtime_episode_recoverable_failure(state) -> bool:
     return mode == "runtime_episode" and next_action == "recoverable_failure" and bool(dispatch_state)
 
 
+def _runtime_handoff_requires_continuation(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    route_context = state.get("current_route_context")
+    if not isinstance(route_context, dict):
+        return False
+    for handoff in list(route_context.get("handoffRefs") or []):
+        if not isinstance(handoff, dict):
+            continue
+        if bool(handoff.get("requiresContinuation")):
+            return True
+        stage = str(handoff.get("handoffStage") or "").strip().lower()
+        artifact_refs = handoff.get("artifactRefs") if isinstance(handoff.get("artifactRefs"), list) else []
+        if stage in {"planned", "compiled"} and not artifact_refs:
+            return True
+    return False
+
+
+def _runtime_handoff_continuation_message(state) -> HumanMessage:
+    route_context = dict((state or {}).get("current_route_context") or {})
+    handoffs = [dict(item) for item in list(route_context.get("handoffRefs") or []) if isinstance(item, dict)]
+    next_actions = [
+        str(item.get("recommendedNextAction") or "").strip()
+        for item in handoffs
+        if str(item.get("recommendedNextAction") or "").strip()
+    ]
+    next_action = next_actions[0] if next_actions else (
+        "Use the granted runtime tools to produce the requested artifacts, then verify and deliver their refs."
+    )
+    return HumanMessage(
+        content=(
+            "[Runtime Intermediate Handoff]\n"
+            "The runtime returned a compiled recipe/work order, not the user's final deliverable. "
+            "Do not stop or claim completion yet. Continue the same user task with the currently granted runtime tools.\n"
+            f"Next action: {next_action}\n"
+            "For Creative Media, create each required image/video/voice job, poll queued jobs, and pass real artifact refs "
+            "to Engineering for integration. Provider task IDs or recipe IDs alone are not delivery evidence."
+        )
+    )
+
+
 def _runtime_handoff_final_message() -> HumanMessage:
     return HumanMessage(
         content=(
-            "[Runtime Completion Instruction]\n"
-            "Runtime episodes are terminal and their typed handoffs are already available in the conversation. "
-            "Now produce one concise user-facing completion/status summary and then stop. "
-            "Do not call tools, do not grant/list/route runtimes, do not inspect files, and do not start new research "
-            "unless the user sends a new request."
+            "[Runtime Handoff Review Advisory]\n"
+            "Runtime episodes are terminal and their typed handoffs are available as execution evidence. "
+            "You are the delivery owner: inspect the returned artifacts, proof, warnings, and acceptance results, "
+            "then decide whether the user's request is ready to deliver. "
+            "If the evidence is sufficient, give the user a concise verified result. If it is incomplete or inconsistent, "
+            "use the available detail, verification, repair, or runtime tools before delivering. "
+            "Do not treat a ready handoff, provider task ID, or worker success sentence as proof by itself."
         )
     )
 
@@ -716,9 +759,9 @@ def _runtime_handoff_final_text(state) -> str:
     ]
     state_label = str(dispatch_status.get("state") or "").strip()
     heading = (
-        "运行时链路已降级回流，当前可见结果如下："
+        "运行时链路已降级回流，等待 Supervisor 验收，当前可见结果如下："
         if state_label == "degraded_handoff_ready"
-        else "运行时链路已经完成并回流，当前可见结果如下："
+        else "运行时结果已经回流，等待 Supervisor 验收，当前可见结果如下："
     )
     lines = [heading]
     for handoff in handoffs[:8]:
@@ -735,7 +778,7 @@ def _runtime_handoff_final_text(state) -> str:
     if not handoffs:
         episode_count = int(dispatch_status.get("episodeCount") or 0)
         lines.append(f"- runtime_episode: {episode_count} 个 episode 已进入终态，但没有可展示 handoff 引用。")
-    lines.append("我会基于这些 runtime 结果完成本轮收口；不会绕过 runtime 直接执行受管控的文件或命令操作。")
+    lines.append("这些 handoff 是验收证据，不是自动交付结论；Supervisor 仍需决定继续验证、修复或向用户交付。")
     return "\n".join(lines)
 
 
@@ -861,10 +904,8 @@ def execute_supervisor_turn(
             route_context=dict(state.get("current_route_context") or {}),
         )
         visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
-        if _runtime_episode_handoff_ready(state):
-            response = _runtime_handoff_final_response(state)
-            extensions_runtime_service.emit_execution_completed(response=response)
-            return response
+        runtime_handoff_ready = _runtime_episode_handoff_ready(state)
+        runtime_handoff_needs_continuation = runtime_handoff_ready and _runtime_handoff_requires_continuation(state)
         if _runtime_episode_recoverable_failure(state):
             response = _runtime_recoverable_failure_final_response(state)
             extensions_runtime_service.emit_execution_completed(response=response)
@@ -1035,8 +1076,9 @@ def execute_supervisor_turn(
             prepared_messages.append(spec_guidance)
         if fast_first_turn_route:
             prepared_messages.append(_fast_first_turn_guidance())
-        if _runtime_episode_handoff_ready(state):
-            filtered_supervisor_tools = []
+        if runtime_handoff_ready and runtime_handoff_needs_continuation:
+            prepared_messages.append(_runtime_handoff_continuation_message(state))
+        elif runtime_handoff_ready:
             prepared_messages.append(_runtime_handoff_final_message())
         elif _runtime_episode_recoverable_failure(state):
             dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})

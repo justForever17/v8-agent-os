@@ -392,7 +392,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             )
 
         row = chat_runtime_module.db.get_chat_canonical_message(message_id)
-        self.assertIn("运行时链路已经完成并回流", row["content_text"])
+        self.assertIn("等待 Supervisor 验收", row["content_text"])
         self.assertIn("Research Runtime 已生成证据包", row["content_text"])
         self.assertNotIn("开始跑调研通道啦", row["content_text"])
 
@@ -446,7 +446,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             )
 
         row = chat_runtime_module.db.get_chat_canonical_message(message_id)
-        self.assertIn("运行时链路已经完成并回流", row["content_text"])
+        self.assertIn("等待 Supervisor 验收", row["content_text"])
         self.assertIn("Skill 产物验证失败", row["content_text"])
         self.assertNotIn("等待 handoff。让我检查执行状态", row["content_text"])
 

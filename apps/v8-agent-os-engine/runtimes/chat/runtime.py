@@ -8316,7 +8316,7 @@ class ChatRuntime:
         if not handoffs:
             return ""
 
-        lines = ["运行时链路已经完成并回流，当前可见结果如下："]
+        lines = ["运行时结果已经回流，等待 Supervisor 验收，当前可见结果如下："]
         for handoff in handoffs[:8]:
             kind = str(handoff.get("kind") or handoff.get("type") or "runtime_handoff").strip()
             status = str(handoff.get("status") or "").strip()
@@ -8328,7 +8328,7 @@ class ChatRuntime:
             lines.append(f"- {label}: {summary[:900]}")
         if len(handoffs) > 8:
             lines.append(f"- 另有 {len(handoffs) - 8} 个 handoff 已进入执行图/诊断面板。")
-        lines.append("我会基于这些 runtime 结果继续作答；本轮不会绕过 runtime 直接执行受管控的文件或命令操作。")
+        lines.append("这些结果是验收证据，不是自动交付结论；Supervisor 会据此决定继续验证、修复或向用户交付。")
         return "\n".join(lines)
 
     @classmethod
@@ -9205,7 +9205,15 @@ class ChatRuntime:
                 "reason": decision.reason,
                 "run_id": chat_run.active_run_id,
             }
-        if getattr(chat_run.prepared, "spec_mode", False):
+        completion_is_advisory = str(decision.details.get("severity") or "").strip().lower() == "advisory"
+        if completion_is_advisory:
+            chat_run.emit_runtime_event(
+                "run.completion.advisory",
+                {"reason": decision.reason, **dict(decision.details or {})},
+                agent_id=None,
+                node="completion_gate",
+            )
+        if getattr(chat_run.prepared, "spec_mode", False) and not completion_is_advisory:
             brief = dict(completion_spec_brief or {})
             pipeline = brief.get("pipelineControl") if isinstance(brief.get("pipelineControl"), dict) else {}
             spec_id = str(brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()

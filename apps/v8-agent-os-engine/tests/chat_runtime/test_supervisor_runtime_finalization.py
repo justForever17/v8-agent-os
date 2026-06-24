@@ -10,6 +10,8 @@ from graph.supervisor_turn import (
     _filter_tool_names,
     _runtime_episode_handoff_ready,
     _runtime_episode_recoverable_failure,
+    _runtime_handoff_continuation_message,
+    _runtime_handoff_requires_continuation,
     _runtime_handoff_final_response,
     _runtime_handoff_final_text,
     _runtime_handoff_final_message,
@@ -70,14 +72,15 @@ def test_runtime_episode_degraded_handoff_ready_is_terminal():
     )
 
 
-def test_runtime_handoff_final_message_blocks_post_handoff_tool_loop():
+def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
     message = _runtime_handoff_final_message()
     content = str(message.content)
-    assert "Do not call tools" in content
-    assert "produce one concise user-facing completion/status summary" in content
+    assert "You are the delivery owner" in content
+    assert "detail, verification, repair, or runtime tools" in content
+    assert "Do not call tools" not in content
 
 
-def test_runtime_handoff_final_response_is_deterministic_from_handoff_refs():
+def test_runtime_handoff_compat_response_is_review_summary_from_handoff_refs():
     state = {
         "planner_dispatch_status": {
             "mode": "runtime_episode",
@@ -97,9 +100,69 @@ def test_runtime_handoff_final_response_is_deterministic_from_handoff_refs():
     }
     text = _runtime_handoff_final_text(state)
     response = _runtime_handoff_final_response(state)
-    assert "运行时链路已经完成并回流" in text
+    assert "等待 Supervisor 验收" in text
     assert "engineering_patch_bundle / ready" in text
     assert "work_plan_ready" in str(response.content)
+
+
+def test_compiled_creative_media_handoff_requires_continuation():
+    state = {
+        "planner_dispatch_status": {
+            "mode": "runtime_episode",
+            "nextAction": "resume_supervisor",
+            "state": "handoff_ready",
+            "handoffCount": 1,
+        },
+        "current_route_context": {
+            "handoffRefs": [
+                {
+                    "kind": "asset_bundle",
+                    "status": "ready",
+                    "compactSummary": "Creative Media recipe compiled: cm_recipe_demo",
+                    "recipeRefs": ["cm_recipe_demo"],
+                    "artifactRefs": [],
+                    "handoffStage": "compiled",
+                    "requiresContinuation": True,
+                    "recommendedNextAction": "Call creative_media_create_job and poll the job.",
+                }
+            ]
+        },
+    }
+
+    assert _runtime_episode_handoff_ready(state)
+    assert _runtime_handoff_requires_continuation(state)
+    message = _runtime_handoff_continuation_message(state)
+    assert "not the user's final deliverable" in str(message.content)
+    assert "creative_media_create_job" in str(message.content)
+
+
+def test_artifact_creative_media_handoff_is_terminal():
+    state = {
+        "current_route_context": {
+            "handoffRefs": [
+                {
+                    "kind": "asset_bundle",
+                    "status": "ready",
+                    "artifactRefs": ["art_video"],
+                    "handoffStage": "delivered",
+                    "requiresContinuation": False,
+                }
+            ]
+        }
+    }
+
+    assert not _runtime_handoff_requires_continuation(state)
+
+
+def test_completion_gate_reports_forward_only_text_as_advisory():
+    decision = evaluate_supervisor_completion(
+        episodes=[{"episodeId": "episode_creative", "state": "completed", "kind": "creative_media"}],
+        final_text="我已经读完技能。现在让我创建任务并生成真实素材。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "forward_only_supervisor_advisory"
+    assert decision.details["severity"] == "advisory"
 
 
 def test_runtime_recoverable_failure_message_blocks_false_completion():
@@ -627,6 +690,46 @@ def test_finalize_success_marks_spec_delivered_from_brief_workspace_path():
         session_id="session-spec",
     )
     run_handle.complete.assert_called_once_with(reason="stream_finished", node="run_manager")
+
+
+def test_finalize_success_advisory_does_not_mark_spec_delivered():
+    emitted = []
+    run_handle = SimpleNamespace(
+        complete=Mock(),
+        transition=Mock(),
+        fail=Mock(),
+    )
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=True, spec_id="spec_ready", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-spec",
+        active_run_id="run-spec",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    completion_brief = {
+        "specId": "spec_ready",
+        "currentStage": "tasks",
+        "pipelineControl": {"runtimeExecutionAllowed": True},
+    }
+    episode = {"episodeId": "episode_engineering", "kind": "engineering", "state": "completed"}
+    handoff = {"handoffRefId": "handoff_engineering", "status": "ready", "kind": "engineering_patch_bundle"}
+
+    with (
+        patch("runtimes.chat.runtime.db.list_runtime_episodes", return_value=[episode]),
+        patch("runtimes.chat.runtime.db.list_runtime_episode_handoffs", return_value=[handoff]),
+        patch.object(ChatRuntime, "_completion_final_text", return_value="Next I will inspect the artifacts."),
+        patch.object(ChatRuntime, "_completion_spec_brief", return_value=completion_brief),
+        patch("runtimes.chat.runtime.spec_service.mark_delivered") as mark_delivered,
+    ):
+        result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "finished"
+    mark_delivered.assert_not_called()
+    run_handle.fail.assert_not_called()
+    run_handle.complete.assert_called_once_with(reason="stream_finished", node="run_manager")
+    assert emitted[0][0] == "run.completion.advisory"
+    assert emitted[0][1]["reason"] == "forward_only_supervisor_advisory"
 
 
 def test_finalize_success_waits_for_active_runtime_episode_instead_of_failing():

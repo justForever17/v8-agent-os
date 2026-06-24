@@ -38,6 +38,7 @@ def _looks_forward_only(text: str) -> bool:
         "我将",
         "我会",
         "现在我重新",
+        "现在让我",
         "准备启动",
         "准备开始",
         "正在启动",
@@ -244,9 +245,13 @@ def evaluate_supervisor_completion(
 
     if normalized_episodes and _looks_forward_only(final_text):
         return SupervisorCompletionDecision(
-            action="fail",
-            reason="forward_only_supervisor_final_text",
-            details={"finalTextPreview": str(final_text or "").strip()[:240]},
+            action="complete",
+            reason="forward_only_supervisor_advisory",
+            details={
+                "severity": "advisory",
+                "finalTextPreview": str(final_text or "").strip()[:240],
+                "message": "Supervisor ended with forward-looking wording; review delivery completeness without overriding its decision.",
+            },
         )
 
     return SupervisorCompletionDecision()

@@ -252,6 +252,7 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
+    const [contentHeight, setContentHeight] = useState(0);
     const bodyInputRef = useRef<TextInput | null>(null);
     const queryInputRef = useRef<TextInput | null>(null);
     const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || uploadedFiles.length > 0);
@@ -260,6 +261,7 @@ export const Composer = memo(function Composer({
     const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
     const canAct = canSend || (stopAvailable && !hasPayload);
     const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || activeQueryMode);
+    const isMultilineText = contentHeight > 28 || bodyValue.includes("\n");
     const actionMode: "send" | "queue" | "stop" | "busy" = canQueue
         ? "queue"
         : stopAvailable
@@ -273,9 +275,7 @@ export const Composer = memo(function Composer({
     const shellBorder = isFocused
         ? (themeMode === "dark" ? "rgba(245,158,11,0.32)" : "rgba(249,115,22,0.28)")
         : colors.border;
-    const editorBackground = themeMode === "dark"
-        ? "rgba(17,24,39,0.46)"
-        : "rgba(248,250,252,0.92)";
+
     const inputWebStyle: any = Platform.OS === "web"
         ? {
             outlineStyle: "none",
@@ -323,8 +323,8 @@ export const Composer = memo(function Composer({
                         style={[
                             styles.editorCard,
                             {
-                                backgroundColor: editorBackground,
-                                borderColor: isFocused ? `${colors.primary}2F` : "transparent",
+                                backgroundColor: "transparent",
+                                borderColor: "transparent",
                             },
                         ]}
                     >
@@ -451,9 +451,12 @@ export const Composer = memo(function Composer({
                                     disableFullscreenUI
                                     returnKeyType="default"
                                     textAlignVertical="top"
+                                    onContentSizeChange={(e) => {
+                                        setContentHeight(e.nativeEvent.contentSize.height);
+                                    }}
                                     style={[
                                         styles.input,
-                                        hasFlowTokens ? styles.inputInline : styles.inputStandalone,
+                                        (hasFlowTokens && !isMultilineText) ? styles.inputInline : styles.inputStandalone,
                                         { color: colors.text },
                                         inputWebStyle,
                                     ]}
@@ -592,36 +595,36 @@ const styles = StyleSheet.create({
     },
     composerCard: {
         borderRadius: 24,
-        paddingHorizontal: 8,
-        paddingTop: 8,
-        paddingBottom: 8,
+        paddingHorizontal: 6,
+        paddingTop: 4,
+        paddingBottom: 4,
         borderWidth: 1,
         shadowOpacity: 0.08,
         shadowRadius: 16,
         shadowOffset: { width: 0, height: 8 },
         elevation: 2,
-        gap: 8,
+        gap: 6,
     },
     editorCard: {
-        minHeight: 72,
+        minHeight: 40,
         borderRadius: 18,
         borderWidth: 1,
         overflow: "hidden",
         justifyContent: "flex-start",
         width: "100%",
-        paddingHorizontal: 6,
-        paddingTop: 6,
+        paddingHorizontal: 4,
+        paddingTop: 4,
         paddingBottom: 4,
     },
     editorFlow: {
-        minHeight: 56,
+        minHeight: 32,
         width: "100%",
         flexDirection: "row",
         flexWrap: "wrap",
         alignItems: "flex-start",
         alignContent: "flex-start",
         columnGap: 6,
-        rowGap: 8,
+        rowGap: 6,
     },
     input: {
         minHeight: 28,
@@ -633,7 +636,7 @@ const styles = StyleSheet.create({
         borderWidth: 0,
         includeFontPadding: false,
         paddingTop: 2,
-        paddingBottom: 0,
+        paddingBottom: 2,
         paddingHorizontal: 0,
         paddingVertical: 0,
         margin: 0,
@@ -643,7 +646,7 @@ const styles = StyleSheet.create({
     },
     inputStandalone: {
         width: "100%",
-        minHeight: 56,
+        minHeight: 32,
         alignSelf: "stretch",
         paddingHorizontal: 2,
         paddingTop: 2,

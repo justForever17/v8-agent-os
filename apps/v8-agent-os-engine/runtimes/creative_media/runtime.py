@@ -3850,8 +3850,20 @@ class CreativeMediaRuntime:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
+    def _provider_http_timeout(self, timeout: float = 120.0) -> httpx.Timeout:
+        timeout_seconds = max(1.0, min(float(timeout or 60.0), 900.0))
+        connect_seconds = min(timeout_seconds, 30.0)
+        write_seconds = min(timeout_seconds, 60.0)
+        pool_seconds = min(timeout_seconds, 30.0)
+        return httpx.Timeout(
+            connect=connect_seconds,
+            read=timeout_seconds,
+            write=write_seconds,
+            pool=pool_seconds,
+        )
+
     async def _request_json(self, method: str, url: str, *, headers: Optional[dict[str, str]] = None, json: Optional[dict[str, Any]] = None, timeout: float = 120.0) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=min(float(timeout or 60.0), 60.0)) as client:
+        async with httpx.AsyncClient(timeout=self._provider_http_timeout(timeout)) as client:
             response = await client.request(method, url, headers=headers, json=json)
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
@@ -3867,7 +3879,7 @@ class CreativeMediaRuntime:
         files: Optional[dict[str, Any]] = None,
         timeout: float = 120.0,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=min(float(timeout or 60.0), 60.0)) as client:
+        async with httpx.AsyncClient(timeout=self._provider_http_timeout(timeout)) as client:
             response = await client.request(method, url, headers=headers, data=data, files=files)
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")

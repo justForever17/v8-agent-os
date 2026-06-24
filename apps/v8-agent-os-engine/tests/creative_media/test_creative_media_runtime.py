@@ -671,6 +671,15 @@ def test_music_brief_can_bind_connected_catalog_model(monkeypatch):
     assert next(item for item in result["operationRows"] if item["operationKind"] == "music.brief")["selectedModelRefs"] == ["mureka_music::auto"]
 
 
+def test_provider_http_timeout_honors_long_media_generation_window():
+    timeout = creative_media_runtime._provider_http_timeout(300)
+
+    assert timeout.read == 300
+    assert timeout.connect == 30
+    assert timeout.write == 60
+    assert timeout.pool == 30
+
+
 def test_minimax_music_job_decodes_hex_artifact(monkeypatch, tmp_path: Path):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)

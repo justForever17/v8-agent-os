@@ -282,9 +282,7 @@ export const Composer = memo(function Composer({
             WebkitAppearance: "none",
         }
         : null;
-    const bodyPlaceholder = activeQueryMode
-        ? ""
-        : t("src.components.chat.composer.message_supervisor");
+    const bodyPlaceholder = "";
 
     useEffect(() => {
         const targetRef = activeQueryMode ? queryInputRef : bodyInputRef;
@@ -338,7 +336,7 @@ export const Composer = memo(function Composer({
                                         },
                                     ]}
                                 >
-                                    <MaterialCommunityIcons name="slash-forward" size={12} color={colors.primary} />
+                                    <MaterialCommunityIcons name="slash-forward" size={11} color={colors.primary} />
                                     <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
                                         {selectedCommand.name}
                                     </Text>
@@ -355,7 +353,7 @@ export const Composer = memo(function Composer({
                                         },
                                     ]}
                                 >
-                                    <MaterialCommunityIcons name="at" size={12} color={colors.warning} />
+                                    <MaterialCommunityIcons name="at" size={11} color={colors.warning} />
                                     <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
                                         {skill.name}
                                     </Text>
@@ -372,7 +370,7 @@ export const Composer = memo(function Composer({
                                         },
                                     ]}
                                 >
-                                    <MaterialCommunityIcons name="account-group-outline" size={12} color={colors.accent} />
+                                    <MaterialCommunityIcons name="account-group-outline" size={11} color={colors.accent} />
                                     <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
                                         {family.displayName || family.familyId}
                                     </Text>
@@ -622,7 +620,7 @@ const styles = StyleSheet.create({
         rowGap: 6,
     },
     input: {
-        minHeight: 28,
+        minHeight: 24,
         maxHeight: 220,
         fontSize: 16,
         lineHeight: 24,
@@ -655,14 +653,14 @@ const styles = StyleSheet.create({
         maxWidth: "100%",
         paddingLeft: 0,
         paddingRight: 0,
-        paddingTop: 1,
-        paddingBottom: 2,
+        paddingTop: 0,
+        paddingBottom: 0,
     },
     tokenChip: {
-        minHeight: 28,
+        minHeight: 24,
         maxWidth: "100%",
-        paddingHorizontal: 10,
-        borderRadius: 14,
+        paddingHorizontal: 8,
+        borderRadius: 12,
         borderWidth: 1,
         flexDirection: "row",
         alignItems: "center",
@@ -672,24 +670,24 @@ const styles = StyleSheet.create({
         maxWidth: 176,
     },
     tokenText: {
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: "700",
-        lineHeight: 18,
+        lineHeight: 16,
         flexShrink: 1,
     },
     queryChip: {
-        minHeight: 28,
+        minHeight: 24,
         minWidth: 68,
         maxWidth: 180,
-        paddingHorizontal: 10,
-        borderRadius: 14,
+        paddingHorizontal: 8,
+        borderRadius: 12,
         borderWidth: 1,
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
     },
     queryPrefix: {
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: "800",
     },
     queryInput: {
@@ -697,8 +695,8 @@ const styles = StyleSheet.create({
         maxWidth: 120,
         paddingVertical: 0,
         paddingHorizontal: 0,
-        fontSize: 13,
-        lineHeight: 18,
+        fontSize: 12,
+        lineHeight: 16,
         includeFontPadding: false,
     },
     bottomControls: {

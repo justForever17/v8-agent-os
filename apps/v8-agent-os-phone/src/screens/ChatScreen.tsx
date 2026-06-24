@@ -6481,7 +6481,7 @@ export default function ChatScreen() {
                                 style={[
                                     styles.floatingHistoryBtnWrap,
                                     {
-                                        top: safeAreaInsets.top + 50,
+                                        top: 10,
                                         opacity: historyBtnOpacity,
                                         transform: [{ translateY: historyBtnTranslateY }],
                                     },
@@ -6495,9 +6495,6 @@ export default function ChatScreen() {
                                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                 >
                                     <MaterialCommunityIcons name="history" size={18} color={palette.text} />
-                                    {isSessionRunning ? (
-                                        <View style={[styles.floatingHistoryBadge, { backgroundColor: palette.primary }]} />
-                                    ) : null}
                                 </Pressable>
                             </Animated.View>
 
@@ -6803,14 +6800,6 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         position: "relative",
-    },
-    floatingHistoryBadge: {
-        position: "absolute",
-        top: 2,
-        right: 2,
-        width: 6,
-        height: 6,
-        borderRadius: 3,
     },
     rightNeonLineContainer: {
         position: "absolute",

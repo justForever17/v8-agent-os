@@ -506,7 +506,8 @@
         "logoAsset": "/model-assets/providers/black-forest-labs.svg",
         "modelIds": [
           "flux-pro-1.1",
-          "flux-dev"
+          "flux-dev",
+          "flux.2"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -642,6 +643,50 @@
           "failed": "failed"
         },
         "sourceUrl": "https://docs.leonardo.ai",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "google_gemini_image",
+        "displayName": "Google Gemini Image",
+        "logoAsset": "/model-assets/lobe/google-color.svg",
+        "modelIds": [
+          "nano-banana-pro"
+        ],
+        "apiStandard": "google_image_generation",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "image.generate",
+          "image.edit"
+        ],
+        "baseUrlDefault": "https://generativelanguage.googleapis.com/v1beta",
+        "credentialHelp": {
+          "label": "Get Gemini API key",
+          "url": "https://aistudio.google.com/apikey"
+        },
+        "auth": {
+          "type": "api_key",
+          "query": "key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/models/{model}:generateContent",
+          "bodyFields": [
+            "contents",
+            "generationConfig",
+            "safetySettings"
+          ],
+          "sizeFormat": "GEMINI_IMAGE_CONFIG"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "candidates[].content.parts[].inlineData.data",
+            "candidates[].content.parts[].fileData.fileUri"
+          ]
+        },
+        "sourceUrl": "https://ai.google.dev/gemini-api/docs/image-generation",
         "confidence": "provider_docs"
       }
     ],
@@ -1934,7 +1979,8 @@
         "displayName": "ElevenLabs Text to Speech",
         "logoAsset": "/model-assets/lobe/elevenlabs.svg",
         "modelIds": [
-          "eleven_multilingual_v2"
+          "eleven_multilingual_v2",
+          "eleven-v3"
         ],
         "apiStandard": "elevenlabs_tts",
         "adapter": "catalog_only",
@@ -1979,7 +2025,8 @@
           "speech-2.6-hd",
           "speech-2.6-turbo",
           "speech-02-hd",
-          "speech-02-turbo"
+          "speech-02-turbo",
+          "minimax-speech-2.6"
         ],
         "apiStandard": "minimax_tts",
         "adapter": "catalog_only",
@@ -2122,7 +2169,8 @@
         "displayName": "Fish Audio TTS",
         "logoAsset": "/model-assets/providers/fish-audio.svg",
         "modelIds": [
-          "fish-speech-1.5"
+          "fish-speech-1.5",
+          "fish-speech-s2"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -2491,6 +2539,51 @@
         },
         "sourceUrl": "https://docs.aws.amazon.com/polly/latest/dg/API_Reference.html",
         "confidence": "provider_docs"
+      },
+      {
+        "id": "fal_tts",
+        "displayName": "fal.ai TTS",
+        "logoAsset": "/model-assets/lobe/fal-color.svg",
+        "modelIds": [
+          "f5-tts"
+        ],
+        "apiStandard": "fal_queue",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "voice.tts"
+        ],
+        "baseUrlDefault": "https://queue.fal.run",
+        "credentialHelp": {
+          "label": "Get fal API key",
+          "url": "https://fal.ai/dashboard/keys"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/fal-ai/f5-tts",
+          "bodyFields": [
+            "text",
+            "voice",
+            "audio_url"
+          ],
+          "sizeFormat": "AUDIO_FORMAT_ENUM"
+        },
+        "polling": {
+          "mode": "task",
+          "statusPath": "/fal-ai/f5-tts/requests/{request_id}/status"
+        },
+        "result": {
+          "paths": [
+            "audio.url",
+            "audio.content_type"
+          ]
+        },
+        "sourceUrl": "https://fal.ai/models/fal-ai/f5-tts",
+        "confidence": "provider_docs"
       }
     ],
     "music": [
@@ -2502,7 +2595,8 @@
           "music-2.6",
           "music-2.6-free",
           "music-cover",
-          "music-cover-free"
+          "music-cover-free",
+          "minimax-music-2.5"
         ],
         "apiStandard": "minimax_music_generation",
         "adapter": "catalog_only",
@@ -2730,6 +2824,135 @@
         },
         "sourceUrl": "https://www.udio.com",
         "confidence": "community_or_inferred"
+      },
+      {
+        "id": "elevenlabs_music",
+        "displayName": "ElevenLabs Music",
+        "logoAsset": "/model-assets/lobe/elevenlabs.svg",
+        "modelIds": [
+          "elevenlabs-music"
+        ],
+        "apiStandard": "elevenlabs_music",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "music.generate"
+        ],
+        "baseUrlDefault": "https://api.elevenlabs.io",
+        "credentialHelp": {
+          "label": "Get ElevenLabs API key",
+          "url": "https://elevenlabs.io/app/settings/api-keys"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "xi-api-key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/v1/music",
+          "bodyFields": [
+            "prompt",
+            "duration_seconds",
+            "model_id"
+          ],
+          "sizeFormat": "AUDIO_DURATION"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "audio",
+            "music_url"
+          ]
+        },
+        "sourceUrl": "https://elevenlabs.io/docs",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "google_lyria_music",
+        "displayName": "Google Lyria Music",
+        "logoAsset": "/model-assets/lobe/google-color.svg",
+        "modelIds": [
+          "lyria-realtime"
+        ],
+        "apiStandard": "google_lyria_realtime",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "music.generate"
+        ],
+        "baseUrlDefault": "https://generativelanguage.googleapis.com/v1beta",
+        "credentialHelp": {
+          "label": "Get Gemini API key",
+          "url": "https://aistudio.google.com/apikey"
+        },
+        "auth": {
+          "type": "api_key",
+          "query": "key"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/models/{model}:streamGenerateContent",
+          "bodyFields": [
+            "contents",
+            "generationConfig"
+          ],
+          "sizeFormat": "REALTIME_AUDIO"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "candidates[].content.parts[].inlineData.data"
+          ]
+        },
+        "sourceUrl": "https://ai.google.dev/gemini-api/docs/music-generation",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "stability_music",
+        "displayName": "Stability AI Music",
+        "logoAsset": "/model-assets/lobe/stability-color.svg",
+        "modelIds": [
+          "stable-audio-2.5"
+        ],
+        "apiStandard": "stability_audio",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "music.generate"
+        ],
+        "baseUrlDefault": "https://api.stability.ai",
+        "credentialHelp": {
+          "label": "Get Stability API key",
+          "url": "https://platform.stability.ai/account/keys"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/v2beta/audio/stable-audio-2/text-to-audio",
+          "bodyFields": [
+            "prompt",
+            "duration",
+            "steps",
+            "output_format"
+          ],
+          "sizeFormat": "AUDIO_DURATION"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "audio",
+            "artifacts[].base64"
+          ]
+        },
+        "sourceUrl": "https://platform.stability.ai/docs/api-reference#tag/Generate/paths/~1v2beta~1audio~1stable-audio-2~1text-to-audio/post",
+        "confidence": "provider_docs"
       }
     ],
     "model3d": [
@@ -2856,7 +3079,8 @@
         "modelIds": [
           "doubao-seed3d-2-0",
           "hyper3d-gen2",
-          "hitem3d-2-0"
+          "hitem3d-2-0",
+          "doubao-seed3d-1-0-250928"
         ],
         "modelLogoAssets": {
           "hyper3d-gen2": "/model-assets/providers/hyper3d.svg",
@@ -2910,7 +3134,8 @@
         "displayName": "Tripo 3D",
         "logoAsset": "/model-assets/lobe/tripo-color.svg",
         "modelIds": [
-          "tripo3d-model"
+          "tripo3d-model",
+          "tripo-3d-v3"
         ],
         "apiStandard": "model3d_task",
         "adapter": "catalog_only",
@@ -2948,7 +3173,8 @@
         "logoAsset": "/model-assets/providers/meshy.svg",
         "modelIds": [
           "meshy-5",
-          "meshy-4"
+          "meshy-4",
+          "meshy-6"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -2995,7 +3221,8 @@
         "displayName": "Hitem3D",
         "logoAsset": "/model-assets/providers/hitem3d.svg",
         "modelIds": [
-          "hitem3d-model"
+          "hitem3d-model",
+          "sparc3d-ultra3d"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -3042,7 +3269,8 @@
         "displayName": "Hyper3D Rodin",
         "logoAsset": "/model-assets/providers/hyper3d.svg",
         "modelIds": [
-          "rodin-gen-1"
+          "rodin-gen-1",
+          "rodin-gen-2"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -3089,7 +3317,8 @@
         "displayName": "CSM 3D",
         "logoAsset": "/model-assets/providers/csm.svg",
         "modelIds": [
-          "csm-cube"
+          "csm-cube",
+          "csm-3d-generation"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -3137,7 +3366,8 @@
         "logoAsset": "/model-assets/providers/3d-ai-studio.ico",
         "modelIds": [
           "trellis",
-          "3d-ai-studio-model"
+          "3d-ai-studio-model",
+          "trellis.2"
         ],
         "apiStandard": "catalog_only",
         "adapter": "catalog_only",
@@ -3178,6 +3408,97 @@
         },
         "sourceUrl": "https://www.3daistudio.com",
         "confidence": "community_or_inferred"
+      },
+      {
+        "id": "aliyun_bailian_3d",
+        "displayName": "Alibaba Cloud Bailian 3D",
+        "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+        "modelIds": [
+          "motionshop-gen3d"
+        ],
+        "apiStandard": "dashscope_3d_task",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://dashscope.aliyuncs.com/api/v1",
+        "credentialHelp": {
+          "label": "Get Alibaba Cloud API key",
+          "url": "https://bailian.console.aliyun.com/"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/services/aigc/3d-generation/generation",
+          "bodyFields": [
+            "model",
+            "input.image_url",
+            "parameters"
+          ],
+          "sizeFormat": "MODEL_3D_ASSET"
+        },
+        "polling": {
+          "mode": "task",
+          "statusPath": "/tasks/{task_id}"
+        },
+        "result": {
+          "paths": [
+            "output.ply_url",
+            "output.model_url"
+          ]
+        },
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/",
+        "confidence": "provider_docs"
+      },
+      {
+        "id": "stability_3d",
+        "displayName": "Stability AI 3D",
+        "logoAsset": "/model-assets/lobe/stability-color.svg",
+        "modelIds": [
+          "stable-fast-3d"
+        ],
+        "apiStandard": "stability_3d",
+        "adapter": "catalog_only",
+        "operationKinds": [
+          "model3d.generate"
+        ],
+        "baseUrlDefault": "https://api.stability.ai",
+        "credentialHelp": {
+          "label": "Get Stability API key",
+          "url": "https://platform.stability.ai/account/keys"
+        },
+        "auth": {
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
+        },
+        "request": {
+          "method": "POST",
+          "submitPath": "/v2beta/3d/stable-fast-3d",
+          "bodyFields": [
+            "image",
+            "texture_resolution",
+            "foreground_ratio",
+            "remesh"
+          ],
+          "sizeFormat": "MODEL_3D_ASSET"
+        },
+        "polling": {
+          "mode": "none"
+        },
+        "result": {
+          "paths": [
+            "model",
+            "model_url",
+            "artifacts[].url"
+          ]
+        },
+        "sourceUrl": "https://platform.stability.ai/docs/api-reference#tag/3D",
+        "confidence": "provider_docs"
       }
     ]
   }

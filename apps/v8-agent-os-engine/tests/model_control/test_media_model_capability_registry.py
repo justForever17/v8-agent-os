@@ -1,5 +1,15 @@
+import json
+from pathlib import Path
+
 from core.media_model_capability_registry import media_model_capability_registry
 from core.model_provider_catalog import model_provider_catalog
+
+REPORT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "core"
+    / "model_catalog"
+    / "media_model_capability_registry_unresolved_report.json"
+)
 
 
 def test_media_model_capability_registry_covers_matrix_and_doc_seed():
@@ -41,7 +51,39 @@ def test_media_catalog_uses_registry_logo_and_keeps_chat_budget_empty():
     assert model["mediaLimits"]["mediaCapabilityRegistry"]["canonicalModelId"] == "gpt-image-2"
 
 
-def test_catalog_only_doc_models_are_visible_without_api_wire_claims():
+def test_reference_media_models_are_matrix_backed_not_doc_only():
+    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    assert report["catalogOnlyModels"] == []
+    assert report["entriesWithMissingFields"] == []
+
+    expected = [
+        ("black_forest_labs_image", "flux.2", "image.generate"),
+        ("google_gemini_image", "nano-banana-pro", "image.generate"),
+        ("3d_ai_studio", "trellis.2", "model3d.generate"),
+        ("aliyun_bailian_3d", "motionshop-gen3d", "model3d.generate"),
+        ("csm_3d", "csm-3d-generation", "model3d.generate"),
+        ("hitem3d", "sparc3d-ultra3d", "model3d.generate"),
+        ("hyper3d_rodin", "rodin-gen-2", "model3d.generate"),
+        ("meshy_3d", "meshy-6", "model3d.generate"),
+        ("stability_3d", "stable-fast-3d", "model3d.generate"),
+        ("tripo3d_placeholder", "tripo-3d-v3", "model3d.generate"),
+        ("volcengine_3d_generation", "doubao-seed3d-1-0-250928", "model3d.generate"),
+        ("elevenlabs_music", "elevenlabs-music", "music.generate"),
+        ("google_lyria_music", "lyria-realtime", "music.generate"),
+        ("minimax_music", "minimax-music-2.5", "music.generate"),
+        ("stability_music", "stable-audio-2.5", "music.generate"),
+        ("elevenlabs_tts", "eleven-v3", "voice.tts"),
+        ("fal_tts", "f5-tts", "voice.tts"),
+        ("fish_audio_tts", "fish-speech-s2", "voice.tts"),
+        ("minimax_tts", "minimax-speech-2.6", "voice.tts"),
+    ]
+    for provider_id, model_id, operation_kind in expected:
+        entry = media_model_capability_registry.find(provider_id, model_id, operation_kind)
+        assert entry, f"{provider_id}::{model_id} missing {operation_kind}"
+        assert "providerMatrixEntry" not in set(entry.get("missingFields") or [])
+
+
+def test_matrix_backed_catalog_models_are_visible_without_api_wire_claims():
     provider = model_provider_catalog.get_provider("black_forest_labs_image")
     assert provider
     assert provider["adapter"] == "catalog_only"

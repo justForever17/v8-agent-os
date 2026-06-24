@@ -459,7 +459,7 @@ class ModelProviderCatalog:
             ],
         }
 
-    def _creative_media_matrix_providers(self) -> List[Dict[str, Any]]:
+    def _creative_media_matrix_providers(self, *, include_root_mapped: bool = True) -> List[Dict[str, Any]]:
         if not _CREATIVE_MEDIA_MATRIX_PATH.exists():
             return []
         try:
@@ -475,6 +475,9 @@ class ModelProviderCatalog:
             for entry in _as_list(entries):
                 if not isinstance(entry, dict):
                     continue
+                provider_id = str(entry.get("id") or "").strip()
+                if not include_root_mapped and provider_id in _MEDIA_ADAPTER_ROOT_PROVIDERS:
+                    continue
                 provider = self._provider_from_media_matrix_entry(str(modality), entry)
                 if provider:
                     providers.append(provider)
@@ -483,6 +486,8 @@ class ModelProviderCatalog:
             if not isinstance(entry, dict):
                 continue
             provider_id = str(entry.get("providerId") or "")
+            if not include_root_mapped and provider_id in _MEDIA_ADAPTER_ROOT_PROVIDERS:
+                continue
             if provider_id in seen:
                 continue
             provider = self._provider_from_media_registry_entry(entry)
@@ -512,7 +517,7 @@ class ModelProviderCatalog:
             item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
             providers.append(item)
             seen_provider_ids.add(str(item.get("id") or ""))
-        for entry in self._creative_media_matrix_providers():
+        for entry in self._creative_media_matrix_providers(include_root_mapped=False):
             provider_id = str(entry.get("id") or "")
             if provider_id in seen_provider_ids:
                 continue

@@ -158,7 +158,6 @@ def test_catalog_bridges_creative_media_provider_matrix():
         "mureka_music": ("music", "MUSIC"),
         "fal_3d": ("model3d", "MODEL3D"),
         "tencent_hunyuan_3d": ("model3d", "MODEL3D"),
-        "minimax_image": ("image", "IMAGE"),
     }
     for provider_id, (modality, model_type) in expected.items():
         provider = providers[provider_id]
@@ -193,8 +192,14 @@ def test_catalog_bridges_creative_media_provider_matrix():
     assert "doubao-seed3d-2-0" in {item["id"] for item in providers["volcengine_3d_generation"]["models"]}
     hitem = next(item for item in providers["volcengine_3d_generation"]["models"] if item["id"] == "hitem3d-2-0")
     assert hitem["logoAsset"].endswith("hitem3d.svg")
-    assert providers["minimax_image"]["models"][0]["id"] == "image-01"
-    assert providers["minimax_image"]["models"][1]["id"] == "image-01-live"
+    assert {
+        "agnes_image",
+        "agnes_video",
+        "minimax_image",
+        "minimax_video",
+        "minimax_tts",
+        "minimax_music",
+    }.isdisjoint(providers)
 
 
 def test_root_provider_accepts_prefixed_media_model_ids():
@@ -241,6 +246,11 @@ def test_root_provider_accepts_prefixed_media_model_ids():
     assert minimax_music["mediaLimits"]["adapterProviderId"] == "minimax_music"
     assert minimax_music["mediaLimits"]["providerModelId"] == "music-2.6"
     assert "music.generate" in minimax_music["mediaLimits"]["operationKinds"]
+
+    minimax_music_25 = model_provider_catalog.normalize_model(minimax_cn, "music_generation/minimax-music-2.5")
+    assert minimax_music_25["type"] == "MUSIC"
+    assert minimax_music_25["mediaLimits"]["adapterProviderId"] == "minimax_music"
+    assert minimax_music_25["mediaLimits"]["providerModelId"] == "minimax-music-2.5"
 
 
 def test_catalog_only_probe_does_not_return_preset_models():

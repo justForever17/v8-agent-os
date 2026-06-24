@@ -53,10 +53,11 @@ COST_LEDGER_STORE_FILE = "creative_media/cost_ledger.json"
 SAFETY_EVENTS_STORE_FILE = "creative_media/safety_events.json"
 SUPPORTED_MODALITIES = {"image", "video", "voice", "music", "model3d"}
 MODEL_PREFERENCE_CONFIG_SOURCES = {"model_control_plane", "runtime_builtin"}
-# music/model3d intentionally stay schema/catalog-only in P2; adapters can be added without changing the job envelope.
-EXECUTABLE_MODALITIES = {"image", "video", "voice"}
+# Only providers with a concrete adapter become executable. Other music/model3d catalog entries stay catalog-only.
+EXECUTABLE_MODALITIES = {"image", "video", "voice", "music", "model3d"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+MODEL3D_EXTENSIONS = {".glb", ".obj", ".fbx", ".zip", ".gltf", ".usdz"}
 MEDIA_MODEL_TYPE_TO_MODALITY = {
     "IMAGE": "image",
     "VIDEO": "video",
@@ -70,7 +71,7 @@ DEFAULT_OPERATION_KINDS = {
     "image": ["image.generate"],
     "video": ["video.text_to_video"],
     "voice": ["voice.tts"],
-    "music": ["music.brief"],
+    "music": ["music.generate", "music.brief"],
     "model3d": ["model3d.generate"],
 }
 EXECUTABLE_OPERATION_KINDS = {
@@ -87,6 +88,9 @@ EXECUTABLE_OPERATION_KINDS = {
     "video.action_transfer",
     "video.replacement",
     "voice.tts",
+    "music.generate",
+    "music.cover",
+    "model3d.generate",
 }
 DASHSCOPE_VIDEO_OPERATION_KINDS = {
     "video.text_to_video",
@@ -430,6 +434,9 @@ class CreativeMediaRuntime:
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
                 {"id": "dashscope", "modalities": ["image", "video"], "executable": True},
                 {"id": "v8_audio_tts", "modalities": ["voice"], "executable": True},
+                {"id": "minimax_music", "modalities": ["music"], "executable": True},
+                {"id": "mureka_music", "modalities": ["music"], "executable": True},
+                {"id": "tencent_hunyuan_3d", "modalities": ["model3d"], "executable": True},
                 {"id": "catalog_only", "modalities": ["music", "model3d"], "executable": False},
             ],
         }
@@ -468,6 +475,14 @@ class CreativeMediaRuntime:
             return "agnes_images"
         if modality == "video" and "agnes" in haystack:
             return "agnes_video"
+        if modality == "music":
+            if "mureka" in haystack:
+                return "mureka_music"
+            if "minimax" in haystack or "mini max" in haystack:
+                return "minimax_music"
+        if modality == "model3d":
+            if any(token in haystack for token in ("tencent", "hunyuan", "hy-3d", "tokenhub")):
+                return "tencent_hunyuan_3d"
         if modality == "image":
             return "openai_images"
         if modality == "voice":
@@ -553,7 +568,18 @@ class CreativeMediaRuntime:
         if modality == "voice":
             return "voice.tts"
         if modality == "music":
-            return "music.brief"
+            model_hint = str(request.get("model") or request.get("modelId") or request.get("model_id") or "").lower()
+            if (
+                "cover" in model_hint
+                or request.get("audioUrl")
+                or request.get("audio_url")
+                or request.get("audioBase64")
+                or request.get("audio_base64")
+                or request.get("coverFeatureId")
+                or request.get("cover_feature_id")
+            ):
+                return "music.cover"
+            return "music.generate"
         if modality == "model3d":
             return "model3d.generate"
         return f"{modality}.generate"
@@ -571,10 +597,16 @@ class CreativeMediaRuntime:
             return True
         if operation_kind == "voice.tts" and adapter == "v8_audio_tts":
             return True
+        if operation_kind == "music.generate" and adapter in {"minimax_music", "mureka_music"}:
+            return True
+        if operation_kind == "music.cover" and adapter == "minimax_music":
+            return True
+        if operation_kind == "model3d.generate" and adapter == "tencent_hunyuan_3d":
+            return True
         return False
 
     def _is_brief_only_operation(self, *, adapter: str, operation_kind: str) -> bool:
-        return operation_kind == "music.brief" and adapter == "catalog_only"
+        return operation_kind == "music.brief"
 
     def list_model_candidates(self) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -2272,6 +2304,10 @@ class CreativeMediaRuntime:
             return await self._poll_agnes_video_job(job)
         if job.get("adapter") == "dashscope" and job.get("providerTaskId"):
             return await self._poll_dashscope_task(job)
+        if job.get("adapter") == "mureka_music" and job.get("providerTaskId"):
+            return await self._poll_mureka_music_job(job)
+        if job.get("adapter") == "tencent_hunyuan_3d" and job.get("providerTaskId"):
+            return await self._poll_tencent_hunyuan_3d_job(job)
         return job
 
     def job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
@@ -2325,6 +2361,10 @@ class CreativeMediaRuntime:
             return await self._create_video_job(request)
         if modality == "voice":
             return await self._create_voice_job(request)
+        if modality == "music":
+            return await self._create_music_job(request)
+        if modality == "model3d":
+            return await self._create_model3d_job(request)
         raise ValueError(f"Unsupported creative media modality: {modality}")
 
     async def retry_job(self, job_id: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2360,6 +2400,10 @@ class CreativeMediaRuntime:
                     job = await self._create_video_job(attempt_request)
                 elif modality == "voice":
                     job = await self._create_voice_job(attempt_request)
+                elif modality == "music":
+                    job = await self._create_music_job(attempt_request)
+                elif modality == "model3d":
+                    job = await self._create_model3d_job(attempt_request)
                 else:
                     raise ValueError(f"Unsupported fallback modality: {modality}")
             except Exception as exc:
@@ -2550,6 +2594,335 @@ class CreativeMediaRuntime:
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
 
+    async def _create_music_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        operation_kind = self._operation_kind_for_request("music", request)
+        if operation_kind not in {"music.generate", "music.cover"}:
+            job = self._new_job(modality="music", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
+            job["status"] = "failed"
+            job["error"] = f"Unsupported music operationKind={operation_kind}; music.brief is planning-only."
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
+        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or "").strip().lower()
+        adapter = str(request.get("adapter") or "").strip().lower()
+        if not adapter:
+            adapter = "mureka_music" if "mureka" in requested_provider_id or "mureka" in requested_model else "minimax_music"
+        prepared_request = {**request, "operationKind": operation_kind}
+        job = self._new_job(modality="music", adapter=adapter, request=prepared_request)
+        self._save_job(job)
+        try:
+            if adapter == "minimax_music":
+                return await self._run_minimax_music_job(job, prepared_request)
+            if adapter == "mureka_music":
+                job = await self._submit_mureka_music_job(job, prepared_request)
+                if bool(request.get("wait", False)):
+                    job = await self._wait_for_async_job(job, request)
+                return job
+            raise ValueError(f"Unsupported music adapter: {adapter}")
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+
+    async def _create_model3d_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        operation_kind = self._operation_kind_for_request("model3d", request)
+        if operation_kind != "model3d.generate":
+            job = self._new_job(modality="model3d", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
+            job["status"] = "failed"
+            job["error"] = f"Unsupported model3d operationKind={operation_kind}"
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
+        adapter = str(request.get("adapter") or ("tencent_hunyuan_3d" if any(token in requested_provider_id for token in ("tencent", "hunyuan")) else "tencent_hunyuan_3d")).strip().lower()
+        prepared_request = {**request, "operationKind": operation_kind}
+        job = self._new_job(modality="model3d", adapter=adapter, request=prepared_request)
+        self._save_job(job)
+        try:
+            if adapter == "tencent_hunyuan_3d":
+                job = await self._submit_tencent_hunyuan_3d_job(job, prepared_request)
+                if bool(request.get("wait", False)):
+                    job = await self._wait_for_async_job(job, request)
+                return job
+            raise ValueError(f"Unsupported model3d adapter: {adapter}")
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+
+    async def _wait_for_async_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        timeout_seconds = max(15, min(int(request.get("timeoutSeconds") or request.get("timeout_seconds") or 300), 900))
+        poll_interval = max(2, min(int(request.get("pollIntervalSeconds") or request.get("poll_interval_seconds") or 8), 60))
+        deadline = asyncio.get_event_loop().time() + timeout_seconds
+        while job.get("status") not in {"succeeded", "failed", "cancelled"} and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(poll_interval)
+            refreshed = await self.refresh_job(str(job.get("jobId") or ""))
+            if refreshed:
+                job = refreshed
+        if job.get("status") not in {"succeeded", "failed", "cancelled"}:
+            job["status"] = "running"
+            with ToolExecutionEnvelope(tool_name="creative_media_create_job", family="creative_media", deadline_ms=timeout_seconds * 1000, retry_limit=1) as envelope:
+                job["toolExecution"] = envelope.payload(
+                    ok=False,
+                    failure_class="deadline_exceeded",
+                    retryable=False,
+                    recommended_next_action="返回 running job；使用 creative_media_get_job 或 creative_media_list_jobs 观察后续状态。",
+                )
+            job["recommendedNextAction"] = "observe_job"
+            return self._save_job(job)
+        return job
+
+    async def _run_minimax_music_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, model = self._configured_provider_for_model(request, default_model="music_generation/music-2.6")
+        model = self._strip_provider_model_prefix(model)
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        prompt = str(request.get("prompt") or request.get("brief") or "").strip()
+        if not prompt:
+            raise ValueError("music job requires prompt")
+        output_format = str(request.get("outputFormat") or request.get("output_format") or "hex").strip().lower() or "hex"
+        audio_format = str(request.get("format") or request.get("audioFormat") or request.get("audio_format") or "mp3").strip().lower() or "mp3"
+        audio_setting = {
+            "sample_rate": int(request.get("sampleRate") or request.get("sample_rate") or 44100),
+            "bitrate": int(request.get("bitrate") or 256000),
+            "format": audio_format,
+        }
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "output_format": output_format,
+            "audio_setting": audio_setting,
+        }
+        lyrics = str(request.get("lyrics") or "").strip()
+        is_instrumental = _truthy(request.get("isInstrumental") if "isInstrumental" in request else request.get("is_instrumental"))
+        if lyrics:
+            payload["lyrics"] = lyrics
+        if is_instrumental:
+            payload["is_instrumental"] = True
+        if str(job.get("operationKind") or "") == "music.cover":
+            audio_url = self._public_url_or_error(request.get("audioUrl") or request.get("audio_url"), field_name="audioUrl")
+            audio_base64 = str(request.get("audioBase64") or request.get("audio_base64") or "").strip()
+            cover_feature_id = str(request.get("coverFeatureId") or request.get("cover_feature_id") or "").strip()
+            if audio_url:
+                payload["audio_url"] = audio_url
+            if audio_base64:
+                payload["audio_base64"] = audio_base64
+            if cover_feature_id:
+                payload["cover_feature_id"] = cover_feature_id
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(base_url, "/v1/music_generation"),
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=300,
+        )
+        base_resp = dict(response.get("base_resp") or {})
+        if base_resp and int(base_resp.get("status_code") or 0) != 0:
+            raise RuntimeError(str(base_resp.get("status_msg") or "MiniMax music generation failed"))
+        data = dict(response.get("data") or {})
+        if data.get("audio"):
+            artifact = self._artifact_from_hex(
+                str(data["audio"]),
+                job=job,
+                kind="audio",
+                provider=provider_id,
+                mime_type=mimetypes.types_map.get(f".{audio_format}", "audio/mpeg"),
+                extension=f".{audio_format.lstrip('.') or 'mp3'}",
+                metadata={"model": model, "operationKind": job.get("operationKind"), "traceId": response.get("trace_id")},
+            )
+        elif data.get("audio_url") or data.get("url"):
+            artifact = await self._artifact_from_url(
+                str(data.get("audio_url") or data.get("url")),
+                job=job,
+                kind="audio",
+                provider=provider_id,
+                mime_hint=mimetypes.types_map.get(f".{audio_format}", "audio/mpeg"),
+                metadata={"model": model, "operationKind": job.get("operationKind"), "traceId": response.get("trace_id")},
+            )
+        else:
+            raise RuntimeError("MiniMax music response did not include data.audio or data.audio_url")
+        job.update(
+            {
+                "status": "succeeded",
+                "artifacts": [artifact],
+                "providerResponse": {
+                    "providerId": provider_id,
+                    "model": model,
+                    "traceId": response.get("trace_id"),
+                    "extraInfo": response.get("extra_info") or {},
+                    "operationKind": job.get("operationKind"),
+                },
+                "completedAt": utc_now_iso(),
+            }
+        )
+        return self._save_job(job)
+
+    async def _submit_mureka_music_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, configured_model = self._configured_provider_for_model(request, default_model="auto")
+        model = "mureka-o1" if configured_model in {"", "auto"} else self._strip_provider_model_prefix(configured_model)
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        prompt = str(request.get("prompt") or request.get("brief") or "").strip()
+        lyrics = str(request.get("lyrics") or "").strip()
+        if not prompt and not lyrics:
+            raise ValueError("Mureka music job requires prompt or lyrics")
+        payload: dict[str, Any] = {"model": model}
+        if prompt:
+            payload["prompt"] = prompt
+        if lyrics:
+            payload["lyrics"] = lyrics
+        duration = request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds")
+        if duration:
+            payload["duration"] = int(duration)
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(base_url, "/v1/song/generate"),
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=120,
+        )
+        task_id = self._extract_task_id(response)
+        if not task_id:
+            raise RuntimeError(f"Mureka response did not include task_id: {self._compact_provider_response(response)}")
+        job["status"] = normalize_provider_status(response.get("status") or response.get("state") or response.get("task_status") or "queued", provider="mureka")
+        if job["status"] == "succeeded":
+            job["status"] = "running"
+        job["providerTaskId"] = task_id
+        job["providerResponse"] = {"providerId": provider_id, "taskId": task_id, "model": model, "operationKind": job.get("operationKind")}
+        return self._save_job(job)
+
+    async def _poll_mureka_music_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(job.get("providerTaskId") or "").strip()
+        if not task_id:
+            job["status"] = "failed"
+            job["error"] = "Missing providerTaskId"
+            return self._save_job(job)
+        request = dict(job.get("request") or {})
+        provider_id, provider_meta, configured_model = self._configured_provider_for_model(request, default_model="auto")
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        response = await self._request_json(
+            "GET",
+            self._join_api_path(base_url, f"/v1/song/query/{task_id}"),
+            headers=self._bearer_headers(api_key),
+            timeout=60,
+        )
+        status = self._normalize_async_status(response.get("status") or response.get("state") or response.get("task_status") or response.get("code"))
+        job["status"] = status
+        job["providerResponse"] = {**dict(job.get("providerResponse") or {}), "lastStatus": response.get("status") or response.get("state"), "taskId": task_id}
+        if status == "succeeded":
+            result_url = self._find_first_url(response, preferred_extensions=AUDIO_EXTENSIONS)
+            if not result_url:
+                job["status"] = "failed"
+                job["error"] = "Mureka task succeeded without audio URL"
+            else:
+                artifact = await self._artifact_from_url(
+                    result_url,
+                    job=job,
+                    kind="audio",
+                    provider=provider_id,
+                    mime_hint="audio/mpeg",
+                    metadata={"model": "mureka-o1" if configured_model in {"", "auto"} else configured_model, "taskId": task_id},
+                )
+                job["artifacts"] = [artifact]
+                job["completedAt"] = utc_now_iso()
+        elif status == "failed":
+            job["error"] = str(response.get("error") or response.get("message") or "Mureka music task failed")
+            job["completedAt"] = utc_now_iso()
+        return self._save_job(job)
+
+    async def _submit_tencent_hunyuan_3d_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, model = self._configured_provider_for_model(request, default_model="hy-3d-3.0")
+        model = self._strip_provider_model_prefix(model)
+        endpoints = self._tencent_tokenhub_3d_endpoints(provider_meta)
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} requires api_key for Tencent TokenHub 3D")
+        prompt = str(request.get("prompt") or request.get("brief") or "").strip()
+        if not prompt and not (request.get("imageUrl") or request.get("image_url")):
+            raise ValueError("model3d job requires prompt or imageUrl")
+        payload: dict[str, Any] = {"model": model}
+        if prompt:
+            payload["prompt"] = prompt
+        image_url = self._public_url_or_error(request.get("imageUrl") or request.get("image_url"), field_name="imageUrl")
+        if image_url:
+            payload["image_url"] = image_url
+        result_format = str(request.get("resultFormat") or request.get("result_format") or "GLB").strip()
+        if result_format:
+            payload["result_format"] = result_format
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            endpoints["submit"],
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=120,
+        )
+        task_id = self._extract_task_id(response)
+        if not task_id:
+            raise RuntimeError(f"Tencent 3D response did not include id: {self._compact_provider_response(response)}")
+        job["status"] = self._normalize_async_status(response.get("status") or "queued")
+        if job["status"] == "succeeded":
+            job["status"] = "running"
+        job["providerTaskId"] = task_id
+        job["providerResponse"] = {
+            "providerId": provider_id,
+            "taskId": task_id,
+            "model": model,
+            "operationKind": job.get("operationKind"),
+            "endpointOverride": endpoints.get("overrideReason") or "",
+        }
+        return self._save_job(job)
+
+    async def _poll_tencent_hunyuan_3d_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(job.get("providerTaskId") or "").strip()
+        if not task_id:
+            job["status"] = "failed"
+            job["error"] = "Missing providerTaskId"
+            return self._save_job(job)
+        request = dict(job.get("request") or {})
+        provider_id, provider_meta, model = self._configured_provider_for_model(request, default_model="hy-3d-3.0")
+        model = self._strip_provider_model_prefix(model)
+        endpoints = self._tencent_tokenhub_3d_endpoints(provider_meta)
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        response = await self._request_json(
+            "POST",
+            endpoints["query"],
+            headers=self._bearer_headers(api_key),
+            json={"model": model, "id": task_id},
+            timeout=60,
+        )
+        status = self._normalize_async_status(response.get("status") or response.get("state"))
+        job["status"] = status
+        job["providerResponse"] = {**dict(job.get("providerResponse") or {}), "lastStatus": response.get("status") or response.get("state"), "taskId": task_id}
+        if status == "succeeded":
+            result_url = self._best_model3d_url(response)
+            if not result_url:
+                job["status"] = "failed"
+                job["error"] = "Tencent 3D task succeeded without model file URL"
+            else:
+                artifact = await self._artifact_from_url(
+                    result_url,
+                    job=job,
+                    kind="model3d",
+                    provider=provider_id,
+                    mime_hint="model/gltf-binary",
+                    metadata={"model": model, "taskId": task_id},
+                )
+                job["artifacts"] = [artifact]
+                job["completedAt"] = utc_now_iso()
+        elif status == "failed":
+            job["error"] = str(response.get("error") or response.get("message") or "Tencent Hunyuan 3D task failed")
+            job["completedAt"] = utc_now_iso()
+        return self._save_job(job)
+
     def _mcp_volc_env(self) -> dict[str, str]:
         config = storage.read_json("config.json")
         servers = (((config.get("mcp") or {}).get("mcpServers") or {}) if isinstance(config, dict) else {})
@@ -2664,17 +3037,25 @@ class CreativeMediaRuntime:
         fallback: list[tuple[str, dict[str, Any]]] = []
         for provider_id, provider_data in candidates:
             models = dict((provider_data or {}).get("models") or {})
-            if requested_model not in models:
+            model_key = requested_model if requested_model in models else ""
+            if not model_key:
+                for candidate_model_id, candidate_model_data in models.items():
+                    provider_model_id = self._provider_model_id(str(candidate_model_id), dict(candidate_model_data or {}))
+                    if requested_model in {provider_model_id, self._strip_provider_model_prefix(provider_model_id), self._strip_provider_model_prefix(str(candidate_model_id))}:
+                        model_key = str(candidate_model_id)
+                        break
+            if not model_key:
                 continue
             provider_meta = dict((provider_data or {}).get("provider") or {})
             name = str(provider_meta.get("name") or provider_id).lower()
             target = preferred if "local2" in name or "local2" in provider_id.lower() else fallback
-            target.append((provider_id, provider_data))
+            target.append((provider_id, {**dict(provider_data or {}), "_selectedModelKey": model_key}))
         selected = (preferred or fallback)
         if not selected:
             raise ValueError(f"No configured provider exposes model: {requested_model}")
         provider_id, provider_data = selected[0]
-        model_data = dict(((provider_data or {}).get("models") or {}).get(requested_model) or {})
+        selected_model_key = str(provider_data.get("_selectedModelKey") or requested_model)
+        model_data = dict(((provider_data or {}).get("models") or {}).get(selected_model_key) or {})
         return provider_id, dict((provider_data or {}).get("provider") or {}), self._provider_model_id(requested_model, model_data)
 
     @staticmethod
@@ -2684,6 +3065,21 @@ class CreativeMediaRuntime:
         if provider_model_id:
             return provider_model_id
         return str(model_id or "")
+
+    @staticmethod
+    def _strip_provider_model_prefix(model_id: str) -> str:
+        raw = str(model_id or "").strip()
+        return raw.rsplit("/", 1)[-1] if "/" in raw else raw
+
+    @staticmethod
+    def _join_api_path(base_url: str, path: str) -> str:
+        base = str(base_url or "").rstrip("/")
+        suffix = str(path or "").strip()
+        if not suffix.startswith("/"):
+            suffix = f"/{suffix}"
+        if base.endswith("/v1") and suffix.startswith("/v1/"):
+            suffix = suffix[3:]
+        return f"{base}{suffix}"
 
     def _openai_image_provider(self, request: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
         return self._configured_provider_for_model(request, default_model="gpt-image-2")
@@ -3270,6 +3666,15 @@ class CreativeMediaRuntime:
         path.write_bytes(data)
         return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
 
+    def _artifact_from_hex(self, payload: str, *, job: dict[str, Any], kind: str, provider: str, mime_type: str, extension: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        raw = re.sub(r"\s+", "", str(payload or ""))
+        if not raw:
+            raise RuntimeError("Provider returned empty hex payload")
+        data = bytes.fromhex(raw)
+        path = self._output_path(job, kind, extension)
+        path.write_bytes(data)
+        return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
+
     async def _artifact_from_url(self, url: str, *, job: dict[str, Any], kind: str, provider: str, mime_hint: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         headers = {"User-Agent": "V8-Agent-OS-CreativeMedia/1.0"}
         timeout = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=30.0)
@@ -3345,7 +3750,99 @@ class CreativeMediaRuntime:
         guessed = mimetypes.guess_extension(content_type or "")
         if guessed:
             return guessed
-        return {"image": ".png", "video": ".mp4", "audio": ".mp3"}.get(kind, ".bin")
+        return {"image": ".png", "video": ".mp4", "audio": ".mp3", "model3d": ".glb"}.get(kind, ".bin")
+
+    def _extract_task_id(self, payload: Any) -> str:
+        for key in ("task_id", "taskId", "id", "job_id", "jobId"):
+            value = self._find_first_value(payload, key)
+            if value:
+                return str(value)
+        return ""
+
+    def _find_first_value(self, payload: Any, target_key: str) -> Any:
+        if isinstance(payload, dict):
+            if target_key in payload and payload[target_key] not in (None, ""):
+                return payload[target_key]
+            for value in payload.values():
+                found = self._find_first_value(value, target_key)
+                if found not in (None, ""):
+                    return found
+        if isinstance(payload, list):
+            for item in payload:
+                found = self._find_first_value(item, target_key)
+                if found not in (None, ""):
+                    return found
+        return None
+
+    def _find_first_url(self, payload: Any, *, preferred_extensions: set[str] | None = None) -> str:
+        preferred_extensions = preferred_extensions or set()
+        urls: list[str] = []
+
+        def visit(value: Any) -> None:
+            if isinstance(value, str):
+                if value.startswith("http://") or value.startswith("https://"):
+                    urls.append(value)
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    visit(item)
+            elif isinstance(value, list):
+                for item in value:
+                    visit(item)
+
+        visit(payload)
+        for url in urls:
+            if Path(urlparse(url).path).suffix.lower() in preferred_extensions:
+                return url
+        return urls[0] if urls else ""
+
+    def _best_model3d_url(self, payload: Any) -> str:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, list):
+            for wanted_type in ("glb", "obj", "zip", "fbx", "gltf", "usdz"):
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("type") or "").strip().lower() == wanted_type and item.get("url"):
+                        return str(item["url"])
+        return self._find_first_url(payload, preferred_extensions=MODEL3D_EXTENSIONS)
+
+    @staticmethod
+    def _normalize_async_status(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"2", "200", "success", "succeeded", "completed", "complete", "finished", "done", "finish"}:
+            return "succeeded"
+        if text in {"-1", "3", "4", "failed", "failure", "error", "cancelled", "canceled"}:
+            return "failed"
+        return "running"
+
+    @staticmethod
+    def _compact_provider_response(payload: Any) -> str:
+        try:
+            text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            text = str(payload)
+        return text[:500]
+
+    def _tencent_tokenhub_3d_endpoints(self, provider_meta: dict[str, Any]) -> dict[str, str]:
+        raw_base = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        override_reason = ""
+        if not raw_base or "ai3d.tencentcloudapi.com" in raw_base:
+            raw_base = "https://tokenhub.tencentmaas.com/v1/api/3d"
+            override_reason = "legacy_tencentcloud_ai3d_preset_uses_tokenhub_bearer"
+        if raw_base.endswith("/submit"):
+            submit = raw_base
+            query = raw_base.rsplit("/", 1)[0] + "/query"
+        elif raw_base.endswith("/query"):
+            query = raw_base
+            submit = raw_base.rsplit("/", 1)[0] + "/submit"
+        elif raw_base.endswith("/v1"):
+            submit = f"{raw_base}/api/3d/submit"
+            query = f"{raw_base}/api/3d/query"
+        else:
+            submit = f"{raw_base}/submit"
+            query = f"{raw_base}/query"
+        return {"submit": submit, "query": query, "overrideReason": override_reason}
 
     def _bearer_headers(self, api_key: str) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

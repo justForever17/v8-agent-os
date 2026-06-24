@@ -671,17 +671,190 @@ def test_music_brief_can_bind_connected_catalog_model(monkeypatch):
     assert next(item for item in result["operationRows"] if item["operationKind"] == "music.brief")["selectedModelRefs"] == ["mureka_music::auto"]
 
 
-def test_music_job_remains_catalog_only(monkeypatch):
+def test_minimax_music_job_decodes_hex_artifact(monkeypatch, tmp_path: Path):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax-cn": {
+                    "provider": {
+                        "name": "MiniMax 中国站",
+                        "api_standard": "minimax",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "music_generation/music-2.6": {
+                            "type": "MUSIC",
+                            "mediaLimits": {
+                                "providerModelId": "music-2.6",
+                                "operationKinds": ["music.generate"],
+                            },
+                        }
+                    },
+                },
+            }
+        },
+    )
+    requested_urls = []
 
-    job = asyncio.run(creative_media_runtime.create_job({"modality": "music", "prompt": "short cinematic cue"}))
+    async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
+        requested_urls.append(url)
+        assert json["model"] == "music-2.6"
+        return {"data": {"audio": "00010203", "status": 2}, "trace_id": "trace_1", "base_resp": {"status_code": 0}}
+
+    def fake_record_local_artifact(*, file_path, job, kind, mime_type, metadata):
+        return {"artifactId": f"artifact_{kind}", "kind": kind, "mimeType": mime_type, "sourcePath": str(file_path), "metadata": metadata}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_record_local_artifact", fake_record_local_artifact)
+
+    job = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "music",
+                "operationKind": "music.generate",
+                "providerId": "minimax-cn",
+                "modelId": "music_generation/music-2.6",
+                "prompt": "short cinematic cue",
+                "is_instrumental": True,
+                "workspacePath": str(tmp_path),
+            }
+        )
+    )
 
     assert job["modality"] == "music"
-    assert job["operationKind"] == "music.brief"
-    assert job["adapter"] == "catalog_only"
-    assert job["status"] == "failed"
-    assert "catalog-only" in job["error"]
+    assert job["operationKind"] == "music.generate"
+    assert job["adapter"] == "minimax_music"
+    assert job["status"] == "succeeded"
+    assert job["artifacts"][0]["kind"] == "audio"
+    assert Path(job["artifacts"][0]["sourcePath"]).read_bytes() == b"\x00\x01\x02\x03"
+    assert requested_urls == ["https://api.minimaxi.com/v1/music_generation"]
+
+
+def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "mureka_music": {
+                    "provider": {
+                        "name": "Mureka Music API",
+                        "api_standard": "mureka_song_task",
+                        "base_url": "https://api.mureka.ai",
+                        "api_key": "sk-test",
+                    },
+                    "models": {"auto": {"type": "MUSIC", "capabilities": {"music": True}}},
+                }
+            }
+        },
+    )
+    requested_urls = []
+
+    async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
+        requested_urls.append((method, url))
+        if url.endswith("/v1/song/generate"):
+            assert json["model"] == "mureka-o1"
+            return {"task_id": "task_1", "status": "queued"}
+        return {"status": "completed", "data": {"audio_url": "https://cdn.example.test/song.mp3"}}
+
+    async def fake_artifact_from_url(url, *, job, kind, provider, mime_hint, metadata=None):
+        return {"artifactId": "artifact_song", "kind": kind, "sourceUrl": url, "metadata": metadata or {}}
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact_from_url)
+    monkeypatch.setattr("runtimes.creative_media.runtime.asyncio.sleep", fake_sleep)
+
+    job = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "music",
+                "operationKind": "music.generate",
+                "providerId": "mureka_music",
+                "modelId": "auto",
+                "prompt": "short cheerful loop",
+                "wait": True,
+                "workspacePath": str(tmp_path),
+            }
+        )
+    )
+
+    assert job["adapter"] == "mureka_music"
+    assert job["status"] == "succeeded"
+    assert job["providerTaskId"] == "task_1"
+    assert job["artifacts"][0]["sourceUrl"] == "https://cdn.example.test/song.mp3"
+    assert requested_urls == [
+        ("POST", "https://api.mureka.ai/v1/song/generate"),
+        ("GET", "https://api.mureka.ai/v1/song/query/task_1"),
+    ]
+
+
+def test_tencent_hunyuan_3d_uses_tokenhub_and_downloads_model(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "tencent_hunyuan_3d": {
+                    "provider": {
+                        "name": "Tencent Hunyuan 3D",
+                        "api_standard": "tencentcloud_ai3d",
+                        "base_url": "https://ai3d.tencentcloudapi.com",
+                        "api_key": "sk-test",
+                    },
+                    "models": {"hy-3d-3.0": {"type": "MODEL3D", "capabilities": {"model3d": True}}},
+                }
+            }
+        },
+    )
+    requested_urls = []
+
+    async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
+        requested_urls.append((method, url, dict(json or {})))
+        assert url.startswith("https://tokenhub.tencentmaas.com/v1/api/3d/")
+        if url.endswith("/submit"):
+            return {"id": "task_3d", "status": "queued"}
+        return {"status": "completed", "data": [{"type": "obj", "url": "https://cdn.example.test/model.obj"}, {"type": "glb", "url": "https://cdn.example.test/model.glb"}]}
+
+    async def fake_artifact_from_url(url, *, job, kind, provider, mime_hint, metadata=None):
+        return {"artifactId": "artifact_model", "kind": kind, "sourceUrl": url, "metadata": metadata or {}}
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact_from_url)
+    monkeypatch.setattr("runtimes.creative_media.runtime.asyncio.sleep", fake_sleep)
+
+    job = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "model3d",
+                "operationKind": "model3d.generate",
+                "providerId": "tencent_hunyuan_3d",
+                "modelId": "hy-3d-3.0",
+                "prompt": "low-poly treasure chest",
+                "wait": True,
+                "workspacePath": str(tmp_path),
+            }
+        )
+    )
+
+    assert job["adapter"] == "tencent_hunyuan_3d"
+    assert job["status"] == "succeeded"
+    assert job["artifacts"][0]["kind"] == "model3d"
+    assert job["artifacts"][0]["sourceUrl"] == "https://cdn.example.test/model.glb"
+    assert job["providerResponse"]["endpointOverride"] == "legacy_tencentcloud_ai3d_preset_uses_tokenhub_bearer"
+    assert requested_urls[0][1].endswith("/submit")
+    assert requested_urls[1][1].endswith("/query")
 
 
 def test_scope_fields_registers_explicit_project_workspace(monkeypatch, tmp_path: Path):

@@ -2599,13 +2599,13 @@
           "minimax-music-2.5"
         ],
         "apiStandard": "minimax_music_generation",
-        "adapter": "catalog_only",
-        "probeStrategy": "catalog_only",
+        "adapter": "minimax_music",
+        "probeStrategy": "live_request",
         "operationKinds": [
           "music.generate",
           "music.cover"
         ],
-        "baseUrlDefault": "https://api.minimaxi.com",
+        "baseUrlDefault": "https://api.minimaxi.com/v1",
         "credentialHelp": {
           "label": "Get API key",
           "url": "https://platform.minimaxi.com/user-center/basic-information/interface-key"
@@ -2657,10 +2657,11 @@
         "displayName": "Mureka Music API",
         "logoAsset": "/model-assets/providers/mureka.svg",
         "modelIds": [
+          "auto",
           "mureka-o1"
         ],
         "apiStandard": "mureka_song_task",
-        "adapter": "catalog_only",
+        "adapter": "mureka_music",
         "baseUrlDefault": "https://api.mureka.ai",
         "credentialHelp": {
           "label": "Get Mureka API key",
@@ -2688,13 +2689,20 @@
         },
         "result": {
           "paths": [
-            "creative_music_brief",
-            "cue_sheet",
-            "future_artifact"
+            "audio_url",
+            "data.audio_url",
+            "data[].url",
+            "result.url",
+            "url"
           ]
         },
-        "sourceUrl": "https://platform.mureka.ai/docs/en/quickstart.html",
-        "confidence": "provider_docs"
+        "sourceUrl": "https://platform.mureka.ai/docs/api/operations/post-v1-song-generate.html",
+        "confidence": "provider_docs",
+        "probeStrategy": "task_poll",
+        "operationKinds": [
+          "music.generate",
+          "music.brief"
+        ]
       },
       {
         "id": "fal_music",
@@ -3005,72 +3013,55 @@
         "displayName": "Tencent Hunyuan 3D",
         "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
         "modelIds": [
+          "hy-3d-3.0",
+          "hy-3d-3.1",
+          "hy-3d-express",
           "hunyuan-3d",
           "hunyuan-3d-rapid",
-          "hunyuan-3d-pro",
-          "hunyuan-3d-texture",
-          "hunyuan-3d-part",
-          "hunyuan-3d-profile",
-          "hunyuan-3d-format-convert"
+          "hunyuan-3d-pro"
         ],
-        "apiStandard": "tencentcloud_ai3d",
-        "adapter": "catalog_only",
+        "apiStandard": "tencent_tokenhub_3d",
+        "adapter": "tencent_hunyuan_3d",
         "operationKinds": [
-          "model3d.generate",
-          "model3d.texture",
-          "model3d.part",
-          "model3d.profile",
-          "model3d.convert"
+          "model3d.generate"
         ],
-        "baseUrlDefault": "https://ai3d.tencentcloudapi.com",
+        "baseUrlDefault": "https://tokenhub.tencentmaas.com/v1/api/3d",
         "credentialHelp": {
           "label": "Get Tencent Cloud API key",
           "url": "https://console.cloud.tencent.com/cam/capi"
         },
         "auth": {
-          "type": "secret_id_key",
-          "signature": "tencentcloud_tc3"
+          "type": "api_key",
+          "header": "Authorization",
+          "scheme": "Bearer"
         },
         "request": {
           "method": "POST",
-          "submitPath": "/",
+          "submitPath": "/submit",
+          "queryPath": "/query",
           "bodyFields": [
-            "Action",
-            "Version",
-            "Region",
-            "Prompt",
-            "ImageBase64",
-            "ImageUrl",
-            "ResultFormat"
-          ],
-          "actions": [
-            "Generate3D",
-            "Query3D",
-            "SubmitHunyuanTo3DRapidJob",
-            "QueryHunyuanTo3DRapidJob",
-            "SubmitHunyuanTo3DProJob",
-            "QueryHunyuanTo3DProJob",
-            "SubmitHunyuanTo3DTextureJob",
-            "SubmitHunyuanTo3DPartJob",
-            "SubmitHunyuanTo3DProfileJob",
-            "SubmitHunyuanTo3DFormatConvertJob"
+            "model",
+            "prompt",
+            "image_url",
+            "result_format"
           ],
           "sizeFormat": "MODEL_3D_ASSET"
         },
         "polling": {
           "mode": "task",
-          "statusPath": "Action=QueryHunyuanTo3DJob",
+          "statusPath": "/query",
           "recommendedIntervalSeconds": 10
         },
         "result": {
           "paths": [
-            "Response.ResultFile3ds[].Url",
-            "Response.ResultFile3ds[].PreviewUrl",
-            "Response.Url"
+            "data[].url",
+            "data[].preview_image_url",
+            "status"
           ]
         },
-        "sourceUrl": "https://cloud.tencent.com.cn/document/product/1804/120838",
-        "confidence": "provider_docs"
+        "sourceUrl": "https://cloud.tencent.com/document/product/1823/130082",
+        "confidence": "provider_docs",
+        "probeStrategy": "task_poll"
       },
       {
         "id": "volcengine_3d_generation",

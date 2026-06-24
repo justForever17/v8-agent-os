@@ -2014,6 +2014,12 @@ class RuntimeEpisodeRunner:
                         "workOrderKind": work_order.get("workOrderKind"),
                         "recipeRefs": work_order.get("recipeRefs") or [],
                         "artifactRefs": work_order.get("artifactRefs") or [],
+                        "handoffStage": "planned",
+                        "requiresContinuation": not bool(work_order.get("artifactRefs")),
+                        "recommendedNextAction": (
+                            "Create the required provider jobs with creative_media_create_job, poll queued jobs with "
+                            "creative_media_get_job, then pass the resulting artifact refs to Engineering."
+                        ),
                         "providerPlan": work_order.get("providerPlan"),
                         "qualityChecks": work_order.get("qualityChecks") or [],
                         "costEstimate": work_order.get("costEstimate") or {},
@@ -2031,7 +2037,16 @@ class RuntimeEpisodeRunner:
                 status="ready",
                 confidence="medium",
                 consumer_hint="Pass recipeRefs/assetRefs back to Engineering or Supervisor for UI/media integration.",
-                extra={"recipeRefs": [recipe_id] if recipe_id else [], "providerStatus": recipe.get("providerStatus")},
+                extra={
+                    "recipeRefs": [recipe_id] if recipe_id else [],
+                    "providerStatus": recipe.get("providerStatus"),
+                    "handoffStage": "compiled",
+                    "requiresContinuation": True,
+                    "recommendedNextAction": (
+                        "Create the required provider jobs with creative_media_create_job, poll queued jobs with "
+                        "creative_media_get_job, then pass the resulting artifact refs to Engineering."
+                    ),
+                },
             )
         except Exception as exc:
             return build_handoff_ref(

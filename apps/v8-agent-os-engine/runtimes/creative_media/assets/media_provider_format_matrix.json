@@ -81,7 +81,7 @@
           "cogview-3-flash"
         ],
         "apiStandard": "zhipu_bigmodel_image",
-        "adapter": "catalog_only",
+        "adapter": "zhipu_bigmodel_image",
         "probeStrategy": "openai_models",
         "operationKinds": [
           "image.generate"
@@ -2029,7 +2029,11 @@
           "minimax-speech-2.6"
         ],
         "apiStandard": "minimax_tts",
-        "adapter": "catalog_only",
+        "adapter": "minimax_tts",
+        "operationKinds": [
+          "voice.tts",
+          "voice.design"
+        ],
         "baseUrlDefault": "https://api.minimaxi.com",
         "credentialHelp": {
           "label": "Get API key",
@@ -2043,11 +2047,15 @@
         "request": {
           "method": "POST",
           "submitPath": "/v1/t2a_v2",
+          "voiceDesignPath": "/v1/voice_design",
           "bodyFields": [
             "model",
             "text",
             "voice_setting",
-            "audio_setting"
+            "audio_setting",
+            "prompt",
+            "preview_text",
+            "voice_id"
           ],
           "sizeFormat": "AUDIO_FORMAT_ENUM"
         },

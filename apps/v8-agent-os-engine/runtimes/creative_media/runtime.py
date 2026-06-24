@@ -63,6 +63,8 @@ MEDIA_MODEL_TYPE_TO_MODALITY = {
     "VIDEO": "video",
     "VOICE": "voice",
     "AUDIO": "voice",
+    "TTS": "voice",
+    "SPEECH": "voice",
     "MUSIC": "music",
     "MODEL3D": "model3d",
     "WORKFLOW": "model3d",
@@ -88,6 +90,7 @@ EXECUTABLE_OPERATION_KINDS = {
     "video.action_transfer",
     "video.replacement",
     "voice.tts",
+    "voice.design",
     "music.generate",
     "music.cover",
     "model3d.generate",
@@ -360,7 +363,7 @@ class CreativeMediaRuntime:
         return {
             "kind": self.kind,
             "displayName": "CreativeMediaRuntime",
-            "summary": "负责图片、视频、语音、音乐与未来 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
+            "summary": "负责图片、视频、配音/旁白、音乐与 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
             "responsibilities": [
                 "归一化媒体 provider 请求格式。",
                 "持久化媒体 job 状态。",
@@ -374,8 +377,9 @@ class CreativeMediaRuntime:
             "visibility": "internal",
             "promptHints": [
                 "用法入口：通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，不要让 Supervisor 直接拼 provider raw request。",
-                "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；明确 Seedance、Sora、图生视频、参考视频、首尾帧或参考音频/音乐时可作为主 runtime。",
-                "支撑能力与边界：Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐或关键帧素材时，Creative Media 作为 CreativeAssetRequest 素材支持 runtime；科普、课程、讲解、产品介绍等可编辑代码视频由 Engineering 主导。",
+                "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；明确图像、视频、配音/旁白、音乐、3D 素材或多媒体拼接任务时可作为主 runtime 或素材支持 runtime。",
+                "支撑能力与边界：Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐、3D 道具或关键帧素材时，Creative Media 作为 CreativeAssetRequest 素材支持 runtime；AI 生成拼接长视频可由 Creative Media 产出各类素材，由 Engineering 组装可编辑页面/时间线。",
+                "语音边界：Creative Media 的 voice.tts / voice.design 生成项目媒体 artifact 与 reusable voice_id，不等同于聊天气泡 `<voice>text</voice>` 的系统 TTS 播放协议。",
                 "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
                 "科普、课程、讲解、产品介绍这类需要可编辑时间线的视频，默认由 Engineering 的代码视频链路主导，Creative Media 只提供素材和媒体 provider 子能力。",
             ],
@@ -434,6 +438,7 @@ class CreativeMediaRuntime:
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
                 {"id": "dashscope", "modalities": ["image", "video"], "executable": True},
                 {"id": "v8_audio_tts", "modalities": ["voice"], "executable": True},
+                {"id": "minimax_tts", "modalities": ["voice"], "executable": True},
                 {"id": "minimax_music", "modalities": ["music"], "executable": True},
                 {"id": "mureka_music", "modalities": ["music"], "executable": True},
                 {"id": "tencent_hunyuan_3d", "modalities": ["model3d"], "executable": True},
@@ -459,12 +464,22 @@ class CreativeMediaRuntime:
         provider_meta: dict[str, Any],
         model_data: dict[str, Any],
     ) -> str:
+        media_limits = dict(model_data.get("mediaLimits") or {})
+        explicit_adapter = str(
+            model_data.get("adapter")
+            or media_limits.get("adapterProviderId")
+            or media_limits.get("adapter")
+            or ""
+        ).strip()
+        if explicit_adapter:
+            return explicit_adapter
         haystack = " ".join(
             [
                 provider_id,
                 str(provider_meta.get("name") or ""),
                 str(provider_meta.get("apiStandard") or provider_meta.get("api_standard") or ""),
                 str(model_data.get("adapter") or ""),
+                str(media_limits.get("adapterProviderId") or ""),
             ]
         ).lower()
         if modality in {"image", "video"} and any(token in haystack for token in ("volc", "seedream", "seedance", "jimeng")):
@@ -486,6 +501,8 @@ class CreativeMediaRuntime:
         if modality == "image":
             return "openai_images"
         if modality == "voice":
+            if "minimax" in haystack or str(model_data.get("id") or "").startswith("t2a_v2/"):
+                return "minimax_tts"
             return "v8_audio_tts" if provider_id == "v8_audio_tts" else str(model_data.get("adapter") or "v8_audio_tts")
         return str(model_data.get("adapter") or "catalog_only")
 
@@ -503,8 +520,6 @@ class CreativeMediaRuntime:
             model_id=str(model_data.get("id") or ""),
             modality=modality,
         )
-        if registry_operations:
-            return registry_operations
         media_limits = dict(model_data.get("mediaLimits") or {})
         explicit = _list_of_strings(
             model_data.get("operationKinds")
@@ -512,6 +527,10 @@ class CreativeMediaRuntime:
             or media_limits.get("operationKinds")
             or provider_meta.get("operationKinds")
         )
+        if modality == "voice" and adapter == "minimax_tts":
+            return list(dict.fromkeys([*registry_operations, *explicit, "voice.tts", "voice.design"]))
+        if registry_operations:
+            return registry_operations
         if explicit:
             return [item for item in explicit if item.startswith(f"{modality}.") or item.startswith("voice.")]
         haystack = " ".join([provider_id, str(provider_meta.get("name") or ""), str(model_data.get("id") or "")]).lower()
@@ -595,7 +614,9 @@ class CreativeMediaRuntime:
             return True
         if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"} and adapter == "agnes_video":
             return True
-        if operation_kind == "voice.tts" and adapter == "v8_audio_tts":
+        if operation_kind == "voice.tts" and adapter in {"v8_audio_tts", "minimax_tts"}:
+            return True
+        if operation_kind == "voice.design" and adapter == "minimax_tts":
             return True
         if operation_kind == "music.generate" and adapter in {"minimax_music", "mureka_music"}:
             return True
@@ -776,6 +797,78 @@ class CreativeMediaRuntime:
                             "outputStreams": ["video", "audio"] if operation_kind in {"video.lipsync", "video.avatar"} else ["video"],
                         },
                         "nativeAudio": operation_kind in {"video.lipsync", "video.avatar"},
+                    }
+                )
+        for provider_id, provider_data in providers.items():
+            provider_meta = dict((provider_data or {}).get("provider") or {})
+            haystack = " ".join(
+                [
+                    str(provider_id),
+                    str(provider_meta.get("name") or ""),
+                    str(provider_meta.get("api_standard") or provider_meta.get("apiStandard") or ""),
+                ]
+            ).lower()
+            if "agnes" not in haystack:
+                continue
+            provider_name = str(provider_meta.get("name") or "Agnes AI").strip() or "Agnes AI"
+            api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+            for operation_kind in ("image.generate", "image.edit"):
+                model_id = "agnes-image-2.1-flash"
+                capability_profile = capability_profile_for_model(
+                    provider_id="agnes_image",
+                    model_id=model_id,
+                    operation_kind=operation_kind,
+                ) or {}
+                candidates.append(
+                    {
+                        "candidateId": _candidate_id(
+                            modality="image",
+                            operation_kind=operation_kind,
+                            provider_id=str(provider_id),
+                            model_id=model_id,
+                            adapter="agnes_images",
+                        ),
+                        "modality": "image",
+                        "operationKind": operation_kind,
+                        "providerId": str(provider_id),
+                        "providerName": provider_name,
+                        "modelId": model_id,
+                        "modelRef": f"{provider_id}::{model_id}",
+                        "adapter": "agnes_images",
+                        "capabilityProfile": capability_profile,
+                        "source": "runtime_builtin",
+                        "available": bool(api_key),
+                        "briefOnly": False,
+                    }
+                )
+            for operation_kind in ("video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"):
+                model_id = "agnes-video-v2.0"
+                capability_profile = capability_profile_for_model(
+                    provider_id="agnes_video",
+                    model_id=model_id,
+                    operation_kind=operation_kind,
+                ) or {}
+                candidates.append(
+                    {
+                        "candidateId": _candidate_id(
+                            modality="video",
+                            operation_kind=operation_kind,
+                            provider_id=str(provider_id),
+                            model_id=model_id,
+                            adapter="agnes_video",
+                        ),
+                        "modality": "video",
+                        "operationKind": operation_kind,
+                        "providerId": str(provider_id),
+                        "providerName": provider_name,
+                        "modelId": model_id,
+                        "modelRef": f"{provider_id}::{model_id}",
+                        "adapter": "agnes_video",
+                        "capabilityProfile": capability_profile,
+                        "nativeAudio": bool(capability_profile.get("nativeAudio")),
+                        "source": "runtime_builtin",
+                        "available": bool(api_key),
+                        "briefOnly": False,
                     }
                 )
         candidates.append(
@@ -2556,15 +2649,23 @@ class CreativeMediaRuntime:
 
     async def _create_voice_job(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_kind = self._operation_kind_for_request("voice", request)
-        if operation_kind != "voice.tts":
-            job = self._new_job(modality="voice", adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
-            job["status"] = "failed"
-            job["error"] = f"Unsupported voice operationKind={operation_kind}"
-            job["completedAt"] = utc_now_iso()
-            return self._save_job(job)
-        job = self._new_job(modality="voice", adapter="v8_audio_tts", request=request)
+        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
+        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or "").strip().lower()
+        adapter = str(request.get("adapter") or "").strip().lower()
+        if not adapter:
+            adapter = "minimax_tts" if "minimax" in requested_provider_id or "minimax" in requested_model else "v8_audio_tts"
+        prepared_request = {**request, "operationKind": operation_kind}
+        job = self._new_job(modality="voice", adapter=adapter, request=prepared_request)
         self._save_job(job)
         try:
+            if adapter == "minimax_tts":
+                if operation_kind == "voice.tts":
+                    return await self._run_minimax_tts_job(job, prepared_request)
+                if operation_kind == "voice.design":
+                    return await self._run_minimax_voice_design_job(job, prepared_request)
+                raise ValueError(f"Unsupported MiniMax voice operationKind={operation_kind}")
+            if operation_kind != "voice.tts":
+                raise ValueError(f"Unsupported voice operationKind={operation_kind}")
             text = str(request.get("text") or request.get("prompt") or "").strip()
             if not text:
                 raise ValueError("voice job requires text")
@@ -2593,6 +2694,192 @@ class CreativeMediaRuntime:
             job["error"] = _exception_summary(exc)
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
+
+    async def _run_minimax_tts_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, model = self._configured_provider_for_model(request, default_model="t2a_v2/speech-2.8-hd")
+        model = self._strip_provider_model_prefix(model)
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        text = str(request.get("text") or request.get("prompt") or "").strip()
+        if not text:
+            raise ValueError("MiniMax voice.tts job requires text")
+        audio_format = str(request.get("format") or request.get("audioFormat") or request.get("audio_format") or "mp3").strip().lower() or "mp3"
+        speed: float | str = 1
+        if request.get("speed") not in (None, ""):
+            try:
+                speed = float(str(request.get("speed")))
+            except ValueError:
+                speed = str(request.get("speed"))
+        try:
+            volume = int(float(str(request.get("volume") or request.get("vol") or 1)))
+        except ValueError:
+            volume = 1
+        try:
+            pitch = int(float(str(request.get("pitch") or 0)))
+        except ValueError:
+            pitch = 0
+        voice_id = str(
+            request.get("voiceId")
+            or request.get("voice_id")
+            or request.get("voice")
+            or (dict(request.get("voiceSetting") or request.get("voice_setting") or {}).get("voice_id"))
+            or "male-qn-qingse"
+        ).strip()
+        payload: dict[str, Any] = {
+            "model": model,
+            "text": text,
+            "stream": False,
+            "voice_setting": {
+                "voice_id": voice_id,
+                "speed": speed,
+                "vol": volume,
+                "pitch": pitch,
+            },
+            "audio_setting": {
+                "sample_rate": int(request.get("sampleRate") or request.get("sample_rate") or 32000),
+                "bitrate": int(request.get("bitrate") or 128000),
+                "format": audio_format,
+                "channel": int(request.get("channel") or 1),
+            },
+            "output_format": "hex",
+            "subtitle_enable": bool(request.get("subtitleEnable") or request.get("subtitle_enable") or False),
+        }
+        emotion = str(request.get("emotion") or "").strip()
+        if emotion:
+            payload["voice_setting"]["emotion"] = emotion
+        pronunciation_dict = request.get("pronunciationDict") or request.get("pronunciation_dict")
+        if isinstance(pronunciation_dict, dict) and pronunciation_dict:
+            payload["pronunciation_dict"] = pronunciation_dict
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(base_url, "/v1/t2a_v2"),
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=180,
+        )
+        base_resp = dict(response.get("base_resp") or {})
+        if base_resp and int(base_resp.get("status_code") or 0) != 0:
+            raise RuntimeError(str(base_resp.get("status_msg") or "MiniMax TTS failed"))
+        audio_hex = str(((response.get("data") or {}) or {}).get("audio") or "").strip()
+        if not audio_hex:
+            raise RuntimeError("MiniMax TTS response did not include data.audio")
+        artifact = self._artifact_from_hex(
+            audio_hex,
+            job=job,
+            kind="audio",
+            provider=provider_id,
+            mime_type=mimetypes.types_map.get(f".{audio_format}", "audio/mpeg"),
+            extension=f".{audio_format.lstrip('.') or 'mp3'}",
+            metadata={
+                "model": model,
+                "operationKind": job.get("operationKind"),
+                "voiceId": voice_id,
+                "traceId": response.get("trace_id"),
+                "creativeMediaVoiceTts": True,
+                "systemVoiceProtocol": False,
+            },
+        )
+        job.update(
+            {
+                "status": "succeeded",
+                "artifacts": [artifact],
+                "providerResponse": {
+                    "providerId": provider_id,
+                    "model": model,
+                    "voiceId": voice_id,
+                    "traceId": response.get("trace_id"),
+                    "extraInfo": response.get("extra_info") or {},
+                    "operationKind": job.get("operationKind"),
+                },
+                "completedAt": utc_now_iso(),
+            }
+        )
+        return self._save_job(job)
+
+    async def _run_minimax_voice_design_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        provider_id, provider_meta, _model = self._configured_provider_for_model(request, default_model="t2a_v2/speech-2.8-hd")
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        prompt = str(
+            request.get("voicePrompt")
+            or request.get("voice_prompt")
+            or request.get("voiceDescription")
+            or request.get("voice_description")
+            or request.get("prompt")
+            or ""
+        ).strip()
+        preview_text = str(
+            request.get("previewText")
+            or request.get("preview_text")
+            or request.get("text")
+            or "这是一段用于试听新音色的 V8 Agent OS 创意媒体旁白。"
+        ).strip()
+        if not prompt:
+            raise ValueError("MiniMax voice.design job requires voicePrompt or prompt")
+        if not preview_text:
+            raise ValueError("MiniMax voice.design job requires previewText or text")
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "preview_text": preview_text[:500],
+        }
+        voice_id = str(request.get("voiceId") or request.get("voice_id") or "").strip()
+        if voice_id:
+            payload["voice_id"] = voice_id
+        if "aigcWatermark" in request or "aigc_watermark" in request:
+            payload["aigc_watermark"] = bool(request.get("aigcWatermark") if "aigcWatermark" in request else request.get("aigc_watermark"))
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(base_url, "/v1/voice_design"),
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=180,
+        )
+        base_resp = dict(response.get("base_resp") or {})
+        if base_resp and int(base_resp.get("status_code") or 0) != 0:
+            raise RuntimeError(str(base_resp.get("status_msg") or "MiniMax voice design failed"))
+        designed_voice_id = str(response.get("voice_id") or voice_id or "").strip()
+        trial_audio = str(response.get("trial_audio") or "").strip()
+        if not designed_voice_id:
+            raise RuntimeError("MiniMax voice design response did not include voice_id")
+        artifacts: list[dict[str, Any]] = []
+        if trial_audio:
+            artifacts.append(
+                self._artifact_from_hex(
+                    trial_audio,
+                    job=job,
+                    kind="audio",
+                    provider=provider_id,
+                    mime_type="audio/mpeg",
+                    extension=".mp3",
+                    metadata={
+                        "operationKind": job.get("operationKind"),
+                        "voiceId": designed_voice_id,
+                        "previewTextLength": len(preview_text),
+                        "creativeMediaVoiceDesign": True,
+                        "systemVoiceProtocol": False,
+                    },
+                )
+            )
+        job.update(
+            {
+                "status": "succeeded",
+                "artifacts": artifacts,
+                "providerResponse": {
+                    "providerId": provider_id,
+                    "voiceId": designed_voice_id,
+                    "operationKind": job.get("operationKind"),
+                    "trialAudioArtifactId": (artifacts[0] or {}).get("artifactId") if artifacts else "",
+                },
+                "completedAt": utc_now_iso(),
+            }
+        )
+        return self._save_job(job)
 
     async def _create_music_job(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_kind = self._operation_kind_for_request("music", request)
@@ -3052,6 +3339,13 @@ class CreativeMediaRuntime:
             target.append((provider_id, {**dict(provider_data or {}), "_selectedModelKey": model_key}))
         selected = (preferred or fallback)
         if not selected:
+            if requested_provider:
+                provider_data = dict(providers[requested_provider] or {})
+                return (
+                    requested_provider,
+                    dict(provider_data.get("provider") or {}),
+                    requested_model,
+                )
             raise ValueError(f"No configured provider exposes model: {requested_model}")
         provider_id, provider_data = selected[0]
         selected_model_key = str(provider_data.get("_selectedModelKey") or requested_model)

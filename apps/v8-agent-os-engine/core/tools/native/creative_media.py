@@ -463,10 +463,13 @@ async def creative_media_create_job(request: dict[str, Any]) -> str:
     """Create a real Creative Media generation job.
 
     Use `request.modality` plus `request.operationKind`:
-    image/video operations for visual media, `music.generate` or `music.cover`
-    for music, `model3d.generate` for 3D assets, and `voice.tts` for voice.
-    Useful fields include `prompt`, optional `providerId`/`modelId`, and
-    modality-specific refs such as `imageUrl`, `audioUrl`, or `resultFormat`.
+    images/videos use image/video operation kinds; `music.generate`/`music.cover`
+    create music; `model3d.generate` creates 3D assets; `voice.tts` creates
+    narration/voice-over audio artifacts; `voice.design` designs a reusable
+    voice_id plus audition artifact. Creative Media voice jobs are media assets,
+    not the chat `<voice>text</voice>` bubble TTS protocol. Useful fields include
+    `prompt`, optional `providerId`/`modelId`, and modality-specific refs such as
+    `imageUrl`, `audioUrl`, `resultFormat`, `voiceId`, or `previewText`.
     If the job is async, call `creative_media_get_job(job_id=...)` until it
     succeeds/fails, then call `creative_media_job_artifacts(job_id=...)`.
     """

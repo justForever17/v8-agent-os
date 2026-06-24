@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from runtimes.creative_media.catalog import (
     capability_profile_for_model,
     load_audio_music_recipe_library,
@@ -104,6 +106,10 @@ def test_media_provider_matrix_has_required_contract_fields():
     assert "subject_reference" in video_entries["minimax_video"]["request"]["bodyFields"]
     assert image_entries["agnes_image"]["adapter"] == "agnes_images"
     assert "data.image_base64[]" in image_entries["minimax_image"]["result"]["paths"]
+    voice_entries = {entry["id"]: entry for entry in modalities["voice"]}
+    assert voice_entries["minimax_tts"]["adapter"] == "minimax_tts"
+    assert {"voice.tts", "voice.design"}.issubset(set(voice_entries["minimax_tts"]["operationKinds"]))
+    assert voice_entries["minimax_tts"]["request"]["voiceDesignPath"] == "/v1/voice_design"
     assert "capabilityProfile" not in video_entries["volcengine_seedance"]
     assert "capabilityProfile" not in video_entries["openai_sora_video"]
 
@@ -671,6 +677,131 @@ def test_music_brief_can_bind_connected_catalog_model(monkeypatch):
     assert next(item for item in result["operationRows"] if item["operationKind"] == "music.brief")["selectedModelRefs"] == ["mureka_music::auto"]
 
 
+def test_minimax_voice_tts_and_design_are_executable_candidates(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax-cn": {
+                    "provider": {
+                        "name": "MiniMax 中国站",
+                        "api_standard": "minimax",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "t2a_v2/speech-2.8-hd": {
+                            "type": "TTS",
+                            "mediaLimits": {
+                                "adapter": "catalog_only",
+                                "adapterProviderId": "minimax_tts",
+                                "providerModelId": "speech-2.8-hd",
+                                "operationKinds": ["voice.tts"],
+                            },
+                        },
+                        "t2a_v2/speech-2.8-hd-legacy": {"type": "TTS"},
+                    },
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(creative_media_runtime, "_volc_credentials", lambda: {})
+
+    prefs = creative_media_runtime.get_model_preferences()
+    options = {
+        (item.get("operationKind"), item.get("modelRef")): item
+        for item in prefs["connectedOptions"]
+        if item.get("providerId") == "minimax-cn"
+    }
+
+    assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd")]["available"] is True
+    assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd")]["available"] is True
+    assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd")]["adapter"] == "minimax_tts"
+    assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["adapter"] == "minimax_tts"
+    assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["available"] is True
+
+
+def test_agnes_media_candidates_visible_from_configured_agnes_provider(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "agnes": {
+                    "provider": {
+                        "name": "Agnes AI",
+                        "api_standard": "openai",
+                        "base_url": "https://apihub.agnes-ai.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {"agnes-2.0-flash": {"type": "TEXT"}},
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(creative_media_runtime, "_volc_credentials", lambda: {})
+
+    prefs = creative_media_runtime.get_model_preferences()
+    options = {
+        (item.get("operationKind"), item.get("modelRef")): item
+        for item in prefs["connectedOptions"]
+        if item.get("providerId") == "agnes"
+    }
+
+    assert options[("image.generate", "agnes::agnes-image-2.1-flash")]["adapter"] == "agnes_images"
+    assert options[("video.text_to_video", "agnes::agnes-video-v2.0")]["available"] is True
+
+
+def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "agnes": {
+                    "provider": {
+                        "name": "Agnes AI",
+                        "base_url": "https://apihub.agnes-ai.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {"agnes-2.0-flash": {"type": "TEXT"}},
+                },
+            }
+        },
+    )
+
+    provider_id, provider_meta, model_id = creative_media_runtime._configured_provider_for_model(
+        {"providerId": "agnes", "modelId": "agnes-image-2.1-flash"},
+        default_model="agnes-image-2.1-flash",
+    )
+
+    assert provider_id == "agnes"
+    assert provider_meta["base_url"] == "https://apihub.agnes-ai.com/v1"
+    assert model_id == "agnes-image-2.1-flash"
+
+
+def test_implicit_provider_still_rejects_unregistered_media_model(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "agnes": {
+                    "provider": {"name": "Agnes AI", "base_url": "https://apihub.agnes-ai.com/v1"},
+                    "models": {"agnes-2.0-flash": {"type": "TEXT"}},
+                },
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="No configured provider exposes model"):
+        creative_media_runtime._configured_provider_for_model(
+            {"modelId": "agnes-image-2.1-flash"},
+            default_model="agnes-image-2.1-flash",
+        )
+
+
 def test_provider_http_timeout_honors_long_media_generation_window():
     timeout = creative_media_runtime._provider_http_timeout(300)
 
@@ -741,6 +872,141 @@ def test_minimax_music_job_decodes_hex_artifact(monkeypatch, tmp_path: Path):
     assert job["artifacts"][0]["kind"] == "audio"
     assert Path(job["artifacts"][0]["sourcePath"]).read_bytes() == b"\x00\x01\x02\x03"
     assert requested_urls == ["https://api.minimaxi.com/v1/music_generation"]
+
+
+def test_minimax_voice_tts_job_decodes_hex_artifact(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax-cn": {
+                    "provider": {
+                        "name": "MiniMax 中国站",
+                        "api_standard": "minimax",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "t2a_v2/speech-2.8-hd": {
+                            "type": "VOICE",
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_tts",
+                                "providerModelId": "speech-2.8-hd",
+                                "operationKinds": ["voice.tts", "voice.design"],
+                            },
+                        }
+                    },
+                },
+            }
+        },
+    )
+    requested = []
+
+    async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
+        requested.append((method, url, json))
+        assert json["model"] == "speech-2.8-hd"
+        assert json["text"] == "你好，欢迎来到 V8 Agent OS。"
+        assert json["voice_setting"]["voice_id"] == "female-shaonv"
+        assert isinstance(json["voice_setting"]["vol"], int)
+        assert isinstance(json["voice_setting"]["pitch"], int)
+        return {"data": {"audio": "00010203", "status": 2}, "trace_id": "trace_voice", "base_resp": {"status_code": 0}}
+
+    def fake_record_local_artifact(*, file_path, job, kind, mime_type, metadata):
+        return {"artifactId": f"artifact_{kind}", "kind": kind, "mimeType": mime_type, "sourcePath": str(file_path), "metadata": metadata}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_record_local_artifact", fake_record_local_artifact)
+
+    job = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "voice",
+                "operationKind": "voice.tts",
+                "providerId": "minimax-cn",
+                "modelId": "t2a_v2/speech-2.8-hd",
+                "text": "你好，欢迎来到 V8 Agent OS。",
+                "voiceId": "female-shaonv",
+                "workspacePath": str(tmp_path),
+            }
+        )
+    )
+
+    assert job["modality"] == "voice"
+    assert job["operationKind"] == "voice.tts"
+    assert job["adapter"] == "minimax_tts"
+    assert job["status"] == "succeeded"
+    assert job["artifacts"][0]["kind"] == "audio"
+    assert job["artifacts"][0]["metadata"]["systemVoiceProtocol"] is False
+    assert Path(job["artifacts"][0]["sourcePath"]).read_bytes() == b"\x00\x01\x02\x03"
+    assert requested[0][1] == "https://api.minimaxi.com/v1/t2a_v2"
+
+
+def test_minimax_voice_design_job_returns_voice_id_and_trial_artifact(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax-cn": {
+                    "provider": {
+                        "name": "MiniMax 中国站",
+                        "api_standard": "minimax",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "t2a_v2/speech-2.8-hd": {
+                            "type": "VOICE",
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_tts",
+                                "providerModelId": "speech-2.8-hd",
+                                "operationKinds": ["voice.tts", "voice.design"],
+                            },
+                        }
+                    },
+                },
+            }
+        },
+    )
+    requested = []
+
+    async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
+        requested.append((method, url, json))
+        assert json["prompt"] == "温柔、清晰、带一点科幻感的中文女声"
+        assert json["preview_text"] == "这是试听文本"
+        return {"voice_id": "v8_custom_voice", "trial_audio": "00010203", "base_resp": {"status_code": 0}}
+
+    def fake_record_local_artifact(*, file_path, job, kind, mime_type, metadata):
+        return {"artifactId": f"artifact_{kind}", "kind": kind, "mimeType": mime_type, "sourcePath": str(file_path), "metadata": metadata}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_record_local_artifact", fake_record_local_artifact)
+
+    job = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "voice",
+                "operationKind": "voice.design",
+                "providerId": "minimax-cn",
+                "modelId": "t2a_v2/speech-2.8-hd",
+                "voicePrompt": "温柔、清晰、带一点科幻感的中文女声",
+                "previewText": "这是试听文本",
+                "workspacePath": str(tmp_path),
+            }
+        )
+    )
+
+    assert job["modality"] == "voice"
+    assert job["operationKind"] == "voice.design"
+    assert job["adapter"] == "minimax_tts"
+    assert job["status"] == "succeeded"
+    assert job["providerResponse"]["voiceId"] == "v8_custom_voice"
+    assert job["artifacts"][0]["metadata"]["creativeMediaVoiceDesign"] is True
+    assert Path(job["artifacts"][0]["sourcePath"]).read_bytes() == b"\x00\x01\x02\x03"
+    assert requested[0][1] == "https://api.minimaxi.com/v1/voice_design"
 
 
 def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path):

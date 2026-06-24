@@ -22,7 +22,6 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
 import { useAppSession } from "@/src/providers/app-session";
-import { PremiumBackground } from "@/src/components/common/PremiumBackground";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
@@ -112,7 +111,12 @@ export default function LoginScreen() {
     };
 
     return (
-        <PremiumBackground>
+        <LinearGradient
+            colors={["#EEF2FF", "#FFF7ED"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.gradient}
+        >
             <SafeAreaView style={styles.safeArea}>
                 <KeyboardAvoidingView
                     style={styles.keyboard}
@@ -123,20 +127,20 @@ export default function LoginScreen() {
                             <View style={styles.brandRow}>
                                 <Image source={BRAND_MARK} style={styles.brandMark} />
                                 <View style={styles.brandTextWrap}>
-                                    <PhoneWordmark dark={true} />
+                                    <PhoneWordmark dark={false} />
                                 </View>
                             </View>
                             <LocaleMenu variant="default" />
                         </View>
-                        <Text style={[styles.title, { color: "#FFFFFF" }]}>{pageTitle}</Text>
-                        <Text style={[styles.subtitle, { color: "rgba(255,255,255,0.6)" }]}>{pageSubtitle}</Text>
+                        <Text style={styles.title}>{pageTitle}</Text>
+                        <Text style={styles.subtitle}>{pageSubtitle}</Text>
                     </View>
 
                     <GlassCard>
                         <View style={styles.form}>
                             <View style={styles.field}>
                                 <View style={styles.labelRow}>
-                                    <Text style={[styles.label, { color: "rgba(255,255,255,0.92)" }]}>{t("app.login.pairing_link")}</Text>
+                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
                                     {Platform.OS === "web" ? null : (
                                         <Pressable style={styles.scanButton} onPress={() => void openScanner()}>
                                             <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.primaryDeep} />
@@ -153,11 +157,11 @@ export default function LoginScreen() {
                                         resetError();
                                     }}
                                     placeholder="v8agentosphone://pair?..."
-                                    placeholderTextColor="rgba(255,255,255,0.36)"
+                                    placeholderTextColor={colors.textSoft}
                                     multiline
-                                    style={[styles.input, styles.pairingInput, { backgroundColor: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)", color: "#FFFFFF" }]}
+                                    style={[styles.input, styles.pairingInput]}
                                 />
-                                <Text style={[styles.fieldHint, { color: "rgba(255,255,255,0.46)" }]}>{t("app.login.pairing_link_hint")}</Text>
+                                <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
                             </View>
 
                             {error ? (
@@ -206,7 +210,7 @@ export default function LoginScreen() {
                     </View>
                 </View>
             </Modal>
-        </PremiumBackground>
+        </LinearGradient>
     );
 }
 

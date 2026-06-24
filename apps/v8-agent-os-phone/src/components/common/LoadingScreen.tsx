@@ -1,34 +1,35 @@
 import { ActivityIndicator, Image, StyleSheet, Text, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 
 import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors } from "@/src/theme/tokens";
-import { PremiumBackground } from "./PremiumBackground";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 
 export function LoadingScreen({ label }: { label?: string }) {
-    const { colors: palette, t } = useUiPrefs();
+    const { colors: palette, themeMode, t } = useUiPrefs();
     const subtitle = label || t("src.components.common.loadingscreen.preparing_your_runtime_workspace");
 
     return (
-        <PremiumBackground>
-            <View style={styles.container}>
-                <View style={[styles.markWrap, { backgroundColor: "rgba(15,23,42,0.74)", borderColor: "rgba(255,255,255,0.08)" }]}>
-                    <Image source={BRAND_MARK} style={styles.mark} />
-                </View>
-                <View style={styles.wordmarkWrap}>
-                    <PhoneWordmark dark={true} text="V8 Agent OS" fontSize={31} />
-                </View>
-                <Text style={[styles.label, { color: "rgba(255,255,255,0.6)" }]}>{subtitle}</Text>
-                <View style={styles.progressRow}>
-                    <ActivityIndicator size="small" color={colors.primary} />
-                    <Text style={[styles.progressText, { color: "rgba(255,255,255,0.46)" }]}>
-                        {t("src.components.common.loadingscreen.system_booting")}
-                    </Text>
-                </View>
+        <LinearGradient
+            colors={themeMode === "dark" ? ["#050816", "#0B1223", "#101B38"] : ["#FCFCFF", "#F7F8FF", "#EEF4FF"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.container}
+        >
+            <View style={[styles.markWrap, { backgroundColor: themeMode === "dark" ? "rgba(15,23,42,0.74)" : "rgba(255,255,255,0.82)", borderColor: `${palette.border}A6` }]}>
+                <Image source={BRAND_MARK} style={styles.mark} />
             </View>
-        </PremiumBackground>
+            <View style={styles.wordmarkWrap}>
+                <PhoneWordmark dark={themeMode === "dark"} text="V8 Agent OS" fontSize={31} />
+            </View>
+            <Text style={[styles.label, { color: palette.textMuted }]}>{subtitle}</Text>
+            <View style={styles.progressRow}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={[styles.progressText, { color: palette.textMuted }]}>{t("src.components.common.loadingscreen.system_booting")}</Text>
+            </View>
+        </LinearGradient>
     );
 }
 

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
+    Animated,
     Modal,
+    PanResponder,
     Platform,
     Pressable,
     ScrollView,
@@ -36,11 +38,9 @@ import { getThumbnailAsync } from "expo-video-thumbnails";
 import { ChatWindow } from "@/src/components/chat/ChatWindow";
 import { Composer } from "@/src/components/chat/Composer";
 import { ComposerPickerOverlay } from "@/src/components/chat/ComposerPickerOverlay";
-import { EdgeActionRail } from "@/src/components/chat/EdgeActionRail";
 import { GovernanceApprovalModal } from "@/src/components/chat/GovernanceApprovalModal";
 import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/src/components/chat/RunControlBar";
-import { RuntimeDock } from "@/src/components/chat/RuntimeDock";
 import { RuntimeTimelinePanel } from "@/src/components/chat/RuntimeTimelinePanel";
 import { TodosHUD } from "@/src/components/chat/TodosHUD";
 import { WorkspaceFolderExplorer } from "@/src/components/chat/WorkspaceFolderExplorer";
@@ -2023,6 +2023,15 @@ export default function ChatScreen() {
     const [rpaMenuVisible, setRpaMenuVisible] = useState(false);
     const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
+    // Reconstruct Drawers & Indicators Animation / Ref state
+    const historyBtnOpacity = useRef(new Animated.Value(1)).current;
+    const historyBtnTranslateY = useRef(new Animated.Value(0)).current;
+    const lastScrollY = useRef(0);
+    const isHistoryBtnVisible = useRef(true);
+
+    const pulseAnim = useRef(new Animated.Value(0.4)).current;
+    const neonOpacity = useRef(new Animated.Value(0)).current;
+
     useEffect(() => {
         if (status === "anonymous") {
             router.replace("/login");
@@ -2082,8 +2091,6 @@ export default function ChatScreen() {
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
     const runtimeTimelineRef = useRef<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
-    const [leftRailOpen, setLeftRailOpen] = useState(false);
-    const [rightRailOpen, setRightRailOpen] = useState(false);
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
@@ -5230,6 +5237,75 @@ export default function ChatScreen() {
         [activeConversationId, approvals, askUserInteractions, contextGovernance, contextGovernanceHistory, contextReferences, conversations, locale, messages, processes, runtime, runtimeTimeline.length, runtimeTimelineForProjection, selectedRuntimeId, t, todos],
     );
 
+    const activeRunStatus = String(projection.runControlState.status || "").trim().toLowerCase();
+    const isSessionRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeRunStatus);
+    const isSessionFailed = ["failed", "cancelled"].includes(activeRunStatus);
+    const showPulseLine = isSessionRunning || isSessionFailed;
+
+    useEffect(() => {
+        if (isSessionRunning) {
+            Animated.loop(
+                Animated.sequence([
+                    Animated.timing(pulseAnim, { toValue: 1.0, duration: 1200, useNativeDriver: true }),
+                    Animated.timing(pulseAnim, { toValue: 0.4, duration: 1200, useNativeDriver: true }),
+                ])
+            ).start();
+        } else {
+            pulseAnim.setValue(1.0);
+        }
+    }, [isSessionRunning, pulseAnim]);
+
+    useEffect(() => {
+        Animated.timing(neonOpacity, {
+            toValue: showPulseLine ? 1 : 0,
+            duration: 400,
+            useNativeDriver: true,
+        }).start();
+    }, [showPulseLine, neonOpacity]);
+
+    const handleScroll = useCallback((event: any) => {
+        const currentY = event.nativeEvent.contentOffset.y;
+        const diff = currentY - lastScrollY.current;
+
+        if (currentY <= 20) {
+            if (!isHistoryBtnVisible.current) {
+                isHistoryBtnVisible.current = true;
+                Animated.parallel([
+                    Animated.timing(historyBtnOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
+                    Animated.timing(historyBtnTranslateY, { toValue: 0, duration: 150, useNativeDriver: true }),
+                ]).start();
+            }
+        } else if (diff > 15 && currentY > 50) {
+            if (isHistoryBtnVisible.current) {
+                isHistoryBtnVisible.current = false;
+                Animated.parallel([
+                    Animated.timing(historyBtnOpacity, { toValue: 0, duration: 150, useNativeDriver: true }),
+                    Animated.timing(historyBtnTranslateY, { toValue: -15, duration: 150, useNativeDriver: true }),
+                ]).start();
+            }
+        } else if (diff < -15) {
+            if (!isHistoryBtnVisible.current) {
+                isHistoryBtnVisible.current = true;
+                Animated.parallel([
+                    Animated.timing(historyBtnOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
+                    Animated.timing(historyBtnTranslateY, { toValue: 0, duration: 150, useNativeDriver: true }),
+                ]).start();
+            }
+        }
+        lastScrollY.current = currentY;
+    }, [historyBtnOpacity, historyBtnTranslateY]);
+
+    const neonPanResponder = useMemo(() => PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10 && gesture.dx < 0,
+        onPanResponderRelease: (_, gesture) => {
+            if (gesture.dx < -18) {
+                setSelectedRuntimeId("chat");
+                setRuntimePanelOpen(true);
+            }
+        },
+    }), []);
+
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
     const latestProjectedMessage = projection.projectedMessages[projection.projectedMessages.length - 1] || null;
     const latestProjectedMessageKey = String(
@@ -6397,119 +6473,52 @@ export default function ChatScreen() {
                                     isLandscape={isLandscape}
                                     bottomInset={chatBottomInset}
                                     emptyState={legacyChatEmptyState || greetingEmptyState}
+                                    onScroll={handleScroll}
                                 />
                             )}
 
-                            {(() => {
-                                const leftRunStatus = String(projection.runControlState.status || "completed");
-                                const leftShowApprovalAction = Boolean(
-                                    (projection.runControlState.pendingApproval || leftRunStatus === "waiting_approval") &&
-                                    projection.runControlState.canOpenApproval
-                                );
-                                const leftShowInterruptAction = Boolean(
-                                    leftRunStatus === "running" && projection.runControlState.canInterrupt
-                                );
-                                const leftShowRetryAction = Boolean(
-                                    (projection.runControlState.canRetry ||
-                                        projection.runControlState.canResume ||
-                                        ["failed", "cancelled", "paused"].includes(leftRunStatus))
-                                );
-                                const hasLeftRunAction = leftShowApprovalAction || leftShowInterruptAction || leftShowRetryAction;
-                                const leftExpandedWidth = hasLeftRunAction ? 168 : 132;
-
-                                return (
-                                    <EdgeActionRail
-                                        side="left"
-                                        open={leftRailOpen}
-                                        expandedWidth={leftExpandedWidth}
-                                        top={4}
-                                        onOpen={() => {
-                                            setLeftRailOpen(true);
-                                            setRightRailOpen(false);
-                                        }}
-                                        onClose={() => setLeftRailOpen(false)}
-                                    >
-                                        <View style={[styles.leftEdgeRailContent, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                                            <Pressable
-                                                style={[styles.edgeIconButton, { backgroundColor: "transparent", borderColor: "transparent" }]}
-                                                onPress={() => {
-                                                    setLeftRailOpen(false);
-                                                    setHistoryOpen(true);
-                                                }}
-                                            >
-                                                <MaterialCommunityIcons name="view-headline" size={20} color={palette.textMuted} />
-                                            </Pressable>
-                                            <Pressable
-                                                accessibilityRole="button"
-                                                accessibilityLabel={t("src.screens.chatscreen.current_workspace")}
-                                                style={[
-                                                    styles.edgeIconButton,
-                                                    {
-                                                        backgroundColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primarySoft : "transparent",
-                                                        borderColor: workspaceInfoOpen || workspaceChooserVisible ? palette.primary : "transparent",
-                                                    },
-                                                ]}
-                                                onPress={() => {
-                                                    setLeftRailOpen(false);
-                                                    if (activeConversationId) {
-                                                        setWorkspaceInfoOpen(true);
-                                                        return;
-                                                    }
-                                                    setWorkspaceChooserVisible(true);
-                                                    clearNewConversationIntent();
-                                                }}
-                                            >
-                                                {scopeLoading ? (
-                                                    <ActivityIndicator size="small" color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted} />
-                                                ) : (
-                                                    <MaterialCommunityIcons
-                                                        name="file-tree-outline"
-                                                        size={20}
-                                                        color={workspaceInfoOpen || workspaceChooserVisible ? palette.primary : palette.textMuted}
-                                                    />
-                                                )}
-                                            </Pressable>
-                                            <RunControlBar
-                                                runId={projection.runControlState.runId}
-                                                status={projection.runControlState.status}
-                                                pendingApproval={projection.runControlState.pendingApproval}
-                                                canOpenApproval={projection.runControlState.canOpenApproval}
-                                                canResume={projection.runControlState.canResume}
-                                                canRetry={projection.runControlState.canRetry}
-                                                canInterrupt={projection.runControlState.canInterrupt}
-                                                busy={runActionBusy}
-                                                onOpenApproval={openApprovalPanel}
-                                                onRetry={() => void handleRunCommand("retry")}
-                                                onInterrupt={() => void handleRunCommand("interrupt")}
-                                            />
-                                        </View>
-                                    </EdgeActionRail>
-                                );
-                            })()}
-
-                            <EdgeActionRail
-                                side="right"
-                                open={rightRailOpen}
-                                expandedWidth={534}
-                                top={4}
-                                onOpen={() => {
-                                    setRightRailOpen(true);
-                                    setLeftRailOpen(false);
-                                }}
-                                onClose={() => setRightRailOpen(false)}
+                            <Animated.View
+                                style={[
+                                    styles.floatingHistoryBtnWrap,
+                                    {
+                                        top: safeAreaInsets.top + 50,
+                                        opacity: historyBtnOpacity,
+                                        transform: [{ translateY: historyBtnTranslateY }],
+                                    },
+                                ]}
                             >
-                                <View style={styles.rightEdgeRailContent}>
-                                    <RuntimeDock
-                                        items={projection.runtimeStageModel.items}
-                                        selectedRuntimeId={projection.selectedRuntimeId}
-                                        panelOpen={runtimePanelOpen}
-                                        onSelectRuntime={(runtimeId) => {
-                                            setSelectedRuntimeId(runtimeId);
-                                            setRuntimePanelOpen(true);
-                                        }}
+                                <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t("src.components.layout.historydrawer.history")}
+                                    style={[styles.floatingHistoryBtn, { backgroundColor: palette.surface, borderColor: palette.border }]}
+                                    onPress={() => setHistoryOpen(true)}
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                >
+                                    <MaterialCommunityIcons name="history" size={18} color={palette.text} />
+                                    {isSessionRunning ? (
+                                        <View style={[styles.floatingHistoryBadge, { backgroundColor: palette.primary }]} />
+                                    ) : null}
+                                </Pressable>
+                            </Animated.View>
+
+                            {showPulseLine ? (
+                                <View style={[styles.rightNeonLineContainer, { top: safeAreaInsets.top + 100, bottom: 120 }]} pointerEvents="box-none">
+                                    <Animated.View
+                                        style={[
+                                            styles.rightNeonLine,
+                                            {
+                                                backgroundColor: isSessionFailed ? palette.danger : palette.primary,
+                                                opacity: Animated.multiply(neonOpacity, pulseAnim),
+                                            },
+                                        ]}
+                                    />
+                                    <Pressable
+                                        style={StyleSheet.absoluteFill}
+                                        onPress={() => setRuntimePanelOpen(true)}
+                                        {...neonPanResponder.panHandlers}
                                     />
                                 </View>
-                            </EdgeActionRail>
+                            ) : null}
                         </View>
                     </View>
                     {overlayDockContent}
@@ -6775,6 +6784,49 @@ const styles = StyleSheet.create({
     chatShell: {
         flex: 1,
         position: "relative",
+    },
+    floatingHistoryBtnWrap: {
+        position: "absolute",
+        left: 12,
+        zIndex: 40,
+        shadowColor: "#000000",
+        shadowOpacity: 0.16,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 3 },
+        elevation: 4,
+    },
+    floatingHistoryBtn: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        position: "relative",
+    },
+    floatingHistoryBadge: {
+        position: "absolute",
+        top: 2,
+        right: 2,
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+    },
+    rightNeonLineContainer: {
+        position: "absolute",
+        right: 0,
+        width: 16,
+        zIndex: 40,
+        alignItems: "flex-end",
+    },
+    rightNeonLine: {
+        width: 2.5,
+        height: "100%",
+        borderTopLeftRadius: 99,
+        borderBottomLeftRadius: 99,
+        shadowOpacity: 0.8,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 0 },
     },
     chatStage: {
         flex: 1,

@@ -52,6 +52,7 @@ type ChatWindowProps = {
         onAction?: () => void;
         variant?: "default" | "greeting";
     } | null;
+    onScroll?: (event: any) => void;
 };
 
 function isAskUserApproval(approval: ChatPendingInteraction | null | undefined) {
@@ -126,6 +127,7 @@ export const ChatWindow = memo(function ChatWindow({
     isLandscape = false,
     bottomInset = 172,
     emptyState,
+    onScroll,
 }: ChatWindowProps) {
     const { colors, t } = useUiPrefs();
     const scrollRef = useRef<ScrollView | null>(null);
@@ -193,6 +195,9 @@ export const ChatWindow = memo(function ChatWindow({
                         const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
                         const distanceToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
                         setIsAtBottom(distanceToBottom < 96);
+                        if (onScroll) {
+                            onScroll(event);
+                        }
                     }}
                     scrollEventThrottle={32}
                 >

@@ -6,6 +6,7 @@ import {
     StyleSheet,
     Text,
     View,
+    useWindowDimensions,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -680,6 +681,8 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     onSelectRuntime: (runtimeId: PhoneRuntimeId) => void;
 }) {
     const { colors, themeMode, t, locale } = useUiPrefs();
+    const { width } = useWindowDimensions();
+    const panelWidth = Math.min(width * 0.86, 320);
     const contentScrollRef = useRef<FlatList<PhoneRuntimeStageActivity> | null>(null);
     const chatContentScrollRef = useRef<FlatList<ChatExecutionSection> | null>(null);
     const runtimeTabsScrollRef = useRef<GestureScrollView | null>(null);
@@ -888,7 +891,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
             <View style={[styles.overlay, { backgroundColor: overlayColor }]}>
                 <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-                <View style={[styles.panelCard, { borderColor: colors.border, shadowColor: colors.text }]}>
+                <View style={[styles.panelCard, { width: panelWidth, borderColor: colors.border, shadowColor: colors.text }]}>
                     <LinearGradient colors={panelGradient} style={StyleSheet.absoluteFill} />
                     <View style={styles.panelInner}>
                         <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -1104,23 +1107,25 @@ const styles = StyleSheet.create({
     overlay: {
         flex: 1,
         justifyContent: "center",
-        paddingHorizontal: 12,
+        paddingRight: 0,
+        paddingLeft: 48,
         paddingVertical: 24,
     },
     panelCard: {
         borderWidth: 1,
-        borderRadius: 24,
+        borderTopLeftRadius: 24,
+        borderBottomLeftRadius: 24,
+        borderTopRightRadius: 0,
+        borderBottomRightRadius: 0,
         overflow: "hidden",
-        width: "100%",
         height: "84%",
         minHeight: 360,
         maxHeight: 720,
         shadowOpacity: 0.18,
         shadowRadius: 30,
-        shadowOffset: { width: 0, height: 18 },
+        shadowOffset: { width: -6, height: 6 },
         elevation: 22,
-        maxWidth: 660,
-        alignSelf: "center",
+        alignSelf: "flex-end",
     },
     panelInner: {
         flex: 1,

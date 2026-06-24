@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -175,9 +175,22 @@ export function HistoryDrawer({
                                                                 color={active ? colors.primary : colors.textMuted}
                                                             />
                                                             <View style={styles.itemBody}>
-                                                                <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text }]} numberOfLines={1}>
-                                                                    {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
-                                                                </Text>
+                                                                <View style={styles.itemTitleRow}>
+                                                                    <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text, flex: 1 }]} numberOfLines={1}>
+                                                                        {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
+                                                                    </Text>
+                                                                    {(() => {
+                                                                        const activeStatus = String(item.workflowStatus || "").trim().toLowerCase();
+                                                                        const isRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeStatus);
+                                                                        const isFailed = ["failed", "cancelled"].includes(activeStatus);
+                                                                        if (isRunning) {
+                                                                            return <ActivityIndicator size="small" color={colors.primary} style={styles.itemTitleSpinner} />;
+                                                                        } else if (isFailed) {
+                                                                            return <MaterialCommunityIcons name="alert-circle" size={14} color={colors.danger} style={styles.itemTitleError} />;
+                                                                        }
+                                                                        return null;
+                                                                    })()}
+                                                                </View>
                                                                 {(item.ownerRuntime || item.workflowStatus || Number(item.pendingApprovalCount || 0) > 0 || item.recoverable) ? (
                                                                     <View style={styles.badgeRow}>
                                                                         {item.ownerRuntime ? (
@@ -185,11 +198,20 @@ export function HistoryDrawer({
                                                                                 <Text style={[styles.metaBadgeText, { color: "#047857" }]}>{item.ownerRuntime}</Text>
                                                                             </View>
                                                                         ) : null}
-                                                                        {item.workflowStatus && item.workflowStatus !== "completed" ? (
-                                                                            <View style={[styles.metaBadge, { backgroundColor: "rgba(245,158,11,0.10)" }]}>
-                                                                                <Text style={[styles.metaBadgeText, { color: "#B45309" }]}>{item.statusLabel || item.workflowStatus}</Text>
-                                                                            </View>
-                                                                        ) : null}
+                                                                        {(() => {
+                                                                            const activeStatus = String(item.workflowStatus || "").trim().toLowerCase();
+                                                                            const isRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeStatus);
+                                                                            const isFailed = ["failed", "cancelled"].includes(activeStatus);
+                                                                            const isCompleted = ["completed", "idle"].includes(activeStatus);
+                                                                            if (item.workflowStatus && !isRunning && !isFailed && !isCompleted) {
+                                                                                return (
+                                                                                    <View style={[styles.metaBadge, { backgroundColor: "rgba(245,158,11,0.10)" }]}>
+                                                                                        <Text style={[styles.metaBadgeText, { color: "#B45309" }]}>{item.statusLabel || item.workflowStatus}</Text>
+                                                                                    </View>
+                                                                                );
+                                                                            }
+                                                                            return null;
+                                                                        })()}
                                                                         {item.recoverable ? (
                                                                             <View style={[styles.metaBadge, { backgroundColor: "rgba(14,165,233,0.10)" }]}>
                                                                                 <Text style={[styles.metaBadgeText, { color: "#0369A1" }]}>{t("src.components.layout.historydrawer.recoverable")}</Text>
@@ -399,5 +421,17 @@ const styles = StyleSheet.create({
         alignItems: "center",
         justifyContent: "center",
         opacity: 0.82,
+    },
+    itemTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 6,
+    },
+    itemTitleSpinner: {
+        marginLeft: 4,
+    },
+    itemTitleError: {
+        marginLeft: 4,
     },
 });

@@ -308,6 +308,9 @@ CREATIVE_MEDIA_PROMPT_SOURCE_REFS = [
 
 CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE = """Creative Media provider discipline:
 - Provider-facing image/video/music prompts default to English; preserve original-language text only for on-canvas text, subtitles, brand copy, or user-intent evidence.
+- Real provider generation is done through Creative Media jobs: call `creative_media_create_job`, poll with `creative_media_get_job`, and hand off refs from `creative_media_job_artifacts`.
+- Music is executable with `modality='music'` and `operationKind='music.generate'` or `music.cover`; 3D assets are executable with `modality='model3d'` and `operationKind='model3d.generate'` when configured models are available.
+- Return artifact IDs, file types, limitations, and acceptance status. Do not hand off provider raw JSON as the result.
 - For Seedance 2.0 exact models, plan first frame, last frame, multi-image references, video references, and audio references as separate roles instead of stuffing every constraint into one paragraph.
 - Treat native audiovisual video models as audio-bearing outputs: preserve their generated dialogue, sound effects, ambience, and music bed by default; add separate TTS/music only when the brief explicitly asks for post audio or the selected model is silent.
 - Do not generalize Seedance 2.0 capabilities to older Seedance versions or unrelated providers without exact model capability evidence."""

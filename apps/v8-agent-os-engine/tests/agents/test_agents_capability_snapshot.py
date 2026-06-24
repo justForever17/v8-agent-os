@@ -1,6 +1,7 @@
 import unittest
 
 from core.agents import AgentConfig, default_subagent_configs, dump_agent_md, parse_agent_md
+from core.tools.native.creative_media import creative_media_create_job, creative_media_get_job, creative_media_job_artifacts
 from graph.supervisor_context import render_agent_tool_surface_summary
 
 
@@ -79,9 +80,26 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertIn("Provider-facing image/video/music prompts default to English", agent.system_prompt)
             self.assertIn("Seedance 2.0 exact models", agent.system_prompt)
             self.assertIn("native audiovisual video models", agent.system_prompt)
+            self.assertIn("creative_media_create_job", agent.system_prompt)
+            self.assertIn("music.generate", agent.system_prompt)
+            self.assertIn("model3d.generate", agent.system_prompt)
+            self.assertIn("artifact IDs", agent.system_prompt)
             self.assertNotIn("llm-video", "\n".join(agent.promptSourceRefs + [agent.system_prompt]))
             self.assertNotIn("E:\\", agent.system_prompt)
             self.assertNotIn("C:\\", agent.system_prompt)
+
+    def test_creative_media_tool_descriptions_explain_music_3d_job_flow(self):
+        create_desc = creative_media_create_job.description
+        get_desc = creative_media_get_job.description
+        artifact_desc = creative_media_job_artifacts.description
+
+        self.assertIn("music.generate", create_desc)
+        self.assertIn("music.cover", create_desc)
+        self.assertIn("model3d.generate", create_desc)
+        self.assertIn("creative_media_get_job", create_desc)
+        self.assertIn("creative_media_job_artifacts", get_desc)
+        self.assertIn("artifact IDs", artifact_desc)
+        self.assertIn("provider raw JSON", artifact_desc)
 
 
 if __name__ == "__main__":

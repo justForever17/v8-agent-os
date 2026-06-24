@@ -460,7 +460,16 @@ def creative_media_resolutions(detail_level: str = "summary") -> str:
 
 @tool
 async def creative_media_create_job(request: dict[str, Any]) -> str:
-    """Create an image, video, or voice job through CreativeMediaRuntime."""
+    """Create a real Creative Media generation job.
+
+    Use `request.modality` plus `request.operationKind`:
+    image/video operations for visual media, `music.generate` or `music.cover`
+    for music, `model3d.generate` for 3D assets, and `voice.tts` for voice.
+    Useful fields include `prompt`, optional `providerId`/`modelId`, and
+    modality-specific refs such as `imageUrl`, `audioUrl`, or `resultFormat`.
+    If the job is async, call `creative_media_get_job(job_id=...)` until it
+    succeeds/fails, then call `creative_media_job_artifacts(job_id=...)`.
+    """
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
@@ -472,7 +481,13 @@ async def creative_media_create_job(request: dict[str, Any]) -> str:
 
 @tool
 async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
-    """Get a CreativeMediaRuntime job by id; refresh polls resumable provider state when supported."""
+    """Get or refresh a Creative Media job.
+
+    Use after `creative_media_create_job`. Keep `refresh=True` to poll supported
+    async providers. When status is `succeeded`, read artifacts with
+    `creative_media_job_artifacts(job_id=...)`; when failed/degraded, report the
+    visible error, limitations, and next safe action instead of provider raw JSON.
+    """
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
@@ -526,7 +541,12 @@ def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[st
 
 @tool
 def creative_media_job_artifacts(job_id: str) -> str:
-    """List artifacts recorded by a CreativeMediaRuntime job."""
+    """List deliverable artifact refs for a Creative Media job.
+
+    Use this after a job succeeds. Return artifact IDs, kind, file type, and
+    download/detail refs to the Supervisor. Do not use provider URLs or
+    provider raw JSON as the final deliverable.
+    """
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 

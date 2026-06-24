@@ -1120,7 +1120,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         {skillReferences.map((skill) => (
                                             <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
                                                 <MaterialCommunityIcons name="at" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>@{skill.name}</Text>
+                                                <Text style={styles.userChipText}>{skill.name}</Text>
                                             </View>
                                         ))}
                                         {taskPlanningMode ? (

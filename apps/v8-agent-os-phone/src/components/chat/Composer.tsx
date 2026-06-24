@@ -252,7 +252,6 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
-    const [contentHeight, setContentHeight] = useState(0);
     const bodyInputRef = useRef<TextInput | null>(null);
     const queryInputRef = useRef<TextInput | null>(null);
     const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || uploadedFiles.length > 0);
@@ -261,7 +260,6 @@ export const Composer = memo(function Composer({
     const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
     const canAct = canSend || (stopAvailable && !hasPayload);
     const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || activeQueryMode);
-    const isMultilineText = contentHeight > 28 || bodyValue.includes("\n");
     const actionMode: "send" | "queue" | "stop" | "busy" = canQueue
         ? "queue"
         : stopAvailable
@@ -451,12 +449,9 @@ export const Composer = memo(function Composer({
                                     disableFullscreenUI
                                     returnKeyType="default"
                                     textAlignVertical="top"
-                                    onContentSizeChange={(e) => {
-                                        setContentHeight(e.nativeEvent.contentSize.height);
-                                    }}
                                     style={[
                                         styles.input,
-                                        (hasFlowTokens && !isMultilineText) ? styles.inputInline : styles.inputStandalone,
+                                        hasFlowTokens ? styles.inputInline : styles.inputStandalone,
                                         { color: colors.text },
                                         inputWebStyle,
                                     ]}
@@ -621,7 +616,7 @@ const styles = StyleSheet.create({
         width: "100%",
         flexDirection: "row",
         flexWrap: "wrap",
-        alignItems: "flex-start",
+        alignItems: "center",
         alignContent: "flex-start",
         columnGap: 6,
         rowGap: 6,
@@ -672,7 +667,6 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        alignSelf: "flex-start",
     },
     commandTokenChip: {
         maxWidth: 176,
@@ -693,7 +687,6 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        alignSelf: "flex-start",
     },
     queryPrefix: {
         fontSize: 13,

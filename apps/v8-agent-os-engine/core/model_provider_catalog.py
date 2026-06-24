@@ -595,7 +595,7 @@ class ModelProviderCatalog:
             item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
             providers.append(item)
             seen_provider_ids.add(str(item.get("id") or ""))
-        for entry in self._creative_media_matrix_providers(include_root_mapped=False):
+        for entry in self._creative_media_matrix_providers(include_root_mapped=True):
             provider_id = str(entry.get("id") or "")
             if provider_id in seen_provider_ids:
                 continue

@@ -143,6 +143,8 @@ def test_catalog_bridges_creative_media_provider_matrix():
     providers = {item["id"]: item for item in catalog["providers"]}
 
     expected = {
+        "agnes_image": ("image", "IMAGE"),
+        "agnes_video": ("video", "VIDEO"),
         "openai_images": ("image", "IMAGE"),
         "zhipu_bigmodel_image": ("image", "IMAGE"),
         "zhipu_bigmodel_video": ("video", "VIDEO"),
@@ -199,7 +201,11 @@ def test_catalog_bridges_creative_media_provider_matrix():
         "minimax_video",
         "minimax_tts",
         "minimax_music",
-    }.isdisjoint(providers)
+    }.issubset(providers)
+    assert providers["agnes_image"]["baseUrl"] == "https://apihub.agnes-ai.com/v1"
+    assert providers["agnes_image"]["models"][0]["id"] == "agnes-image-2.1-flash"
+    assert providers["agnes_video"]["baseUrl"] == "https://apihub.agnes-ai.com"
+    assert providers["agnes_video"]["models"][0]["id"] == "agnes-video-v2.0"
 
 
 def test_root_provider_accepts_prefixed_media_model_ids():

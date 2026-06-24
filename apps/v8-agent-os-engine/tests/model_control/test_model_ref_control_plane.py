@@ -253,6 +253,86 @@ def test_root_provider_accepts_prefixed_media_model_ids():
     assert minimax_music_25["mediaLimits"]["providerModelId"] == "minimax-music-2.5"
 
 
+def test_media_matrix_matches_by_model_id_across_custom_gateway_paths():
+    custom_minimax = model_provider_catalog.build_custom_provider(
+        name="My MiniMax Gateway",
+        base_url="https://relay.example.com/openai-compatible",
+        provider_id="custom-minimax-gateway",
+        provider_kind="media_generation",
+    )
+    custom_music = model_provider_catalog.normalize_model(custom_minimax, "music_generation/minimax-music-2.5")
+    assert custom_music["type"] == "MUSIC"
+    assert custom_music["modelId"] == "music_generation/minimax-music-2.5"
+    assert custom_music["mediaLimits"]["adapterProviderId"] == "minimax_music"
+    assert custom_music["mediaLimits"]["providerModelId"] == "minimax-music-2.5"
+    assert "music.generate" in custom_music["mediaLimits"]["operationKinds"]
+
+    custom_video = model_provider_catalog.normalize_model(custom_minimax, "video_generation/MiniMax-Hailuo-02")
+    assert custom_video["type"] == "VIDEO"
+    assert custom_video["mediaLimits"]["adapterProviderId"] == "minimax_video"
+    assert custom_video["mediaLimits"]["providerModelId"] == "MiniMax-Hailuo-02"
+
+    custom_video_by_bare_model_id = model_provider_catalog.normalize_model(custom_minimax, "MiniMax-Hailuo-02")
+    assert custom_video_by_bare_model_id["type"] == "VIDEO"
+    assert custom_video_by_bare_model_id["mediaLimits"]["adapterProviderId"] == "minimax_video"
+    assert custom_video_by_bare_model_id["mediaLimits"]["providerModelId"] == "MiniMax-Hailuo-02"
+
+    custom_video_by_gateway_path = model_provider_catalog.normalize_model(custom_minimax, "proxy/media/video/MiniMax-Hailuo-2.3")
+    assert custom_video_by_gateway_path["type"] == "VIDEO"
+    assert custom_video_by_gateway_path["mediaLimits"]["adapterProviderId"] == "minimax_video"
+    assert custom_video_by_gateway_path["mediaLimits"]["providerModelId"] == "MiniMax-Hailuo-2.3"
+
+    custom_agnes = model_provider_catalog.build_custom_provider(
+        name="My Agnes Gateway",
+        base_url="https://relay.example.com/agnes",
+        provider_id="custom-agnes-gateway",
+        provider_kind="media_generation",
+    )
+    custom_agnes_video = model_provider_catalog.normalize_model(custom_agnes, "videos/agnes-video-v2.0")
+    assert custom_agnes_video["type"] == "VIDEO"
+    assert custom_agnes_video["mediaLimits"]["adapterProviderId"] == "agnes_video"
+    assert custom_agnes_video["mediaLimits"]["providerModelId"] == "agnes-video-v2.0"
+
+    custom_google = model_provider_catalog.build_custom_provider(
+        name="My Google Media Gateway",
+        base_url="https://relay.example.com/google",
+        provider_id="custom-google-media",
+        provider_kind="media_generation",
+    )
+    custom_google_image = model_provider_catalog.normalize_model(custom_google, "models/nano-banana-pro:generateContent")
+    assert custom_google_image["type"] == "IMAGE"
+    assert custom_google_image["mediaLimits"]["adapterProviderId"] == "google_gemini_image"
+    assert custom_google_image["mediaLimits"]["providerModelId"] == "nano-banana-pro"
+
+    custom_stability = model_provider_catalog.build_custom_provider(
+        name="My Stability Gateway",
+        base_url="https://relay.example.com/stability",
+        provider_id="custom-stability-media",
+        provider_kind="media_generation",
+    )
+    custom_stability_music = model_provider_catalog.normalize_model(
+        custom_stability,
+        "v2beta/audio/stable-audio-2/text-to-audio/stable-audio-2.5",
+    )
+    assert custom_stability_music["type"] == "MUSIC"
+    assert custom_stability_music["mediaLimits"]["adapterProviderId"] == "stability_music"
+    assert custom_stability_music["mediaLimits"]["providerModelId"] == "stable-audio-2.5"
+
+    custom_aliyun = model_provider_catalog.build_custom_provider(
+        name="My Aliyun Gateway",
+        base_url="https://relay.example.com/aliyun",
+        provider_id="custom-aliyun-media",
+        provider_kind="media_generation",
+    )
+    custom_aliyun_3d = model_provider_catalog.normalize_model(
+        custom_aliyun,
+        "services/aigc/3d-generation/generation/motionshop-gen3d",
+    )
+    assert custom_aliyun_3d["type"] == "MODEL3D"
+    assert custom_aliyun_3d["mediaLimits"]["adapterProviderId"] == "aliyun_bailian_3d"
+    assert custom_aliyun_3d["mediaLimits"]["providerModelId"] == "motionshop-gen3d"
+
+
 def test_catalog_only_probe_does_not_return_preset_models():
     result = model_provider_catalog.probe_provider("suno_placeholder", credential="")
 

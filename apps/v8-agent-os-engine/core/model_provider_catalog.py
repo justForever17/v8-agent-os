@@ -115,6 +115,32 @@ def _url_path(value: Any) -> str:
     return path.rstrip("/")
 
 
+def _url_host(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    return parsed.netloc.lower()
+
+
+def _media_base_url_matches(root_provider: Dict[str, Any], media_provider: Dict[str, Any]) -> bool:
+    root_base = root_provider.get("baseUrl") or root_provider.get("base_url") or ""
+    media_base = media_provider.get("baseUrl") or media_provider.get("base_url") or ""
+    root_host = _url_host(root_base)
+    media_host = _url_host(media_base)
+    if not root_host or not media_host or root_host != media_host:
+        return False
+    root_path = _url_path(root_base)
+    media_path = _url_path(media_base)
+    if not root_path or not media_path:
+        return True
+    return (
+        root_path == media_path
+        or media_path.startswith(f"{root_path}/")
+        or root_path.startswith(f"{media_path}/")
+    )
+
+
 def _media_relative_submit_path(root_base_url: Any, source_base_url: Any, submit_path: Any) -> str:
     submit = _url_path(submit_path)
     if not submit:
@@ -132,15 +158,67 @@ def _media_relative_submit_path(root_base_url: Any, source_base_url: Any, submit
 
 def _media_endpoint_model_id(root_provider: Dict[str, Any], media_provider: Dict[str, Any], provider_model_id: str) -> str:
     request = dict(media_provider.get("request") or {})
+    clean_model_id = str(provider_model_id or "").strip()
     relative_path = _media_relative_submit_path(
         root_provider.get("baseUrl") or root_provider.get("base_url") or "",
         media_provider.get("baseUrl") or media_provider.get("base_url") or "",
         request.get("submitPath") or "",
     )
-    clean_model_id = str(provider_model_id or "").strip()
+    if clean_model_id and "{model}" in relative_path:
+        return relative_path.replace("{model}", clean_model_id).strip("/")
     if relative_path and clean_model_id:
         return f"{relative_path}/{clean_model_id}"
     return clean_model_id
+
+
+def _media_model_id_match_keys(value: Any) -> Set[str]:
+    raw = str(value or "").strip().strip("/")
+    if not raw:
+        return set()
+    keys: Set[str] = {raw}
+    tail = raw.rsplit("/", 1)[-1].strip()
+    if tail:
+        keys.add(tail)
+    for target in (raw, tail):
+        for separator in (":", "?", "#"):
+            if separator in target:
+                clean = target.split(separator, 1)[0].strip().strip("/")
+                if clean:
+                    keys.add(clean)
+                    if "/" in clean:
+                        keys.add(clean.rsplit("/", 1)[-1].strip())
+    return {item for item in keys if item}
+
+
+def _media_model_match_quality(
+    display_model_id: str,
+    root_provider: Dict[str, Any],
+    media_provider: Dict[str, Any],
+    provider_model_id: str,
+) -> int | None:
+    display = str(display_model_id or "").strip().strip("/")
+    if not display:
+        return None
+    root_endpoint_id = _media_endpoint_model_id(root_provider, media_provider, provider_model_id)
+    official_endpoint_id = _media_endpoint_model_id(media_provider, media_provider, provider_model_id)
+    actual_model_id = str(provider_model_id or "").strip()
+    if display == root_endpoint_id:
+        return 0
+    if display == official_endpoint_id:
+        return 1
+    if display == actual_model_id:
+        return 2
+    display_keys = _media_model_id_match_keys(display)
+    if actual_model_id in display_keys:
+        return 3
+    candidate_keys = (
+        _media_model_id_match_keys(actual_model_id)
+        | _media_model_id_match_keys(root_endpoint_id)
+        | _media_model_id_match_keys(official_endpoint_id)
+    )
+    if display_keys & candidate_keys:
+        return 4
+    return None
 
 
 def _load_media_capability_overrides() -> List[Dict[str, Any]]:
@@ -611,34 +689,61 @@ class ModelProviderCatalog:
                 return dict(item)
         return {"id": model_id}
 
+    def _has_explicit_catalog_model(self, provider: Dict[str, Any], model_id: str) -> bool:
+        for item in _as_list(provider.get("models")):
+            if str(item.get("id") or "") == str(model_id or ""):
+                return any(
+                    item.get(key)
+                    for key in (
+                        "type",
+                        "capabilities",
+                        "capabilityClass",
+                        "capabilityOverride",
+                        "capabilityFactsOverride",
+                        "explicitCapabilityOverride",
+                        "mediaLimits",
+                        "mediaCapabilityRegistry",
+                        "parameterProfile",
+                    )
+                )
+        return False
+
     def _media_model_from_root_provider(self, provider: Dict[str, Any], model_id: str) -> Dict[str, Any] | None:
-        if "/" not in model_id:
-            return None
         provider_id = str(provider.get("id") or "").strip()
         display_model_id = str(model_id or "").strip()
         if not provider_id or not display_model_id:
             return None
+        provider_kind = str(provider.get("providerKind") or "").strip()
+        media_modality = _normalized_modality(provider.get("mediaModality") or "")
+        if "/" not in display_model_id and provider_kind != "media_generation" and media_modality not in _MEDIA_MODEL_TYPES:
+            return None
+        matches: List[tuple[int, int, str, Dict[str, Any], Dict[str, Any]]] = []
         for media_provider in self._creative_media_matrix_providers():
             media_provider_id = str(media_provider.get("id") or "")
-            if _MEDIA_ADAPTER_ROOT_PROVIDERS.get(media_provider_id) != provider_id:
-                continue
+            root_provider_id = _MEDIA_ADAPTER_ROOT_PROVIDERS.get(media_provider_id)
+            provider_affinity = 0 if root_provider_id == provider_id else 1 if _media_base_url_matches(provider, media_provider) else 2
             for item in _as_list(media_provider.get("models")):
                 actual_model_id = str(item.get("id") or "").strip()
-                if _media_endpoint_model_id(provider, media_provider, actual_model_id) != display_model_id:
+                match_quality = _media_model_match_quality(display_model_id, provider, media_provider, actual_model_id)
+                if match_quality is None:
                     continue
-                model = dict(item)
-                media_limits = dict(model.get("mediaLimits") or {})
-                media_limits.setdefault("adapterProviderId", media_provider_id)
-                media_limits.setdefault("providerModelId", actual_model_id)
-                media_limits.setdefault("displayModelId", display_model_id)
-                model["id"] = display_model_id
-                model["modelId"] = display_model_id
-                model["adapter"] = media_limits.get("adapter") or media_provider.get("adapter") or model.get("adapter") or ""
-                model["mediaLimits"] = media_limits
-                model["sourceProviderId"] = media_provider_id
-                model["sourceProviderName"] = media_provider.get("name") or media_provider_id
-                return model
-        return None
+                matches.append((provider_affinity, match_quality, media_provider_id, dict(item), media_provider))
+        if not matches:
+            return None
+        _, _, media_provider_id, item, media_provider = sorted(matches, key=lambda entry: (entry[0], entry[1], entry[2], str(entry[3].get("id") or "")))[0]
+        actual_model_id = str(item.get("id") or "").strip()
+        model = dict(item)
+        media_limits = dict(model.get("mediaLimits") or {})
+        media_limits.setdefault("adapterProviderId", media_provider_id)
+        media_limits.setdefault("providerModelId", actual_model_id)
+        media_limits.setdefault("displayModelId", display_model_id)
+        model["id"] = display_model_id
+        model["modelId"] = display_model_id
+        model["adapter"] = media_limits.get("adapter") or media_provider.get("adapter") or model.get("adapter") or ""
+        model["mediaLimits"] = media_limits
+        model["sourceProviderId"] = media_provider_id
+        model["sourceProviderName"] = media_provider.get("name") or media_provider_id
+        return model
 
     def _headers_for_probe(self, provider: Dict[str, Any], credential: str) -> Dict[str, str]:
         auth = dict(provider.get("auth") or {})
@@ -1047,7 +1152,8 @@ class ModelProviderCatalog:
     def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         online_metadata = dict(online_metadata or {})
         provider_id = str(provider.get("id") or "").strip()
-        model = self._media_model_from_root_provider(provider, model_id) or self._model_from_catalog(provider, model_id)
+        catalog_model = self._model_from_catalog(provider, model_id)
+        model = catalog_model if self._has_explicit_catalog_model(provider, model_id) else self._media_model_from_root_provider(provider, model_id) or catalog_model
         provider_kind = str(provider.get("providerKind") or "chat")
         registry_entry = model_capability_registry.find(model_id)
         explicit_provider_override = bool(
@@ -1108,6 +1214,12 @@ class ModelProviderCatalog:
             if media_registry
             else {}
         )
+        media_model_type = str(model.get("type") or "").strip().upper() if model.get("mediaLimits") else ""
+        resolved_model_type = (
+            media_model_type
+            if media_model_type in set(_MEDIA_MODEL_TYPES.values())
+            else self._infer_model_type(capability_map)
+        )
         reasoning_surface = resolve_reasoning_surface_for_metadata(
             {
                 "provider_id": provider_id,
@@ -1123,7 +1235,7 @@ class ModelProviderCatalog:
             "id": model_id,
             "modelId": model_id,
             "modelRef": make_model_ref(str(provider.get("id") or ""), model_id),
-            "type": self._infer_model_type(capability_map),
+            "type": resolved_model_type,
             "logoAsset": model.get("logoAsset") or online_metadata.get("logoAsset") or "",
             "promptCachingProfileId": provider.get("promptCachingProfileId")
             or prompt_cache_profile_id_for_provider(str(provider.get("id") or "")),

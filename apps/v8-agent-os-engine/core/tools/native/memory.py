@@ -541,6 +541,8 @@ def memory_broker(
     remembered preferences, project history, daily logs, or knowledge graph relations.
     Use mode="catalog" to inspect available memory domains, or mode="route" to get a compact
     evidence pack across Memory Core, Research Experience, Workflow and Engineering proof.
+    A no-match result is final for the current query. Continue the current task instead of
+    retrying memory with near-duplicate wording in the same user turn.
     This tool does not update or delete memory.
     """
     normalized_mode = str(mode or "recall").strip().lower()
@@ -621,9 +623,9 @@ def memory_broker(
                 mode=normalized_mode,
                 query=search_text,
                 scope=scope,
-                summary=f"Found {len(items)} relevant memory item(s)." if items else "No relevant memory found.",
+                summary=f"Found {len(items)} relevant memory item(s)." if items else "No matching prior memory.",
                 items=items,
-                nextAction="Use get_item/read_day/graph_neighbors if a result needs deeper verification." if items else "Ask the user or run fresh research when memory is insufficient.",
+                nextAction="Use get_item/read_day/graph_neighbors if a result needs deeper verification." if items else None,
             )
 
         if normalized_mode == "get_item":

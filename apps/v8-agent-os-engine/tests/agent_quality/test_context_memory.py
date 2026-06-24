@@ -4,12 +4,17 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import api.chat_realtime_routes as routes
 from api.models import ChatMessage, ChatRequest, ChatRequestData
 from core.database import DatabaseManager
 from core.native_tools import memory_broker
-from graph.supervisor_turn import _memory_broker_first_guidance, _should_force_memory_broker_first
+from graph.supervisor_turn import (
+    _memory_broker_first_guidance,
+    _memory_no_match_since_latest_human,
+    _should_force_memory_broker_first,
+)
 
 
 class _Tool:
@@ -122,3 +127,36 @@ def test_recall_cue_does_not_force_memory_when_tool_is_not_available() -> None:
         passive_rag_diagnostics={"has_recall_cue": True},
         selected_tools=[_Tool("workspace_broker")],
     )
+
+
+def test_recall_cue_does_not_force_memory_twice_in_same_user_turn() -> None:
+    state = {
+        "messages": [
+            HumanMessage(content="继续上一轮上下文"),
+            AIMessage(content="", tool_calls=[{"id": "call_memory", "name": "memory_broker", "args": {"mode": "recall"}}]),
+            ToolMessage(
+                content="Memory: no matching prior evidence.\nContinue with the current request.",
+                name="memory_broker",
+                tool_call_id="call_memory",
+            ),
+        ]
+    }
+
+    assert not _should_force_memory_broker_first(
+        user_query="继续上一轮上下文",
+        passive_rag_diagnostics={"has_recall_cue": True, "reject_reason": "no_recall_results"},
+        selected_tools=[_Tool("workspace_broker"), _Tool("memory_broker")],
+        state=state,
+    )
+    assert _memory_no_match_since_latest_human(state)
+
+
+def test_memory_match_keeps_deeper_reads_available_in_same_turn() -> None:
+    state = {
+        "messages": [
+            HumanMessage(content="继续上一轮上下文"),
+            ToolMessage(content="Memory broker: recall\nFound 1 relevant memory item.", name="memory_broker", tool_call_id="call_memory"),
+        ]
+    }
+
+    assert not _memory_no_match_since_latest_human(state)

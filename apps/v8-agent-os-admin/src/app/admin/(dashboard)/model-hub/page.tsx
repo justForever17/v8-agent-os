@@ -108,12 +108,15 @@ type CatalogProvider = {
     name: string;
     apiStandard?: string;
     providerKind?: string;
+    catalogVisibility?: string;
     mediaModality?: string;
     adapter?: string;
     baseUrl?: string;
     modelsUrl?: string;
     modelsPath?: string;
     request?: { submitPath?: string };
+    capabilityEntries?: CatalogProvider[];
+    sourceProviderId?: string;
     credentialRealm?: string;
     anthropicCompatible?: {
         apiStandard?: string;
@@ -206,15 +209,6 @@ const CATALOG_PURPOSES: { id: CatalogPurpose; labelKey: string; hintKey: string;
     { id: "workflow", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.workflow", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.workflowHint", modelType: "WORKFLOW", modality: "workflow" },
     { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.purpose.model3d", hintKey: "app.admin.dashboard.model.hub.catalog.purpose.model3dHint", modelType: "MODEL3D", modality: "model3d" },
 ];
-
-const MEDIA_ADAPTER_ROOT_PROVIDER_IDS: Record<string, string> = {
-    agnes_image: "agnes",
-    agnes_video: "agnes",
-    minimax_image: "minimax-cn",
-    minimax_video: "minimax-cn",
-    minimax_tts: "minimax-cn",
-    minimax_music: "minimax-cn",
-};
 
 const MEDIA_MODEL_TYPES = new Set<string>(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]);
 const RETRIEVAL_MODEL_TYPES = new Set<string>(["EMBEDDING", "RERANK", "RERANKER"]);
@@ -365,15 +359,6 @@ function getCatalogPurposeConfig(purpose: CatalogPurpose) {
     return CATALOG_PURPOSES.find((item) => item.id === purpose) || CATALOG_PURPOSES[0];
 }
 
-function mediaRootProviderId(providerId: string | undefined) {
-    return MEDIA_ADAPTER_ROOT_PROVIDER_IDS[String(providerId || "")] || "";
-}
-
-function isFoldableMediaAdapterProvider(provider: Pick<CatalogProvider, "id" | "providerKind"> | Pick<AIProvider, "id" | "code">) {
-    const id = "code" in provider ? provider.code || provider.id : provider.id;
-    return Boolean(mediaRootProviderId(id));
-}
-
 function urlPath(value: string | undefined) {
     const raw = String(value || "").trim();
     if (!raw) return "";
@@ -424,28 +409,27 @@ function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], pu
         return catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
     }
     const expected = getCatalogPurposeConfig(purpose).modality || purpose;
-    const providerById = new Map(catalogProviders.map((item) => [item.id, item]));
     const projected = new Map<string, CatalogProvider>();
+    const internalCapabilityIds = new Set<string>();
+    for (const rootProvider of catalogProviders) {
+        const capabilityEntries = (rootProvider.capabilityEntries || []).filter(
+            (entry) => String(entry.mediaModality || "").toLowerCase() === expected,
+        );
+        if (!capabilityEntries.length) continue;
+        const models = capabilityEntries.flatMap((entry) => {
+            if (entry.sourceProviderId) internalCapabilityIds.add(entry.sourceProviderId);
+            return (entry.models || []).map((model) => endpointMediaCatalogModel(model, entry, rootProvider));
+        });
+        projected.set(rootProvider.id, {
+            ...rootProvider,
+            mediaModality: expected,
+            models,
+        });
+    }
     const direct = catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
     for (const provider of direct) {
-        const rootId = mediaRootProviderId(provider.id);
-        if (!rootId) {
-            projected.set(provider.id, provider);
-            continue;
-        }
-        const rootProvider = providerById.get(rootId);
-        if (!rootProvider) {
-            projected.set(provider.id, provider);
-            continue;
-        }
-        const existing = projected.get(rootId);
-        const nextModels = (provider.models || []).map((model) => endpointMediaCatalogModel(model, provider, rootProvider));
-        projected.set(rootId, {
-            ...rootProvider,
-            providerKind: rootProvider.providerKind || "chat",
-            mediaModality: expected,
-            models: [...(existing?.models || []), ...nextModels],
-        });
+        if (provider.catalogVisibility === "internal_capability" || internalCapabilityIds.has(provider.id)) continue;
+        if (!projected.has(provider.id)) projected.set(provider.id, provider);
     }
     const customProviders = catalogProviders.filter((item) => item.isCustom && providerMatchesPurpose(item, purpose));
     for (const provider of customProviders) {
@@ -653,11 +637,22 @@ export default function ModelHubPage() {
     }, [selectedCatalogProvider]);
     const visibleProviders = useMemo(() => {
         const configuredProviderIds = new Set(providers.map((provider) => provider.code || provider.id));
+        const capabilityRootsBySource = new Map<string, Set<string>>();
+        for (const rootProvider of catalogProviders) {
+            for (const capability of rootProvider.capabilityEntries || []) {
+                const sourceProviderId = String(capability.sourceProviderId || "").trim();
+                if (!sourceProviderId) continue;
+                const roots = capabilityRootsBySource.get(sourceProviderId) || new Set<string>();
+                roots.add(rootProvider.id);
+                capabilityRootsBySource.set(sourceProviderId, roots);
+            }
+        }
         return providers.filter((provider) => {
-            const rootId = mediaRootProviderId(provider.code || provider.id);
-            return !isFoldableMediaAdapterProvider(provider) || !configuredProviderIds.has(rootId);
+            const providerId = provider.code || provider.id;
+            const rootIds = capabilityRootsBySource.get(providerId);
+            return !rootIds || !Array.from(rootIds).some((rootId) => configuredProviderIds.has(rootId));
         });
-    }, [providers]);
+    }, [catalogProviders, providers]);
     const visibleCatalogModels = useMemo(() => {
         const query = catalogModelFilter.trim().toLowerCase();
         if (!query) return catalogProbeModels.slice(0, 80);

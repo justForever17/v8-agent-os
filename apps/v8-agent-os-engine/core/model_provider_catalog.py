@@ -70,15 +70,6 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "tripo3d_placeholder": ["tripo3d-model"],
 }
 
-_MEDIA_ADAPTER_ROOT_PROVIDERS = {
-    "agnes_image": "agnes",
-    "agnes_video": "agnes",
-    "minimax_image": "minimax-cn",
-    "minimax_video": "minimax-cn",
-    "minimax_tts": "minimax-cn",
-    "minimax_music": "minimax-cn",
-}
-
 _VOICE_MODEL_TOKENS = {
     "tts",
     "speech",
@@ -473,6 +464,7 @@ class ModelProviderCatalog:
             "apiStandard": api_standard,
             "providerKind": "media_generation",
             "mediaModality": normalized_modality,
+            "catalogVisibility": "internal_capability",
             "adapter": adapter,
             "baseUrl": entry.get("baseUrlDefault") or "",
             "logoAsset": logo_asset,
@@ -537,7 +529,7 @@ class ModelProviderCatalog:
             ],
         }
 
-    def _creative_media_matrix_providers(self, *, include_root_mapped: bool = True) -> List[Dict[str, Any]]:
+    def _creative_media_matrix_providers(self) -> List[Dict[str, Any]]:
         if not _CREATIVE_MEDIA_MATRIX_PATH.exists():
             return []
         try:
@@ -554,8 +546,6 @@ class ModelProviderCatalog:
                 if not isinstance(entry, dict):
                     continue
                 provider_id = str(entry.get("id") or "").strip()
-                if not include_root_mapped and provider_id in _MEDIA_ADAPTER_ROOT_PROVIDERS:
-                    continue
                 provider = self._provider_from_media_matrix_entry(str(modality), entry)
                 if provider:
                     providers.append(provider)
@@ -564,8 +554,6 @@ class ModelProviderCatalog:
             if not isinstance(entry, dict):
                 continue
             provider_id = str(entry.get("providerId") or "")
-            if not include_root_mapped and provider_id in _MEDIA_ADAPTER_ROOT_PROVIDERS:
-                continue
             if provider_id in seen:
                 continue
             provider = self._provider_from_media_registry_entry(entry)
@@ -574,9 +562,40 @@ class ModelProviderCatalog:
                 seen.add(provider_id)
         return providers
 
+    @staticmethod
+    def _resolved_capability_entries(
+        provider: Dict[str, Any],
+        media_providers_by_id: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        resolved: List[Dict[str, Any]] = []
+        for descriptor in _as_list(provider.get("capabilityEntries")):
+            if not isinstance(descriptor, dict):
+                continue
+            source_provider_id = str(descriptor.get("sourceProviderId") or "").strip()
+            source = media_providers_by_id.get(source_provider_id)
+            if not source:
+                continue
+            resolved.append(
+                {
+                    **deepcopy(source),
+                    **deepcopy(descriptor),
+                    "sourceProviderId": source_provider_id,
+                    "mediaModality": _normalized_modality(
+                        descriptor.get("type") or descriptor.get("mediaModality") or source.get("mediaModality")
+                    ),
+                }
+            )
+        return resolved
+
     def load(self) -> Dict[str, Any]:
         builtin = self._load_builtin()
         custom = self._load_custom()
+        media_providers = self._creative_media_matrix_providers()
+        media_providers_by_id = {
+            str(item.get("id") or ""): item
+            for item in media_providers
+            if str(item.get("id") or "").strip()
+        }
         providers: List[Dict[str, Any]] = []
         seen_provider_ids: Set[str] = set()
         for entry in _as_list(custom.get("providers")):
@@ -593,9 +612,12 @@ class ModelProviderCatalog:
             item = deepcopy(entry)
             item.setdefault("isCustom", False)
             item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
+            capability_entries = self._resolved_capability_entries(item, media_providers_by_id)
+            if capability_entries:
+                item["capabilityEntries"] = capability_entries
             providers.append(item)
             seen_provider_ids.add(str(item.get("id") or ""))
-        for entry in self._creative_media_matrix_providers(include_root_mapped=True):
+        for entry in media_providers:
             provider_id = str(entry.get("id") or "")
             if provider_id in seen_provider_ids:
                 continue
@@ -718,10 +740,23 @@ class ModelProviderCatalog:
         if "/" not in display_model_id and provider_kind != "media_generation" and media_modality not in _MEDIA_MODEL_TYPES:
             return None
         matches: List[tuple[int, int, str, Dict[str, Any], Dict[str, Any]]] = []
+        root_mappings: Dict[str, Set[str]] = {}
+        for root in _as_list(self._load_builtin().get("providers")):
+            if not isinstance(root, dict):
+                continue
+            root_id = str(root.get("id") or "").strip()
+            if not root_id:
+                continue
+            for descriptor in _as_list(root.get("capabilityEntries")):
+                if not isinstance(descriptor, dict):
+                    continue
+                source_provider_id = str(descriptor.get("sourceProviderId") or "").strip()
+                if source_provider_id:
+                    root_mappings.setdefault(source_provider_id, set()).add(root_id)
         for media_provider in self._creative_media_matrix_providers():
             media_provider_id = str(media_provider.get("id") or "")
-            root_provider_id = _MEDIA_ADAPTER_ROOT_PROVIDERS.get(media_provider_id)
-            provider_affinity = 0 if root_provider_id == provider_id else 1 if _media_base_url_matches(provider, media_provider) else 2
+            root_provider_ids = root_mappings.get(media_provider_id, set())
+            provider_affinity = 0 if provider_id in root_provider_ids else 1 if _media_base_url_matches(provider, media_provider) else 2
             for item in _as_list(media_provider.get("models")):
                 actual_model_id = str(item.get("id") or "").strip()
                 match_quality = _media_model_match_quality(display_model_id, provider, media_provider, actual_model_id)

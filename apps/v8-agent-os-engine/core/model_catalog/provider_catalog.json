@@ -1738,6 +1738,16 @@
           ]
         }
       ],
+      "capabilityEntries": [
+        {
+          "type": "image",
+          "sourceProviderId": "agnes_image"
+        },
+        {
+          "type": "video",
+          "sourceProviderId": "agnes_video"
+        }
+      ],
       "providerKind": "chat",
       "logoAsset": "/model-assets/providers/agnes.png"
     },
@@ -1879,6 +1889,24 @@
             "chat",
             "streaming"
           ]
+        }
+      ],
+      "capabilityEntries": [
+        {
+          "type": "image",
+          "sourceProviderId": "minimax_image"
+        },
+        {
+          "type": "video",
+          "sourceProviderId": "minimax_video"
+        },
+        {
+          "type": "voice",
+          "sourceProviderId": "minimax_tts"
+        },
+        {
+          "type": "music",
+          "sourceProviderId": "minimax_music"
         }
       ],
       "providerKind": "chat",
@@ -2051,6 +2079,24 @@
             "chat",
             "streaming"
           ]
+        }
+      ],
+      "capabilityEntries": [
+        {
+          "type": "image",
+          "sourceProviderId": "minimax_image"
+        },
+        {
+          "type": "video",
+          "sourceProviderId": "minimax_video"
+        },
+        {
+          "type": "voice",
+          "sourceProviderId": "minimax_tts"
+        },
+        {
+          "type": "music",
+          "sourceProviderId": "minimax_music"
         }
       ],
       "providerKind": "chat",

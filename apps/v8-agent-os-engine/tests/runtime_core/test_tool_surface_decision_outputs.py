@@ -707,3 +707,43 @@ def test_unknown_json_defaults_to_minimal_summary_with_detail_tool():
     assert "tool_observation_detail" in visible
     assert "internalControl" not in visible
     _assert_not_json_wrapper(visible)
+
+
+def test_malformed_structured_output_never_exposes_partial_json():
+    message = ToolMessage(
+        content='{"ok": true, "summary": "cut off", "internal": {',
+        name="new_experimental_tool",
+        tool_call_id="call-malformed-json",
+    )
+
+    visible = str(
+        apply_tool_surface_budget(
+            message,
+            {"agentVisibleBudget": 1200},
+            tool_name="new_experimental_tool",
+        ).content
+    )
+
+    assert "incomplete structured output" in visible
+    assert "tool_observation_detail" in visible
+    assert not visible.lstrip().startswith("{")
+    assert '"internal"' not in visible
+
+
+def test_bracketed_control_message_is_not_misclassified_as_partial_json():
+    message = ToolMessage(
+        content="[route required] Engineering runtime must handle this write.",
+        name="write_native_file",
+        tool_call_id="call-route-required",
+    )
+
+    visible = str(
+        apply_tool_surface_budget(
+            message,
+            {"agentVisibleBudget": 1200},
+            tool_name="write_native_file",
+        ).content
+    )
+
+    assert "[route required]" in visible
+    assert "incomplete structured output" not in visible

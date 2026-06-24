@@ -7326,13 +7326,12 @@ class ChatRuntime:
             if isinstance(compact_result, str):
                 return compact_result
             return str(compact_result or "")
-        if normalized_tool_name == "web_broker" or normalized_tool_name.startswith("web_"):
-            return cls._render_agent_visible_tool_surface_for_event(
-                tool_name=normalized_tool_name,
-                value=compact_result,
-                fallback=cls._extract_agent_visible_tool_result(output),
-            )
-        return cls._extract_agent_visible_tool_result(output)
+        raw_visible = cls._extract_agent_visible_tool_result(output)
+        return cls._render_agent_visible_tool_surface_for_event(
+            tool_name=normalized_tool_name,
+            value=raw_visible,
+            fallback=raw_visible,
+        )
 
     @classmethod
     def _render_agent_visible_tool_surface_for_event(cls, *, tool_name: str, value: Any, fallback: str) -> str:

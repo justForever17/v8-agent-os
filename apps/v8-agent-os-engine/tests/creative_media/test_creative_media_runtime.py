@@ -723,7 +723,7 @@ def test_minimax_voice_tts_and_design_are_executable_candidates(monkeypatch):
     assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["available"] is True
 
 
-def test_agnes_media_candidates_visible_from_configured_agnes_provider(monkeypatch):
+def test_agnes_media_candidates_require_models_saved_in_model_hub(monkeypatch):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr(
@@ -751,8 +751,7 @@ def test_agnes_media_candidates_visible_from_configured_agnes_provider(monkeypat
         if item.get("providerId") == "agnes"
     }
 
-    assert options[("image.generate", "agnes::agnes-image-2.1-flash")]["adapter"] == "agnes_images"
-    assert options[("video.text_to_video", "agnes::agnes-video-v2.0")]["available"] is True
+    assert options == {}
 
 
 def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):

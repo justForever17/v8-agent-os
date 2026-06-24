@@ -202,6 +202,27 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("run.reasoning.suppressed", topics)
         self.assertIn("run.reasoning.delta", topics)
 
+    async def test_reasoning_token_deltas_preserve_provider_spacing_and_paragraphs(self):
+        for token in ["I need", " to inspect", " the workspace.\n", "下一步读取文件。"]:
+            await self.runtime.handle_stream_event(
+                self.chat_run,
+                self.stream_state,
+                {
+                    "event": "on_chat_model_stream",
+                    "run_id": "model_reasoning_spacing",
+                    "name": "V8ChatModelAdapter",
+                    "data": {"chunk": {"additional_kwargs": {"reasoning_content": token}}},
+                },
+            )
+
+        expected = "I need to inspect the workspace.\n下一步读取文件。"
+        self.assertEqual("".join(self.stream_state.reasoning_buffer), expected)
+        reasoning_events = [
+            event for event in self.chat_run.events
+            if event["topic"] == "run.reasoning.delta"
+        ]
+        self.assertEqual("".join(str(event["payload"].get("content") or "") for event in reasoning_events), expected)
+
     async def test_trusted_reasoning_cumulative_snapshots_patch_one_canonical_node(self):
         self.stream_state.reasoning_surface_contract = {
             "mode": "provider_reasoning",

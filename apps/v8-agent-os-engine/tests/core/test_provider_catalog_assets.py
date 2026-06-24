@@ -52,6 +52,19 @@ def test_llm_provider_catalog_contains_new_model_providers():
         "agnes-image-2.1-flash",
         "agnes-video-v2.0",
     ]
+    assert agnes["capabilityEntries"] == [
+        {"type": "image", "sourceProviderId": "agnes_image"},
+        {"type": "video", "sourceProviderId": "agnes_video"},
+    ]
+
+    loaded_agnes = model_provider_catalog.get_provider("agnes")
+    loaded_capabilities = {
+        (item["type"], item["sourceProviderId"]): item
+        for item in loaded_agnes["capabilityEntries"]
+    }
+    assert loaded_capabilities[("image", "agnes_image")]["models"]
+    assert loaded_capabilities[("video", "agnes_video")]["models"]
+    assert loaded_capabilities[("image", "agnes_image")]["catalogVisibility"] == "internal_capability"
 
 
 def test_media_matrix_contains_requested_generation_providers():

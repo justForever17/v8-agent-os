@@ -1,7 +1,7 @@
 import time
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .supervisor_context import (
     apply_passive_rag_injection,
@@ -58,6 +58,62 @@ def _has_tool(tools, tool_name: str) -> bool:
     return any(_tool_ref_name(tool) == expected for tool in list(tools or []))
 
 
+def _tool_called_since_latest_human(state, tool_name: str) -> bool:
+    if not isinstance(state, dict):
+        return False
+    expected = str(tool_name or "").strip()
+    if not expected:
+        return False
+    for message in reversed(list(state.get("messages") or [])):
+        if isinstance(message, HumanMessage):
+            break
+        if isinstance(message, ToolMessage) and str(getattr(message, "name", "") or "").strip() == expected:
+            return True
+        if isinstance(message, dict):
+            role = str(message.get("role") or message.get("type") or "").strip().lower()
+            if role in {"human", "user"}:
+                break
+            if role in {"tool", "toolmessage"} and str(message.get("name") or message.get("toolName") or "").strip() == expected:
+                return True
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls is None and isinstance(message, dict):
+            tool_calls = message.get("tool_calls") or message.get("toolCalls")
+        for call in list(tool_calls or []):
+            if isinstance(call, dict):
+                call_name = str(call.get("name") or ((call.get("function") or {}).get("name") if isinstance(call.get("function"), dict) else "") or "").strip()
+            else:
+                call_name = str(getattr(call, "name", "") or "").strip()
+            if call_name == expected:
+                return True
+    return False
+
+
+def _memory_no_match_since_latest_human(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    markers = ("no matching prior memory", "no matching prior evidence", "no relevant memory found")
+    for message in reversed(list(state.get("messages") or [])):
+        if isinstance(message, HumanMessage):
+            break
+        role = ""
+        name = ""
+        content = ""
+        if isinstance(message, ToolMessage):
+            role = "tool"
+            name = str(getattr(message, "name", "") or "").strip()
+            content = str(getattr(message, "content", "") or "")
+        elif isinstance(message, dict):
+            role = str(message.get("role") or message.get("type") or "").strip().lower()
+            if role in {"human", "user"}:
+                break
+            name = str(message.get("name") or message.get("toolName") or "").strip()
+            content = str(message.get("content") or message.get("result") or "")
+        if role in {"tool", "toolmessage"} and name == "memory_broker":
+            normalized = content.lower()
+            return any(marker in normalized for marker in markers)
+    return False
+
+
 def _should_force_memory_broker_first(
     *,
     user_query: str,
@@ -66,6 +122,8 @@ def _should_force_memory_broker_first(
     state=None,
 ) -> bool:
     if not _has_tool(selected_tools, "memory_broker"):
+        return False
+    if _tool_called_since_latest_human(state, "memory_broker"):
         return False
     if _spec_mode_active(state) and _spec_runtime_execution_allowed(state):
         return False
@@ -939,6 +997,8 @@ def execute_supervisor_turn(
             route_bundle = _suppress_extensions_prefilter_prompt(route_bundle)
         filtered_supervisor_tools = route_bundle.filtered_tools
         filtered_supervisor_tools = _filter_spec_tools_for_mode(filtered_supervisor_tools, state)
+        if _memory_no_match_since_latest_human(state):
+            filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, {"memory_broker"})
         try:
             route_bundle.filtered_tools = list(filtered_supervisor_tools)
         except Exception:

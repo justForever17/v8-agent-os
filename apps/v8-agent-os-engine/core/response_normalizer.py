@@ -7,7 +7,6 @@ from typing import Any, Iterable, Mapping, Tuple
 
 from core.reasoning_payload_contract import (
     REASONING_KEYS,
-    SIGNATURE_KEYS,
     TEXT_BLOCK_TYPES,
     REASONING_BLOCK_TYPES,
 )
@@ -198,17 +197,15 @@ def _extract_reasoning_payload(payload: Mapping[str, Any]) -> str:
         value = payload.get(key)
         _append_unique(parts, _stringify_reasoning_value(value))
 
-    for key in SIGNATURE_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and value:
-            _append_unique(parts, f"[{key}] {value}")
-
     return "\n".join(parts)
 
 
 def _stringify_reasoning_value(value: Any) -> str:
     if isinstance(value, str):
-        return value.strip()
+        # Streaming providers commonly encode the word boundary in the leading
+        # space of the next token. Stripping here glues every reasoning token
+        # together and also destroys provider-authored paragraph breaks.
+        return value if value.strip() else ""
 
     if isinstance(value, (int, float, bool)):
         return str(value)

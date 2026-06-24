@@ -6,10 +6,37 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-from core.response_normalizer import sanitize_model_tool_calls
+from core.response_normalizer import extract_text_and_reasoning, sanitize_model_tool_calls
 
 
 class ResponseNormalizerToolCallIdTests(unittest.TestCase):
+    def test_reasoning_preserves_stream_token_whitespace_and_line_breaks(self):
+        first = SimpleNamespace(
+            content="",
+            additional_kwargs={"reasoning_content": "I need"},
+            response_metadata={},
+        )
+        second = SimpleNamespace(
+            content="",
+            additional_kwargs={"reasoning_content": " to inspect\n下一步"},
+            response_metadata={},
+        )
+
+        self.assertEqual(extract_text_and_reasoning(first)[1], "I need")
+        self.assertEqual(extract_text_and_reasoning(second)[1], " to inspect\n下一步")
+
+    def test_provider_thought_signature_is_not_visible_reasoning(self):
+        message = SimpleNamespace(
+            content=[{"text": "Visible answer", "thoughtSignature": "opaque-provider-signature"}],
+            additional_kwargs={},
+            response_metadata={"thoughtSignature": "another-opaque-signature"},
+        )
+
+        text, reasoning = extract_text_and_reasoning(message)
+
+        self.assertEqual(text, "Visible answer")
+        self.assertEqual(reasoning, "")
+
     def test_provider_id_is_preserved_as_shadow_while_v8_binds_canonical_id(self):
         message = SimpleNamespace(
             content="",

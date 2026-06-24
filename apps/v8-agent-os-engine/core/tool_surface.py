@@ -459,6 +459,17 @@ def _tool_json_any_payload(text: str) -> Any | None:
     return payload if isinstance(payload, (dict, list)) else None
 
 
+def _looks_like_structured_json_prefix(text: str) -> bool:
+    stripped = str(text or "").lstrip()
+    if stripped.startswith("{"):
+        return True
+    if not stripped.startswith("["):
+        return False
+    # Bracketed control markers such as ``[route required]`` are readable
+    # protocol text, not broken JSON. Arrays must begin with a JSON value.
+    return bool(re.match(r'^\[\s*(?:[\{\[\"]|-?\d|true\b|false\b|null\b|\])', stripped, re.IGNORECASE))
+
+
 def _short_text(value: Any, limit: int = 120) -> str:
     text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\s+", " ", text)
@@ -552,6 +563,15 @@ def _source_line(item: dict[str, Any], *, title_limit: int = 120, url_limit: int
 def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     mode = _short_text(payload.get("mode") or "status", 40)
     lines = [f"Runtime route menu ({mode})"]
+    state = payload.get("state") or payload.get("status")
+    if state:
+        lines.append(f"Status: {_short_text(state, 80)}")
+    episode_id = payload.get("queuedEpisodeId") or payload.get("episodeId") or payload.get("runtimeEpisodeId")
+    if episode_id:
+        lines.append(f"Episode: {_short_text(episode_id, 120)}")
+    handoff_id = payload.get("handoffId") or payload.get("runtimeHandoffId")
+    if handoff_id:
+        lines.append(f"Handoff: {_short_text(handoff_id, 120)}")
     active = payload.get("activeGrants") or payload.get("grants") or payload.get("runtimeToolGrants") or []
     if isinstance(active, list) and active:
         names = []
@@ -1163,6 +1183,17 @@ def _render_native_json_surface(tool_name: str, payload: dict[str, Any], raw_ref
 def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str) -> str | None:
     if tool_name == "memory_broker":
         mode = str(payload.get("mode") or "").strip() or "recall"
+        items = payload.get("items")
+        packs = payload.get("evidencePacks")
+        summary = str(payload.get("summary") or "").strip().lower()
+        no_match = (
+            payload.get("ok") is not False
+            and not items
+            and not packs
+            and any(marker in summary for marker in ("no matching prior memory", "no relevant memory found"))
+        )
+        if no_match:
+            return "Memory: no matching prior evidence.\nContinue with the current request."
         lines = [f"Memory broker: {mode}"]
         if payload.get("summary"):
             lines.append(f"Summary: {_short_text(payload.get('summary'), 220)}")
@@ -1171,7 +1202,6 @@ def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str
         if payload.get("scope"):
             lines.append(f"Scope: {_short_text(payload.get('scope'), 80)}")
 
-        packs = payload.get("evidencePacks")
         if isinstance(packs, list) and packs:
             lines.append("Evidence packs:")
             for pack in packs[:3]:
@@ -1243,7 +1273,6 @@ def _render_memory_surface(tool_name: str, payload: dict[str, Any], raw_ref: str
             if len(packs) > 3:
                 lines.append(f"- … {len(packs) - 3} more packs")
 
-        items = payload.get("items")
         if isinstance(items, list) and items:
             lines.append("Items:")
             for item in items[:5]:
@@ -2410,6 +2439,26 @@ def apply_tool_surface_budget(
             }
         )
         return _copy_tool_message_with_budget(message, decision_surface, budget_meta)
+
+    if _looks_like_structured_json_prefix(content_str) and _tool_json_any_payload(content_str) is None:
+        malformed_surface = "\n".join(
+            line
+            for line in (
+                f"{str(tool_name or 'tool').replace('_', ' ')} returned incomplete structured output.",
+                "The partial JSON is hidden because it is not safe or useful as an agent/client result.",
+                f"Detail: tool_observation_detail(raw_ref='{raw_ref}')" if raw_ref else "",
+            )
+            if line
+        )
+        budget_meta.update(
+            {
+                "wasBudgetTruncated": True,
+                "semanticTruncationStrategy": "malformed_structured_output_surface",
+                "originalChars": len(original_content_str),
+                "visibleChars": len(malformed_surface),
+            }
+        )
+        return _copy_tool_message_with_budget(message, malformed_surface, budget_meta)
 
     if tool_name == TOOL_OBSERVATION_DETAIL_NAME:
         was_truncated = len(content_str) > budget

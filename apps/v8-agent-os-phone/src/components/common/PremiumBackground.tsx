@@ -1,153 +1,234 @@
 import { useEffect, useRef } from "react";
-import { Animated, Easing, StyleSheet, View, useWindowDimensions } from "react-native";
+import { Animated, Easing, StyleSheet, View, DimensionValue } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 
-function SpotlightBlob({ color }: { color: string }) {
-    return (
-        <View style={styles.spotlightParent}>
-            <View style={[styles.spotlightOuter, { backgroundColor: color }]} />
-            <View style={[styles.spotlightMiddle, { backgroundColor: color }]} />
-            <View style={[styles.spotlightInner, { backgroundColor: color }]} />
-        </View>
-    );
+interface StarCoord {
+    top: DimensionValue;
+    left: DimensionValue;
 }
 
-export function PremiumBackground({ children }: { children?: React.ReactNode }) {
-    const { width, height } = useWindowDimensions();
-    const gridAnim = useRef(new Animated.Value(0)).current;
-    const spotAAnim = useRef(new Animated.Value(0)).current;
-    const spotBAnim = useRef(new Animated.Value(0)).current;
+const STARS_1_COORDS: StarCoord[] = [
+    { top: "8%", left: "12%" }, { top: "25%", left: "5%" }, { top: "40%", left: "22%" },
+    { top: "12%", left: "55%" }, { top: "6%", left: "85%" }, { top: "30%", left: "70%" },
+    { top: "52%", left: "10%" }, { top: "65%", left: "32%" }, { top: "72%", left: "82%" },
+    { top: "82%", left: "15%" }, { top: "90%", left: "45%" }, { top: "60%", left: "58%" },
+    { top: "42%", left: "92%" }, { top: "78%", left: "68%" }, { top: "95%", left: "88%" },
+];
 
-    const step = 45;
-    const gridWidth = width + step * 2;
-    const gridHeight = height + step * 2;
-    const cols = Math.ceil(gridWidth / step);
-    const rows = Math.ceil(gridHeight / step);
+const STARS_2_COORDS: StarCoord[] = [
+    { top: "4%", left: "32%" }, { top: "18%", left: "42%" }, { top: "35%", left: "12%" },
+    { top: "15%", left: "74%" }, { top: "28%", left: "96%" }, { top: "55%", left: "48%" },
+    { top: "74%", left: "4%" }, { top: "80%", left: "38%" }, { top: "64%", left: "86%" },
+    { top: "86%", left: "62%" }, { top: "93%", left: "25%" }, { top: "48%", left: "78%" },
+];
+
+const STARS_3_COORDS: StarCoord[] = [
+    { top: "16%", left: "28%" }, { top: "34%", left: "64%" }, { top: "45%", left: "6%" },
+    { top: "58%", left: "34%" }, { top: "68%", left: "50%" }, { top: "76%", left: "92%" },
+    { top: "88%", left: "75%" }, { top: "22%", left: "88%" }, { top: "2%", left: "60%" },
+];
+
+export function PremiumBackground({ children }: { children?: React.ReactNode }) {
+    const twinkle1 = useRef(new Animated.Value(0)).current;
+    const twinkle2 = useRef(new Animated.Value(0)).current;
+    const twinkle3 = useRef(new Animated.Value(0)).current;
+
+    const m1Val = useRef(new Animated.Value(0)).current;
+    const m2Val = useRef(new Animated.Value(0)).current;
+    const m3Val = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
-        const gridLoop = Animated.loop(
-            Animated.timing(gridAnim, {
-                toValue: 1,
-                duration: 12000,
-                easing: Easing.linear,
-                useNativeDriver: true,
-            })
-        );
-        const spotALoop = Animated.loop(
-            Animated.timing(spotAAnim, {
-                toValue: 1,
-                duration: 22000,
-                easing: Easing.linear,
-                useNativeDriver: true,
-            })
-        );
-        const spotBLoop = Animated.loop(
-            Animated.timing(spotBAnim, {
-                toValue: 1,
-                duration: 28000,
-                easing: Easing.linear,
-                useNativeDriver: true,
-            })
-        );
-
-        gridLoop.start();
-        spotALoop.start();
-        spotBLoop.start();
-
-        return () => {
-            gridLoop.stop();
-            spotALoop.stop();
-            spotBLoop.stop();
+        const runTwinkle = (val: Animated.Value, duration: number, delay = 0) => {
+            Animated.loop(
+                Animated.sequence([
+                    Animated.delay(delay),
+                    Animated.timing(val, {
+                        toValue: 1,
+                        duration: duration / 2,
+                        easing: Easing.inOut(Easing.ease),
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(val, {
+                        toValue: 0,
+                        duration: duration / 2,
+                        easing: Easing.inOut(Easing.ease),
+                        useNativeDriver: true,
+                    }),
+                ])
+            ).start();
         };
-    }, [gridAnim, spotAAnim, spotBAnim]);
 
-    const gridTranslateX = gridAnim.interpolate({
+        const runMeteor = (val: Animated.Value, duration: number, delay = 0) => {
+            Animated.loop(
+                Animated.sequence([
+                    Animated.delay(delay),
+                    Animated.timing(val, {
+                        toValue: 1,
+                        duration: duration,
+                        easing: Easing.linear,
+                        useNativeDriver: true,
+                    }),
+                ])
+            ).start();
+        };
+
+        runTwinkle(twinkle1, 3000);
+        runTwinkle(twinkle2, 5000, 1000);
+        runTwinkle(twinkle3, 7000, 2000);
+
+        runMeteor(m1Val, 8000);
+        runMeteor(m2Val, 12000, 4000);
+        runMeteor(m3Val, 10000, 2000);
+    }, [twinkle1, twinkle2, twinkle3, m1Val, m2Val, m3Val]);
+
+    const opacity1 = twinkle1.interpolate({
         inputRange: [0, 1],
-        outputRange: [0, -step],
+        outputRange: [0.2, 1.0],
     });
-    const gridTranslateY = gridAnim.interpolate({
+    const opacity2 = twinkle2.interpolate({
         inputRange: [0, 1],
-        outputRange: [0, -step],
+        outputRange: [0.2, 1.0],
+    });
+    const opacity3 = twinkle3.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.2, 1.0],
     });
 
-    const spotATranslateX = spotAAnim.interpolate({
-        inputRange: [0, 0.25, 0.5, 0.75, 1],
-        outputRange: [-80, 80, 100, -60, -80],
-    });
-    const spotATranslateY = spotAAnim.interpolate({
-        inputRange: [0, 0.25, 0.5, 0.75, 1],
-        outputRange: [-60, -100, 60, 100, -60],
-    });
+    const m1Style = {
+        position: "absolute" as const,
+        top: "10%" as DimensionValue,
+        right: -80,
+        opacity: m1Val.interpolate({
+            inputRange: [0, 0.05, 0.12, 0.15, 1],
+            outputRange: [0, 1, 1, 0, 0],
+        }),
+        transform: [
+            {
+                translateX: m1Val.interpolate({
+                    inputRange: [0, 0.15, 1],
+                    outputRange: [0, -1200, -1200],
+                }),
+            },
+            {
+                translateY: m1Val.interpolate({
+                    inputRange: [0, 0.15, 1],
+                    outputRange: [0, 840, 840],
+                }),
+            },
+            { rotate: "-35deg" as const },
+        ],
+    };
 
-    const spotBTranslateX = spotBAnim.interpolate({
-        inputRange: [0, 0.25, 0.5, 0.75, 1],
-        outputRange: [100, -60, -100, 80, 100],
-    });
-    const spotBTranslateY = spotBAnim.interpolate({
-        inputRange: [0, 0.25, 0.5, 0.75, 1],
-        outputRange: [80, 100, -80, -60, 80],
-    });
+    const m2Style = {
+        position: "absolute" as const,
+        top: "30%" as DimensionValue,
+        right: -80,
+        opacity: m2Val.interpolate({
+            inputRange: [0, 0.05, 0.12, 0.15, 1],
+            outputRange: [0, 1, 1, 0, 0],
+        }),
+        transform: [
+            {
+                translateX: m2Val.interpolate({
+                    inputRange: [0, 0.15, 1],
+                    outputRange: [0, -1200, -1200],
+                }),
+            },
+            {
+                translateY: m2Val.interpolate({
+                    inputRange: [0, 0.15, 1],
+                    outputRange: [0, 840, 840],
+                }),
+            },
+            { rotate: "-35deg" as const },
+        ],
+    };
+
+    const m3Style = {
+        position: "absolute" as const,
+        top: "50%" as DimensionValue,
+        right: -80,
+        opacity: m3Val.interpolate({
+            inputRange: [0, 0.05, 0.12, 0.15, 1],
+            outputRange: [0, 1, 1, 0, 0],
+        }),
+        transform: [
+            {
+                translateX: m3Val.interpolate({
+                    inputRange: [0, 0.15, 1],
+                    outputRange: [0, -1200, -1200],
+                }),
+            },
+            {
+                translateY: m3Val.interpolate({
+                    inputRange: [0, 0.15, 1],
+                    outputRange: [0, 840, 840],
+                }),
+            },
+            { rotate: "-35deg" as const },
+        ],
+    };
 
     return (
         <View style={styles.container}>
-            {/* Spotlight Blobs */}
-            <Animated.View
-                style={[
-                    styles.spotlightWrap,
-                    {
-                        left: width * 0.2,
-                        top: height * 0.3,
-                        transform: [{ translateX: spotATranslateX }, { translateY: spotATranslateY }],
-                    },
-                ]}
-            >
-                <SpotlightBlob color="#6366F1" />
-            </Animated.View>
+            {/* Sky Background */}
+            <View style={styles.skyCanvas} />
 
-            <Animated.View
-                style={[
-                    styles.spotlightWrap,
-                    {
-                        left: width * 0.6,
-                        top: height * 0.5,
-                        transform: [{ translateX: spotBTranslateX }, { translateY: spotBTranslateY }],
-                    },
-                ]}
-            >
-                <SpotlightBlob color="#06B6D4" />
-            </Animated.View>
-
-            {/* Moving Grid Container */}
-            <View style={StyleSheet.absoluteFill} pointerEvents="none">
-                <Animated.View
-                    style={[
-                        styles.gridContainer,
-                        {
-                            width: gridWidth,
-                            height: gridHeight,
-                            transform: [{ translateX: gridTranslateX }, { translateY: gridTranslateY }],
-                        },
-                    ]}
-                >
-                    {Array.from({ length: cols }).map((_, i) => (
-                        <View
-                            key={`col-${i}`}
-                            style={[
-                                styles.gridLineVertical,
-                                { left: i * step },
-                            ]}
-                        />
-                    ))}
-                    {Array.from({ length: rows }).map((_, i) => (
-                        <View
-                            key={`row-${i}`}
-                            style={[
-                                styles.gridLineHorizontal,
-                                { top: i * step },
-                            ]}
-                        />
-                    ))}
-                </Animated.View>
+            {/* Moon */}
+            <View style={styles.moon}>
+                <View style={styles.moonBody} />
+                <View style={styles.moonMask} />
             </View>
+
+            {/* Twinkling Star Layers */}
+            <Animated.View style={[StyleSheet.absoluteFill, { opacity: opacity1 }]} pointerEvents="none">
+                {STARS_1_COORDS.map((coord, i) => (
+                    <View key={`star1-${i}`} style={[styles.star, styles.star1, coord]} />
+                ))}
+            </Animated.View>
+
+            <Animated.View style={[StyleSheet.absoluteFill, { opacity: opacity2 }]} pointerEvents="none">
+                {STARS_2_COORDS.map((coord, i) => (
+                    <View key={`star2-${i}`} style={[styles.star, styles.star2, coord]} />
+                ))}
+            </Animated.View>
+
+            <Animated.View style={[StyleSheet.absoluteFill, { opacity: opacity3 }]} pointerEvents="none">
+                {STARS_3_COORDS.map((coord, i) => (
+                    <View key={`star3-${i}`} style={[styles.star, styles.star3, coord]} />
+                ))}
+            </Animated.View>
+
+            {/* Shooting Stars */}
+            <Animated.View style={m1Style} pointerEvents="none">
+                <View style={styles.meteorPoint} />
+                <LinearGradient
+                    colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={styles.meteorTail}
+                />
+            </Animated.View>
+
+            <Animated.View style={m2Style} pointerEvents="none">
+                <View style={styles.meteorPoint} />
+                <LinearGradient
+                    colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={styles.meteorTail}
+                />
+            </Animated.View>
+
+            <Animated.View style={m3Style} pointerEvents="none">
+                <View style={styles.meteorPoint} />
+                <LinearGradient
+                    colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={styles.meteorTail}
+                />
+            </Animated.View>
 
             {/* Foreground Content */}
             {children}
@@ -158,60 +239,76 @@ export function PremiumBackground({ children }: { children?: React.ReactNode }) 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: "#06070D",
+        backgroundColor: "#050505",
         position: "relative",
         overflow: "hidden",
     },
-    spotlightWrap: {
+    skyCanvas: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "#050505",
+    },
+    star: {
         position: "absolute",
-        width: 1,
+        backgroundColor: "#FFFFFF",
+        borderRadius: 99,
+    },
+    star1: {
+        width: 1.5,
+        height: 1.5,
+    },
+    star2: {
+        width: 2.0,
+        height: 2.0,
+    },
+    star3: {
+        width: 2.5,
+        height: 2.5,
+    },
+    moon: {
+        position: "absolute",
+        top: "12%",
+        right: "12%",
+        width: 64,
+        height: 64,
+        borderRadius: 32,
+        shadowColor: "#fdfbd3",
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.36,
+        shadowRadius: 16,
+        elevation: 6,
+        zIndex: 10,
+    },
+    moonBody: {
+        width: "100%",
+        height: "100%",
+        borderRadius: 32,
+        backgroundColor: "#fdfbd3",
+    },
+    moonMask: {
+        position: "absolute",
+        top: -12,
+        left: -12,
+        width: "100%",
+        height: "100%",
+        borderRadius: 32,
+        backgroundColor: "#050505",
+    },
+    meteorPoint: {
+        width: 2.5,
+        height: 2.5,
+        borderRadius: 99,
+        backgroundColor: "#FFFFFF",
+        shadowColor: "#FFFFFF",
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.8,
+        shadowRadius: 6,
+        elevation: 2,
+    },
+    meteorTail: {
+        position: "absolute",
+        left: 2.5,
+        top: 0.75,
+        width: 80,
         height: 1,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    spotlightParent: {
-        position: "absolute",
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    spotlightOuter: {
-        position: "absolute",
-        width: 320,
-        height: 320,
-        borderRadius: 160,
-        opacity: 0.045,
-    },
-    spotlightMiddle: {
-        position: "absolute",
-        width: 200,
-        height: 200,
-        borderRadius: 100,
-        opacity: 0.075,
-    },
-    spotlightInner: {
-        position: "absolute",
-        width: 100,
-        height: 100,
-        borderRadius: 50,
-        opacity: 0.12,
-    },
-    gridContainer: {
-        position: "absolute",
-        left: 0,
-        top: 0,
-    },
-    gridLineVertical: {
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        width: 1,
-        backgroundColor: "rgba(255, 255, 255, 0.024)",
-    },
-    gridLineHorizontal: {
-        position: "absolute",
-        left: 0,
-        right: 0,
-        height: 1,
-        backgroundColor: "rgba(255, 255, 255, 0.024)",
     },
 });

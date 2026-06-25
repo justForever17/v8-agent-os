@@ -10,9 +10,12 @@ _DEEPSEEK_PROVIDERS = {"deepseek"}
 _DASHSCOPE_PROVIDERS = {"dashscope", "qwen"}
 _GLM_PROVIDERS = {"zhipu", "zai-coding", "bigmodel"}
 _MINIMAX_PROVIDERS = {"minimax", "minimax-cn"}
+_XIAOMI_MIMO_PROVIDERS = {"xiaomi-mimo", "xiaomi-mimo-tokenplan"}
+_VOLCENGINE_ARK_PROVIDERS = {"volcengine-ark", "volcengine-coding"}
 
 _DEEPSEEK_NO_THINK_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
 _MINIMAX_NO_THINK_MODELS = {"minimax-m3"}
+_XIAOMI_MIMO_NO_THINK_MODELS = {"mimo-v2.5", "mimo-v2.5-flash", "mimo-v2.5-pro"}
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -35,6 +38,15 @@ def _model_supports_reasoning(model_record: Mapping[str, Any] | None) -> bool:
     return bool(capabilities.get("reasoning") or "reasoning" in tags or "reasoning" in raw_type)
 
 
+def _is_volcengine_ark_no_think_model(model_id: str) -> bool:
+    return (
+        model_id.startswith("doubao-seed-")
+        or model_id.startswith("deepseek-v4-")
+        or model_id.startswith("deepseek-v3-2")
+        or model_id.startswith("glm-4-7")
+    )
+
+
 def _request_style_for_model(
     *,
     provider_id: str,
@@ -52,6 +64,10 @@ def _request_style_for_model(
     if provider in _DEEPSEEK_PROVIDERS and model_lower in _DEEPSEEK_NO_THINK_MODELS:
         return "openai_thinking_disabled"
     if provider in _MINIMAX_PROVIDERS and model_lower in _MINIMAX_NO_THINK_MODELS:
+        return "openai_thinking_disabled"
+    if provider in _XIAOMI_MIMO_PROVIDERS and model_lower in _XIAOMI_MIMO_NO_THINK_MODELS:
+        return "openai_thinking_disabled"
+    if provider in _VOLCENGINE_ARK_PROVIDERS and _is_volcengine_ark_no_think_model(model_lower):
         return "openai_thinking_disabled"
     if provider in _OPENAI_REASONING_PROVIDERS and _model_supports_reasoning(model_record):
         return "openai_reasoning_effort_none"

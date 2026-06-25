@@ -384,17 +384,34 @@ def test_supported_no_think_models_expose_thinking_control():
     dashscope = model_provider_catalog.get_provider("dashscope")
     zhipu = model_provider_catalog.get_provider("zhipu")
     zai_coding = model_provider_catalog.get_provider("zai-coding")
-    assert deepseek and dashscope and zhipu and zai_coding
+    mimo = model_provider_catalog.get_provider("xiaomi-mimo")
+    mimo_tokenplan = model_provider_catalog.get_provider("xiaomi-mimo-tokenplan")
+    volcengine_ark = model_provider_catalog.get_provider("volcengine-ark")
+    assert deepseek and dashscope and zhipu and zai_coding and mimo and mimo_tokenplan and volcengine_ark
 
     deepseek_v4 = model_provider_catalog.normalize_model(deepseek, "deepseek-v4-flash")
     qwen = model_provider_catalog.normalize_model(dashscope, "qwen-max")
     glm = model_provider_catalog.normalize_model(zhipu, "glm-5")
     glm_52 = model_provider_catalog.normalize_model(zai_coding, "glm-5.2")
+    mimo_25_pro = model_provider_catalog.normalize_model(mimo, "mimo-v2.5-pro")
+    mimo_25 = model_provider_catalog.normalize_model(mimo, "mimo-v2.5")
+    mimo_25_flash = model_provider_catalog.normalize_model(mimo, "mimo-v2.5-flash")
+    mimo_25_tts = model_provider_catalog.normalize_model(mimo, "mimo-v2.5-tts")
+    mimo_tokenplan_25_pro = model_provider_catalog.normalize_model(mimo_tokenplan, "mimo-v2.5-pro")
+    doubao_seed = model_provider_catalog.normalize_model(volcengine_ark, "doubao-seed-2-0-pro-260215")
+    doubao_code = model_provider_catalog.normalize_model(volcengine_ark, "doubao-seed-2-0-code-preview-260215")
 
     assert deepseek_v4["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert qwen["thinkingControl"]["requestStyle"] == "dashscope_enable_thinking_false"
     assert glm["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert glm_52["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert mimo_25_pro["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert mimo_25["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert mimo_25_flash["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert not mimo_25_tts.get("thinkingControl")
+    assert mimo_tokenplan_25_pro["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert doubao_seed["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert doubao_code["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
 
 
 def test_model_control_plane_surfaces_saved_no_think_state():
@@ -1196,6 +1213,10 @@ def test_no_think_request_patch_for_openai_compatible_providers():
     cases = [
         ("deepseek", "deepseek-v4-flash", {"extra_body": {"thinking": {"type": "disabled"}}}),
         ("minimax-cn", "MiniMax-M3", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("xiaomi-mimo", "mimo-v2.5-pro", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("xiaomi-mimo-tokenplan", "mimo-v2.5", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("volcengine-ark", "doubao-seed-2-1-pro-260628", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("volcengine-coding", "doubao-seed-2.0-pro", {"extra_body": {"thinking": {"type": "disabled"}}}),
         ("zhipu", "glm-5", {"extra_body": {"thinking": {"type": "disabled"}}}),
         ("dashscope", "qwen-max", {"extra_body": {"enable_thinking": False}}),
         ("openai", "gpt-5.5", {"reasoning": {"effort": "none"}}),

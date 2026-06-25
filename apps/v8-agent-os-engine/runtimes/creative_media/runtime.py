@@ -198,30 +198,51 @@ def _all_operation_kinds() -> list[str]:
     return sorted(values)
 
 
+def _model_identifier_variants(value: Any) -> set[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return set()
+    variants = {raw, raw.lower()}
+    tail = raw.rsplit("/", 1)[-1].strip()
+    if tail:
+        variants.update({tail, tail.lower()})
+    return {item for item in variants if item}
+
+
+def _normalize_operation_kinds_for_modality(modality: str, operations: Iterable[str]) -> list[str]:
+    filtered: list[str] = []
+    for operation in operations:
+        item = str(operation or "").strip()
+        if item and (item.startswith(f"{modality}.") or (modality == "voice" and item.startswith("voice."))):
+            filtered.append(item)
+    if modality == "image":
+        filtered = [*filtered, "image.generate", "image.edit"]
+    return list(dict.fromkeys(filtered))
+
+
 def _registry_operation_kinds_for_model(*, provider_id: str, model_id: str, modality: str) -> list[str]:
     registry = load_media_model_capability_registry()
     target_provider = str(provider_id or "").strip()
     target_model = str(model_id or "").strip()
-    if not target_provider or not target_model:
+    target_model_variants = _model_identifier_variants(target_model)
+    if not target_model_variants:
         return []
     for item in list(registry.get("models") or []):
         if not isinstance(item, dict):
             continue
         provider_ids = {str(value or "").strip() for value in list(item.get("providerIds") or [])}
-        aliases = {str(value or "").strip() for value in list(item.get("aliases") or [])}
-        aliases.add(str(item.get("canonicalModelId") or "").strip())
-        if target_provider not in provider_ids or target_model not in aliases:
+        aliases: set[str] = set()
+        for value in list(item.get("aliases") or []):
+            aliases.update(_model_identifier_variants(value))
+        aliases.update(_model_identifier_variants(item.get("canonicalModelId")))
+        if not aliases or not (target_model_variants & aliases):
             continue
         operations = [
             str(value or "").strip()
             for value in list(item.get("operationKinds") or [])
             if str(value or "").strip()
         ]
-        return [
-            operation
-            for operation in operations
-            if operation.startswith(f"{modality}.") or (modality == "voice" and operation.startswith("voice."))
-        ]
+        return _normalize_operation_kinds_for_modality(modality, operations)
     return []
 
 
@@ -530,15 +551,16 @@ class CreativeMediaRuntime:
         if modality == "voice" and adapter == "minimax_tts":
             return list(dict.fromkeys([*registry_operations, *explicit, "voice.tts", "voice.design"]))
         if registry_operations:
-            return registry_operations
+            return _normalize_operation_kinds_for_modality(modality, registry_operations)
         if explicit:
-            return [item for item in explicit if item.startswith(f"{modality}.") or item.startswith("voice.")]
+            return _normalize_operation_kinds_for_modality(modality, explicit)
         haystack = " ".join([provider_id, str(provider_meta.get("name") or ""), str(model_data.get("id") or "")]).lower()
         if modality == "image":
             if adapter == "dashscope":
                 return ["image.generate", "image.edit"]
             if adapter == "openai_images":
                 return ["image.generate", "image.edit"]
+            return ["image.generate", "image.edit"]
         if modality == "video":
             if any(token in haystack for token in ("lipsync", "lip-sync", "retalk", "对口型")):
                 return ["video.lipsync"]
@@ -833,6 +855,15 @@ class CreativeMediaRuntime:
     def _is_configured_model_candidate(self, candidate: dict[str, Any]) -> bool:
         return str(candidate.get("source") or "") in MODEL_PREFERENCE_CONFIG_SOURCES
 
+    def _is_model_preference_visible_candidate(self, candidate: dict[str, Any]) -> bool:
+        if not self._is_configured_model_candidate(candidate):
+            return False
+        if bool(candidate.get("available", True)) or bool(candidate.get("briefOnly", False)):
+            return True
+        # Image providers often expose generation/edit endpoints before V8OS has a dedicated adapter.
+        # Keep them selectable with a risk marker instead of hiding the user's connected model.
+        return str(candidate.get("modality") or "") == "image"
+
     def _candidate_source_rank(self, candidate: dict[str, Any]) -> int:
         source = str(candidate.get("source") or "")
         if source == "model_control_plane":
@@ -978,12 +1009,12 @@ class CreativeMediaRuntime:
         connected_options = [
             dict(item)
             for item in candidates
-            if self._is_configured_model_candidate(item) and (bool(item.get("available", True)) or bool(item.get("briefOnly", False)))
+            if self._is_model_preference_visible_candidate(item)
         ]
         diagnostic_candidates = [
             dict(item)
             for item in candidates
-            if not self._is_configured_model_candidate(item) or (not bool(item.get("available", True)) and not bool(item.get("briefOnly", False)))
+            if not self._is_model_preference_visible_candidate(item)
         ]
         return {
             "version": 1,

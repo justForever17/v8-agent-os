@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, Clapperboard, RefreshCw, Save, Sparkles, UserRound } from "lucide-react";
+import { AlertTriangle, Box, ChevronDown, ChevronRight, Clapperboard, RefreshCw, Save, Sparkles, UserRound } from "lucide-react";
 
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
@@ -119,18 +119,26 @@ function creativeMediaStatusLabel(t: ReturnType<typeof useT>, status: unknown) {
     return keyMap[normalized] ? t(keyMap[normalized]) : text(status);
 }
 
-function asModelSelectOption(candidate: CreativeModelCandidate): AdminModelSelectOption {
+function candidateWarningReason(t: ReturnType<typeof useT>, candidate: CreativeModelCandidate) {
+    if (candidate.briefOnly) return t("app.admin.dashboard.creativeMedia.candidateRiskBriefOnly");
+    if (candidate.available === false) return t("app.admin.dashboard.creativeMedia.candidateRiskUnavailable");
+    return "";
+}
+
+function asModelSelectOption(candidate: CreativeModelCandidate, warningReason = ""): AdminModelSelectOption {
     return {
         id: candidate.modelRef || candidate.candidateId,
         modelRef: candidate.modelRef,
         providerId: candidate.providerId,
         modelId: candidate.modelId,
+        logoAsset: candidate.modelLogoAsset || candidate.providerLogoAsset || null,
         type: candidate.modality?.toUpperCase(),
         provider: {
             id: candidate.providerId,
             name: candidate.providerName,
         },
         providerName: candidate.providerName,
+        warningReason,
     };
 }
 
@@ -159,6 +167,7 @@ export default function CreativeMediaPage() {
     const [loading, setLoading] = useState(true);
     const [savingModels, setSavingModels] = useState(false);
     const [error, setError] = useState("");
+    const [modelPreferencesOpen, setModelPreferencesOpen] = useState(true);
 
     const fetchData = useCallback(async () => {
         setLoading(true);
@@ -426,13 +435,19 @@ export default function CreativeMediaPage() {
                                 </AdminHoverInfo>
                             </CardTitle>
                         </div>
-                        <Button onClick={() => void saveModelPreferences()} disabled={savingModels || loading}>
-                            <Save className="mr-2 h-4 w-4" />
-                            {savingModels ? t("app.admin.dashboard.creativeMedia.saving") : t("app.admin.dashboard.creativeMedia.saveModelPreferences")}
-                        </Button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button variant="outline" onClick={() => setModelPreferencesOpen((value) => !value)}>
+                                {modelPreferencesOpen ? <ChevronDown className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+                                {modelPreferencesOpen ? t("app.admin.dashboard.creativeMedia.collapseModelPreferences") : t("app.admin.dashboard.creativeMedia.expandModelPreferences")}
+                            </Button>
+                            <Button onClick={() => void saveModelPreferences()} disabled={savingModels || loading}>
+                                <Save className="mr-2 h-4 w-4" />
+                                {savingModels ? t("app.admin.dashboard.creativeMedia.saving") : t("app.admin.dashboard.creativeMedia.saveModelPreferences")}
+                            </Button>
+                        </div>
                     </div>
                 </CardHeader>
-                <CardContent>
+                {modelPreferencesOpen ? <CardContent>
                     <Table>
                         <TableHeader>
                             <TableRow>
@@ -450,8 +465,9 @@ export default function CreativeMediaPage() {
                                 const rowCandidates = connectedModelOptions
                                     .filter((candidate) => candidate.operationKind === row.operationKind);
                                 const options = rowCandidates
-                                    .map(asModelSelectOption);
-                                const hasBriefOnlyOption = rowCandidates.some((candidate) => candidate.briefOnly);
+                                    .map((candidate) => asModelSelectOption(candidate, candidateWarningReason(t, candidate)));
+                                const rowWarning = rowCandidates.find((candidate) => candidate.briefOnly || candidate.available === false);
+                                const rowWarningReason = rowWarning ? candidateWarningReason(t, rowWarning) : "";
                                 const selected = row.selectedModelRefs || [];
                                 return (
                                     <TableRow key={row.operationKind}>
@@ -468,7 +484,7 @@ export default function CreativeMediaPage() {
                                         <TableCell className="font-mono text-xs">{text(row.operationKind)}</TableCell>
                                         <TableCell className="min-w-72">
                                             {options.length ? (
-                                                <div className="space-y-2">
+                                                <div>
                                                     <ModelSelect
                                                         models={options}
                                                         value={selected[0] || ""}
@@ -477,11 +493,6 @@ export default function CreativeMediaPage() {
                                                         onValueChange={(value) => setOperationModelRef(row.operationKind, 0, value)}
                                                         showCompatibilityHint={false}
                                                     />
-                                                    {hasBriefOnlyOption ? (
-                                                        <div className="text-xs leading-5 text-muted-foreground">
-                                                            {t("app.admin.dashboard.creativeMedia.briefOnlyHint")}
-                                                        </div>
-                                                    ) : null}
                                                 </div>
                                             ) : (
                                                 <div className="space-y-2">
@@ -520,13 +531,16 @@ export default function CreativeMediaPage() {
                                             />
                                         </TableCell>
                                         <TableCell>
-                                            <Badge variant={options.length ? "default" : "secondary"}>
-                                                {options.length
-                                                    ? hasBriefOnlyOption
-                                                        ? t("app.admin.dashboard.creativeMedia.briefOnly")
-                                                        : `${options.length}`
-                                                    : t("app.admin.dashboard.creativeMedia.unavailable")}
-                                            </Badge>
+                                            <div className="flex items-center gap-2">
+                                                <Badge variant={options.length ? "default" : "secondary"}>
+                                                    {options.length ? `${options.length}` : t("app.admin.dashboard.creativeMedia.unavailable")}
+                                                </Badge>
+                                                {rowWarningReason ? (
+                                                    <span title={rowWarningReason} aria-label={rowWarningReason} className="shrink-0">
+                                                        <AlertTriangle className="h-4 w-4 text-rose-500" />
+                                                    </span>
+                                                ) : null}
+                                            </div>
                                         </TableCell>
                                     </TableRow>
                                 );
@@ -551,7 +565,7 @@ export default function CreativeMediaPage() {
                             }))} />
                         </div>
                     </details>
-                </CardContent>
+                </CardContent> : null}
             </Card>
 
             <div className="grid gap-6 xl:grid-cols-2">

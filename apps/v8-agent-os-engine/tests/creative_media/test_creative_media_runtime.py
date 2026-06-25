@@ -754,6 +754,67 @@ def test_agnes_media_candidates_require_models_saved_in_model_hub(monkeypatch):
     assert options == {}
 
 
+def test_image_candidates_stay_selectable_even_when_adapter_is_not_executable(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "agnes": {
+                    "provider": {
+                        "name": "Agnes AI",
+                        "api_standard": "openai",
+                        "base_url": "https://apihub.agnes-ai.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "images/generations/agnes-image-2.1-flash": {"type": "IMAGE"},
+                    },
+                },
+                "minimax-cn": {
+                    "provider": {
+                        "name": "MiniMax 中国站",
+                        "api_standard": "minimax",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "image_generation/image-01": {
+                            "type": "IMAGE",
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_image",
+                                "providerModelId": "image-01",
+                                "operationKinds": ["image.generate"],
+                            },
+                        },
+                    },
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(creative_media_runtime, "_volc_credentials", lambda: {})
+    monkeypatch.setattr(creative_media_runtime, "_dashscope_credentials", lambda: {})
+
+    prefs = creative_media_runtime.get_model_preferences()
+    options = {
+        (item.get("operationKind"), item.get("modelRef")): item
+        for item in prefs["connectedOptions"]
+        if item.get("providerId") in {"agnes", "minimax-cn"}
+    }
+
+    agnes_ref = "agnes::images/generations/agnes-image-2.1-flash"
+    minimax_ref = "minimax-cn::image_generation/image-01"
+    assert options[("image.generate", agnes_ref)]["available"] is True
+    assert options[("image.edit", agnes_ref)]["available"] is True
+    assert options[("image.generate", minimax_ref)]["available"] is False
+    assert options[("image.edit", minimax_ref)]["available"] is False
+    assert (("image.generate", minimax_ref)) not in {
+        (item.get("operationKind"), item.get("modelRef"))
+        for item in prefs["diagnosticCandidates"]
+    }
+
+
 def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):
     monkeypatch.setattr(
         "runtimes.creative_media.runtime.model_control_plane.get_config",

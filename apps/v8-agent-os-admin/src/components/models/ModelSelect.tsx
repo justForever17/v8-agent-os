@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { AlertTriangle } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ti } from "@/i18n/admin-legacy";
@@ -21,6 +22,7 @@ export type AdminModelSelectOption = {
     name?: string | null;
   } | null;
   providerName?: string | null;
+  warningReason?: string | null;
 };
 const MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262144;
 const NON_TEXT_TYPES = new Set(["IMAGE", "VIDEO", "VOICE", "MUSIC", "MODEL3D", "WORKFLOW", "EMBEDDING", "RERANK", "VECTOR"]);
@@ -77,6 +79,11 @@ function ModelSelectOptionRow({
             {icon ? <Image src={icon} alt="" width={16} height={16} className="h-4 w-4 rounded object-contain" unoptimized /> : modelOptionProviderMark(model)}
         </span>
         <span className="min-w-0 truncate">{label}</span>
+        {model.warningReason ? (
+          <span title={model.warningReason} aria-label={model.warningReason} className="shrink-0">
+            <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
+          </span>
+        ) : null}
         {invalidReason ? <span className="shrink-0 text-xs text-amber-600">({invalidReason})</span> : null}
     </span>;
 }

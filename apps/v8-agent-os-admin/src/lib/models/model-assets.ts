@@ -1,6 +1,7 @@
 import { LOBE_ICON_ASSETS } from "./lobe-icons.generated";
 
 const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
+    agnes: "/model-assets/providers/agnes.png",
     anthropic: "/model-assets/providers/anthropic.ico",
     deepseek: "/model-assets/providers/deepseek.ico",
     groq: "/model-assets/providers/groq.ico",
@@ -56,6 +57,7 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
 };
 
 const LOCAL_MODEL_LOGOS: Record<string, string> = {
+    agnes: "/model-assets/providers/agnes.png",
     hitem3d: "/model-assets/providers/hitem3d.svg",
     hyper3d: "/model-assets/providers/hyper3d.svg",
     mureka: "/model-assets/providers/mureka.svg",
@@ -124,6 +126,7 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     const candidates: string[] = [];
 
     if (haystack.includes("gemini-cli") || haystack.includes("geminicli")) candidates.push("geminicli-color", "geminicli");
+    if (haystack.includes("agnes")) candidates.push("agnes");
     if (haystack.includes("gemini") || haystack.includes("google")) candidates.push("gemini-color", "gemini", "google-color", "google");
     if (haystack.includes("openai") || haystack.includes("codex")) candidates.push("openai");
     if (haystack.includes("anthropic") || haystack.includes("claude")) candidates.push("anthropic", "claude-color", "claude");
@@ -213,6 +216,7 @@ function modelSlugCandidates(modelId?: string | null) {
     if (/^(gpt|o1|o3|o4|codex)/.test(id) || id.includes("openai")) candidates.push("openai");
     if (id.includes("claude")) candidates.push("claude-color", "claude", "anthropic");
     if (id.includes("gemini")) candidates.push("gemini-color", "gemini");
+    if (id.includes("agnes")) candidates.push("agnes");
     if (id.includes("deepseek")) candidates.push("deepseek-color", "deepseek");
     if (id.includes("qwen") || id.includes("qwq")) candidates.push("qwen-color", "qwen");
     if (id.includes("doubao") || id.includes("seedance") || id.includes("seedream") || id.includes("seed3d")) candidates.push("doubao-color", "doubao", "volcengine-color", "volcengine");

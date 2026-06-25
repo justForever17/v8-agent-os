@@ -34,6 +34,11 @@ from core.provider_runtime_profiles import (
 from core.model_budget_service import model_budget_service
 from core.model_control_plane import model_control_plane, normalize_config_temperature
 from core.model_telemetry import model_telemetry_service
+from core.model_thinking_control import (
+    merge_model_request_patch,
+    no_think_request_patch,
+    resolve_thinking_control_for_metadata,
+)
 from core.oauth_credentials import resolve_oauth_reference, resolve_provider_oauth_credential
 from core.provider_compatibility import normalize_provider_error
 from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
@@ -858,6 +863,17 @@ class LLMFactory:
                         "capabilities": capabilities,
                     }
                 ),
+                "thinking_control": resolve_thinking_control_for_metadata(
+                    {
+                        "provider_id": p_name,
+                        "model_id": upstream_model_id,
+                        "model_ref": model_ref,
+                        "provider_record": p_conf,
+                        "model_record": meta,
+                        "api_standard": api_standard,
+                        "capabilities": capabilities,
+                    }
+                ),
                 "cost_per_input": meta.get("costPerInput"),
                 "cost_per_output": meta.get("costPerOutput"),
                 "tokenizer_family": meta.get("tokenizerFamily") or meta.get("tokenizer_family") or "",
@@ -926,6 +942,7 @@ class LLMFactory:
             if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "model_kwargs", "timeout"}:
                 final_kwargs[key] = value
 
+        final_kwargs = merge_model_request_patch(final_kwargs, no_think_request_patch(meta.get("thinking_control")))
         return final_kwargs
 
     @classmethod

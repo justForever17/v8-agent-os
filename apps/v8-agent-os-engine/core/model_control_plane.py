@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
 from core.model_role_doctor import diagnose_model_role
+from core.model_thinking_control import resolve_thinking_control_for_metadata
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
@@ -720,6 +721,14 @@ class ModelControlPlane:
                             "model_record": model_meta,
                         }
                     ),
+                    "thinkingControl": resolve_thinking_control_for_metadata(
+                        {
+                            "provider_id": provider_id,
+                            "model_id": model_id,
+                            "provider_record": meta,
+                            "model_record": model_meta,
+                        }
+                    ),
                     "capabilityClass": capability_class,
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
@@ -1291,6 +1300,14 @@ class ModelControlPlane:
                     "parameterProfile": model_meta.get("parameterProfile") or "chat",
                     "mediaLimits": model_meta.get("mediaLimits") or {},
                     "reasoningSurface": model_meta.get("reasoningSurface") or {},
+                    "thinkingControl": resolve_thinking_control_for_metadata(
+                        {
+                            "provider_id": provider_id,
+                            "model_id": model_id,
+                            "provider_record": provider_meta,
+                            "model_record": model_meta,
+                        }
+                    ),
                     "promptCachingProfileId": model_meta.get("promptCachingProfileId")
                     or provider_meta.get("promptCachingProfileId")
                     or prompt_cache_profile_id_for_provider(str(provider_id)),

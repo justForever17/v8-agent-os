@@ -45,3 +45,16 @@ def test_json_in_reasoning_only_is_not_accepted() -> None:
     assert error == "background_output_no_visible_text"
     assert sanitized.text == ""
     assert sanitized.reasoning_stripped is True
+
+
+def test_no_think_visible_json_without_reasoning_is_accepted() -> None:
+    response = SimpleNamespace(content=[{"type": "text", "text": '{"decision":"allow"}'}])
+
+    parsed, sanitized, error = parse_background_json_object(response)
+
+    assert error is None
+    assert parsed == {"decision": "allow"}
+    assert sanitized.text == '{"decision":"allow"}'
+    assert sanitized.reasoning_stripped is False
+    assert sanitized.reasoning_chars == 0
+    assert sanitized.stripped_keys == ()

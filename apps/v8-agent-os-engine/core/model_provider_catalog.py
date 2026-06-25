@@ -13,6 +13,7 @@ import requests
 from core.model_capability_registry import model_capability_registry
 from core.media_model_capability_registry import media_model_capability_registry
 from core.model_ref import make_model_ref
+from core.model_thinking_control import resolve_thinking_control_for_metadata
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
 
@@ -1345,6 +1346,14 @@ class ModelProviderCatalog:
                 },
             }
         )
+        thinking_control = resolve_thinking_control_for_metadata(
+            {
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "provider_record": provider,
+                "model_record": model,
+            }
+        )
         return {
             "id": model_id,
             "modelId": model_id,
@@ -1357,6 +1366,7 @@ class ModelProviderCatalog:
             "maxTokens": max_tokens,
             "capabilities": capability_map,
             "reasoningSurface": reasoning_surface,
+            "thinkingControl": thinking_control,
             "capabilityTags": sorted(capability_tags),
             "capabilitySource": capability_source,
             "capabilityRegistryMatched": bool(registry_entry or media_registry),

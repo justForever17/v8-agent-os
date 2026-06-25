@@ -60,7 +60,10 @@ export async function POST(req: NextRequest) {
         if (!modelCode) throw new Error("modelId is required");
 
         // 2. Merge model configurations
-        providerData.models[modelCode] = buildModelMutationPayload(data);
+        providerData.models[modelCode] = {
+            ...(providerData.models[modelCode] || {}),
+            ...buildModelMutationPayload(data),
+        };
         
         // Remap to structure
         routesData.providers[providerCode] = providerData;

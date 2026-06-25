@@ -57,6 +57,7 @@ type AIModel = {
     contextWindow?: number | null;
     maxTokens?: number | null;
     rerankApiFlavor?: string;
+    thinkingControl?: Record<string, unknown> | null;
     logoAsset?: string | null;
     isEnabled: boolean;
     provider?: {
@@ -750,6 +751,37 @@ export default function ModelHubPage() {
         }
         setIsModelDialogOpen(false);
         setEditingModel(null);
+        await fetchData();
+    };
+    const handleToggleNoThink = async (model: AIModel, controlMeta: ControlPlaneModel | null, disabled: boolean) => {
+        const thinkingControl = {
+            ...(model.thinkingControl || {}),
+            ...(controlMeta?.thinkingControl || {}),
+            supportsNoThink: true,
+            disabled,
+        };
+        const response = await fetch("/api/models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                providerId: model.providerId,
+                modelId: model.modelId,
+                type: model.type || controlMeta?.type || "TEXT",
+                contextWindow: model.contextWindow ?? controlMeta?.contextWindow ?? "",
+                maxTokens: model.maxTokens ?? controlMeta?.maxTokens ?? "",
+                rerankApiFlavor: model.rerankApiFlavor || "",
+                thinkingControl,
+            }),
+        });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, "Think 模式保存失败");
+            toast({ variant: "destructive", title: "Think 模式保存失败", description: errorMessage });
+            return;
+        }
+        toast({
+            title: disabled ? "已关闭 think 模式" : "已恢复模型默认思考",
+            description: model.modelId,
+        });
         await fetchData();
     };
     const handleDeleteProvider = async (id: string) => {
@@ -1895,13 +1927,17 @@ export default function ModelHubPage() {
                 </div>
 
                 {filteredModels.length === 0 ? (<EmptyState title={t("app.admin.dashboard.model.hub.page.k14457a61")} description={t("app.admin.dashboard.model.hub.page.k8d6baa0f")}/>) : (<div className="grid gap-3 md:grid-cols-3 2xl:grid-cols-5">
-                        {filteredModels.map((model) => (<ModelCardV2 key={model.modelRef || model.id} model={model} controlMeta={controlModelsById.get(model.modelRef || model.id) || null} isDefault={(model.modelRef || model.id) === defaultModelRef} connectionStatus={connectionStatusMap[model.modelRef || model.id] || null} reasoningRepairStatus={reasoningRepairStatusMap[model.modelRef || model.id] || null} onEdit={() => {
+                        {filteredModels.map((model) => {
+                            const modelRef = model.modelRef || model.id;
+                            const controlMeta = controlModelsById.get(modelRef) || null;
+                            return (<ModelCardV2 key={modelRef} model={model} controlMeta={controlMeta} isDefault={modelRef === defaultModelRef} connectionStatus={connectionStatusMap[modelRef] || null} reasoningRepairStatus={reasoningRepairStatusMap[modelRef] || null} onEdit={() => {
                     setEditingModel(model);
                     setModelType(model.type || "TEXT");
                     setModelProviderId(model.providerId);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setIsModelDialogOpen(true);
-                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onSetDefault={handleSetDefaultModel}/>))}
+                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onSetDefault={handleSetDefaultModel}/>);
+                        })}
                     </div>)}
             </ConfigCard>
 

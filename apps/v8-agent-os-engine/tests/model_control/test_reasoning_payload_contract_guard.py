@@ -18,6 +18,7 @@ ALLOWLIST = {
     "core/model_control_plane.py",
     "core/model_provider_catalog.py",
     "core/model_reasoning_repair.py",
+    "core/model_thinking_control.py",
     "core/provider_compatibility.py",
     "core/reasoning_payload_contract.py",
     "core/reasoning_surface_contract.py",

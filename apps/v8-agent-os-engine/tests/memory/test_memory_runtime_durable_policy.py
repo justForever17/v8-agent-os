@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 import tempfile
@@ -194,6 +195,47 @@ class MemoryDurablePolicyTests(unittest.TestCase):
         self.assertIsNone(attempt.result)
         self.assertEqual(attempt.failure_stage, "llm_response_empty")
         self.assertEqual(attempt.extractor_model, "memory-extractor-test")
+
+    def test_extract_with_llm_accepts_no_think_visible_json(self):
+        payload = {
+            "summary": "用户希望后台记忆抽取在 no-think 模式下仍能稳定工作。",
+            "tags": ["memory", "no-think", "sanitizer"],
+            "preferences": [],
+            "knowledge": [
+                {
+                    "fact": "后台 Memory Agent 应只消费可见文本或 JSON，不依赖 reasoning 字段。",
+                    "category": "runtime_quality",
+                    "scope": "global",
+                    "importance": 75,
+                    "confidence": 0.9,
+                    "durability": "stable",
+                    "target_store": "knowledge",
+                }
+            ],
+            "entities": [],
+            "relations": [],
+            "workflow_episodes": [],
+        }
+
+        class _FakeLlm:
+            model_id = "memory-extractor-no-think-test"
+
+            def invoke(self, _messages):  # noqa: ANN001, ANN201
+                return SimpleNamespace(content=[{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}])
+
+        with patch.object(memory_agent, "_get_background_llm", return_value=_FakeLlm()):
+            attempt = memory_agent._extract_with_llm(
+                "USER: 后台记忆抽取不要依赖模型思考内容",
+                "No prior knowledge retrieved.",
+                resolved_scope="global",
+                scope_chain=["global"],
+            )
+
+        self.assertIsNotNone(attempt.result)
+        self.assertEqual(attempt.failure_stage, "")
+        self.assertEqual(attempt.extractor_model, "memory-extractor-no-think-test")
+        self.assertIn("no-think", attempt.raw_output_preview)
+        self.assertEqual(attempt.result.knowledge[0].scope, "global")
 
     def test_extract_with_llm_reports_repair_parser_failed_when_fixing_parser_still_fails(self):
         class _FakeParser:

@@ -44,6 +44,7 @@ interface ModelCardV2Props {
   onSetDefault?: (modelRef: string, categoryKey?: string) => void;
   onTestConnection?: (modelRef: string) => Promise<void> | void;
   onRepairReasoning?: (modelRef: string) => Promise<void> | void;
+  onToggleNoThink?: (disabled: boolean) => Promise<void> | void;
   connectionStatus?: {
     status: "idle" | "testing" | "success" | "warning" | "error";
     message?: string;
@@ -174,6 +175,7 @@ export function ModelCardV2({
   onSetDefault,
   onTestConnection,
   onRepairReasoning,
+  onToggleNoThink,
   connectionStatus,
   reasoningRepairStatus,
   onEdit,
@@ -196,6 +198,9 @@ export function ModelCardV2({
   const pricing = controlMeta?.pricing || model.pricing || null;
   const registry = controlMeta?.capabilityRegistry || model.capabilityRegistry || null;
   const reasoningSurface = controlMeta?.reasoningSurface || null;
+  const thinkingControl = controlMeta?.thinkingControl || null;
+  const supportsNoThink = Boolean(thinkingControl?.supportsNoThink);
+  const noThinkDisabled = Boolean(thinkingControl?.disabled);
   const missingFields = registry?.missingFields || [];
   const roleDoctor = (controlMeta as ControlPlaneModelWithDoctor | null | undefined)?.roleDoctor || (model as ModelWithDoctor).roleDoctor || null;
   const roleDoctorIssues = Array.isArray(roleDoctor?.issues) ? roleDoctor.issues : [];
@@ -223,7 +228,7 @@ export function ModelCardV2({
     providerName: model.provider?.name,
     explicitAsset: model.logoAsset || null
   });
-  const details = [`ID: ${model.modelId}`, `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
+  const details = [`ID: ${model.modelId}`, `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", supportsNoThink ? `No-think control: ${noThinkDisabled ? "disabled reasoning on request" : "model default thinking"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
   return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
@@ -283,6 +288,11 @@ export function ModelCardV2({
           }} title={repairing ? t("components.models.ModelCardV2.reasoningRepairing") : t("components.models.ModelCardV2.reasoningRepairTitle")}>
 
                                 <Wrench className={`h-3.5 w-3.5 ${repairing ? "animate-pulse" : ""}`} />
+                            </Button>}
+                        {supportsNoThink && onToggleNoThink && <Button variant="ghost" size="icon" className={`h-7 w-7 ${noThinkDisabled ? "bg-sky-50 text-sky-700 hover:bg-sky-100 hover:text-sky-800" : "text-muted-foreground hover:text-primary"}`} onClick={async () => {
+            await onToggleNoThink(!noThinkDisabled);
+          }} title={noThinkDisabled ? "恢复模型默认思考" : "请求时关闭 think 模式"}>
+                                <Brain className="h-3.5 w-3.5" />
                             </Button>}
                         {!isDefaultForInferredCategory && defaultCategoryToSet && onSetDefault && <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" onClick={() => onSetDefault(modelRef, defaultCategoryToSet)} title={t("components.models.ModelCardV2.setCategoryDefault", {
               category: t(DEFAULT_CATEGORY_LABEL_KEYS[defaultCategoryToSet])

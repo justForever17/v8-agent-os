@@ -65,6 +65,13 @@ export type ControlPlaneModel = {
         displayKind?: string;
         responseFields?: string[];
     } | null;
+    thinkingControl?: {
+        supportsNoThink?: boolean;
+        disabled?: boolean;
+        requestStyle?: string;
+        source?: string;
+        defaultDisabled?: boolean;
+    } | null;
     isEnabled: boolean;
     capabilities: ModelCapabilities;
     capabilityTags: string[];

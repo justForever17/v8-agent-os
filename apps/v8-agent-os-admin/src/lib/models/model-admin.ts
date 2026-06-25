@@ -20,6 +20,7 @@ export type AdminModelRecord = {
     contextWindow: number | null;
     maxTokens: number | null;
     rerankApiFlavor: string;
+    thinkingControl?: Record<string, unknown> | null;
     logoAsset?: string | null;
     isEnabled: boolean;
     provider: {
@@ -84,6 +85,9 @@ export function mapEngineModel(
         contextWindow: asNullableNumber(modelMeta.contextWindow),
         maxTokens: asNullableNumber(modelMeta.maxTokens),
         rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
+        thinkingControl: modelMeta.thinkingControl && typeof modelMeta.thinkingControl === "object"
+            ? modelMeta.thinkingControl as Record<string, unknown>
+            : null,
         logoAsset: String(modelMeta.logoAsset || "") || null,
         isEnabled: modelMeta.isEnabled !== false,
         provider: {
@@ -116,7 +120,7 @@ export function listEngineModels(
 }
 
 export function buildModelMutationPayload(data: Record<string, unknown>) {
-    return {
+    const payload: Record<string, unknown> = {
         type: data.type,
         contextWindow: parseOptionalInteger(data.contextWindow),
         maxTokens: parseOptionalInteger(data.maxTokens),
@@ -124,4 +128,8 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
         costPerOutput: parseOptionalFloat(data.costPerOutput),
         rerank_api_flavor: String(data.rerankApiFlavor || "").trim() || undefined,
     };
+    if (data.thinkingControl && typeof data.thinkingControl === "object") {
+        payload.thinkingControl = data.thinkingControl;
+    }
+    return payload;
 }

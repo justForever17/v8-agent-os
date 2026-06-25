@@ -8,6 +8,7 @@ from core.llm_factory import llm_factory
 from core.model_capability_registry import model_capability_registry
 from core.model_control_plane import DEFAULT_ROLE_MAP, DEFAULT_ROUTING_POLICIES, MODULE_DEFINITIONS, ROLE_DEFINITIONS, model_control_plane
 from core.model_provider_catalog import ModelProviderCatalog, model_provider_catalog
+from core.model_thinking_control import resolve_thinking_control_for_metadata
 from core.model_ref import make_model_ref, parse_model_ref
 
 
@@ -373,6 +374,56 @@ def test_minimax_providers_use_official_models_endpoint_and_reasoning_contract()
     assert normalized["reasoningSurface"]["mode"] == "provider_reasoning"
     assert normalized["reasoningSurface"]["trust"] == "official"
     assert "reasoning_details" in normalized["reasoningSurface"]["responseFields"]
+    assert normalized["thinkingControl"]["supportsNoThink"] is True
+    assert normalized["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert normalized["thinkingControl"]["disabled"] is False
+
+
+def test_supported_no_think_models_expose_thinking_control():
+    deepseek = model_provider_catalog.get_provider("deepseek")
+    dashscope = model_provider_catalog.get_provider("dashscope")
+    zhipu = model_provider_catalog.get_provider("zhipu")
+    zai_coding = model_provider_catalog.get_provider("zai-coding")
+    assert deepseek and dashscope and zhipu and zai_coding
+
+    deepseek_v4 = model_provider_catalog.normalize_model(deepseek, "deepseek-v4-flash")
+    qwen = model_provider_catalog.normalize_model(dashscope, "qwen-max")
+    glm = model_provider_catalog.normalize_model(zhipu, "glm-5")
+    glm_52 = model_provider_catalog.normalize_model(zai_coding, "glm-5.2")
+
+    assert deepseek_v4["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert qwen["thinkingControl"]["requestStyle"] == "dashscope_enable_thinking_false"
+    assert glm["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert glm_52["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+
+
+def test_model_control_plane_surfaces_saved_no_think_state():
+    config = model_control_plane.normalize_config(
+        {
+            "providers": {
+                "deepseek": {
+                    "provider": {
+                        "name": "DeepSeek",
+                        "base_url": "https://api.deepseek.com/v1",
+                        "api_standard": "openai",
+                    },
+                    "models": {
+                        "deepseek-v4-flash": {
+                            "type": "TEXT",
+                            "capabilities": {"chat": True, "reasoning": True},
+                            "thinkingControl": {"disabled": True},
+                        }
+                    },
+                }
+            }
+        }
+    )
+    rows = model_control_plane.list_models(config)
+    row = next(item for item in rows if item["modelId"] == "deepseek-v4-flash")
+
+    assert row["thinkingControl"]["supportsNoThink"] is True
+    assert row["thinkingControl"]["disabled"] is True
+    assert row["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
 
 
 def test_minimax_model_list_probe_uses_site_specific_models_endpoint():
@@ -1139,3 +1190,64 @@ def test_explicit_create_for_role_temperature_zero_is_preserved(monkeypatch):
     model = llm_factory.create_for_role("summary", temperature=0)
 
     assert model._model_kwargs["temperature"] == 0
+
+
+def test_no_think_request_patch_for_openai_compatible_providers():
+    cases = [
+        ("deepseek", "deepseek-v4-flash", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("minimax-cn", "MiniMax-M3", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("zhipu", "glm-5", {"extra_body": {"thinking": {"type": "disabled"}}}),
+        ("dashscope", "qwen-max", {"extra_body": {"enable_thinking": False}}),
+        ("openai", "gpt-5.5", {"reasoning": {"effort": "none"}}),
+        ("openrouter", "deepseek/deepseek-r1", {"reasoning": {"effort": "none"}}),
+    ]
+
+    for provider_id, model_id, expected_patch in cases:
+        thinking_control = resolve_thinking_control_for_metadata(
+            {
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "model_record": {
+                    "capabilities": {"chat": True, "reasoning": True},
+                    "thinkingControl": {"disabled": True},
+                },
+            }
+        )
+        kwargs = llm_factory._build_openai_kwargs(
+            model_id,
+            {
+                "api_key": "sk-test",
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "thinking_control": thinking_control,
+            },
+        )
+        for key, value in expected_patch.items():
+            assert kwargs[key] == value
+
+
+def test_no_think_request_patch_merges_existing_extra_body():
+    thinking_control = resolve_thinking_control_for_metadata(
+        {
+            "provider_id": "deepseek",
+            "model_id": "deepseek-v4-pro",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "thinkingControl": {"disabled": True},
+            },
+        }
+    )
+
+    kwargs = llm_factory._build_openai_kwargs(
+        "deepseek-v4-pro",
+        {
+            "api_key": "sk-test",
+            "provider_id": "deepseek",
+            "model_id": "deepseek-v4-pro",
+            "thinking_control": thinking_control,
+        },
+        extra_body={"caching": {"prefix": True}},
+    )
+
+    assert kwargs["extra_body"]["caching"] == {"prefix": True}
+    assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}

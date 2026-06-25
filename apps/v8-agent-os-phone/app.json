@@ -23,13 +23,13 @@
     "android": {
       "package": "com.v8agentos.phone",
       "versionCode": 1,
-      "usesCleartextTraffic": true,
       "softwareKeyboardLayoutMode": "pan",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "allowBackup": false
     },
     "web": {
       "bundler": "metro",
@@ -63,7 +63,8 @@
             "compileSdkVersion": 36,
             "targetSdkVersion": 35,
             "buildToolsVersion": "36.0.0",
-            "minSdkVersion": 24
+            "minSdkVersion": 24,
+            "usesCleartextTraffic": true
           }
         }
       ],

@@ -22,7 +22,12 @@ export async function getStoredValue(key: keyof typeof KEYS) {
             return null;
         }
     }
-    return SecureStore.getItemAsync(KEYS[key]);
+    try {
+        return await SecureStore.getItemAsync(KEYS[key]);
+    } catch (error) {
+        console.warn(`[mobile-storage] Failed to get secure item for ${key}:`, error);
+        return null;
+    }
 }
 
 export async function setStoredValue(key: keyof typeof KEYS, value: string) {
@@ -34,7 +39,11 @@ export async function setStoredValue(key: keyof typeof KEYS, value: string) {
         }
         return;
     }
-    await SecureStore.setItemAsync(KEYS[key], value);
+    try {
+        await SecureStore.setItemAsync(KEYS[key], value);
+    } catch (error) {
+        console.warn(`[mobile-storage] Failed to set secure item for ${key}:`, error);
+    }
 }
 
 export async function removeStoredValue(key: keyof typeof KEYS) {
@@ -46,7 +55,11 @@ export async function removeStoredValue(key: keyof typeof KEYS) {
         }
         return;
     }
-    await SecureStore.deleteItemAsync(KEYS[key]);
+    try {
+        await SecureStore.deleteItemAsync(KEYS[key]);
+    } catch (error) {
+        console.warn(`[mobile-storage] Failed to delete secure item for ${key}:`, error);
+    }
 }
 
 export async function clearSessionStorage() {

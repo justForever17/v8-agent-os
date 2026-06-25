@@ -94,10 +94,13 @@ export function PremiumBackground({ children }: { children?: React.ReactNode }) 
         outputRange: [0.2, 1.0],
     });
 
-    const m1Style = {
+    const m1ContainerStyle = {
         position: "absolute" as const,
         top: "10%" as DimensionValue,
         right: -80,
+        transform: [{ rotate: "-35deg" as const }],
+    };
+    const m1AnimatedStyle = {
         opacity: m1Val.interpolate({
             inputRange: [0, 0.05, 0.12, 0.15, 1],
             outputRange: [0, 1, 1, 0, 0],
@@ -109,20 +112,16 @@ export function PremiumBackground({ children }: { children?: React.ReactNode }) 
                     outputRange: [0, -1200, -1200],
                 }),
             },
-            {
-                translateY: m1Val.interpolate({
-                    inputRange: [0, 0.15, 1],
-                    outputRange: [0, 840, 840],
-                }),
-            },
-            { rotate: "-35deg" as const },
         ],
     };
 
-    const m2Style = {
+    const m2ContainerStyle = {
         position: "absolute" as const,
         top: "30%" as DimensionValue,
         right: -80,
+        transform: [{ rotate: "-35deg" as const }],
+    };
+    const m2AnimatedStyle = {
         opacity: m2Val.interpolate({
             inputRange: [0, 0.05, 0.12, 0.15, 1],
             outputRange: [0, 1, 1, 0, 0],
@@ -134,20 +133,16 @@ export function PremiumBackground({ children }: { children?: React.ReactNode }) 
                     outputRange: [0, -1200, -1200],
                 }),
             },
-            {
-                translateY: m2Val.interpolate({
-                    inputRange: [0, 0.15, 1],
-                    outputRange: [0, 840, 840],
-                }),
-            },
-            { rotate: "-35deg" as const },
         ],
     };
 
-    const m3Style = {
+    const m3ContainerStyle = {
         position: "absolute" as const,
         top: "50%" as DimensionValue,
         right: -80,
+        transform: [{ rotate: "-35deg" as const }],
+    };
+    const m3AnimatedStyle = {
         opacity: m3Val.interpolate({
             inputRange: [0, 0.05, 0.12, 0.15, 1],
             outputRange: [0, 1, 1, 0, 0],
@@ -159,13 +154,6 @@ export function PremiumBackground({ children }: { children?: React.ReactNode }) 
                     outputRange: [0, -1200, -1200],
                 }),
             },
-            {
-                translateY: m3Val.interpolate({
-                    inputRange: [0, 0.15, 1],
-                    outputRange: [0, 840, 840],
-                }),
-            },
-            { rotate: "-35deg" as const },
         ],
     };
 
@@ -200,35 +188,41 @@ export function PremiumBackground({ children }: { children?: React.ReactNode }) 
             </Animated.View>
 
             {/* Shooting Stars */}
-            <Animated.View style={m1Style} pointerEvents="none">
-                <View style={styles.meteorPoint} />
-                <LinearGradient
-                    colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
-                    start={{ x: 0, y: 0.5 }}
-                    end={{ x: 1, y: 0.5 }}
-                    style={styles.meteorTail}
-                />
-            </Animated.View>
+            <View style={m1ContainerStyle} pointerEvents="none">
+                <Animated.View style={m1AnimatedStyle}>
+                    <View style={styles.meteorPoint} />
+                    <LinearGradient
+                        colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
+                        start={{ x: 0, y: 0.5 }}
+                        end={{ x: 1, y: 0.5 }}
+                        style={styles.meteorTail}
+                    />
+                </Animated.View>
+            </View>
 
-            <Animated.View style={m2Style} pointerEvents="none">
-                <View style={styles.meteorPoint} />
-                <LinearGradient
-                    colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
-                    start={{ x: 0, y: 0.5 }}
-                    end={{ x: 1, y: 0.5 }}
-                    style={styles.meteorTail}
-                />
-            </Animated.View>
+            <View style={m2ContainerStyle} pointerEvents="none">
+                <Animated.View style={m2AnimatedStyle}>
+                    <View style={styles.meteorPoint} />
+                    <LinearGradient
+                        colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
+                        start={{ x: 0, y: 0.5 }}
+                        end={{ x: 1, y: 0.5 }}
+                        style={styles.meteorTail}
+                    />
+                </Animated.View>
+            </View>
 
-            <Animated.View style={m3Style} pointerEvents="none">
-                <View style={styles.meteorPoint} />
-                <LinearGradient
-                    colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
-                    start={{ x: 0, y: 0.5 }}
-                    end={{ x: 1, y: 0.5 }}
-                    style={styles.meteorTail}
-                />
-            </Animated.View>
+            <View style={m3ContainerStyle} pointerEvents="none">
+                <Animated.View style={m3AnimatedStyle}>
+                    <View style={styles.meteorPoint} />
+                    <LinearGradient
+                        colors={["rgba(255, 255, 255, 0.9)", "rgba(255, 255, 255, 0.0)"]}
+                        start={{ x: 0, y: 0.5 }}
+                        end={{ x: 1, y: 0.5 }}
+                        style={styles.meteorTail}
+                    />
+                </Animated.View>
+            </View>
 
             {/* Foreground Content */}
             {children}

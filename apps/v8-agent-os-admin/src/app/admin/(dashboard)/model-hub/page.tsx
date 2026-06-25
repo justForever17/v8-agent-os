@@ -108,6 +108,7 @@ type CatalogProvider = {
     name: string;
     apiStandard?: string;
     providerKind?: string;
+    type?: string;
     catalogVisibility?: string;
     mediaModality?: string;
     adapter?: string;
@@ -413,7 +414,7 @@ function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], pu
     const internalCapabilityIds = new Set<string>();
     for (const rootProvider of catalogProviders) {
         const capabilityEntries = (rootProvider.capabilityEntries || []).filter(
-            (entry) => String(entry.mediaModality || "").toLowerCase() === expected,
+            (entry) => String(entry.mediaModality || entry.type || "").toLowerCase() === expected,
         );
         if (!capabilityEntries.length) continue;
         const models = capabilityEntries.flatMap((entry) => {
@@ -428,7 +429,7 @@ function buildCatalogProvidersForPurpose(catalogProviders: CatalogProvider[], pu
     }
     const direct = catalogProviders.filter((item) => providerMatchesPurpose(item, purpose));
     for (const provider of direct) {
-        if (provider.catalogVisibility === "internal_capability" || internalCapabilityIds.has(provider.id)) continue;
+        if (provider.catalogVisibility === "internal_capability" && internalCapabilityIds.has(provider.id)) continue;
         if (!projected.has(provider.id)) projected.set(provider.id, provider);
     }
     const customProviders = catalogProviders.filter((item) => item.isCustom && providerMatchesPurpose(item, purpose));

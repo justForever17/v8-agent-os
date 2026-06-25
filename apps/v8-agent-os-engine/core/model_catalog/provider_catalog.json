@@ -80,6 +80,17 @@
           }
         }
       ],
+      "capabilityEntries": [
+        {
+          "type": "image"
+        },
+        {
+          "type": "video"
+        },
+        {
+          "type": "voice"
+        }
+      ],
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/openai.svg",
       "reasoningSurface": {
@@ -429,6 +440,20 @@
           }
         }
       ],
+      "capabilityEntries": [
+        {
+          "type": "image"
+        },
+        {
+          "type": "video"
+        },
+        {
+          "type": "voice"
+        },
+        {
+          "type": "music"
+        }
+      ],
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/gemini-color.svg",
       "reasoningSurface": {
@@ -660,6 +685,20 @@
             "tools",
             "streaming"
           ]
+        }
+      ],
+      "capabilityEntries": [
+        {
+          "type": "image"
+        },
+        {
+          "type": "video"
+        },
+        {
+          "type": "voice"
+        },
+        {
+          "type": "model3d"
         }
       ],
       "providerKind": "chat",
@@ -1161,6 +1200,17 @@
           ]
         }
       ],
+      "capabilityEntries": [
+        {
+          "type": "image"
+        },
+        {
+          "type": "video"
+        },
+        {
+          "type": "voice"
+        }
+      ],
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/zhipu-color.svg",
       "reasoningSurface": {
@@ -1499,6 +1549,11 @@
           "parameterProfile": "voice_design"
         }
       ],
+      "capabilityEntries": [
+        {
+          "type": "voice"
+        }
+      ],
       "providerKind": "chat",
       "credentialRealm": "xiaomi_mimo"
     },
@@ -1675,6 +1730,20 @@
           }
         }
       ],
+      "capabilityEntries": [
+        {
+          "type": "image"
+        },
+        {
+          "type": "video"
+        },
+        {
+          "type": "voice"
+        },
+        {
+          "type": "model3d"
+        }
+      ],
       "providerKind": "chat",
       "credentialRealm": "volcengine_ark",
       "logoAsset": "/model-assets/lobe/volcengine-color.svg"
@@ -1698,6 +1767,11 @@
       },
       "confidence": "official",
       "models": [],
+      "capabilityEntries": [
+        {
+          "type": "model3d"
+        }
+      ],
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/hunyuan-color.svg"
     },
@@ -1740,12 +1814,10 @@
       ],
       "capabilityEntries": [
         {
-          "type": "image",
-          "sourceProviderId": "agnes_image"
+          "type": "image"
         },
         {
-          "type": "video",
-          "sourceProviderId": "agnes_video"
+          "type": "video"
         }
       ],
       "providerKind": "chat",
@@ -1893,20 +1965,16 @@
       ],
       "capabilityEntries": [
         {
-          "type": "image",
-          "sourceProviderId": "minimax_image"
+          "type": "image"
         },
         {
-          "type": "video",
-          "sourceProviderId": "minimax_video"
+          "type": "video"
         },
         {
-          "type": "voice",
-          "sourceProviderId": "minimax_tts"
+          "type": "voice"
         },
         {
-          "type": "music",
-          "sourceProviderId": "minimax_music"
+          "type": "music"
         }
       ],
       "providerKind": "chat",
@@ -2083,20 +2151,16 @@
       ],
       "capabilityEntries": [
         {
-          "type": "image",
-          "sourceProviderId": "minimax_image"
+          "type": "image"
         },
         {
-          "type": "video",
-          "sourceProviderId": "minimax_video"
+          "type": "video"
         },
         {
-          "type": "voice",
-          "sourceProviderId": "minimax_tts"
+          "type": "voice"
         },
         {
-          "type": "music",
-          "sourceProviderId": "minimax_music"
+          "type": "music"
         }
       ],
       "providerKind": "chat",

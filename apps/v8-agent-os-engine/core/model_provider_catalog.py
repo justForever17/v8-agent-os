@@ -132,6 +132,54 @@ def _media_base_url_matches(root_provider: Dict[str, Any], media_provider: Dict[
     )
 
 
+_PROVIDER_TOKEN_STOP_WORDS = {
+    "ai",
+    "api",
+    "audio",
+    "cloud",
+    "compatible",
+    "generation",
+    "image",
+    "images",
+    "model",
+    "models",
+    "open",
+    "provider",
+    "speech",
+    "text",
+    "tts",
+    "video",
+    "voice",
+}
+
+
+def _provider_identity_tokens(provider: Dict[str, Any]) -> Set[str]:
+    values = [
+        provider.get("id"),
+        provider.get("name"),
+        provider.get("displayName"),
+        provider.get("credentialRealm"),
+    ]
+    tokens: Set[str] = set()
+    for value in values:
+        raw = str(value or "").lower()
+        for token in re.split(r"[^a-z0-9]+", raw):
+            if len(token) < 3 or token in _PROVIDER_TOKEN_STOP_WORDS:
+                continue
+            tokens.add(token)
+    return tokens
+
+
+def _media_provider_matches_root(root_provider: Dict[str, Any], media_provider: Dict[str, Any]) -> bool:
+    if _media_base_url_matches(root_provider, media_provider):
+        return True
+    root_realm = str(root_provider.get("credentialRealm") or "").strip().lower()
+    media_realm = str(media_provider.get("credentialRealm") or "").strip().lower()
+    if root_realm and media_realm and root_realm == media_realm:
+        return True
+    return bool(_provider_identity_tokens(root_provider) & _provider_identity_tokens(media_provider))
+
+
 def _media_relative_submit_path(root_base_url: Any, source_base_url: Any, submit_path: Any) -> str:
     submit = _url_path(submit_path)
     if not submit:
@@ -571,20 +619,45 @@ class ModelProviderCatalog:
         for descriptor in _as_list(provider.get("capabilityEntries")):
             if not isinstance(descriptor, dict):
                 continue
-            source_provider_id = str(descriptor.get("sourceProviderId") or "").strip()
-            source = media_providers_by_id.get(source_provider_id)
-            if not source:
-                continue
-            resolved.append(
-                {
-                    **deepcopy(source),
-                    **deepcopy(descriptor),
-                    "sourceProviderId": source_provider_id,
-                    "mediaModality": _normalized_modality(
-                        descriptor.get("type") or descriptor.get("mediaModality") or source.get("mediaModality")
-                    ),
-                }
+            media_modality = _normalized_modality(
+                descriptor.get("type") or descriptor.get("mediaModality")
             )
+            source_provider_id = str(descriptor.get("sourceProviderId") or "").strip()
+            sources: List[Dict[str, Any]] = []
+            if source_provider_id:
+                source = media_providers_by_id.get(source_provider_id)
+                if source:
+                    sources.append(source)
+            else:
+                sources = [
+                    source
+                    for source in media_providers_by_id.values()
+                    if (
+                        (not media_modality or _normalized_modality(source.get("mediaModality")) == media_modality)
+                        and _media_provider_matches_root(provider, source)
+                    )
+                ]
+            if not sources:
+                resolved.append(
+                    {
+                        **deepcopy(descriptor),
+                        "mediaModality": media_modality,
+                        "models": _as_list(descriptor.get("models")),
+                    }
+                )
+                continue
+            for source in sorted(sources, key=lambda item: str(item.get("id") or "")):
+                source_id = str(source.get("id") or "").strip()
+                resolved.append(
+                    {
+                        **deepcopy(source),
+                        **deepcopy(descriptor),
+                        "sourceProviderId": source_id,
+                        "mediaModality": _normalized_modality(
+                            descriptor.get("type") or descriptor.get("mediaModality") or source.get("mediaModality")
+                        ),
+                    }
+                )
         return resolved
 
     def load(self) -> Dict[str, Any]:
@@ -756,7 +829,13 @@ class ModelProviderCatalog:
         for media_provider in self._creative_media_matrix_providers():
             media_provider_id = str(media_provider.get("id") or "")
             root_provider_ids = root_mappings.get(media_provider_id, set())
-            provider_affinity = 0 if provider_id in root_provider_ids else 1 if _media_base_url_matches(provider, media_provider) else 2
+            provider_affinity = (
+                0
+                if provider_id in root_provider_ids or _media_provider_matches_root(provider, media_provider)
+                else 1
+                if _media_base_url_matches(provider, media_provider)
+                else 2
+            )
             for item in _as_list(media_provider.get("models")):
                 actual_model_id = str(item.get("id") or "").strip()
                 match_quality = _media_model_match_quality(display_model_id, provider, media_provider, actual_model_id)

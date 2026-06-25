@@ -53,9 +53,23 @@ def test_llm_provider_catalog_contains_new_model_providers():
         "agnes-video-v2.0",
     ]
     assert agnes["capabilityEntries"] == [
-        {"type": "image", "sourceProviderId": "agnes_image"},
-        {"type": "video", "sourceProviderId": "agnes_video"},
+        {"type": "image"},
+        {"type": "video"},
     ]
+    for provider_id in [
+        "openai",
+        "gemini-api",
+        "dashscope",
+        "zhipu",
+        "xiaomi-mimo",
+        "volcengine-ark",
+        "tencent-hunyuan",
+        "minimax",
+        "minimax-cn",
+    ]:
+        provider = next(item for item in payload["providers"] if item["id"] == provider_id)
+        assert provider.get("capabilityEntries"), provider_id
+        assert all("sourceProviderId" not in item for item in provider["capabilityEntries"])
 
     loaded_agnes = model_provider_catalog.get_provider("agnes")
     loaded_capabilities = {
@@ -65,6 +79,16 @@ def test_llm_provider_catalog_contains_new_model_providers():
     assert loaded_capabilities[("image", "agnes_image")]["models"]
     assert loaded_capabilities[("video", "agnes_video")]["models"]
     assert loaded_capabilities[("image", "agnes_image")]["catalogVisibility"] == "internal_capability"
+    loaded_dashscope = model_provider_catalog.get_provider("dashscope")
+    loaded_dashscope_sources = {
+        item["sourceProviderId"]
+        for item in loaded_dashscope["capabilityEntries"]
+        if item.get("sourceProviderId")
+    }
+    assert {"aliyun_bailian_image", "aliyun_bailian_video", "aliyun_bailian_cosyvoice", "aliyun_bailian_3d"}.issubset(
+        loaded_dashscope_sources
+    )
+    assert "openai_images" not in loaded_dashscope_sources
 
 
 def test_media_matrix_contains_requested_generation_providers():

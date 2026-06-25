@@ -631,7 +631,7 @@ export async function ensureDesktopLiveBridge() {
                 bridgePid: spawnedPid,
                 lastErrorStage: "status",
             });
-            for (let attempt = 0; attempt < 12; attempt += 1) {
+            for (let attempt = 0; attempt < 30; attempt += 1) {
                 const payload = await pingBridge();
                 if (payload) {
                     const currentPid = await findBridgePidByPort();

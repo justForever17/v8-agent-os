@@ -56,6 +56,14 @@ class ProjectRegistryService:
             project_id=project_id,
         )
         prepared_payload["name"] = resolved_name
+        if not project_id and resolved_workspace_path:
+            existing_project = self.find_project_for_workspace(workspace_path=resolved_workspace_path)
+            if existing_project:
+                project_id = existing_project.project_id
+                if not prepared_payload.get("name"):
+                    resolved_name = existing_project.name
+                    prepared_payload["name"] = resolved_name
+
         if not project_id:
             project_id = self._generate_project_id(
                 name=resolved_name,

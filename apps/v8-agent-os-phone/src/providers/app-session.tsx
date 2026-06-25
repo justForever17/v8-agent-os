@@ -20,6 +20,19 @@ import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue 
 import { pairDevice as consumeDevicePairing, parseDevicePairingUri } from "@/src/lib/phone-api";
 import type { DevicePairingInput, PhoneUser } from "@/src/types/admin";
 
+async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 4000): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { ...init, signal: controller.signal });
+        clearTimeout(timer);
+        return res;
+    } catch (err) {
+        clearTimeout(timer);
+        throw err;
+    }
+}
+
 type SessionStatus = "booting" | "anonymous" | "authenticated";
 
 type SessionContextValue = {
@@ -160,14 +173,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
         for (const candidateBaseUrl of candidateBaseUrls) {
             try {
-                const response = await fetch(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/refresh"), {
+                const response = await fetchWithTimeout(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/refresh"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         refreshToken: refreshTokenInput,
                         deviceName: `v8-phone-${Platform.OS}`,
                     }),
-                });
+                }, 4000);
                 if (!response.ok) {
                     continue;
                 }
@@ -233,9 +246,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(preferredBaseUrl);
             for (const candidateBaseUrl of candidateBaseUrls) {
                 try {
-                    const meResponse = await fetch(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/me"), {
+                    const meResponse = await fetchWithTimeout(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/me"), {
                         headers: { Authorization: `Bearer ${storedAccessToken}` },
-                    });
+                    }, 4000);
                     if (!meResponse.ok) {
                         continue;
                     }
@@ -335,9 +348,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         if (!baseUrl || !accessToken) {
             return null;
         }
-        const response = await fetch(buildAdminApiUrl(baseUrl, "/api/client/auth/me"), {
+        const response = await fetchWithTimeout(buildAdminApiUrl(baseUrl, "/api/client/auth/me"), {
             headers: { Authorization: `Bearer ${accessToken}` },
-        });
+        }, 4000);
         if (!response.ok) {
             return null;
         }
@@ -383,13 +396,13 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
 
         const doFetch = async (token: string, targetBaseUrl: string) =>
-            fetch(buildAdminApiUrl(targetBaseUrl, path), {
+            fetchWithTimeout(buildAdminApiUrl(targetBaseUrl, path), {
                 ...init,
                 headers: {
                     ...(init?.headers || {}),
                     Authorization: `Bearer ${token}`,
                 },
-            }) as Promise<Response>;
+            }, 15000) as Promise<Response>;
         const attemptFetch = async (token: string) => {
             const candidates = getPreferredBrowserAdminBaseUrls(baseUrl);
             let lastError: unknown = null;

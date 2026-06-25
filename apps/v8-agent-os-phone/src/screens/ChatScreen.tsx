@@ -2535,7 +2535,7 @@ export default function ChatScreen() {
 
     const waitForDesktopLiveAvailability = useCallback(async (requestId: number) => {
         let lastError = "";
-        for (let attempt = 0; attempt < 18; attempt += 1) {
+        for (let attempt = 0; attempt < 30; attempt += 1) {
             if (desktopPreviewRequestIdRef.current !== requestId) {
                 return null;
             }

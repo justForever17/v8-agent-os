@@ -66,6 +66,7 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             {
                 "creative-media-director",
                 "visual-recipe-engineer",
+                "psd-layer-compositor",
                 "character-continuity-designer",
                 "motion-shot-director",
                 "audio-post-producer",
@@ -87,6 +88,18 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertNotIn("llm-video", "\n".join(agent.promptSourceRefs + [agent.system_prompt]))
             self.assertNotIn("E:\\", agent.system_prompt)
             self.assertNotIn("C:\\", agent.system_prompt)
+
+        psd_agent = next(agent for agent in creative_agents if agent.id == "psd-layer-compositor")
+        self.assertEqual(psd_agent.capabilitySnapshot.get("agentClass"), "psd_layer_compositor")
+        self.assertIn("psd_source", psd_agent.capabilitySnapshot.get("artifactCapabilities", []))
+        self.assertIn("compose_psd", psd_agent.capabilitySnapshot.get("operationCapabilities", []))
+        self.assertIn("psd-tools helps inspect, compose, and export layered assets", psd_agent.system_prompt)
+        self.assertIn("#00FFCC", psd_agent.system_prompt)
+        self.assertIn("#FF00CC", psd_agent.system_prompt)
+        self.assertIn("#00FF00", psd_agent.system_prompt)
+        self.assertIn("creative_media_alpha_inspect", psd_agent.system_prompt)
+        self.assertIn("creative_media_psd_compose_template", psd_agent.system_prompt)
+        self.assertIn("provider raw JSON", psd_agent.system_prompt)
 
     def test_creative_media_tool_descriptions_explain_music_3d_job_flow(self):
         create_desc = creative_media_create_job.description

@@ -77,6 +77,10 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "creative_media_retry_job",
             "creative_media_cost_ledger",
             "creative_media_safety_events",
+            "creative_media_alpha_inspect",
+            "creative_media_psd_inspect",
+            "creative_media_psd_export_preview",
+            "creative_media_psd_compose_template",
         ),
     ),
     (

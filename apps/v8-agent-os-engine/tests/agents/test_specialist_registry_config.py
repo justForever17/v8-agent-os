@@ -174,6 +174,25 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         self.assertIn("media-motion | class=", rendered)
         self.assertNotIn("eng-impl | class=", rendered)
 
+    def test_psd_layered_asset_high_confidence_auto_reveals_creative_media(self):
+        agents = [
+            _agent("eng-impl", "engineering", ops=["implement", "code"]),
+            _agent("psd-layer-compositor", "creative_media", ops=["plan_layers", "compose_psd"]),
+        ]
+        bundle = _build_context_bundle(
+            specialist_registry={"familyModeEnabled": True, "exposureMode": "family_cards"},
+            query="请做一套可编辑 PSD 分层海报，包含抠图角色、透明背景清理和图层命名。",
+            agents=agents,
+        )
+
+        rendered = str(bundle["specialist_agents_context"])
+        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "creative_media")
+        self.assertIn("autoReveal=eligible", bundle["task_shape_context"])
+        self.assertIn("autoRevealFamilies=creative_media", rendered)
+        self.assertIn("[creative_media] revealSource=task_shape_high_confidence", rendered)
+        self.assertIn("psd-layer-compositor | class=", rendered)
+        self.assertNotIn("eng-impl | class=", rendered)
+
     def test_output_modality_only_keeps_family_cards_without_member_reveal(self):
         agents = [
             _agent("eng-impl", "engineering", ops=["implement", "code"]),

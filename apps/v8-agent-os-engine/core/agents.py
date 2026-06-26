@@ -3,7 +3,7 @@ import yaml
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-05-03-research"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-06-26-creative-psd"
 DEFAULT_SUBAGENT_IDS = {
     "project-planner",
     "implementation-engineer",
@@ -16,6 +16,7 @@ DEFAULT_SUBAGENT_IDS = {
     "skill-workflow-curator",
     "creative-media-director",
     "visual-recipe-engineer",
+    "psd-layer-compositor",
     "character-continuity-designer",
     "motion-shot-director",
     "audio-post-producer",
@@ -36,7 +37,7 @@ DEFAULT_SPECIALIST_FAMILIES = [
         "familyId": "creative_media",
         "displayName": "Creative Media",
         "aliases": ["创意媒体", "media", "multimedia"],
-        "description": "Image, video, voice, music brief, recipe, asset, and post-production specialist work.",
+        "description": "Image, video, voice, music brief, layered PSD/source assets, recipe, asset, and post-production specialist work.",
     },
     {
         "familyId": "writing",
@@ -316,6 +317,13 @@ CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE = """Creative Media provider discipline:
 - For Seedance 2.0 exact models, plan first frame, last frame, multi-image references, video references, and audio references as separate roles instead of stuffing every constraint into one paragraph.
 - Treat native audiovisual video models as audio-bearing outputs: preserve their generated dialogue, sound effects, ambience, and music bed by default; add separate TTS/music only when the brief explicitly asks for post audio or the selected model is silent.
 - Do not generalize Seedance 2.0 capabilities to older Seedance versions or unrelated providers without exact model capability evidence."""
+
+CREATIVE_MEDIA_PSD_DISCIPLINE = """PSD/layered asset discipline:
+- psd-tools helps inspect, compose, and export layered assets; it does not improve a model's raw drawing ability. Use it for layer structure, manifests, previews, and editable source handoff.
+- Do not trust a provider's "transparent PNG" claim until alpha is inspected. Detect fake transparency, checkerboards, solid white/gray/black backgrounds, and halos before accepting an asset.
+- For cutout assets, request a high-contrast chroma-key background such as #00FFCC, #FF00CC, or #00FF00. Require flat color, no shadow, no floor, no gradient, no texture, no checkerboard, and no background color inside the subject.
+- Preferred pipeline: `creative_media_alpha_inspect` -> regenerate/clean the asset when needed -> `creative_media_psd_compose_template` -> `creative_media_psd_export_preview`.
+- Agent-visible handoff should be concise Markdown: PSD artifact/ref, preview PNG, layer manifest summary, alpha cleanup status, source asset refs, limitations, and next action. Keep provider raw JSON and full PSD/layer internals behind detail refs."""
 
 
 DEFAULT_AGENT_DISCIPLINE = """Shared V8 subagent discipline:
@@ -687,6 +695,42 @@ def default_subagent_configs() -> List[AgentConfig]:
             boundaries="- Do not copy long external prompt templates into the answer.\n- Do not imply a model can guarantee readable text, perfect continuity, or exact edits without verification.\n- Do not use discarded trial video skills as a source or precedent.",
             prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
             extra_guidance=CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE,
+        ),
+        _default_agent(
+            agent_id="psd-layer-compositor",
+            name="PSD Layer Compositor",
+            description="Designs editable PSD/source assets, layer manifests, alpha cleanup, and preview handoff for Creative Media jobs.",
+            role_label="PSD Compositor",
+            icon="layers",
+            capability_snapshot={
+                "agentClass": "psd_layer_compositor",
+                "specialistFamily": "creative_media",
+                "domainTags": [
+                    "creative_media",
+                    "psd",
+                    "layered_assets",
+                    "alpha_quality",
+                    "background_removal",
+                    "image_generation",
+                    "asset_composition",
+                ],
+                "artifactCapabilities": ["psd_source", "layer_manifest", "preview_png", "alpha_report", "asset_cutout_plan"],
+                "operationCapabilities": ["plan_layers", "inspect_alpha", "request_chroma_key_assets", "compose_psd", "export_preview", "handoff_artifact"],
+                "runtimeAffinities": ["chat", "artifact", "extensions", "creative_media"],
+                "toolExposurePolicy": "contextual_auto",
+                "plannerSuitability": "medium",
+                "externalWorkerSuitability": "medium",
+                "confidence": 0.84,
+                "source": "system_default",
+            },
+            mission="- Own editable PSD/source deliverables for Creative Media work.\n- Turn flat AI image assets into a layer plan, cutout strategy, preview PNG, alpha cleanup report, and traceable artifact handoff.",
+            input_contract="- A creative brief, canvas size, target use, required layers, source assets, reference images, text requirements, and delivery format.\n- Any hard constraints from the supervisor about transparency, layer editability, rights, and artifact refs.",
+            operating_protocol="- Start with a layer manifest: canvas, layer order, layer names, editable text, masks/effects, source assets, and acceptance checks.\n- For cutouts, request chroma-key assets on #00FFCC, #FF00CC, or #00FF00 and keep the subject fully inside the frame.\n- Run `creative_media_alpha_inspect` before PSD composition. If transparency is fake or dirty, require background cleanup/refinement before accepting the layer.\n- Use `creative_media_psd_compose_template` for raster-layer PSD creation and `creative_media_psd_export_preview` for flattened review previews.\n- Keep long layer manifests and source asset details behind detail refs rather than dumping raw layer JSON.",
+            output_contract="- Concise PSD handoff: PSD artifact/ref, preview PNG ref, layer manifest summary, alpha/cleanup status, source asset refs, limitations, and recommended next action.",
+            verification="- Check every required layer exists, layer names are stable, order matches the brief, editable text remains editable when possible, true alpha is present for cutouts, and preview export matches the intended composition.",
+            boundaries="- Do not treat a provider transparent PNG as true alpha without inspection.\n- Do not flatten editable text or reusable source layers unless the brief asks for a flat image.\n- Do not claim a PSD artifact exists unless it was actually produced or clearly mark the output as a plan.\n- Do not expose provider raw JSON or full PSD internals as the agent-visible result.",
+            prompt_source_refs=CREATIVE_MEDIA_PROMPT_SOURCE_REFS,
+            extra_guidance=f"{CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE}\n\n{CREATIVE_MEDIA_PSD_DISCIPLINE}",
         ),
         _default_agent(
             agent_id="character-continuity-designer",

@@ -732,7 +732,14 @@ def build_supervisor_system_content(
         agent_class = str(snapshot.get("agentClass") or "").strip().lower()
         domains = " ".join(str(item).strip().lower() for item in list(snapshot.get("domainTags") or []) if str(item).strip())
         if (
-            agent_class in {"creative_director", "visual_recipe_engineer", "character_continuity", "motion_director", "audio_post"}
+            agent_class in {
+                "creative_director",
+                "visual_recipe_engineer",
+                "psd_layer_compositor",
+                "character_continuity",
+                "motion_director",
+                "audio_post",
+            }
             or any(
                 token in domains
                 for token in (
@@ -741,6 +748,11 @@ def build_supervisor_system_content(
                     "image",
                     "video",
                     "audio",
+                    "psd",
+                    "layered",
+                    "alpha",
+                    "cutout",
+                    "mask",
                     "storyboard",
                     "keyframe",
                     "character",
@@ -810,9 +822,12 @@ def build_supervisor_system_content(
             "image", "video", "audio", "media", "multimedia", "creative", "storyboard", "shot",
             "keyframe", "character", "continuity", "camera", "motion", "voiceover", "subtitle",
             "music", "sfx", "clip", "edit", "render", "comfyui", "seedance", "lovart", "libtv",
+            "psd", "photoshop", "layer", "layers", "layered", "alpha", "transparent", "transparency",
+            "chroma", "chroma-key", "cutout", "mask",
             "图片", "图像", "视频", "音频", "多媒体", "创意", "分镜", "镜头", "关键帧",
             "角色", "一致性", "运镜", "配音", "旁白", "字幕", "音乐", "音效", "剪辑",
-            "拼接", "生成图", "生成视频", "口语化编辑",
+            "拼接", "生成图", "生成视频", "口语化编辑", "图层", "分层", "透明", "抠图",
+            "蒙版", "色键", "纯色背景",
         )
         matches: list[str] = []
         if has_any_token(engineering_tokens):

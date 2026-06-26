@@ -97,6 +97,7 @@ from core.tools.native.command_governance import (
 from core.tools.native.automation import *  # automation/process/cron/hook tool family compatibility exports
 from core.tools.native.command import *  # command/session tool family compatibility exports
 from core.tools.native.creative_media import *  # creative media tool family compatibility exports
+from core.tools.native.creative_media_psd import *  # creative media PSD tool family compatibility exports
 from core.tools.native.delegation import *  # delegation broker tool family compatibility exports
 from core.tools.native.runtime import *  # runtime broker tool family compatibility exports
 from core.tools.native.mcp import *  # MCP config tool family compatibility exports

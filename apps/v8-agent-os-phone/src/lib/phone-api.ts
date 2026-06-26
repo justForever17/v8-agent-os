@@ -418,10 +418,24 @@ export async function deleteConversation(authorizedFetch: AuthorizedFetch, id: s
     );
 }
 
-export async function getConversationDetail(authorizedFetch: AuthorizedFetch, id: string) {
+export async function getConversationDetail(authorizedFetch: AuthorizedFetch, id: string, omitMessages = false) {
     return authorizedJson<ConversationDetail>(
         authorizedFetch,
-        `/api/client/conversations/${encodeURIComponent(id)}`,
+        `/api/client/conversations/${encodeURIComponent(id)}${omitMessages ? '?omitMessages=1' : ''}`,
+        translateCurrent("src.lib.phone_api.text_16"),
+        { cache: "no-store" },
+    );
+}
+
+export async function getConversationTimelineSync(authorizedFetch: AuthorizedFetch, id: string, since: string) {
+    return authorizedJson<{
+        messages: any[];
+        deletions: string[];
+        syncCursor: string;
+        sessionId: string;
+    }>(
+        authorizedFetch,
+        `/api/client/conversations/${encodeURIComponent(id)}/sync?since=${encodeURIComponent(since)}`,
         translateCurrent("src.lib.phone_api.text_16"),
         { cache: "no-store" },
     );

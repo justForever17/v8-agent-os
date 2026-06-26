@@ -93,6 +93,7 @@ import {
     getDesktopLiveStatus,
     getDesktopLiveStreamUrl,
     getConversationDetail,
+    getConversationTimelineSync,
     getProjectsRegistry,
     getRealtimeSnapshot,
     getSessionProcesses,
@@ -114,6 +115,7 @@ import {
     uploadAttachment,
 } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
+import { localDatabase } from "@/src/services/LocalDatabaseService";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type {
@@ -3433,7 +3435,26 @@ export default function ChatScreen() {
                     return;
                 }
                 const fetchStartedAt = getPerfNowMs();
-                const snapshot = await getRealtimeSnapshot(authorizedFetch, targetConversationId);
+                const syncCursor = await localDatabase.getSyncCursor(targetConversationId);
+                const [snapshot, syncData] = await Promise.all([
+                    getRealtimeSnapshot(authorizedFetch, targetConversationId),
+                    getConversationTimelineSync(authorizedFetch, targetConversationId, syncCursor || ""),
+                ]);
+                
+                if (syncData.deletions && syncData.deletions.length > 0) {
+                    await localDatabase.deleteMessages(targetConversationId, syncData.deletions);
+                }
+                if (syncData.messages && syncData.messages.length > 0) {
+                    await localDatabase.upsertMessages(targetConversationId, syncData.messages);
+                }
+                if (syncData.syncCursor) {
+                    await localDatabase.setSyncCursor(targetConversationId, syncData.syncCursor);
+                }
+                
+                const timelineMessages = await localDatabase.getMessages(targetConversationId);
+                // Inject the timeline messages from SQLite into the snapshot payload
+                snapshot.messages = timelineMessages;
+
                 if (__DEV__ || isPhonePerfAuditEnabled()) {
                     const elapsedMs = Math.round(getPerfNowMs() - fetchStartedAt);
                     const payloadBytes = measureJsonBytes(snapshot);
@@ -4381,8 +4402,10 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = conversationId;
         setConversationBusy(true);
         try {
-            const [detail, processSurface] = await Promise.all([
-                getConversationDetail(authorizedFetch, conversationId),
+            const syncCursor = await localDatabase.getSyncCursor(conversationId);
+            const [detail, syncData, processSurface] = await Promise.all([
+                getConversationDetail(authorizedFetch, conversationId, true),
+                getConversationTimelineSync(authorizedFetch, conversationId, syncCursor || ""),
                 getSessionProcesses(authorizedFetch, conversationId).catch(() => ({ processes: [] as AdminProcessRef[], stale: true })),
             ]);
             if (
@@ -4391,9 +4414,16 @@ export default function ChatScreen() {
             ) {
                 return false;
             }
-            const timelineMessages = Array.isArray(detail.timeline)
-                ? detail.timeline
-                : [];
+            if (syncData.deletions && syncData.deletions.length > 0) {
+                await localDatabase.deleteMessages(conversationId, syncData.deletions);
+            }
+            if (syncData.messages && syncData.messages.length > 0) {
+                await localDatabase.upsertMessages(conversationId, syncData.messages);
+            }
+            if (syncData.syncCursor) {
+                await localDatabase.setSyncCursor(conversationId, syncData.syncCursor);
+            }
+            const timelineMessages = await localDatabase.getMessages(conversationId);
             setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detail));
             const snapshotMessages = normalizeMessagesForState(timelineMessages);
             const preserveOptimisticLocalState = Boolean(

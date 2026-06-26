@@ -29,7 +29,7 @@ export async function GET(
         || req.nextUrl.searchParams.get("compact") === "1";
 
     try {
-        const res = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
+        const res = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot${compactPhone ? "?compact=1" : ""}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",

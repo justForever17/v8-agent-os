@@ -25,6 +25,7 @@ export async function GET(
 
     const { id } = await params;
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
+    const omitMessages = req.nextUrl.searchParams.get("omitMessages") === "1";
 
     try {
         const [snapshotResponse, historyResponse] = await Promise.all([
@@ -33,7 +34,7 @@ export async function GET(
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
             }),
-            fetch(`${ENGINE_URL}/sessions/${id}/history`, {
+            omitMessages ? Promise.resolve(null) : fetch(`${ENGINE_URL}/sessions/${id}/history`, {
                 method: "GET",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
@@ -49,7 +50,7 @@ export async function GET(
             await snapshotResponse.json().catch(() => ({})),
             { publicBaseUrl },
         ) as Record<string, unknown>;
-        const historyData = historyResponse.ok
+        const historyData = historyResponse && historyResponse.ok
             ? await historyResponse.json().catch(() => ({}))
             : null;
         const historyRecord = asRecord(historyData);

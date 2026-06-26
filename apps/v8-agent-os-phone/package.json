@@ -35,6 +35,7 @@
     "expo-screen-orientation": "~55.0.16",
     "expo-secure-store": "^55.0.14",
     "expo-splash-screen": "~55.0.21",
+    "expo-sqlite": "~55.0.17",
     "expo-status-bar": "~55.0.6",
     "expo-video": "^55.0.17",
     "expo-video-thumbnails": "^55.0.15",

@@ -2007,6 +2007,45 @@ class DatabaseManager:
             )
             return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
 
+    def get_chat_canonical_messages_since(self, session_id: str, since_ts: str) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM chat_canonical_messages
+                WHERE session_id = ?
+                  AND updated_at >= ?
+                  AND id NOT IN (
+                    SELECT message_id
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                  AND id NOT IN (
+                    SELECT COALESCE(canonical_message_id, '')
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                ORDER BY ordinal ASC, created_at ASC
+                ''',
+                (session_id, since_ts, session_id, session_id),
+            )
+            return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
+
+    def get_chat_message_deletions_since(self, session_id: str, since_ts: str) -> List[str]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT COALESCE(canonical_message_id, message_id) as deleted_id
+                FROM chat_message_deletions
+                WHERE session_id = ?
+                  AND deleted_at >= ?
+                ''',
+                (session_id, since_ts),
+            )
+            return [row["deleted_id"] for row in cursor.fetchall() if row["deleted_id"]]
+
     def get_chat_canonical_max_version(self, session_id: str) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()

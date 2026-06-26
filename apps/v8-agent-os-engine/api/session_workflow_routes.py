@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -705,7 +706,7 @@ async def get_runtime_artifact_content(artifact_id: str):
 
 
 @router.get("/sessions/{session_id}/snapshot")
-async def get_session_snapshot(session_id: str):
+async def get_session_snapshot(session_id: str, compact: int = 0):
     started_at_ms = _now_perf_ms()
     try:
         payload = runtime_command_router.get_snapshot(session_id)
@@ -716,7 +717,7 @@ async def get_session_snapshot(session_id: str):
                     **payload,
                     "snapshot": {
                         **snapshot,
-                        "messages": _filter_deleted_messages(session_id, snapshot.get("messages") or []),
+                        "messages": [] if compact == 1 else _filter_deleted_messages(session_id, snapshot.get("messages") or []),
                         "artifacts": _filter_deleted_artifacts(session_id, snapshot.get("artifacts") or []),
                     },
                 }
@@ -817,6 +818,24 @@ async def get_session_history(session_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}/timeline/sync")
+async def get_session_timeline_sync(session_id: str, since: str):
+    try:
+        messages = db.get_chat_canonical_messages_since(session_id, since)
+        deletions = db.get_chat_message_deletions_since(session_id, since)
+        sync_cursor = datetime.now(timezone.utc).isoformat()
+        return {
+            "messages": messages,
+            "deletions": deletions,
+            "syncCursor": sync_cursor,
+            "sessionId": session_id,
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

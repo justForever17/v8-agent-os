@@ -32,6 +32,35 @@ def guess_mime_type(file_path: str | Path, fallback: str = "application/octet-st
     return mime_type or fallback
 
 
+def _audio_format_from_mime(mime_type: str) -> str:
+    normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized in {"audio/mpeg", "audio/mp3"}:
+        return "mp3"
+    if normalized in {"audio/mp4", "audio/x-m4a", "audio/m4a"}:
+        return "m4a"
+    if normalized in {"audio/x-wav", "audio/wave", "audio/wav"}:
+        return "wav"
+    if normalized == "audio/ogg":
+        return "ogg"
+    if normalized == "audio/flac":
+        return "flac"
+    if normalized == "audio/aac":
+        return "aac"
+    if normalized == "audio/aiff":
+        return "aiff"
+    if "/" in normalized:
+        return normalized.rsplit("/", 1)[-1].replace("x-", "")
+    return "mp3"
+
+
+def _strip_data_url(value: str) -> str:
+    text = str(value or "")
+    marker = ";base64,"
+    if marker in text:
+        return text.split(marker, 1)[1]
+    return text
+
+
 def build_multimodal_content(
     *,
     prompt: str,
@@ -56,8 +85,53 @@ def build_multimodal_content(
         )
         return content
 
-    if normalized_transport == "inline_base64_image":
-        raise ValueError("只有图片支持 inline_base64_image 传输模式。")
+    if kind == "audio":
+        if normalized_transport == "inline_base64_audio":
+            audio_data = _strip_data_url(media_url)
+            if normalized_api in {"google", "gemini"}:
+                content.append(
+                    {
+                        "type": "media",
+                        "data": audio_data,
+                        "mime_type": mime_type,
+                    }
+                )
+                return content
+            content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": audio_data,
+                        "format": _audio_format_from_mime(mime_type),
+                    },
+                }
+            )
+            return content
+
+        if normalized_transport == "url_reference":
+            if normalized_api in {"google", "gemini"}:
+                content.append(
+                    {
+                        "type": "media",
+                        "file_uri": media_url,
+                        "mime_type": mime_type,
+                    }
+                )
+                return content
+            content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": media_url,
+                        "format": _audio_format_from_mime(mime_type),
+                    },
+                }
+            )
+            return content
+        raise ValueError(f"不支持的音频传输模式：{transport_mode}")
+
+    if normalized_transport in {"inline_base64_image", "inline_base64_audio"}:
+        raise ValueError("只有图片支持 inline_base64_image，只有音频支持 inline_base64_audio。")
 
     if normalized_api in {"google", "gemini"}:
         content.append(

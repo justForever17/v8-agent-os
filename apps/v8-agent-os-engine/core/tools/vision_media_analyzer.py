@@ -1,5 +1,6 @@
 import os
 import mimetypes
+import base64
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
@@ -31,6 +32,24 @@ from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 from core.system_base import get_engine_origin
 from core.workspace_guard import ensure_workspace_auto_create_allowed
+
+_MAX_INLINE_AUDIO_BYTES = 10 * 1024 * 1024
+_SUPPORTED_AUDIO_MIME_TYPES = {
+    "audio/aac",
+    "audio/aiff",
+    "audio/flac",
+    "audio/m4a",
+    "audio/mp3",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/wav",
+    "audio/wave",
+    "audio/webm",
+    "audio/x-m4a",
+    "audio/x-wav",
+}
+
 
 async def _upload_to_temp_s3(file_path: Path) -> str:
     from core.tools.s3_tools import upload_file_to_s3
@@ -96,6 +115,8 @@ def _enforce_remote_media_guard(url: str, *, tool_call_id: str) -> tuple[bool, s
 def _non_image_error_for_local(media_kind: str) -> str:
     if media_kind == "video":
         return "当前本地模型不支持视频识别。"
+    if media_kind == "audio":
+        return "当前本地模型不支持音频识别。"
     if media_kind in {"document", "file"}:
         return "当前本地模型不支持文档直读。"
     return "当前本地模型只支持图片识别。"
@@ -104,9 +125,23 @@ def _non_image_error_for_local(media_kind: str) -> str:
 def _document_redirect_message(media_kind: str) -> str:
     if media_kind == "video":
         return "当前视觉分析只保留视频 URL/S3 通道。"
+    if media_kind == "audio":
+        return "当前 vision_media_analyzer 只支持音频 URL 或本地音频文件，不承担普通文档直读。"
     if media_kind in {"document", "file"}:
         return "当前 vision_media_analyzer 不再承担文档直读，请改用 web_fetch 或文本抽取链路。"
-    return "当前 vision_media_analyzer 只处理图片和视频。"
+    return "当前 vision_media_analyzer 只处理图片、视频和音频。"
+
+
+def _build_inline_audio_data_from_file(file_path: Path, mime_type: str) -> tuple[str, int]:
+    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized_mime not in _SUPPORTED_AUDIO_MIME_TYPES:
+        raise ValueError(f"当前音频 MIME 类型暂不支持：{mime_type}")
+    byte_size = file_path.stat().st_size
+    if byte_size > _MAX_INLINE_AUDIO_BYTES:
+        raise ValueError(
+            f"音频文件过大（{byte_size} bytes），当前内联音频上限为 {_MAX_INLINE_AUDIO_BYTES} bytes。"
+        )
+    return base64.b64encode(file_path.read_bytes()).decode("ascii"), byte_size
 
 
 @tool
@@ -117,18 +152,17 @@ def vision_media_analyzer(
     prompt: str = "详细描述这个文件里的内容。如果包含文字请提取出来。如果是视频，请总结视频的剧情和关键帧变化。",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Analyze images and videos directly using a powerful Vision LLM.
+    """Analyze images, videos, and audio directly using a multimodal LLM.
     
-    When a user uploads a media file (image/video) via the Web UI or a Channel (Feishu), 
+    When a user uploads a media file (image/video/audio) via the Web UI or a Channel (Feishu), 
     their message will explicitly contain a system injected path: `[User uploaded file: /path/to/media.mp4]`.
     
     Extract that local path, and pass it immediately to this tool along with your analytical requirements in `prompt`.
-    This tool natively supports analyzing long video files without manual frame extraction, 
-    and returns textual analysis which you can incorporate into your reasoning.
+    This tool returns textual analysis which you can incorporate into your reasoning.
     
     Arguments:
-        file_path (str): The absolute local filesystem path to the uploaded image or video.
-        source_url (str): 远程图片/视频/文档 URL，可直接消费 web_fetch 返回的 visionCandidates。
+        file_path (str): The absolute local filesystem path to the uploaded image, video, or audio.
+        source_url (str): 远程图片/视频/音频 URL，可直接消费 web_fetch 返回的 visionCandidates。
         mime_type_hint (str): 远程媒体的 MIME 类型提示，可选。
         prompt (str): Your specific instructions to the Vision LLM (e.g., "Extract the error code from this screenshot").
     """
@@ -140,6 +174,7 @@ def vision_media_analyzer(
         transport_mode = "url_reference"
         payload_media_ref = resolved_url
         inline_image_payload: dict[str, object] | None = None
+        inline_media_byte_size: int | None = None
 
         if resolved_url:
             print(f"[VisionMediaAnalyzer] Starting remote analysis for: {resolved_url}")
@@ -198,6 +233,7 @@ def vision_media_analyzer(
             payload_media_ref = str((inline_image_payload or {}).get("dataUrl") or "")
             mime = str((inline_image_payload or {}).get("mimeType") or "image/png")
             media_kind = "image"
+            inline_media_byte_size = int((inline_image_payload.get("byteSize") or 0) or 0)
         else:
             if media_kind == "video":
                 if resolved_url:
@@ -212,6 +248,18 @@ def vision_media_analyzer(
                         resolved_url = asyncio.run(_mount_in_workspace(path))
                     print(f"[VisionMediaAnalyzer] Media temporarily mapped to URL: {resolved_url}")
                 payload_media_ref = resolved_url
+            elif media_kind == "audio":
+                if resolved_url:
+                    allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
+                    if not allowed:
+                        return error_message or "Safety Guardian 已阻止远程媒体分析。"
+                    payload_media_ref = resolved_url
+                elif path is not None:
+                    try:
+                        payload_media_ref, inline_media_byte_size = _build_inline_audio_data_from_file(path, mime)
+                    except Exception as exc:
+                        return f"当前音频文件无法交给多模态模型分析：{exc}"
+                    transport_mode = "inline_base64_audio"
             else:
                 try:
                     if path is not None:
@@ -226,6 +274,7 @@ def vision_media_analyzer(
                     payload_media_ref = str((inline_image_payload or {}).get("dataUrl") or "")
                     mime = str((inline_image_payload or {}).get("mimeType") or "image/png")
                     media_kind = "image"
+                    inline_media_byte_size = int((inline_image_payload.get("byteSize") or 0) or 0)
                 except Exception:
                     return _document_redirect_message(media_kind)
 
@@ -248,6 +297,8 @@ def vision_media_analyzer(
         }
         if inline_image_payload is not None:
             metadata["byteSize"] = int((inline_image_payload.get("byteSize") or 0) or 0)
+        if inline_media_byte_size is not None:
+            metadata["byteSize"] = int(inline_media_byte_size)
 
         if path is not None:
             artifact_store.record_local_file(
@@ -308,7 +359,7 @@ def vision_media_analyzer(
                     api_standard=api_standard,
                     transport_mode=transport_mode,
                     source_ref=display_source,
-                    byte_size=int((inline_image_payload or {}).get("byteSize") or 0) or None,
+                    byte_size=inline_media_byte_size,
                 )
             },
         )

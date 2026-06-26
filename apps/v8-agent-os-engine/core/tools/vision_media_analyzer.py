@@ -35,19 +35,8 @@ from core.workspace_guard import ensure_workspace_auto_create_allowed
 
 _MAX_INLINE_AUDIO_BYTES = 10 * 1024 * 1024
 _SUPPORTED_AUDIO_MIME_TYPES = {
-    "audio/aac",
-    "audio/aiff",
-    "audio/flac",
-    "audio/m4a",
     "audio/mp3",
-    "audio/mp4",
     "audio/mpeg",
-    "audio/ogg",
-    "audio/wav",
-    "audio/wave",
-    "audio/webm",
-    "audio/x-m4a",
-    "audio/x-wav",
 }
 
 
@@ -132,10 +121,25 @@ def _document_redirect_message(media_kind: str) -> str:
     return "当前 vision_media_analyzer 只处理图片、视频和音频。"
 
 
+def _audio_requires_mp3_message(mime_type: str) -> str:
+    return (
+        "当前 vision_media_analyzer 的音频输入只支持 MP3。"
+        f"收到的音频类型是 {mime_type or 'unknown'}。"
+        "请先用受治理的命令或媒体处理流程把音频转换为 mp3，再重新调用本工具。"
+    )
+
+
+def _is_supported_mp3_audio(mime_type: str, source_name: str = "") -> bool:
+    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized_mime in _SUPPORTED_AUDIO_MIME_TYPES:
+        return True
+    return str(source_name or "").strip().lower().split("?", 1)[0].endswith(".mp3")
+
+
 def _build_inline_audio_data_from_file(file_path: Path, mime_type: str) -> tuple[str, int]:
     normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
-    if normalized_mime not in _SUPPORTED_AUDIO_MIME_TYPES:
-        raise ValueError(f"当前音频 MIME 类型暂不支持：{mime_type}")
+    if not _is_supported_mp3_audio(normalized_mime, str(file_path)):
+        raise ValueError(_audio_requires_mp3_message(mime_type))
     byte_size = file_path.stat().st_size
     if byte_size > _MAX_INLINE_AUDIO_BYTES:
         raise ValueError(
@@ -161,8 +165,8 @@ def vision_media_analyzer(
     This tool returns textual analysis which you can incorporate into your reasoning.
     
     Arguments:
-        file_path (str): The absolute local filesystem path to the uploaded image, video, or audio.
-        source_url (str): 远程图片/视频/音频 URL，可直接消费 web_fetch 返回的 visionCandidates。
+        file_path (str): The absolute local filesystem path to the uploaded image, video, or mp3 audio.
+        source_url (str): 远程图片/视频/MP3 音频 URL，可直接消费 web_fetch 返回的 visionCandidates。
         mime_type_hint (str): 远程媒体的 MIME 类型提示，可选。
         prompt (str): Your specific instructions to the Vision LLM (e.g., "Extract the error code from this screenshot").
     """
@@ -249,6 +253,8 @@ def vision_media_analyzer(
                     print(f"[VisionMediaAnalyzer] Media temporarily mapped to URL: {resolved_url}")
                 payload_media_ref = resolved_url
             elif media_kind == "audio":
+                if not _is_supported_mp3_audio(mime, resolved_url or str(path or "")):
+                    return _audio_requires_mp3_message(mime)
                 if resolved_url:
                     allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
                     if not allowed:

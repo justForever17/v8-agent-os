@@ -38,6 +38,27 @@ def test_multimodal_adapter_builds_gemini_inline_audio_payload():
     ]
 
 
+def test_multimodal_adapter_builds_openai_audio_url_payload():
+    content = build_multimodal_content(
+        prompt="请识别音频内容。",
+        media_url="https://example.test/audio.mp3",
+        mime_type="audio/mpeg",
+        api_standard="openai",
+        transport_mode="url_reference",
+    )
+
+    assert content == [
+        {"type": "text", "text": "请识别音频内容。"},
+        {
+            "type": "input_audio",
+            "input_audio": {
+                "url": "https://example.test/audio.mp3",
+                "format": "mp3",
+            },
+        },
+    ]
+
+
 def test_vision_media_analyzer_accepts_audio_and_strips_reasoning(monkeypatch, tmp_path: Path):
     audio_path = tmp_path / "voice.mp3"
     audio_path.write_bytes(b"\x00\x01fake-mp3")
@@ -92,3 +113,37 @@ def test_vision_media_analyzer_accepts_audio_and_strips_reasoning(monkeypatch, t
     assert message_content[1]["input_audio"]["format"] == "mp3"
     assert captured["config"]["metadata"]["mediaKind"] == "audio"
     assert captured["config"]["metadata"]["transportMode"] == "inline_base64_audio"
+
+
+def test_vision_media_analyzer_rejects_non_mp3_audio_before_model_call(monkeypatch, tmp_path: Path):
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"RIFFfake-wav")
+
+    monkeypatch.setattr(
+        vision_module,
+        "get_runtime_context",
+        lambda: {"session_id": "session-audio", "run_id": "run-audio", "project_id": "test"},
+    )
+    monkeypatch.setattr(
+        vision_module.model_control_plane,
+        "resolve_model_for_role",
+        lambda role: {
+            "resolvedProvider": {"type": "API", "api_standard": "openai"},
+            "resolvedProviderId": "openai-audio",
+            "resolvedModel": {"capabilityClass": "vision_multimodal"},
+            "resolvedModelId": "gpt-4o-audio-preview",
+        },
+    )
+
+    def _should_not_create_model(*args, **kwargs):
+        raise AssertionError("non-mp3 audio must be rejected before model initialization")
+
+    monkeypatch.setattr(vision_module.llm_factory, "create_for_role", _should_not_create_model)
+
+    output = vision_module.vision_media_analyzer.func(
+        file_path=str(audio_path),
+        prompt="请逐字转写音频。",
+    )
+
+    assert "只支持 MP3" in output
+    assert "转换为 mp3" in output

@@ -122,7 +122,7 @@ def build_multimodal_content(
                 {
                     "type": "input_audio",
                     "input_audio": {
-                        "data": media_url,
+                        "url": media_url,
                         "format": _audio_format_from_mime(mime_type),
                     },
                 }

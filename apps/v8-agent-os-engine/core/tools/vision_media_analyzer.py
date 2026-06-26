@@ -1,10 +1,14 @@
-import os
 import mimetypes
+import asyncio
 import base64
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
 
+import requests
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import interrupt
@@ -33,20 +37,55 @@ from erc.safety_guardian import safety_guardian
 from core.system_base import get_engine_origin
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 
+_LARGE_MEDIA_S3_THRESHOLD = 25 * 1024 * 1024
 _MAX_INLINE_AUDIO_BYTES = 10 * 1024 * 1024
+_MAX_REMOTE_AUDIO_BYTES = 50 * 1024 * 1024
 _SUPPORTED_AUDIO_MIME_TYPES = {
     "audio/mp3",
     "audio/mpeg",
 }
+_TRANSCODABLE_AUDIO_SUFFIXES = {
+    ".aac",
+    ".aiff",
+    ".amr",
+    ".flac",
+    ".m4a",
+    ".mp4",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+}
+_AUDIO_SUFFIX_BY_MIME = {
+    "audio/aac": ".aac",
+    "audio/aiff": ".aiff",
+    "audio/amr": ".amr",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp4": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+}
 
 
-async def _upload_to_temp_s3(file_path: Path) -> str:
+def _upload_to_temp_s3_sync(file_path: Path) -> str:
     from core.tools.s3_tools import upload_file_to_s3
 
     try:
         return str(upload_file_to_s3(file_path, prefix="v8chat").get("url") or "")
     except Exception as e:
         raise ValueError(f"S3 Upload failed: Failed to upload {file_path}: {e}")
+
+
+async def _upload_to_temp_s3(file_path: Path) -> str:
+    return _upload_to_temp_s3_sync(file_path)
+
 
 async def _mount_in_workspace(file_path: Path) -> str:
     import shutil
@@ -70,6 +109,29 @@ async def _mount_in_workspace(file_path: Path) -> str:
     if str(file_path.absolute()) != str(target_path.absolute()):
         shutil.copy2(file_path, target_path)
     return f"{get_engine_origin().rstrip('/')}/workspace/{file_path.name}"
+
+
+def _try_upload_media_to_s3(file_path: Path) -> str:
+    url = _upload_to_temp_s3_sync(file_path)
+    if not url:
+        raise ValueError("S3 上传未返回可用 URL。")
+    return url
+
+
+def _route_local_media_file_to_url(file_path: Path, *, allow_workspace_fallback: bool = False) -> tuple[str, dict[str, object]]:
+    try:
+        return _try_upload_media_to_s3(file_path), {"mediaRoutedToS3": True}
+    except Exception as exc:
+        if not allow_workspace_fallback:
+            raise
+        try:
+            return asyncio.run(_mount_in_workspace(file_path)), {
+                "mediaRoutedToS3": False,
+                "mediaRouteFallback": "workspace_url",
+                "mediaRouteFallbackReason": str(exc)[:240],
+            }
+        except Exception:
+            raise exc
 
 
 def _enforce_remote_media_guard(url: str, *, tool_call_id: str) -> tuple[bool, str | None]:
@@ -115,7 +177,7 @@ def _document_redirect_message(media_kind: str) -> str:
     if media_kind == "video":
         return "当前视觉分析只保留视频 URL/S3 通道。"
     if media_kind == "audio":
-        return "当前 vision_media_analyzer 只支持音频 URL 或本地音频文件，不承担普通文档直读。"
+        return "当前 vision_media_analyzer 支持音频 URL 或本地音频文件，并会在进入模型前统一转换为 MP3。"
     if media_kind in {"document", "file"}:
         return "当前 vision_media_analyzer 不再承担文档直读，请改用 web_fetch 或文本抽取链路。"
     return "当前 vision_media_analyzer 只处理图片、视频和音频。"
@@ -123,9 +185,9 @@ def _document_redirect_message(media_kind: str) -> str:
 
 def _audio_requires_mp3_message(mime_type: str) -> str:
     return (
-        "当前 vision_media_analyzer 的音频输入只支持 MP3。"
+        "当前 vision_media_analyzer 会把音频统一交给模型为 MP3。"
         f"收到的音频类型是 {mime_type or 'unknown'}。"
-        "请先用受治理的命令或媒体处理流程把音频转换为 mp3，再重新调用本工具。"
+        "但本次未能完成自动转换，请先用受治理的命令或媒体处理流程把音频转换为 mp3，再重新调用本工具。"
     )
 
 
@@ -136,16 +198,165 @@ def _is_supported_mp3_audio(mime_type: str, source_name: str = "") -> bool:
     return str(source_name or "").strip().lower().split("?", 1)[0].endswith(".mp3")
 
 
-def _build_inline_audio_data_from_file(file_path: Path, mime_type: str) -> tuple[str, int]:
+def _looks_like_audio_source(source_name: str) -> bool:
+    suffix = Path(str(source_name or "").split("?", 1)[0]).suffix.lower()
+    return suffix in _TRANSCODABLE_AUDIO_SUFFIXES or suffix == ".mp3"
+
+
+def _normalize_audio_mime(mime_type: str, source_name: str = "") -> str:
     normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
-    if not _is_supported_mp3_audio(normalized_mime, str(file_path)):
-        raise ValueError(_audio_requires_mp3_message(mime_type))
-    byte_size = file_path.stat().st_size
-    if byte_size > _MAX_INLINE_AUDIO_BYTES:
-        raise ValueError(
-            f"音频文件过大（{byte_size} bytes），当前内联音频上限为 {_MAX_INLINE_AUDIO_BYTES} bytes。"
-        )
-    return base64.b64encode(file_path.read_bytes()).decode("ascii"), byte_size
+    if normalized_mime:
+        return normalized_mime
+    guessed_mime, _ = mimetypes.guess_type(str(source_name or ""))
+    return (guessed_mime or "").split(";", 1)[0].strip().lower()
+
+
+def _suffix_for_audio_temp(mime_type: str, source_name: str = "") -> str:
+    normalized_mime = _normalize_audio_mime(mime_type, source_name)
+    if normalized_mime in _AUDIO_SUFFIX_BY_MIME:
+        return _AUDIO_SUFFIX_BY_MIME[normalized_mime]
+    suffix = Path(str(source_name or "").split("?", 1)[0]).suffix.lower()
+    if suffix in _TRANSCODABLE_AUDIO_SUFFIXES or suffix == ".mp3":
+        return suffix
+    return ".audio"
+
+
+def _transcode_audio_file_to_mp3(source_path: Path, target_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ValueError("系统未检测到 ffmpeg，无法把当前音频自动转换为 MP3。请安装 ffmpeg 或先转换后重试。")
+
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        "64k",
+        str(target_path),
+    ]
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if result.returncode != 0 or not target_path.exists() or target_path.stat().st_size <= 0:
+        stderr = (result.stderr or "").strip()
+        if len(stderr) > 360:
+            stderr = stderr[-360:]
+        raise ValueError(f"ffmpeg 未能把音频转换为 MP3。{stderr or '没有可用的错误详情。'}")
+
+
+def _download_remote_audio_to_file(url: str, mime_type: str) -> tuple[Path, str, Path]:
+    temp_dir = Path(tempfile.mkdtemp(prefix="v8-vision-audio-"))
+    suffix = _suffix_for_audio_temp(mime_type, url)
+    target_path = temp_dir / f"remote-audio{suffix}"
+    try:
+        with requests.get(url, stream=True, timeout=45) as response:
+            response.raise_for_status()
+            response_mime = _normalize_audio_mime(
+                response.headers.get("Content-Type", "") if response.headers else "",
+                url,
+            )
+            total = 0
+            with target_path.open("wb") as fh:
+                for chunk in response.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > _MAX_REMOTE_AUDIO_BYTES:
+                        raise ValueError(
+                            f"远程音频过大，下载上限为 {_MAX_REMOTE_AUDIO_BYTES} bytes。请先裁剪或压缩后重试。"
+                        )
+                    fh.write(chunk)
+        return target_path, response_mime or mime_type, temp_dir
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
+def _build_inline_audio_data_from_file(file_path: Path, mime_type: str) -> tuple[str, int, dict[str, object]]:
+    payload_ref, byte_size, metadata, transport_mode = _prepare_audio_payload_from_file(file_path, mime_type)
+    if transport_mode != "inline_base64_audio":
+        raise ValueError("音频已按大文件路由上传为 URL，无法作为 inline payload 返回。")
+    return payload_ref, byte_size, metadata
+
+
+def _prepare_audio_payload_from_file(file_path: Path, mime_type: str) -> tuple[str, int, dict[str, object], str]:
+    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    temp_dir: Path | None = None
+    read_path = file_path
+    original_byte_size = file_path.stat().st_size
+    metadata: dict[str, object] = {
+        "audioInputMimeType": normalized_mime or mime_type or "unknown",
+        "audioOriginalByteSize": original_byte_size,
+    }
+    try:
+        if not _is_supported_mp3_audio(normalized_mime, str(file_path)):
+            temp_dir = Path(tempfile.mkdtemp(prefix="v8-vision-audio-mp3-"))
+            read_path = temp_dir / f"{file_path.stem[:80] or 'audio'}.mp3"
+            _transcode_audio_file_to_mp3(file_path, read_path)
+            metadata.update(
+                {
+                    "audioTranscoded": True,
+                    "audioTranscodeTarget": "audio/mpeg",
+                }
+            )
+        else:
+            metadata["audioTranscoded"] = False
+
+        byte_size = read_path.stat().st_size
+        should_use_url = byte_size > _MAX_INLINE_AUDIO_BYTES or original_byte_size > _LARGE_MEDIA_S3_THRESHOLD
+        if should_use_url:
+            try:
+                url = _try_upload_media_to_s3(read_path)
+            except Exception as exc:
+                raise ValueError(
+                    f"音频文件已超过内联上限或大媒体阈值，但无法上传到 S3：{exc}"
+                ) from exc
+            metadata.update(
+                {
+                    "audioRoutedToUrl": True,
+                    "mediaRoutedToS3": True,
+                    "audioRoutedByteSize": byte_size,
+                }
+            )
+            return url, byte_size, metadata, "url_reference"
+        metadata["audioRoutedToUrl"] = False
+        return base64.b64encode(read_path.read_bytes()).decode("ascii"), byte_size, metadata, "inline_base64_audio"
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _build_inline_audio_data_from_url(url: str, mime_type: str) -> tuple[str, int, dict[str, object]]:
+    payload_ref, byte_size, metadata, transport_mode = _prepare_audio_payload_from_url(url, mime_type)
+    if transport_mode != "inline_base64_audio":
+        raise ValueError("音频已按大文件路由上传为 URL，无法作为 inline payload 返回。")
+    return payload_ref, byte_size, metadata
+
+
+def _prepare_audio_payload_from_url(url: str, mime_type: str) -> tuple[str, int, dict[str, object], str]:
+    downloaded_path, downloaded_mime, temp_dir = _download_remote_audio_to_file(url, mime_type)
+    try:
+        data, byte_size, metadata, transport_mode = _prepare_audio_payload_from_file(downloaded_path, downloaded_mime or mime_type)
+        metadata["audioRemoteDownloaded"] = True
+        return data, byte_size, metadata, transport_mode
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @tool
@@ -165,8 +376,8 @@ def vision_media_analyzer(
     This tool returns textual analysis which you can incorporate into your reasoning.
     
     Arguments:
-        file_path (str): The absolute local filesystem path to the uploaded image, video, or mp3 audio.
-        source_url (str): 远程图片/视频/MP3 音频 URL，可直接消费 web_fetch 返回的 visionCandidates。
+        file_path (str): The absolute local filesystem path to the uploaded image, video, or audio file. Non-MP3 audio is converted to MP3 before model input.
+        source_url (str): 远程图片/视频/音频 URL，可直接消费 web_fetch 返回的 visionCandidates；非 MP3 音频会先下载并转换为 MP3。
         mime_type_hint (str): 远程媒体的 MIME 类型提示，可选。
         prompt (str): Your specific instructions to the Vision LLM (e.g., "Extract the error code from this screenshot").
     """
@@ -179,6 +390,8 @@ def vision_media_analyzer(
         payload_media_ref = resolved_url
         inline_image_payload: dict[str, object] | None = None
         inline_media_byte_size: int | None = None
+        audio_metadata: dict[str, object] = {}
+        media_route_metadata: dict[str, object] = {}
 
         if resolved_url:
             print(f"[VisionMediaAnalyzer] Starting remote analysis for: {resolved_url}")
@@ -204,6 +417,9 @@ def vision_media_analyzer(
             guessed_mime, _ = mimetypes.guess_type(urlparse(resolved_url).path)
             mime = str(mime_type_hint or guessed_mime or "application/octet-stream").strip()
         media_kind = infer_media_kind(mime)
+        if media_kind == "file" and _looks_like_audio_source(resolved_url or str(path or "")):
+            mime = _normalize_audio_mime(mime if mime != "application/octet-stream" else "", resolved_url or str(path or "")) or "audio/mpeg"
+            media_kind = "audio"
 
         if is_local_provider(resolved_provider):
             if media_kind == "video":
@@ -245,42 +461,63 @@ def vision_media_analyzer(
                     if not allowed:
                         return error_message or "Safety Guardian 已阻止远程媒体分析。"
                 elif path is not None:
-                    import asyncio
                     try:
-                        resolved_url = asyncio.run(_upload_to_temp_s3(path))
+                        resolved_url, media_route_metadata = _route_local_media_file_to_url(
+                            path,
+                            allow_workspace_fallback=True,
+                        )
                     except Exception:
                         resolved_url = asyncio.run(_mount_in_workspace(path))
                     print(f"[VisionMediaAnalyzer] Media temporarily mapped to URL: {resolved_url}")
                 payload_media_ref = resolved_url
             elif media_kind == "audio":
-                if not _is_supported_mp3_audio(mime, resolved_url or str(path or "")):
-                    return _audio_requires_mp3_message(mime)
                 if resolved_url:
                     allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
                     if not allowed:
                         return error_message or "Safety Guardian 已阻止远程媒体分析。"
-                    payload_media_ref = resolved_url
+                    if _is_supported_mp3_audio(mime, resolved_url):
+                        payload_media_ref = resolved_url
+                    else:
+                        try:
+                            payload_media_ref, inline_media_byte_size, audio_metadata, transport_mode = _prepare_audio_payload_from_url(
+                                resolved_url,
+                                mime,
+                            )
+                        except Exception as exc:
+                            return f"当前音频 URL 无法转换为 MP3 后交给多模态模型分析：{exc}"
+                        mime = "audio/mpeg"
                 elif path is not None:
                     try:
-                        payload_media_ref, inline_media_byte_size = _build_inline_audio_data_from_file(path, mime)
+                        payload_media_ref, inline_media_byte_size, audio_metadata, transport_mode = _prepare_audio_payload_from_file(path, mime)
                     except Exception as exc:
-                        return f"当前音频文件无法交给多模态模型分析：{exc}"
-                    transport_mode = "inline_base64_audio"
+                        return f"当前音频文件无法转换为 MP3 后交给多模态模型分析：{exc}"
+                    mime = "audio/mpeg"
             else:
                 try:
                     if path is not None:
-                        inline_image_payload = build_inline_image_data_from_file(path)
+                        if path.stat().st_size > _LARGE_MEDIA_S3_THRESHOLD:
+                            try:
+                                resolved_url, media_route_metadata = _route_local_media_file_to_url(path)
+                                transport_mode = "url_reference"
+                                payload_media_ref = resolved_url
+                                media_kind = "image"
+                                inline_media_byte_size = path.stat().st_size
+                            except Exception:
+                                inline_image_payload = build_inline_image_data_from_file(path)
+                        else:
+                            inline_image_payload = build_inline_image_data_from_file(path)
                     else:
                         allowed, error_message = _enforce_remote_media_guard(resolved_url, tool_call_id=tool_call_id)
                         if not allowed:
                             return error_message or "Safety Guardian 已阻止远程媒体分析。"
                         remote_bytes = download_remote_image_bytes(resolved_url)
                         inline_image_payload = build_inline_image_data_from_bytes(remote_bytes)
-                    transport_mode = "inline_base64_image"
-                    payload_media_ref = str((inline_image_payload or {}).get("dataUrl") or "")
-                    mime = str((inline_image_payload or {}).get("mimeType") or "image/png")
-                    media_kind = "image"
-                    inline_media_byte_size = int((inline_image_payload.get("byteSize") or 0) or 0)
+                    if inline_image_payload is not None:
+                        transport_mode = "inline_base64_image"
+                        payload_media_ref = str((inline_image_payload or {}).get("dataUrl") or "")
+                        mime = str((inline_image_payload or {}).get("mimeType") or "image/png")
+                        media_kind = "image"
+                        inline_media_byte_size = int((inline_image_payload.get("byteSize") or 0) or 0)
                 except Exception:
                     return _document_redirect_message(media_kind)
 
@@ -300,6 +537,8 @@ def vision_media_analyzer(
             "providerId": str(role_resolution.get("resolvedProviderId") or ""),
             "modelId": resolved_model_id,
             "role": resolved_role,
+            **media_route_metadata,
+            **audio_metadata,
         }
         if inline_image_payload is not None:
             metadata["byteSize"] = int((inline_image_payload.get("byteSize") or 0) or 0)
@@ -353,21 +592,34 @@ def vision_media_analyzer(
         # 4. Invoke LLM
         msg = HumanMessage(content=content_components)
         print(f"[VisionMediaAnalyzer] Invoking Vision LLM...")
+        payload_metadata = build_multimodal_payload_metadata(
+            mime_type=mime,
+            media_url=payload_media_ref if transport_mode == "url_reference" else "",
+            api_standard=api_standard,
+            transport_mode=transport_mode,
+            source_ref=display_source,
+            byte_size=inline_media_byte_size,
+        )
+        for key in (
+            "audioInputMimeType",
+            "audioOriginalByteSize",
+            "audioRemoteDownloaded",
+            "audioRoutedByteSize",
+            "audioRoutedToUrl",
+            "audioTranscodeTarget",
+            "audioTranscoded",
+            "mediaRouteFallback",
+            "mediaRouteFallbackReason",
+            "mediaRoutedToS3",
+        ):
+            if key in metadata:
+                payload_metadata[key] = metadata[key]
         
         # Actually in standard Langchain format for videos, it might crash some adapters if `video_url` isn't fully supported.
         # But since the user explicitly confirmed doubao-seed-2.0-pro supports it, we'll send it and let the provider adapter handle serialization.
         response = vision_llm.invoke(
             [msg],
-            {
-                "metadata": build_multimodal_payload_metadata(
-                    mime_type=mime,
-                    media_url=payload_media_ref if transport_mode == "url_reference" else "",
-                    api_standard=api_standard,
-                    transport_mode=transport_mode,
-                    source_ref=display_source,
-                    byte_size=inline_media_byte_size,
-                )
-            },
+            {"metadata": payload_metadata},
         )
 
         sanitized = sanitize_background_model_output(response)

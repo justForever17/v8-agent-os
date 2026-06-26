@@ -51,6 +51,8 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
         _tool("creative_media_compile_recipe"),
         _tool("creative_media_create_character_bible"),
         _tool("creative_media_create_edit_plan"),
+        _tool("creative_media_alpha_inspect"),
+        _tool("creative_media_psd_compose_template"),
     ]
 
     visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
@@ -67,6 +69,8 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     assert "creative_media_compile_recipe" not in names
     assert "creative_media_create_character_bible" not in names
     assert "creative_media_create_edit_plan" not in names
+    assert "creative_media_alpha_inspect" not in names
+    assert "creative_media_psd_compose_template" not in names
 
 
 def test_network_supervisor_delegate_requires_explicit_runtime_grant():
@@ -1364,6 +1368,10 @@ def test_creative_media_runtime_group_includes_p2_p3_recipe_asset_and_render_too
         _tool("creative_media_retry_job"),
         _tool("creative_media_cost_ledger"),
         _tool("creative_media_safety_events"),
+        _tool("creative_media_alpha_inspect"),
+        _tool("creative_media_psd_inspect"),
+        _tool("creative_media_psd_export_preview"),
+        _tool("creative_media_psd_compose_template"),
     ]
     visible = filter_visible_tools_for_actor(
         tools,
@@ -1397,6 +1405,10 @@ def test_creative_media_runtime_group_includes_p2_p3_recipe_asset_and_render_too
         "creative_media_retry_job",
         "creative_media_cost_ledger",
         "creative_media_safety_events",
+        "creative_media_alpha_inspect",
+        "creative_media_psd_inspect",
+        "creative_media_psd_export_preview",
+        "creative_media_psd_compose_template",
     }
 
 

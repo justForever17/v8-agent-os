@@ -217,7 +217,7 @@ class DesktopLiveService:
         self._jpeg_quality = 68
         self._availability_cache: dict[str, Any] | None = None
         self._availability_cached_at = 0.0
-        self._availability_ttl_seconds = 3.0
+        self._availability_ttl_seconds = 10.0
 
     def _config(self) -> dict[str, Any]:
         return get_desktop_live_config()
@@ -569,7 +569,7 @@ class DesktopLiveService:
 
     async def create_webrtc_answer(self, session_id: str, viewer_id: str, offer_sdp: str, offer_type: str = "offer") -> dict[str, Any]:
         self._cleanup_expired_sessions()
-        availability = self._availability()
+        availability = await asyncio.to_thread(self._availability)
         if not availability.get("available"):
             raise RuntimeError(str(availability.get("reason") or "当前桌面直播不可用"))
 

@@ -2549,7 +2549,7 @@ export default function ChatScreen() {
                     : status?.reason
                         || t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"),
             );
-            await new Promise((resolve) => setTimeout(resolve, Math.min(900 + attempt * 150, 1800)));
+            await new Promise((resolve) => setTimeout(resolve, 500));
         }
         throw new Error(lastError || t("src.screens.chatscreen.desktop_preview_is_not_ready_yet_please_wait"));
     }, [refreshDesktopLiveStatus, t]);

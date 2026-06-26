@@ -60,7 +60,7 @@ async def _frame_stream(session_id: str) -> AsyncIterator[bytes]:
 
 @router.get("/desktop-live/status", dependencies=[Depends(_require_internal_secret)])
 async def get_desktop_live_status():
-    payload = desktop_live_service.get_status()
+    payload = await asyncio.to_thread(desktop_live_service.get_status)
     payload["bridgeLayer"] = "python_local_webrtc_bridge"
     payload["bridgeExecutable"] = sys.executable
     return payload
@@ -69,7 +69,7 @@ async def get_desktop_live_status():
 @router.post("/desktop-live/session", dependencies=[Depends(_require_internal_secret)])
 async def create_desktop_live_session(payload: DesktopLiveCreatePayload):
     try:
-        return desktop_live_service.create_session(payload.viewer_id or "anonymous")
+        return await asyncio.to_thread(desktop_live_service.create_session, payload.viewer_id or "anonymous")
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 

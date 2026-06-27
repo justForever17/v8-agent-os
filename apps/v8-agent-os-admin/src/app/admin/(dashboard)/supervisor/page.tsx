@@ -15,6 +15,8 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
+import { useDebugMode } from "@/lib/useDebugMode";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 interface AIModel {
   id: string;
   modelRef?: string;
@@ -97,6 +99,7 @@ function temperatureDefaultText(t: ReturnType<typeof useT>) {
 }
 export default function SupervisorPage() {
   const t = useT();
+  const [debugMode] = useDebugMode();
   const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedModelId, setSelectedModelId] = useState<string>("default");
   const [visionModelId, setVisionModelId] = useState<string>("__empty__");
@@ -305,18 +308,18 @@ export default function SupervisorPage() {
   return <div className="p-6 lg:p-8 space-y-8 max-w-7xl mx-auto">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-4">
-                    <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
-                        <Link href="/admin/chat-runtime" aria-label={t("app.admin.dashboard.common.backToChatRuntime")}>
-                            <ArrowLeft className="h-4 w-4" />
-                        </Link>
-                    </Button>
                     <div>
                         <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
                             <Crown className="w-8 h-8 text-amber-500" />
                             {t("app.admin.dashboard.supervisor.page.kf45c6152")}
                         </h1>
-                        <p className="text-muted-foreground mt-2">
+                        <p className="text-muted-foreground mt-2 flex items-center gap-1.5 flex-wrap">
                             {t("app.admin.dashboard.supervisor.page.k48284369")}
+                            {debugMode && (
+                                <AdminHoverInfo content="配置源：~/.v8-agent-os/V8_AGENT_OS.md (Prompt)、config.json#supervisor (资料)、config.json#models.roles.default (模型)">
+                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">❓ 详细路径</span>
+                                </AdminHoverInfo>
+                            )}
                         </p>
                     </div>
                 </div>

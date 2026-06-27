@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
+import { useDebugMode } from "@/lib/useDebugMode";
 
 export type MemorySectionKey =
     | "context"
@@ -34,10 +35,18 @@ const MEMORY_SECTION_ITEMS: Array<{ key: MemorySectionKey; href: string; label: 
 
 export default function MemorySectionNav({ activeKey }: { activeKey: MemorySectionKey }) {
     const t = useT();
+    const [debugMode] = useDebugMode();
+
+    const visibleItems = MEMORY_SECTION_ITEMS.filter((item) => {
+        if (!debugMode) {
+            return !["logs", "runtime", "config", "graph"].includes(item.key);
+        }
+        return true;
+    });
 
     return (
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-2 text-center">
-            {MEMORY_SECTION_ITEMS.map((item) => {
+            {visibleItems.map((item) => {
                 const active = item.key === activeKey;
                 return (
                     <Link

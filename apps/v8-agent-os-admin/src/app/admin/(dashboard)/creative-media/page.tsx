@@ -12,6 +12,7 @@ import { ModelSelect, type AdminModelSelectOption } from "@/components/models/Mo
 import { useT } from "@/components/providers/LocaleProvider";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useDebugMode } from "@/lib/useDebugMode";
 
 type CreativeMediaData = {
     catalog?: Record<string, unknown>;
@@ -163,6 +164,7 @@ function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
 
 export default function CreativeMediaPage() {
     const t = useT();
+    const [debugMode] = useDebugMode();
     const [data, setData] = useState<CreativeMediaData>(EMPTY_DATA);
     const [loading, setLoading] = useState(true);
     const [savingModels, setSavingModels] = useState(false);
@@ -300,18 +302,7 @@ export default function CreativeMediaPage() {
                     <div className="flex items-center gap-2">
                         <Sparkles className="h-7 w-7 text-violet-600" />
                         <h1 className="text-3xl font-bold tracking-tight">
-                            <AdminHoverInfo
-                                content={
-                                    <span>
-                                        {t("app.admin.dashboard.creativeMedia.description")}
-                                        <br />
-                                        {t("app.admin.dashboard.creativeMedia.musicBoundaryInline")}
-                                    </span>
-                                }
-                                panelClassName="text-sm leading-6"
-                            >
-                                <span>{t("app.admin.dashboard.creativeMedia.title")}</span>
-                            </AdminHoverInfo>
+                            {t("app.admin.dashboard.creativeMedia.title")}
                         </h1>
                     </div>
                 </div>
@@ -420,20 +411,7 @@ export default function CreativeMediaPage() {
                 <CardHeader>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                            <CardTitle>
-                                <AdminHoverInfo
-                                    content={
-                                        <span>
-                                            {t("app.admin.dashboard.creativeMedia.modelPreferencesDescription")}
-                                            <br />
-                                            {t("app.admin.dashboard.creativeMedia.modelPreferencesConnectedHint")}
-                                        </span>
-                                    }
-                                    panelClassName="text-sm leading-6"
-                                >
-                                    <span>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</span>
-                                </AdminHoverInfo>
-                            </CardTitle>
+                            <CardTitle>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</CardTitle>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" onClick={() => setModelPreferencesOpen((value) => !value)}>
@@ -568,7 +546,9 @@ export default function CreativeMediaPage() {
                 </CardContent> : null}
             </Card>
 
-            <div className="grid gap-6 xl:grid-cols-2">
+            {debugMode && (
+                <>
+                    <div className="grid gap-6 xl:grid-cols-2">
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.recipesTitle")}</CardTitle>
@@ -886,6 +866,7 @@ export default function CreativeMediaPage() {
                     </CardContent>
                 </Card>
             </div>
+            </>)}
         </div>
     );
 }

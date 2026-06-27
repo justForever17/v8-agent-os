@@ -77,7 +77,7 @@ export async function GET(
             : [];
         const snapshotProcesses = Array.isArray(snapshotData.processes) ? snapshotData.processes : [];
 
-        const engineNow = snapshotResponse.headers.get(ENGINE_NOW_HEADER) || historyResponse.headers.get(ENGINE_NOW_HEADER);
+        const engineNow = snapshotResponse.headers.get(ENGINE_NOW_HEADER) || historyResponse?.headers.get(ENGINE_NOW_HEADER);
 
         const responsePayload = applyCanonicalSourceGroup({
             id,

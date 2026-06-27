@@ -1,7 +1,7 @@
 "use client";
 
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Loader2, Monitor, Search, Server } from "lucide-react";
+import { Bell, Loader2, Monitor, Search, Server, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import Image from "next/image";
 
@@ -15,6 +15,8 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminNavItem } from "@/lib/admin-navigation";
 import { cn } from "@/lib/utils";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { useDebugMode } from "@/lib/useDebugMode";
 
 type InboxItem = {
     id: string;
@@ -53,6 +55,7 @@ export function Topbar() {
     const router = useRouter();
     const current = getAdminNavItem(pathname);
     const t = useT();
+    const [debugMode, toggleDebugMode] = useDebugMode();
     const { toast } = useToast();
     const [activePanel, setActivePanel] = useState<"install" | "search" | "inbox" | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
@@ -328,6 +331,19 @@ export function Topbar() {
                 <div className="flex items-center gap-2">
                     <DeviceConnectDialog />
                     <LocaleToggle />
+                    <AdminHoverInfo
+                        content={debugMode ? "当前处于调试模式，已显示底层的诊断卡片" : "开启调试模式，显示底层的诊断卡片与信息"}
+                        align="right"
+                    >
+                        <Button
+                            variant={debugMode ? "default" : "outline"}
+                            size="icon"
+                            onClick={() => toggleDebugMode(!debugMode)}
+                            className="rounded-2xl border-slate-200"
+                        >
+                            <Wrench className="h-4 w-4" />
+                        </Button>
+                    </AdminHoverInfo>
                     <div ref={installContainerRef} className="relative">
                         <Button
                             variant="outline"

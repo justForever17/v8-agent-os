@@ -20,6 +20,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { ArrowLeft, BrainCircuit, Cable, ChevronDown, Loader2, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
+import { useDebugMode } from "@/lib/useDebugMode";
 type Agent = {
   id: string;
   name: string;
@@ -570,6 +571,7 @@ function classifySelector(selector: string, skillNames: Set<string>, mcpNames: S
 }
 export default function SubagentsPage() {
   const t = useT();
+  const [debugMode] = useDebugMode();
   const {
     toast
   } = useToast();
@@ -1350,15 +1352,15 @@ export default function SubagentsPage() {
   return <div className="mx-auto max-w-[1600px] w-full space-y-8 p-6 lg:p-8">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-start gap-4">
-                    <Button variant="ghost" size="icon" asChild className="mt-1 shrink-0">
-                        <Link href="/admin/chat-runtime" aria-label={t("app.admin.dashboard.common.backToChatRuntime")}>
-                            <ArrowLeft className="h-4 w-4" />
-                        </Link>
-                    </Button>
                     <div>
                         <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.subagents.page.k6c291586")}</h1>
-                        <p className="mt-1 text-muted-foreground">
+                        <p className="mt-1 text-muted-foreground flex items-center gap-1.5 flex-wrap">
                             {t("app.admin.dashboard.subagents.page.k790af087")}
+                            {debugMode && (
+                                <AdminHoverInfo content="包含：Tool Modes、Capability Snapshots、并委派与兼容手动模式 Pinning 配置">
+                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">❓ 详细配置项</span>
+                                </AdminHoverInfo>
+                            )}
                         </p>
                     </div>
                 </div>

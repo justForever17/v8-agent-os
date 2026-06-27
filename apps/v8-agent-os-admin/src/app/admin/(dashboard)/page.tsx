@@ -9,6 +9,7 @@ import { formatLocalDateTime } from "@/lib/time";
 import { useT } from "@/components/providers/LocaleProvider";
 import { RuntimeDashboardCards } from "@/components/runtime/RuntimeDashboardCards";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { useDebugMode } from "@/lib/useDebugMode";
 
 const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#7C3AED", "#F43F5E", "#14B8A6", "#F97316"];
 const DASHBOARD_WINDOW_DAYS = 7;
@@ -210,6 +211,7 @@ function promptCacheHoverLines(
 
 export default function DashboardPage() {
     const t = useT();
+    const [debugMode] = useDebugMode();
     const [data, setData] = useState<DashboardData>(EMPTY_DATA);
     const [telemetryError, setTelemetryError] = useState("");
     const [loading, setLoading] = useState(true);
@@ -415,15 +417,21 @@ export default function DashboardPage() {
                                             </div>
                                         </div>
                                         <div className="text-right">
-                                            <AdminHoverInfo
-                                                lines={promptCacheHoverLines(t, item, data.promptCache)}
-                                                align="right"
-                                                panelClassName="text-xs leading-5"
-                                            >
+                                            {debugMode ? (
+                                                <AdminHoverInfo
+                                                    lines={promptCacheHoverLines(t, item, data.promptCache)}
+                                                    align="right"
+                                                    panelClassName="text-xs leading-5"
+                                                >
+                                                    <Badge variant={item.status === "completed" ? "default" : "secondary"}>
+                                                        {item.status}
+                                                    </Badge>
+                                                </AdminHoverInfo>
+                                            ) : (
                                                 <Badge variant={item.status === "completed" ? "default" : "secondary"}>
                                                     {item.status}
                                                 </Badge>
-                                            </AdminHoverInfo>
+                                            )}
                                             <div className="mt-1 text-xs text-muted-foreground">
                                                 {item.total_tokens} Tokens · {Math.round(item.latency_ms)} ms
                                             </div>

@@ -12,6 +12,7 @@ import { Loader2, Save } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ik, tg } from "@/i18n/admin-legacy";
+import { useDebugMode } from "@/lib/useDebugMode";
 interface SysModel {
   id: string;
   modelRef?: string;
@@ -213,6 +214,7 @@ interface RecallPreviewResponse {
 }
 export default function MemoryConfigPanel() {
   const t = useT();
+  const [debugMode] = useDebugMode();
   const [config, setConfig] = useState<MemoryConfig>({});
   const [durableDefaults, setDurableDefaults] = useState<DurablePolicyDefaults>(MEMORY_DURABLE_POLICY_DEFAULTS);
   const [durablePresets, setDurablePresets] = useState<DurablePolicyPresets>({
@@ -788,9 +790,10 @@ export default function MemoryConfigPanel() {
                 </CardContent>
             </Card>
 
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k20e21cd2")}</CardTitle>
+            {debugMode && (
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k20e21cd2")}</CardTitle>
                 <CardDescription>
                     {t("components.memory.MemoryConfigPanel.k918c5973")}
                     </CardDescription>
@@ -888,6 +891,7 @@ export default function MemoryConfigPanel() {
                         </div> : null}
                 </CardContent>
             </Card>
+            )}
 
             <div className="flex justify-end">
                 <Button onClick={handleSave} disabled={saving}>

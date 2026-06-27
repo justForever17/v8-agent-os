@@ -69,7 +69,7 @@ const ATTACH_POLICY_OPTIONS = [
     { value: "attach_run", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.attachRun" },
     { value: "resume_run", label: "app.admin.dashboard.automation.wakeIngress.attachPolicy.resumeRun" },
 ] as const;
-export default function HooksPage() {
+export function HooksPage() {
     const t = useT();
     const { locale } = useLocale();
     const [hooks, setHooks] = useState<HookConfig[]>([]);
@@ -433,4 +433,13 @@ export default function HooksPage() {
           </div>)}
       </div>
     </div>);
+}
+
+import { useRouter } from "next/navigation";
+export default function HooksPageRedirect() {
+    const router = useRouter();
+    useEffect(() => {
+        router.replace("/admin/automation?tab=hooks");
+    }, [router]);
+    return null;
 }

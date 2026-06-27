@@ -721,7 +721,7 @@ export function RuntimeGovernanceWorkbench({
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="flex flex-col gap-3 md:flex-row">
-                            <Input value={query} onChange={event => setQuery(event.target.value)} placeholder="components.runtime.RuntimeGovernanceWorkbench.kab2a9ac2" />
+                            <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={t("components.runtime.RuntimeGovernanceWorkbench.kab2a9ac2")} />
                             <Button onClick={() => void handleSearch()} disabled={busyKey === "query"}>{tg(t, "189d876a")}</Button>
                         </div>
                         <div className="space-y-3">
@@ -747,10 +747,10 @@ export function RuntimeGovernanceWorkbench({
                     </CardHeader>
                     <CardContent className="space-y-3">
                         {(Object.keys(PRESET_LABELS) as RuntimePresetId[]).map(preset => <div key={preset} className="rounded-2xl border border-border/60 p-4">
-                                <div className="text-sm font-medium">{PRESET_LABELS[preset].title}</div>
-                                <div className="mt-1 text-xs text-muted-foreground">{PRESET_LABELS[preset].description}</div>
+                                <div className="text-sm font-medium">{t(PRESET_LABELS[preset].title)}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">{t(PRESET_LABELS[preset].description)}</div>
                                 <Button className="mt-3" variant="outline" onClick={() => void applyPreset(preset)} disabled={busyKey === `preset:${preset}`}>
-                                    {tg(t, "d6988b11")}
+                                    {busyKey === `preset:${preset}` ? t("app.admin.dashboard.creativeMedia.saving") : t("components.runtime.RuntimeGovernanceWorkbench.applyPresetButton")}
                                 </Button>
                             </div>)}
                     </CardContent>
@@ -767,8 +767,8 @@ export function RuntimeGovernanceWorkbench({
                         <div className="space-y-6">
                             {groupedRuntimes.map(section => <div key={section.key} className="space-y-4">
                                     <div className="rounded-2xl border border-border/60 bg-muted/30 px-4 py-3">
-                                        <div className="text-sm font-semibold text-slate-900">{section.title}</div>
-                                        <div className="mt-1 text-xs leading-5 text-muted-foreground">{section.description}</div>
+                                        <div className="text-sm font-semibold text-slate-900">{t(section.title)}</div>
+                                        <div className="mt-1 text-xs leading-5 text-muted-foreground">{t(section.description)}</div>
                                     </div>
                                     <div className="space-y-4">
                                         {section.runtimes.map(runtime => {
@@ -808,8 +808,13 @@ export function RuntimeGovernanceWorkbench({
                                                             </div>
                                                         </div>
                                                         <div className="flex gap-2">
-                                                            <Button variant="outline" onClick={() => void resetPolicy(runtime.kind)} disabled={busyKey === `reset:${runtime.kind}` || busyKey === `save:${runtime.kind}`}>{tg(t, "616090e7")}</Button>
-                                                            <Button onClick={() => void savePolicy(runtime.kind)} disabled={busyKey === `save:${runtime.kind}` || busyKey === `reset:${runtime.kind}`}><Save className="mr-2 h-4 w-4" />{t("app.admin.dashboard.creativeMedia.saving")}</Button>
+                                                            <Button variant="outline" onClick={() => void resetPolicy(runtime.kind)} disabled={busyKey === `reset:${runtime.kind}` || busyKey === `save:${runtime.kind}`}>
+                                                                {busyKey === `reset:${runtime.kind}` ? "重置中..." : t("components.runtime.RuntimeGovernanceWorkbench.resetPresetButton")}
+                                                            </Button>
+                                                            <Button onClick={() => void savePolicy(runtime.kind)} disabled={busyKey === `save:${runtime.kind}` || busyKey === `reset:${runtime.kind}`}>
+                                                                <Save className="mr-2 h-4 w-4" />
+                                                                {busyKey === `save:${runtime.kind}` ? t("app.admin.dashboard.creativeMedia.saving") : t("components.runtime.RuntimeGovernanceWorkbench.savePresetButton")}
+                                                            </Button>
                                                         </div>
                                                         <div className="mt-4 grid gap-4 md:grid-cols-3">
                                                          <SettingToggleCard
@@ -858,7 +863,7 @@ export function RuntimeGovernanceWorkbench({
                                                             <Label htmlFor={`${runtime.kind}-notes`}>{tg(t, "e0361480")}</Label>
                                                             <Textarea id={`${runtime.kind}-notes`} className="mt-2 min-h-[110px]" value={policy.notes} onChange={event => patchPolicy(runtime.kind, {
                           notes: event.target.value
-                        })} placeholder="components.runtime.RuntimeGovernanceWorkbench.kaba1447c" />
+                        })} placeholder={t("components.runtime.RuntimeGovernanceWorkbench.kaba1447c")} />
                                                             {runtime.promptHints?.length ? <div className="mt-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground"><Settings2 className="mr-2 inline h-3 w-3" />{tg(t, "b8471587")}{runtime.promptHints.join("；")}</div> : null}
                                                         </div>
                                                     </div>

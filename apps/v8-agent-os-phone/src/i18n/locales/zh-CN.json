@@ -482,6 +482,7 @@
   "src.screens.chatscreen.no_project_workspaces_are_available_yet": "当前还没有可用的项目级工作区。",
   "src.screens.chatscreen.no_folder_selected": "尚未选择文件夹",
   "src.screens.chatscreen.no_recording_file_found": "没有拿到录音文件",
+  "src.screens.chatscreen.voice_audio_input_prompt": "这是一段语音输入，请识别音频内容并继续处理。",
   "src.screens.chatscreen.no_speech_detected": "未识别到语音内容",
   "src.screens.chatscreen.path": "路径",
   "src.screens.chatscreen.path_unavailable": "路径未就绪",

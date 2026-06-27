@@ -1539,6 +1539,29 @@ export default function ChatClient() {
         }
     };
 
+    const handleVoiceAudioMessage = async (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>> }) => {
+        const hasFiles = Array.isArray(data.fileUrls) && data.fileUrls.length > 0;
+        if (status !== 'authenticated' || !hasFiles || isLoading) return;
+        if (!activeConversationIdRef.current) {
+            setWorkspaceChooserVisible(true);
+            if (!newConversationIntent) {
+                clearNewConversationIntent();
+            }
+            return;
+        }
+
+        try {
+            await sendMessage(t(lt("这是一段语音输入，请识别音频内容并继续处理。", "This is a voice input. Please understand the audio and continue.")), {
+                agentId: undefined,
+                userId: session?.user?.id,
+                ...buildScopePayload(activeConversationIdRef.current),
+                ...data,
+            });
+        } catch (error) {
+            console.error("[ChatClient] Failed to send voice audio message:", error);
+        }
+    };
+
     // Fetch history when ID changes
     useEffect(() => {
         if (activeConversationId) {
@@ -1997,6 +2020,7 @@ export default function ChatClient() {
                                             return prefix ? `${prefix}\n${transcript}` : transcript;
                                         });
                                     }}
+                                    onVoiceAudioMessage={handleVoiceAudioMessage}
                                     isLoading={isLoading}
                                     onStop={stop}
                                     selectedAgentName={t(lt("智能主管", "Supervisor"))}

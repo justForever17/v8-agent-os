@@ -92,6 +92,7 @@ import {
     dispatchRunCommand,
     getDesktopLiveStatus,
     getDesktopLiveStreamUrl,
+    getAudioInputStatus,
     getConversationDetail,
     getConversationTimelineSync,
     getProjectsRegistry,
@@ -162,6 +163,12 @@ type RuntimeSummary = {
     latestSeq: number;
     runId?: string;
     label?: string;
+};
+
+type SendComposerOptions = {
+    text?: string;
+    files?: UploadedWorkspaceFile[];
+    preserveComposer?: boolean;
 };
 
 type ComposerMentionItem =
@@ -1965,6 +1972,7 @@ export default function ChatScreen() {
     const loadConversationRef = useRef<(conversationId: string, options?: { force?: boolean; token?: number }) => Promise<boolean>>(async () => false);
     const startRealtimeRef = useRef<(conversationId: string, transitionToken?: number) => Promise<void>>(async () => undefined);
     const stopRealtimeRef = useRef<(options?: { preserveMessageState?: boolean }) => void>(() => undefined);
+    const handleSendRef = useRef<(options?: SendComposerOptions) => Promise<void>>(async () => undefined);
     const closeDesktopPreviewRef = useRef<() => Promise<void>>(async () => undefined);
     const latestSeqRef = useRef(0);
     const desktopPreviewRequestIdRef = useRef(0);
@@ -4991,6 +4999,51 @@ export default function ChatScreen() {
             }
 
             setTranscribing(true);
+            const inputStatus = await getAudioInputStatus(authorizedFetch) as {
+                route?: string;
+                stt?: { reason?: string };
+                visionAudio?: { reason?: string };
+                error?: string;
+            };
+            if (inputStatus.route === "vision_audio") {
+                const filename = `voice-${Date.now()}.m4a`;
+                const uploaded = await uploadAttachment(authorizedFetch, {
+                    uri,
+                    name: filename,
+                    type: "audio/m4a",
+                }, {
+                    sessionId: activeConversationIdRef.current,
+                    conversationId: activeConversationIdRef.current,
+                    workspaceId: scopeBinding?.workspaceId,
+                    workspacePath: scopeBinding?.workspacePath,
+                    projectId: scopeBinding?.projectId,
+                });
+                const voiceFile: UploadedWorkspaceFile = {
+                    ...uploaded,
+                    localId: uploaded.localId || `voice:${Date.now()}`,
+                    name: uploaded.name || filename,
+                    type: uploaded.type || "audio/m4a",
+                    localUri: uri,
+                    previewKind: "file",
+                };
+                const sendVoice = handleSendRef.current;
+                if (!sendVoice) {
+                    throw new Error(t("src.screens.chatscreen.unable_to_send_message"));
+                }
+                await sendVoice({
+                    text: t("src.screens.chatscreen.voice_audio_input_prompt"),
+                    files: [voiceFile],
+                    preserveComposer: true,
+                });
+                return;
+            }
+            if (inputStatus.route !== "stt") {
+                throw new Error(
+                    String(inputStatus.stt?.reason || inputStatus.visionAudio?.reason || inputStatus.error || "").trim()
+                    || t("src.screens.chatscreen.unable_to_transcribe_recording")
+                );
+            }
+
             const formData = new FormData();
             formData.append("file", {
                 uri,
@@ -5008,7 +5061,7 @@ export default function ChatScreen() {
         } finally {
             setTranscribing(false);
         }
-    }, [authorizedFetch, recorder, t]);
+    }, [authorizedFetch, recorder, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, t]);
 
     const handleBodyInputChange = useCallback((next: string) => {
         const leading = next.trimStart();
@@ -5588,9 +5641,12 @@ export default function ChatScreen() {
         voiceEnabled,
     ]);
 
-    const handleSend = useCallback(async () => {
-        const text = input.trim();
-        if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && uploadedFiles.length === 0) {
+    const handleSend = useCallback(async (options: SendComposerOptions = {}) => {
+        const hasExplicitFiles = Array.isArray(options.files);
+        const preserveComposer = Boolean(options.preserveComposer);
+        const text = String(options.text ?? input).trim();
+        const effectiveUploadedFiles = hasExplicitFiles ? [...(options.files || [])] : uploadedFiles;
+        if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && effectiveUploadedFiles.length === 0) {
             return;
         }
         const currentConversationId = activeConversationIdRef.current;
@@ -5603,7 +5659,7 @@ export default function ChatScreen() {
         const pendingCommand = selectedCommand;
         const pendingSkills = [...selectedSkills];
         const pendingSubagentFamilies = [...selectedSubagentFamilies];
-        const pendingFiles = [...uploadedFiles];
+        const pendingFiles = [...effectiveUploadedFiles];
         const effectiveText = text || (
             pendingFiles.length === 1
                 ? t("shared.upload.uploaded_single")
@@ -5661,13 +5717,17 @@ export default function ChatScreen() {
                     ...current,
                     label: t("src.screens.chatscreen.message_queued"),
                 }));
-                setInput("");
-                setActiveQueryMode(null);
-                setActiveQueryText("");
-                setSelectedCommand(null);
-                setSelectedSkills([]);
-                setSelectedSubagentFamilies([]);
-                setUploadedFiles([]);
+                if (!preserveComposer) {
+                    setInput("");
+                    setActiveQueryMode(null);
+                    setActiveQueryText("");
+                    setSelectedCommand(null);
+                    setSelectedSkills([]);
+                    setSelectedSubagentFamilies([]);
+                }
+                if (!hasExplicitFiles) {
+                    setUploadedFiles([]);
+                }
 
                 if (effectiveText) {
                     setConversations((current) => current.map((conversation) =>
@@ -5820,13 +5880,17 @@ export default function ChatScreen() {
                 ...current,
                 status: "running",
             }));
-            setInput("");
-            setActiveQueryMode(null);
-            setActiveQueryText("");
-            setSelectedCommand(null);
-            setSelectedSkills([]);
-            setSelectedSubagentFamilies([]);
-            setUploadedFiles([]);
+            if (!preserveComposer) {
+                setInput("");
+                setActiveQueryMode(null);
+                setActiveQueryText("");
+                setSelectedCommand(null);
+                setSelectedSkills([]);
+                setSelectedSubagentFamilies([]);
+            }
+            if (!hasExplicitFiles) {
+                setUploadedFiles([]);
+            }
 
             if (effectiveText) {
                 setConversations((current) => current.map((conversation) =>
@@ -5917,12 +5981,16 @@ export default function ChatScreen() {
                     return next;
                 });
             }
-            setSelectedCommand(null);
-            setSelectedSkills([]);
-            setSelectedSubagentFamilies([]);
-            setUploadedFiles([]);
-            setActiveQueryMode(null);
-            setActiveQueryText("");
+            if (!preserveComposer) {
+                setSelectedCommand(null);
+                setSelectedSkills([]);
+                setSelectedSubagentFamilies([]);
+                setActiveQueryMode(null);
+                setActiveQueryText("");
+            }
+            if (!hasExplicitFiles) {
+                setUploadedFiles([]);
+            }
 
             const submittedRunId = String(
                 submitResult.runId
@@ -5963,11 +6031,15 @@ export default function ChatScreen() {
 
         } catch (error) {
             if (!submissionAccepted) {
-                setInput(text);
-                setSelectedCommand(pendingCommand);
-                setSelectedSkills(pendingSkills);
-                setSelectedSubagentFamilies(pendingSubagentFamilies);
-                setUploadedFiles(pendingFiles);
+                if (!preserveComposer) {
+                    setInput(text);
+                    setSelectedCommand(pendingCommand);
+                    setSelectedSkills(pendingSkills);
+                    setSelectedSubagentFamilies(pendingSubagentFamilies);
+                }
+                if (!hasExplicitFiles) {
+                    setUploadedFiles(pendingFiles);
+                }
                 setQueuedMessages((current) => current.filter((item) =>
                     item.id !== localQueueId && item.clientMessageId !== submittedClientMessageId,
                 ));
@@ -6004,6 +6076,10 @@ export default function ChatScreen() {
         uploadedFiles,
         upsertQueuedMessage,
     ]);
+
+    useEffect(() => {
+        handleSendRef.current = handleSend;
+    }, [handleSend]);
 
     if (status === "booting" || status === "anonymous") {
         return <LoadingScreen label={t("src.screens.chatscreen.loading_the_conversation_lane")} />;

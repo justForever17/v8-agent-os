@@ -1037,6 +1037,15 @@ export async function speechToText(authorizedFetch: AuthorizedFetch, formData: F
     return readJsonOrThrow<Record<string, unknown>>(response, translateCurrent("src.lib.phone_api.text_34"));
 }
 
+export async function getAudioInputStatus(authorizedFetch: AuthorizedFetch) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        "/api/client/audio/input-status",
+        translateCurrent("src.lib.phone_api.text_34"),
+        { method: "GET" },
+    );
+}
+
 export async function requestTextToSpeech(authorizedFetch: AuthorizedFetch, payload: Record<string, unknown>) {
     const response = await authorizedFetch("/api/client/audio/tts", {
         method: "POST",

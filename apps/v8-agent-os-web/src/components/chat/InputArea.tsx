@@ -157,10 +157,23 @@ interface InputAreaProps {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handleSubmit: (e: FormEvent<HTMLFormElement>, options?: { data?: any }) => void | Promise<void>;
     onVoiceTranscript?: (text: string) => void;
+    onVoiceAudioMessage?: (data: VoiceAudioMessageData) => void | Promise<void>;
     isLoading: boolean;
     onStop?: () => void;
     selectedAgentName?: string;
     shellClassName?: string;
+}
+
+interface VoiceAudioMessageData {
+    fileUrls: string[];
+    attachments: Array<Record<string, unknown>>;
+}
+
+interface AudioInputStatusPayload {
+    route?: string;
+    stt?: { usable?: boolean; reason?: string };
+    visionAudio?: { usable?: boolean; modelId?: string; reason?: string };
+    error?: string;
 }
 
 type InlineNoticeTone = "info" | "success" | "error";
@@ -209,6 +222,7 @@ export function InputArea({
     handleInputChange,
     handleSubmit,
     onVoiceTranscript,
+    onVoiceAudioMessage,
     isLoading,
     onStop,
     selectedAgentName,
@@ -541,9 +555,71 @@ export function InputArea({
         };
     }, [clearInlineNoticeTimer, stopRecordingTracks]);
 
+    const getAudioInputStatus = React.useCallback(async (): Promise<AudioInputStatusPayload> => {
+        const res = await fetch("/api/audio/input-status", { method: "GET", cache: "no-store" });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(
+                typeof payload?.error === "string"
+                    ? payload.error
+                    : t(lt("语音输入状态检查失败", "Failed to check voice input status"))
+            );
+        }
+        return payload;
+    }, [t]);
+
+    const uploadAndSendVoiceAudio = React.useCallback(async (blob: Blob) => {
+        if (!onVoiceAudioMessage) {
+            throw new Error(t(lt("当前页面不支持直接发送语音文件。", "This page cannot send voice files directly.")));
+        }
+        const file = new File([blob], "voice-input.wav", { type: "audio/wav" });
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch("/api/upload", { method: "POST", body: formData });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(
+                typeof payload?.error === "string"
+                    ? payload.error
+                    : t(lt("语音文件上传失败", "Voice file upload failed"))
+            );
+        }
+        const url = String(payload?.url || payload?.publicUrl || "").trim();
+        if (!url) {
+            throw new Error(t(lt("语音文件上传后没有返回可用链接。", "Voice upload did not return a usable URL.")));
+        }
+        await onVoiceAudioMessage({
+            fileUrls: [url],
+            attachments: [{
+                url,
+                publicUrl: String(payload?.publicUrl || url),
+                name: file.name,
+                mimeType: file.type,
+                size: file.size,
+                mediaKind: "audio",
+                source: "os_web_voice_upload",
+            }],
+        });
+    }, [onVoiceAudioMessage, t]);
+
     const transcribeAudio = React.useCallback(async (blob: Blob) => {
         try {
             setIsTranscribing(true);
+            showInlineNotice("info", t(lt("正在检查语音输入能力...", "Checking voice input...")), 0);
+            const status = await getAudioInputStatus();
+            if (status.route === "vision_audio") {
+                showInlineNotice("info", t(lt("正在发送语音给多模态模型理解...", "Sending voice to the multimodal model...")), 0);
+                await uploadAndSendVoiceAudio(blob);
+                showInlineNotice("success", t(lt("语音已发送给多模态模型理解。", "Voice was sent to the multimodal model.")));
+                return;
+            }
+            if (status.route !== "stt") {
+                throw new Error(
+                    String(status.stt?.reason || status.visionAudio?.reason || status.error || "").trim()
+                    || t(lt("未配置可用 STT，也没有可读取音频的视觉模型。", "No usable STT or audio-capable vision model is configured."))
+                );
+            }
+
             showInlineNotice("info", t(lt("正在转写语音...", "Transcribing voice...")), 0);
             const file = new File([blob], "voice-input.wav", { type: "audio/wav" });
             const formData = new FormData();
@@ -577,7 +653,7 @@ export function InputArea({
         } finally {
             setIsTranscribing(false);
         }
-    }, [onVoiceTranscript, showInlineNotice, t]);
+    }, [getAudioInputStatus, onVoiceTranscript, showInlineNotice, t, uploadAndSendVoiceAudio]);
 
     const startRecording = React.useCallback(async () => {
         if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {

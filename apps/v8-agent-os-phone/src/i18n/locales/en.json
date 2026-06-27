@@ -482,6 +482,7 @@
   "src.screens.chatscreen.no_project_workspaces_are_available_yet": "No project workspaces are available yet.",
   "src.screens.chatscreen.no_folder_selected": "No folder selected",
   "src.screens.chatscreen.no_recording_file_found": "No recording file found",
+  "src.screens.chatscreen.voice_audio_input_prompt": "This is a voice input. Please understand the audio and continue.",
   "src.screens.chatscreen.no_speech_detected": "No speech detected",
   "src.screens.chatscreen.path": "Path",
   "src.screens.chatscreen.path_unavailable": "Path unavailable",

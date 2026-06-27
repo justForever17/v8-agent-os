@@ -824,9 +824,9 @@ async def get_session_history(session_id: str):
 @router.get("/sessions/{session_id}/timeline/sync")
 async def get_session_timeline_sync(session_id: str, since: str):
     try:
+        sync_cursor = datetime.now(timezone.utc).isoformat()
         messages = db.get_chat_canonical_messages_since(session_id, since)
         deletions = db.get_chat_message_deletions_since(session_id, since)
-        sync_cursor = datetime.now(timezone.utc).isoformat()
         return {
             "messages": messages,
             "deletions": deletions,

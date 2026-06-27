@@ -32,6 +32,12 @@ class LocalDatabaseService {
                     session_id TEXT PRIMARY KEY NOT NULL,
                     sync_cursor TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS local_message_deletions (
+                    session_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    deleted_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, message_id)
+                );
             `);
             this.initialized = true;
         })();
@@ -58,6 +64,23 @@ class LocalDatabaseService {
     async upsertMessages(sessionId: string, messages: any[]) {
         if (!this.db) await this.init();
         if (messages.length === 0) return;
+
+        const messageIds = messages
+            .map((msg) => String(msg?.id || '').trim())
+            .filter(Boolean);
+        const deletedIds = new Set<string>();
+        if (messageIds.length > 0) {
+            const placeholders = messageIds.map(() => '?').join(',');
+            const rows = await this.db!.getAllAsync<{ message_id: string }>(
+                `SELECT message_id FROM local_message_deletions WHERE session_id = ? AND message_id IN (${placeholders})`,
+                [sessionId, ...messageIds],
+            );
+            for (const row of rows) {
+                if (row.message_id) {
+                    deletedIds.add(row.message_id);
+                }
+            }
+        }
         
         const statement = await this.db!.prepareAsync(
             'INSERT OR REPLACE INTO local_messages (id, session_id, ordinal, created_at, raw_json) VALUES (?, ?, ?, ?, ?)'
@@ -65,8 +88,12 @@ class LocalDatabaseService {
         
         try {
             for (const msg of messages) {
+                const messageId = String(msg?.id || '').trim();
+                if (!messageId || deletedIds.has(messageId)) {
+                    continue;
+                }
                 await statement.executeAsync([
-                    msg.id || '',
+                    messageId,
                     sessionId,
                     msg.ordinal || 0,
                     msg.createdAt || msg.created_at || '',
@@ -81,19 +108,43 @@ class LocalDatabaseService {
     async deleteMessages(sessionId: string, messageIds: string[]) {
         if (!this.db) await this.init();
         if (messageIds.length === 0) return;
+
+        const normalizedMessageIds = messageIds.map((id) => String(id || '').trim()).filter(Boolean);
+        if (normalizedMessageIds.length === 0) return;
+
+        const deletedAt = new Date().toISOString();
+        const tombstoneStatement = await this.db!.prepareAsync(
+            'INSERT OR REPLACE INTO local_message_deletions (session_id, message_id, deleted_at) VALUES (?, ?, ?)'
+        );
+        try {
+            for (const messageId of normalizedMessageIds) {
+                await tombstoneStatement.executeAsync([sessionId, messageId, deletedAt]);
+            }
+        } finally {
+            await tombstoneStatement.finalizeAsync();
+        }
         
-        const placeholders = messageIds.map(() => '?').join(',');
+        const placeholders = normalizedMessageIds.map(() => '?').join(',');
         await this.db!.runAsync(
             `DELETE FROM local_messages WHERE session_id = ? AND id IN (${placeholders})`,
-            [sessionId, ...messageIds]
+            [sessionId, ...normalizedMessageIds]
         );
     }
 
     async getMessages(sessionId: string, limit: number = 50, offset: number = 0): Promise<any[]> {
         if (!this.db) await this.init();
         const rows = await this.db!.getAllAsync<{ raw_json: string }>(
-            'SELECT raw_json FROM local_messages WHERE session_id = ? ORDER BY ordinal ASC, created_at ASC LIMIT ? OFFSET ?',
-            [sessionId, limit, offset]
+            `SELECT raw_json
+             FROM local_messages
+             WHERE session_id = ?
+               AND id NOT IN (
+                   SELECT message_id
+                   FROM local_message_deletions
+                   WHERE session_id = ?
+               )
+             ORDER BY ordinal ASC, created_at ASC
+             LIMIT ? OFFSET ?`,
+            [sessionId, sessionId, limit, offset]
         );
         return rows.map(r => JSON.parse(r.raw_json));
     }

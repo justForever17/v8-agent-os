@@ -20,6 +20,7 @@ import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { ti } from "@/i18n/admin-legacy";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 type MachinePosture = "dedicated_runtime_host" | "developer_mixed_host";
 type ModelOption = {
   id?: string;
@@ -619,8 +620,17 @@ export default function SafetyControlPage() {
 
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="text-base">{ti(t, "kac3aa53ae3")}</CardTitle>
-                        <CardDescription>{ti(t, "ked7bf764bd")}</CardDescription>
+                        <CardTitle className="text-base">
+                            <AdminHoverInfo
+                                content={
+                                    <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                        {ti(t, "ked7bf764bd")}
+                                    </span>
+                                }
+                            >
+                                <span className="cursor-help">{ti(t, "kac3aa53ae3")}</span>
+                            </AdminHoverInfo>
+                        </CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <div className="space-y-2">
@@ -744,8 +754,17 @@ export default function SafetyControlPage() {
 
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
-                        <CardTitle className="text-base">{t("app.admin.dashboard.safety.control.page.section.recentSkillScans")}</CardTitle>
-                        <CardDescription>{ti(t, "k3b8428667f")}</CardDescription>
+                        <CardTitle className="text-base">
+                            <AdminHoverInfo
+                                content={
+                                    <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                        {ti(t, "k3b8428667f")}
+                                    </span>
+                                }
+                            >
+                                <span className="cursor-help">{t("app.admin.dashboard.safety.control.page.section.recentSkillScans")}</span>
+                            </AdminHoverInfo>
+                        </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3 max-h-[380px] overflow-y-auto pr-2 scrollbar-thin">
                         {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k906ff562fc")}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
@@ -788,8 +807,17 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">{ti(t, "k0bd4eb9e51")}</CardTitle>
-                                <CardDescription>{ti(t, "k53b0056fae")}</CardDescription>
+                                <CardTitle className="text-base">
+                                    <AdminHoverInfo
+                                        content={
+                                            <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                {ti(t, "k53b0056fae")}
+                                            </span>
+                                        }
+                                    >
+                                        <span className="cursor-help">{ti(t, "k0bd4eb9e51")}</span>
+                                    </AdminHoverInfo>
+                                </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <SettingToggleCard
@@ -867,8 +895,17 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">{ti(t, "k207d54bdcb")}</CardTitle>
-                                <CardDescription>{ti(t, "k31e671581a")}</CardDescription>
+                                <CardTitle className="text-base">
+                                    <AdminHoverInfo
+                                        content={
+                                            <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                {ti(t, "k31e671581a")}
+                                            </span>
+                                        }
+                                    >
+                                        <span className="cursor-help">{ti(t, "k207d54bdcb")}</span>
+                                    </AdminHoverInfo>
+                                </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-3">
                                     {(dashboard?.pendingSafetyApprovals || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k8943074568")}</div> : (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map(approval => <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
@@ -903,8 +940,17 @@ export default function SafetyControlPage() {
                         <div className="grid gap-4 xl:grid-cols-2">
                             <Card className="rounded-2xl border-slate-200 shadow-sm">
                                 <CardHeader>
-                                    <CardTitle className="text-base">{t("app.admin.dashboard.safety.control.page.section.skillLedger")}</CardTitle>
-                                    <CardDescription>{ti(t, "k0e783e6a82")}</CardDescription>
+                                    <CardTitle className="text-base">
+                                        <AdminHoverInfo
+                                            content={
+                                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                    {ti(t, "k0e783e6a82")}
+                                                </span>
+                                            }
+                                        >
+                                            <span className="cursor-help">{t("app.admin.dashboard.safety.control.page.section.skillLedger")}</span>
+                                        </AdminHoverInfo>
+                                    </CardTitle>
                                 </CardHeader>
                                 <CardContent>
                                     {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k4fd29dc28e")}</div> : <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-2">
@@ -929,8 +975,17 @@ export default function SafetyControlPage() {
 
                             <Card className="rounded-2xl border-slate-200 shadow-sm">
                                 <CardHeader>
-                                    <CardTitle className="text-base">{t("app.admin.dashboard.safety.control.page.section.allowlist")}</CardTitle>
-                                    <CardDescription>{ti(t, "k24d5d908de")}</CardDescription>
+                                    <CardTitle className="text-base">
+                                        <AdminHoverInfo
+                                            content={
+                                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                    {ti(t, "k24d5d908de")}
+                                                </span>
+                                            }
+                                        >
+                                            <span className="cursor-help">{t("app.admin.dashboard.safety.control.page.section.allowlist")}</span>
+                                        </AdminHoverInfo>
+                                    </CardTitle>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
                                     {(dashboard?.allowlistEntries || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "kc83fd439cd")}</div> : (dashboard?.allowlistEntries || []).slice(0, 8).map(entry => <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
@@ -952,8 +1007,17 @@ export default function SafetyControlPage() {
 
                         <Card className="rounded-2xl border-slate-200 shadow-sm">
                             <CardHeader>
-                                <CardTitle className="text-base">{ti(t, "k82e119eb54")}</CardTitle>
-                                <CardDescription>{ti(t, "kf3c79e2420")}</CardDescription>
+                                <CardTitle className="text-base">
+                                    <AdminHoverInfo
+                                        content={
+                                            <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                {ti(t, "kf3c79e2420")}
+                                            </span>
+                                        }
+                                    >
+                                        <span className="cursor-help">{ti(t, "k82e119eb54")}</span>
+                                    </AdminHoverInfo>
+                                </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-3">
                                 {(dashboard?.recentDecisions || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k08fd2c0902")}</div> : (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">

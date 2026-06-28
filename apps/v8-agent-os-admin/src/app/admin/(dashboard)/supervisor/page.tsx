@@ -410,7 +410,6 @@ export default function SupervisorPage() {
                                                 <Label>{t("app.admin.dashboard.supervisor.page.kc933bd04")}</Label>
                                                 <Input value={avatar} onChange={e => setAvatar(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k19e35ac4")} />
                                             </div>
-                                            <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.supervisor.page.k0e3baca6")}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -420,9 +419,6 @@ export default function SupervisorPage() {
                                 <Label>{t("app.admin.dashboard.supervisor.page.kba259bc3")}</Label>
                                 <ModelSelect models={models} value={selectedModelId} emptyValue="default" emptyLabel={t("app.admin.dashboard.supervisor.page.k534ef300")} emptyOutputValue="default" placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")} onValueChange={setSelectedModelId} />
 
-                                <p className="text-xs text-muted-foreground">
-                                    {tg(t, "dbdc66e6")}
-                                </p>
                                 {defaultModelId ? <p className="text-xs text-muted-foreground">
                                         {tg(t, "4c85d452", {
                                             value1: defaultModelId
@@ -433,7 +429,17 @@ export default function SupervisorPage() {
                             <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between gap-3">
-                                        <Label>{tg(t, "bd753fce")}</Label>
+                                        <AdminHoverInfo
+                                            content={
+                                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                    {tg(t, "e3097bad", {
+                                                        value1: temperatureDefaultText(t)
+                                                    })}
+                                                </span>
+                                            }
+                                        >
+                                            <Label className="cursor-help">{tg(t, "bd753fce")}</Label>
+                                        </AdminHoverInfo>
                                         <span className="text-xs font-medium text-muted-foreground">
                                             {temperatureStatusText(t, supervisorTemperature)}
                                         </span>
@@ -443,15 +449,18 @@ export default function SupervisorPage() {
                                     <Button type="button" variant="outline" size="sm" onClick={() => setSupervisorTemperature("")}>
                                         {tg(t, "89699da9")}
                                     </Button>
-                                    <p className="text-xs leading-5 text-muted-foreground">
-                                        {tg(t, "e3097bad", {
-                                            value1: temperatureDefaultText(t)
-                                        })}
-                                    </p>
                                 </div>
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between gap-3">
-                                        <Label>{tg(t, "4cc6e647")}</Label>
+                                        <AdminHoverInfo
+                                            content={
+                                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                                    {tg(t, "3949675c")}
+                                                </span>
+                                            }
+                                        >
+                                            <Label className="cursor-help">{tg(t, "4cc6e647")}</Label>
+                                        </AdminHoverInfo>
                                         <span className="text-xs font-medium text-muted-foreground">
                                             {temperatureStatusText(t, subagentTemperature)}
                                         </span>
@@ -461,9 +470,6 @@ export default function SupervisorPage() {
                                     <Button type="button" variant="outline" size="sm" onClick={() => setSubagentTemperature("")}>
                                         {tg(t, "89699da9")}
                                     </Button>
-                                    <p className="text-xs leading-5 text-muted-foreground">
-                                        {tg(t, "3949675c")}
-                                    </p>
                                 </div>
                             </div>
                         </CardContent>

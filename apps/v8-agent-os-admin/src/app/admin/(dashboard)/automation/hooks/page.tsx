@@ -262,9 +262,6 @@ export function HooksPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{t("app.admin.dashboard.automation.hooks.page.k9e0060cc")}</h1>
-          <p className="text-muted-foreground">
-            {t("app.admin.dashboard.automation.hooks.page.k22188b09")}
-          </p>
         </div>
         <div className="flex gap-2">
           <Button onClick={loadDocumentation} variant="secondary">

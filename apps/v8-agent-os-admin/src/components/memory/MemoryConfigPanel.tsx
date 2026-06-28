@@ -13,6 +13,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ik, tg } from "@/i18n/admin-legacy";
 import { useDebugMode } from "@/lib/useDebugMode";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 interface SysModel {
   id: string;
   modelRef?: string;
@@ -357,8 +358,17 @@ export default function MemoryConfigPanel() {
   return <div className="space-y-4">
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k92cabc30")}</CardTitle>
-                    <CardDescription>{t("components.memory.MemoryConfigPanel.k6b835e95")}</CardDescription>
+                    <CardTitle className="text-base">
+                        <AdminHoverInfo
+                            content={
+                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                    {t("components.memory.MemoryConfigPanel.k6b835e95")}
+                                </span>
+                            }
+                        >
+                            <span className="cursor-help">{t("components.memory.MemoryConfigPanel.k92cabc30")}</span>
+                        </AdminHoverInfo>
+                    </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="space-y-1.5">
@@ -409,8 +419,17 @@ export default function MemoryConfigPanel() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k81935040")}</CardTitle>
-                    <CardDescription>{t("components.memory.MemoryConfigPanel.k2014a965")}</CardDescription>
+                    <CardTitle className="text-base">
+                        <AdminHoverInfo
+                            content={
+                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                    {t("components.memory.MemoryConfigPanel.k2014a965")}
+                                </span>
+                            }
+                        >
+                            <span className="cursor-help">{t("components.memory.MemoryConfigPanel.k81935040")}</span>
+                        </AdminHoverInfo>
+                    </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="grid grid-cols-2 gap-4">
@@ -710,10 +729,17 @@ export default function MemoryConfigPanel() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k4a2f7fd5")}</CardTitle>
-                <CardDescription>
-                    {t("components.memory.MemoryConfigPanel.k93c31269")}
-                </CardDescription>
+                    <CardTitle className="text-base">
+                        <AdminHoverInfo
+                            content={
+                                <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                    {t("components.memory.MemoryConfigPanel.k93c31269")}
+                                </span>
+                            }
+                        >
+                            <span className="cursor-help">{t("components.memory.MemoryConfigPanel.k4a2f7fd5")}</span>
+                        </AdminHoverInfo>
+                    </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="space-y-3 rounded-lg border p-4">
@@ -793,11 +819,18 @@ export default function MemoryConfigPanel() {
             {debugMode && (
                 <Card>
                     <CardHeader>
-                        <CardTitle className="text-base">{t("components.memory.MemoryConfigPanel.k20e21cd2")}</CardTitle>
-                <CardDescription>
-                    {t("components.memory.MemoryConfigPanel.k918c5973")}
-                    </CardDescription>
-                </CardHeader>
+                        <CardTitle className="text-base">
+                            <AdminHoverInfo
+                                content={
+                                    <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                        {t("components.memory.MemoryConfigPanel.k918c5973")}
+                                    </span>
+                                }
+                            >
+                                <span className="cursor-help">{t("components.memory.MemoryConfigPanel.k20e21cd2")}</span>
+                            </AdminHoverInfo>
+                        </CardTitle>
+                    </CardHeader>
                 <CardContent className="space-y-5">
                     <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs leading-6 text-muted-foreground">
                         {t("components.memory.MemoryConfigPanel.kb9fe428e")}

@@ -7,6 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 export default function DocumentUploader() {
     const t = useT();
     const { locale } = useLocale();
@@ -176,14 +177,17 @@ export default function DocumentUploader() {
             <CardHeader>
                 <CardTitle className="text-xl flex items-center gap-2">
                     <UploadCloud className="w-5 h-5"/>
-                    {t("components.memory.DocumentUploader.k29e2e916")}
+                    <AdminHoverInfo
+                        content={
+                            <div className="space-y-1 text-xs">
+                                <div>{t("components.memory.DocumentUploader.k6ed36052")}</div>
+                                <div className="mt-1 font-medium text-amber-500">{t("components.memory.DocumentUploader.kc0e099b8")}</div>
+                            </div>
+                        }
+                    >
+                        <span className="cursor-help">{t("components.memory.DocumentUploader.k29e2e916")}</span>
+                    </AdminHoverInfo>
                 </CardTitle>
-                <CardDescription>
-                    {t("components.memory.DocumentUploader.k6ed36052")}
-                </CardDescription>
-                <p className="text-xs leading-5 text-muted-foreground">
-                    {t("components.memory.DocumentUploader.kc0e099b8")}
-                </p>
             </CardHeader>
             <CardContent className="space-y-6">
                 

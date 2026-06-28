@@ -2034,20 +2034,6 @@ export default function SubagentsPage() {
                   roleLabel: event.target.value
                 }))} placeholder={t("app.admin.dashboard.subagents.page.k49570350")} />
                             </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.subagents.page.k5888282d")}</Label>
-                                <Input value={form.icon} onChange={event => setForm(current => ({
-                  ...current,
-                  icon: event.target.value
-                }))} placeholder="🤖" />
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t("app.admin.dashboard.subagents.page.kc2c1e310")}</Label>
-                                <Input value={form.avatar} onChange={event => setForm(current => ({
-                  ...current,
-                  avatar: event.target.value
-                }))} placeholder={t("app.admin.dashboard.subagents.page.kf714bed3")} />
-                            </div>
                         </div>
 
                         <div className="space-y-2">

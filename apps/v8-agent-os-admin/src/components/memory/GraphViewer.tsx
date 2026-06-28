@@ -533,12 +533,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                 <div className="absolute left-1/2 top-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/10 blur-3xl" />
             </div>
 
-            <div className="absolute left-5 top-5 z-10 max-w-xs rounded-2xl border border-border/50 bg-background/70 px-4 py-3 backdrop-blur">
-                <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground/70">{t("components.memory.GraphViewer.ka9b2a770")}</p>
-                <p className="mt-2 text-sm text-muted-foreground">
-                    {t("components.memory.GraphViewer.kde12c84c")}
-                </p>
-            </div>
+
 
             <ForceGraph2D ref={fgRef} width={graphSize.width} height={graphSize.height} graphData={data} backgroundColor="rgba(0,0,0,0)" warmupTicks={36} cooldownTicks={150} enableNodeDrag={false} onBackgroundClick={handleBackgroundClick} onEngineStop={() => fgRef.current?.zoomToFit?.(480, 110)} onNodeHover={(node) => setHoveredNodeId(node ? (node as GraphNode).id : null)} onNodeClick={(node, event) => void handleNodeClick(node, event as MouseEvent)} nodeLabel={(node) => {
       const graphNode = node as GraphNode;

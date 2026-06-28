@@ -47,6 +47,34 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def global_skill_roots() -> tuple[Path, ...]:
+    home = _resolve_path(Path.home())
+    return (
+        _resolve_path(home / ".agents" / "skills"),
+        _resolve_path(home / ".agent" / "skill"),
+    )
+
+
+def is_global_skill_path(path: str | Path) -> bool:
+    resolved = _resolve_path(path)
+    return any(_is_within(resolved, root) for root in global_skill_roots())
+
+
+_SKILL_PATH_MUTATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i)(^|[\s;&|])(?:remove-item|del|erase|rm|rmdir|rd|move-item|move|rename-item|ren|mv|"
+        r"set-content|add-content|out-file|new-item|copy-item|copy|cp|xcopy|robocopy|chmod|chown|"
+        r"icacls|takeown)\b"
+    ),
+    re.compile(r"(?i)(^|[\s;&|])(?:python|python3|node|pwsh|powershell|cmd|bash|sh)\b.*\b(?:unlink|rmtree|remove|rename|write_text|write_bytes)\b"),
+)
+
+
+def command_appears_to_mutate_path(command: str) -> bool:
+    text = str(command or "")
+    return any(pattern.search(text) for pattern in _SKILL_PATH_MUTATION_PATTERNS)
+
+
 def _iter_extra_roots(context: dict[str, Any]) -> tuple[Path, ...]:
     raw = context.get("allowed_extra_roots") or context.get("allowedExtraRoots") or []
     if isinstance(raw, str):
@@ -90,6 +118,7 @@ def resolve_workspace_tool_path(
     *,
     runtime_context: dict[str, Any] | None = None,
     runtime_kind: str | None = None,
+    allow_global_skill_read: bool = False,
 ) -> dict[str, Any]:
     binding = build_workspace_binding(runtime_context, runtime_kind=runtime_kind)
     raw = str(path or "").strip()
@@ -110,6 +139,9 @@ def resolve_workspace_tool_path(
         allowed = True
     elif any(_is_within(resolved, root) for root in binding.allowed_extra_roots):
         relation = "inside_allowed_extra_root"
+        allowed = True
+    elif allow_global_skill_read and is_global_skill_path(resolved):
+        relation = "inside_global_skill_read_execute_root"
         allowed = True
     else:
         relation = "outside_active_workspace"
@@ -185,19 +217,35 @@ def preflight_command_workspace(
     for raw_path in extract_absolute_paths_from_command(command):
         result = resolve_workspace_tool_path(raw_path, runtime_context=runtime_context, runtime_kind=runtime_kind)
         if not result.get("ok"):
+            resolved_path = str(result.get("resolvedPath") or raw_path)
+            if is_global_skill_path(resolved_path):
+                if command_appears_to_mutate_path(command):
+                    violations.append(
+                        {
+                            "path": raw_path,
+                            "resolvedPath": resolved_path,
+                            "relation": "global_skill_read_execute_only",
+                        }
+                    )
+                continue
             violations.append(
                 {
                     "path": raw_path,
-                    "resolvedPath": str(result.get("resolvedPath") or ""),
+                    "resolvedPath": resolved_path,
                     "relation": str(result.get("relation") or ""),
                 }
             )
 
     if violations:
+        skill_mutation = any(item.get("relation") == "global_skill_read_execute_only" for item in violations)
         return {
             "ok": False,
-            "error": "workspace_command_path_violation",
-            "summary": "命令引用了当前 Active Workspace Root 之外的绝对路径，已按硬工作区边界拒绝。",
+            "error": "global_skill_mutation_violation" if skill_mutation else "workspace_command_path_violation",
+            "summary": (
+                "全局 Skill 目录只允许读取和执行，禁止通过 Agent 命令修改、移动或删除。"
+                if skill_mutation
+                else "命令引用了当前 Active Workspace Root 之外的绝对路径，已按硬工作区边界拒绝。"
+            ),
             "cwd": cwd,
             "resolvedCwd": cwd_result.get("resolvedPath"),
             "violations": violations[:8],

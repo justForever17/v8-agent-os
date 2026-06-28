@@ -28,7 +28,7 @@ from core.tools.native.workspace_governance import (
     _workspace_inventory_status,
     _workspace_inventory_tokens,
 )
-from core.workspace_capability import build_workspace_binding, resolve_workspace_tool_path
+from core.workspace_capability import build_workspace_binding, is_global_skill_path, resolve_workspace_tool_path
 from core.workspace_state_digest import mark_workspace_state_stale, record_workspace_inventory_token
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
@@ -57,6 +57,20 @@ def _compat_native_attr(name: str, local: Any) -> Any:
 def _workspace_inventory_status_compat(runtime_context: dict[str, Any]) -> dict[str, Any]:
     fn = _compat_native_attr("_workspace_inventory_status", _workspace_inventory_status)
     return fn(runtime_context)
+
+
+def _global_skill_write_block_payload(target_path: Path | str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "kind": "global_skill_read_execute_only",
+        "summary": "全局 Skill 目录可读、可执行，但 Agent 不可修改、覆盖、移动或删除其中内容。",
+        "error": "global_skill_write_blocked",
+        "path": str(target_path),
+        "recommendedNextAction": (
+            "读取请使用 fetch_skill_instructions 或 read_native_file；运行 Skill 内脚本请通过 Skill 工具的 run_script。"
+            " 如需安装或更新全局 Skill，请由用户通过 Admin/CLI 的 Skill 管理入口完成。"
+        ),
+    }
 
 
 TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.json', '.yaml', '.yml', '.csv', '.log', '.sh', '.bat', '.ps1', '.html', '.css', '.js', '.ts', '.tsx', '.jsx'}
@@ -208,7 +222,7 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
     """
     try:
         runtime_context = get_runtime_context()
-        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
+        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context, allow_global_skill_read=True)
         if not path_preflight.get("ok"):
             return json.dumps(
                 {
@@ -495,6 +509,8 @@ def write_native_file(
     """
     try:
         runtime_context = get_runtime_context()
+        if str(path or "").strip() and is_global_skill_path(path):
+            return json.dumps(_global_skill_write_block_payload(path), ensure_ascii=False, indent=2)
         path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
         if not path_preflight.get("ok"):
             return json.dumps(
@@ -511,6 +527,8 @@ def write_native_file(
                 ensure_ascii=False,
             )
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
+        if is_global_skill_path(target_path):
+            return json.dumps(_global_skill_write_block_payload(target_path), ensure_ascii=False, indent=2)
         inventory_status = _workspace_inventory_status_compat(runtime_context)
         if (
             not inventory_status.get("hasInventoryToken")
@@ -654,7 +672,7 @@ def grep_search(query: str, path: str, regex: bool = False, ignore_case: bool = 
     """
     try:
         runtime_context = get_runtime_context()
-        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)
+        path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context, allow_global_skill_read=True)
         if not path_preflight.get("ok"):
             return json.dumps(
                 {

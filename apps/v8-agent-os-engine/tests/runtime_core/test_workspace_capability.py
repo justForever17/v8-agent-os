@@ -27,6 +27,10 @@ def _patch_descriptor(monkeypatch, *, active_root: Path, main_root: Path) -> Non
     )
 
 
+def _patch_home(monkeypatch, home: Path) -> None:
+    monkeypatch.setattr(workspace_capability_module.Path, "home", lambda: home)
+
+
 def test_relative_tool_path_resolves_inside_active_workspace(tmp_path, monkeypatch):
     active_root = tmp_path / "active"
     main_root = tmp_path / "main"
@@ -52,6 +56,30 @@ def test_absolute_default_workspace_path_is_blocked_when_scoped(tmp_path, monkey
 
     assert result["ok"] is False
     assert result["error"] == "workspace_boundary_violation"
+
+
+def test_global_skill_path_is_readable_only_when_explicitly_requested(tmp_path, monkeypatch):
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    fake_home = tmp_path / "home"
+    active_root.mkdir()
+    main_root.mkdir()
+    skill_file = fake_home / ".agents" / "skills" / "demo" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Demo Skill\n", encoding="utf-8")
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    _patch_home(monkeypatch, fake_home)
+
+    default_result = resolve_workspace_tool_path(str(skill_file), runtime_context={"workspace_path": str(active_root)})
+    read_result = resolve_workspace_tool_path(
+        str(skill_file),
+        runtime_context={"workspace_path": str(active_root)},
+        allow_global_skill_read=True,
+    )
+
+    assert default_result["ok"] is False
+    assert read_result["ok"] is True
+    assert read_result["relation"] == "inside_global_skill_read_execute_root"
 
 
 def test_command_preflight_blocks_absolute_path_outside_active_workspace(tmp_path, monkeypatch):
@@ -83,6 +111,42 @@ def test_command_preflight_expands_userprofile_paths(tmp_path, monkeypatch):
     assert result["error"] == "workspace_command_path_violation"
 
 
+def test_command_preflight_allows_global_skill_script_execution(tmp_path, monkeypatch):
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    fake_home = tmp_path / "home"
+    active_root.mkdir()
+    main_root.mkdir()
+    script = fake_home / ".agents" / "skills" / "demo" / "scripts" / "check.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('ok')\n", encoding="utf-8")
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    _patch_home(monkeypatch, fake_home)
+
+    result = preflight_command_workspace(f'python "{script}"', runtime_context={"workspace_path": str(active_root)})
+
+    assert result["ok"] is True
+
+
+def test_command_preflight_blocks_global_skill_mutation(tmp_path, monkeypatch):
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    fake_home = tmp_path / "home"
+    active_root.mkdir()
+    main_root.mkdir()
+    script = fake_home / ".agents" / "skills" / "demo" / "scripts" / "check.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('ok')\n", encoding="utf-8")
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    _patch_home(monkeypatch, fake_home)
+
+    result = preflight_command_workspace(f'Remove-Item "{script}"', runtime_context={"workspace_path": str(active_root)})
+
+    assert result["ok"] is False
+    assert result["error"] == "global_skill_mutation_violation"
+    assert result["violations"][0]["relation"] == "global_skill_read_execute_only"
+
+
 def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkeypatch):
     from core import native_tools
 
@@ -100,6 +164,35 @@ def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkey
     assert (active_root / "src" / "ok.txt").read_text(encoding="utf-8") == "ok"
     assert "workspace_boundary_block" in blocked_result
     assert not (main_root / "projects" / "wrong.txt").exists()
+
+
+def test_write_native_file_blocks_global_skill_root_even_with_extra_root(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    fake_home = tmp_path / "home"
+    active_root.mkdir()
+    main_root.mkdir()
+    skill_file = fake_home / ".agents" / "skills" / "demo" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Demo Skill\n", encoding="utf-8")
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    _patch_home(monkeypatch, fake_home)
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+        allowed_extra_roots=[str(skill_file.parent)],
+    ):
+        read_result = native_tools.read_native_file.func(str(skill_file))
+        blocked_result = native_tools.write_native_file.func(str(skill_file), "# changed\n")
+
+    assert "# Demo Skill" in read_result
+    assert "global_skill_read_execute_only" in blocked_result
+    assert skill_file.read_text(encoding="utf-8") == "# Demo Skill\n"
 
 
 def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):

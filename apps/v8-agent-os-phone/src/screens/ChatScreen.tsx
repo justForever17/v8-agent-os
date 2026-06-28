@@ -5660,6 +5660,10 @@ export default function ChatScreen() {
         const pendingSkills = [...selectedSkills];
         const pendingSubagentFamilies = [...selectedSubagentFamilies];
         const pendingFiles = [...effectiveUploadedFiles];
+        const pendingTaskPlanningMode = taskPlanningMode;
+        if (pendingTaskPlanningMode) {
+            setTaskPlanningMode(false);
+        }
         const effectiveText = text || (
             pendingFiles.length === 1
                 ? t("shared.upload.uploaded_single")
@@ -5692,7 +5696,7 @@ export default function ChatScreen() {
                 command: pendingCommand,
                 skills: pendingSkills,
                 subagentFamilies: pendingSubagentFamilies,
-                taskPlanningMode,
+                taskPlanningMode: pendingTaskPlanningMode,
                 files: pendingFiles,
             }, engineNowMs);
             const clientMessageId = userMessage.id;
@@ -5775,7 +5779,7 @@ export default function ChatScreen() {
                         ],
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
-                        taskPlanningMode,
+                        taskPlanningMode: pendingTaskPlanningMode,
                     },
                 );
                 if (submitResult.accepted === false) {
@@ -5794,7 +5798,7 @@ export default function ChatScreen() {
                     ...(assistantPlaceholder.metadata || {}),
                     clientMessageId,
                 };
-                if (taskPlanningMode) {
+                if (pendingTaskPlanningMode) {
                     assistantPlaceholder.uiStreamPhase = "task_planning";
                     assistantPlaceholder.metadata = {
                         ...(assistantPlaceholder.metadata || {}),
@@ -5849,7 +5853,7 @@ export default function ChatScreen() {
             };
             optimisticUserMessageId = userMessage.id;
             optimisticAssistantMessageId = assistantPlaceholder.id;
-            if (taskPlanningMode) {
+            if (pendingTaskPlanningMode) {
                 assistantPlaceholder.uiStreamPhase = "task_planning";
                 assistantPlaceholder.metadata = {
                     ...(assistantPlaceholder.metadata || {}),
@@ -5938,7 +5942,7 @@ export default function ChatScreen() {
                     ],
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
-                    taskPlanningMode,
+                    taskPlanningMode: pendingTaskPlanningMode,
                 },
             );
             if (submitResult.accepted === false) {

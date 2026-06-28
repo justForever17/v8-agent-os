@@ -757,6 +757,7 @@ export function InputArea({
         <form
             onSubmit={async (e) => {
                 const nextData: Record<string, unknown> = {};
+                const pendingTaskPlanningMode = taskPlanningMode;
                 if (uploadedUrls.length > 0) {
                     nextData.fileUrls = uploadedUrls;
                     nextData.attachments = uploadedUrls.map((url, index) => ({
@@ -800,9 +801,12 @@ export function InputArea({
                 if (contextMentions.length > 0) {
                     nextData.contextMentions = contextMentions;
                 }
-                if (taskPlanningMode) {
+                if (pendingTaskPlanningMode) {
                     nextData.plannerMode = "off";
                     nextData.specMode = true;
+                }
+                if (pendingTaskPlanningMode) {
+                    setTaskPlanningMode(false);
                 }
 
                 await handleSubmit(e, { data: nextData });

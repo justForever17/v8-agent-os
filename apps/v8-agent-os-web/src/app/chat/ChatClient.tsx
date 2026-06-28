@@ -37,13 +37,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
 import { useSession } from "next-auth/react";
 import { LoginDialog } from "@/components/auth/LoginDialog";
-import { Bot, FolderTree, Route } from "lucide-react";
+import { Bot, FolderTree, TerminalSquare } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
-import { TodosHUD } from "@/components/chat/TodosHUD";
-import { ProcessesHUD } from "@/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/components/chat/RunControlBar";
 import { Button } from "@/components/ui/button";
-import { RuntimeDock } from "@/components/chat/RuntimeDock";
+import { WorkspaceWorkbenchPanel, type WorkbenchTab } from "@/components/chat/WorkspaceWorkbenchPanel";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
@@ -459,6 +457,8 @@ export default function ChatClient() {
     const lastSessionProcessSurfaceAtRef = useRef(0);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
+    const [workbenchOpen, setWorkbenchOpen] = useState(false);
+    const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("terminal");
     const [isContextExpanded, setIsContextExpanded] = useState(false);
     const [localHour, setLocalHour] = useState<number>(9);
     const viewportBaselineRef = useRef(0);
@@ -699,22 +699,6 @@ export default function ChatClient() {
         ),
         [projectionContextGovernanceRaw, projectionContextGovernanceHistoryRaw],
     );
-    const projectionTodosAllCompleted = projectionTodos.length > 0
-        && projectionTodos.every((item) => {
-            const status = String(item.status || "").trim().toLowerCase();
-            return status === "done" || status === "skipped";
-        });
-    const projectionHasActiveProcess = hudProcesses.some((process) => {
-        const status = String(process.status || "").trim().toLowerCase();
-        return status !== "stopped"
-            && status !== "terminated"
-            && status !== "completed"
-            && status !== "failed";
-    });
-    const todoHudShouldAutoHide = projectionTodosAllCompleted
-        && !effectivePendingApproval
-        && !projectionHasActiveProcess
-        && !["running", "waiting_input", "waiting_approval", "queued", "pending", "starting", "streaming"].includes(String(effectiveStatus || "").trim().toLowerCase());
     const runtimeStageModel = useMemo(() => buildRuntimeStageModel(messages, {
         ownerRuntime: sessionProjection?.workflow?.ownerRuntime || sessionProjection?.summary?.ownerRuntime || null,
         status: effectiveStatus || null,
@@ -1786,9 +1770,6 @@ export default function ChatClient() {
             ? `calc(0.5rem + env(safe-area-inset-bottom) + ${mobileKeyboardInset}px)`
             : "calc(0.5rem + env(safe-area-inset-bottom))",
     };
-    const hudStackStyle = mobileKeyboardInset > 0
-        ? { maxHeight: "5rem" }
-        : undefined;
 
     return (
         <div className="relative flex h-full min-h-0 w-full overflow-hidden overscroll-none bg-transparent">
@@ -1838,27 +1819,17 @@ export default function ChatClient() {
                                 type="button"
                                 className={cn(
                                     "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
-                                    isTimelineOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                    workbenchOpen && workbenchTab === "terminal" ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
                                 )}
-                                onClick={() => setIsTimelineOpen(true)}
-                                aria-label={t(lt("执行地图", "Execution Map"))}
-                                title={t(lt("执行地图", "Execution Map"))}
-                            >
-                                <Route className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
-                            </button>
-                            <RuntimeDock
-                                model={runtimeStageModel}
-                                selectedRuntimeId={selectedRuntimeId}
-                                isPanelOpen={isTimelineOpen}
-                                onSelectRuntime={(runtimeId) => {
-                                    if (isTimelineOpen && selectedRuntimeId === runtimeId) {
-                                        setIsTimelineOpen(false);
-                                        return;
-                                    }
-                                    setSelectedRuntimeId(runtimeId);
-                                    setIsTimelineOpen(true);
+                                onClick={() => {
+                                    setWorkbenchTab("terminal");
+                                    setWorkbenchOpen(true);
                                 }}
-                            />
+                                aria-label={t(lt("终端", "Terminal"))}
+                                title={t(lt("终端", "Terminal"))}
+                            >
+                                <TerminalSquare className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
+                            </button>
                         </div>
                     </div>
 
@@ -2061,17 +2032,6 @@ export default function ChatClient() {
                     style={composerShellStyle}
                 >
                     <div className="flex flex-col gap-2">
-                        <div
-                            className="empty:hidden flex max-h-[22vh] max-w-full flex-col items-end gap-2 overflow-y-auto overscroll-contain sm:max-h-[28vh]"
-                            style={hudStackStyle}
-                        >
-                            <ProcessesHUD processes={hudProcesses} />
-                            <TodosHUD
-                                items={projectionTodos}
-                                isStale={projectionTodoStale}
-                                shouldAutoHide={todoHudShouldAutoHide}
-                            />
-                        </div>
                         <div className="relative shrink-0">
                             <div className="pointer-events-none absolute inset-x-4 -top-7 hidden h-7 bg-gradient-to-t from-background via-background/82 to-transparent blur-sm sm:block" />
                             {activeConversationId ? (
@@ -2124,6 +2084,22 @@ export default function ChatClient() {
             />
 
             <ArtifactsPanel sessionId={activeConversationId} />
+
+            <WorkspaceWorkbenchPanel
+                open={workbenchOpen}
+                activeTab={workbenchTab}
+                onOpenChange={setWorkbenchOpen}
+                onTabChange={setWorkbenchTab}
+                workspacePath={scopeBinding?.workspacePath || mainWorkspacePath}
+                messages={messages}
+                processes={hudProcesses}
+                todos={projectionTodos}
+                todoStale={projectionTodoStale}
+                runtimeModel={runtimeStageModel}
+                selectedRuntimeId={selectedRuntimeId}
+                onSelectRuntime={setSelectedRuntimeId}
+                onOpenRuntimeDetail={() => setIsTimelineOpen(true)}
+            />
 
             <RuntimeTimelinePanel
                 isOpen={isTimelineOpen}

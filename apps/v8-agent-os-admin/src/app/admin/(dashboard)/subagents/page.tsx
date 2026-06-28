@@ -17,7 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
-import { ArrowLeft, BrainCircuit, Cable, ChevronDown, Loader2, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, BrainCircuit, Cable, ChevronDown, Loader2, Pencil, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import { useDebugMode } from "@/lib/useDebugMode";
@@ -45,6 +45,10 @@ type Agent = {
       name?: string | null;
     } | null;
   } | null;
+};
+const isBuiltinAgent = (agent?: Agent | null) => {
+  if (!agent) return false;
+  return agent.createdBy === "system" || ["engineering", "creative_media", "research", "computer_use", "rpa"].includes(agent.id);
 };
 type BaselineSystemTool = {
   name: string;
@@ -1475,49 +1479,72 @@ export default function SubagentsPage() {
                             const familyKey = normalizeFamilyId(specialistFamily || "engineering");
                             const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
                             const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "engineering", "E");
+                            const isBuiltin = isBuiltinAgent(agent);
                             return <Card key={agent.id} className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
-                                        <CardHeader className="space-y-4">
+                                        <CardHeader className="p-4 pb-2">
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="flex min-w-0 items-center gap-3">
                                                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={agent.globalExposure ? "globalExposure" : `family:${familyKey}`}>
                                                         {avatarLabel}
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <CardTitle className="truncate text-lg">{agent.name}</CardTitle>
-                                                        <CardDescription className="truncate">{resolveAgentModelDisplay(agent)}</CardDescription>
+                                                        <CardTitle className="truncate text-base font-semibold">{agent.name}</CardTitle>
+                                                        <CardDescription className="truncate text-xs">{resolveAgentModelDisplay(agent)}</CardDescription>
                                                     </div>
                                                 </div>
                                                 <div className="flex gap-1">
-                                                    <Button type="button" variant="ghost" size="sm" onClick={() => {
+                                                    <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => {
                                                         setEditingAgent(agent);
                                                         setIsDialogOpen(true);
                                                     }}>
-                                                        {t("app.admin.dashboard.subagents.page.k75997619")}
+                                                        <Pencil className="h-4 w-4 text-slate-500" />
                                                     </Button>
-                                                    <Button type="button" variant="ghost" size="sm" className="text-rose-600" onClick={() => void handleDelete(agent.id)}>
+                                                    <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-rose-600 disabled:opacity-40" onClick={() => void handleDelete(agent.id)} disabled={isBuiltin}>
                                                         <Trash2 className="h-4 w-4" />
                                                     </Button>
                                                 </div>
                                             </div>
-                                            <div className="flex flex-wrap gap-2">
-                                                <Badge variant={toolMode === "explicit" ? "default" : "secondary"}>{resolveToolModeLabel(toolMode)}</Badge>
-                                                {specialistFamily ? <Badge variant="secondary">family:{specialistFamily}</Badge> : null}
-                                                {agent.globalExposure ? <Badge className="bg-emerald-600 hover:bg-emerald-600">globalExposure</Badge> : null}
-                                                {agentClass ? <Badge variant="outline">{agentClass}</Badge> : null}
-                                                {domainTags.map(tag => <Badge key={tag} variant="outline">{tag}</Badge>)}
-                                                {agent.createdBy === "supervisor" ? <Badge className="bg-indigo-600 hover:bg-indigo-600">{t("app.admin.dashboard.subagents.page.kcec0f2f4")}</Badge> : null}
-                                                {agent.reflection_enabled ? <Badge variant="outline">{t("app.admin.dashboard.subagents.page.k1599cdff")} × {agent.max_reflections || 3}</Badge> : null}
-                                            </div>
                                         </CardHeader>
-                                        <CardContent className="space-y-4">
-                                            <p className="min-h-[3rem] text-sm leading-6 text-slate-500">{agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}</p>
-                                            {toolMode === "explicit" ? <div className="space-y-2">
-                                                    <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.subagents.page.k1dc6b253")}</div>
-                                                    {renderToolBadgeSummary(selectors)}
-                                                </div> : <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-xs leading-5 text-slate-500">
-                                                    <div className="font-medium text-slate-900">{resolveToolModeLabel("contextual_auto")}</div>
-                                                    <div>{t("app.admin.dashboard.subagents.page.kf913a2e6")}</div>
-                                                </div>}
+                                        <CardContent className="px-4 pb-4 pt-1 space-y-2">
+                                            <p className="text-xs leading-5 text-slate-500 line-clamp-2 min-h-[2.5rem]" title={agent.description || ""}>
+                                                {agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}
+                                            </p>
+                                            <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs text-muted-foreground">
+                                                <div className="flex items-center gap-1.5">
+                                                    {isBuiltin ? (
+                                                        <Badge variant="outline" className="text-[10px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">内置</Badge>
+                                                    ) : (
+                                                        <Badge variant="outline" className="text-[10px] text-slate-600 bg-slate-50/50 border-slate-200 shadow-none px-1.5 py-0 h-5">自定义</Badge>
+                                                    )}
+                                                    {agent.globalExposure && <Badge className="text-[10px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">全局</Badge>}
+                                                </div>
+                                                <AdminHoverInfo
+                                                    content={
+                                                        <div className="space-y-2 text-xs leading-relaxed text-slate-200 p-1 max-w-[280px]">
+                                                            <div><strong>专家族 (Family):</strong> {specialistFamily || "无"}</div>
+                                                            {isBuiltin && <div className="text-amber-400 font-medium">⚠️ 内置 Subagent 绑定核心运行，无法删除。</div>}
+                                                            <div><strong>分类 (Class):</strong> {agentClass || "无"}</div>
+                                                            <div><strong>工具策略:</strong> {resolveToolModeLabel(toolMode)}</div>
+                                                            {domainTags.length > 0 && <div><strong>业务领域:</strong> {domainTags.join("、")}</div>}
+                                                            {selectors.length > 0 && (
+                                                                <div>
+                                                                    <strong>显式授权工具 ({selectors.length}):</strong>
+                                                                    <div className="mt-1 flex flex-wrap gap-1">
+                                                                        {selectors.slice(0, 8).map(s => <span key={s} className="bg-slate-800 text-slate-300 px-1 rounded text-[10px]">{s}</span>)}
+                                                                        {selectors.length > 8 && <span className="text-[10px]">...</span>}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            <div><strong>自省控制:</strong> {agent.reflection_enabled ? `开启 (Max: ${agent.max_reflections})` : "关闭"}</div>
+                                                            <div><strong>创建者:</strong> {agent.createdBy || "human"}</div>
+                                                        </div>
+                                                    }
+                                                >
+                                                    <span className="cursor-help text-[11px] text-sky-600 hover:text-sky-700 hover:underline flex items-center gap-0.5">
+                                                        📄 策略与工具详情
+                                                    </span>
+                                                </AdminHoverInfo>
+                                            </div>
                                         </CardContent>
                                     </Card>;
                         })}
@@ -1531,11 +1558,18 @@ export default function SubagentsPage() {
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2 text-base">
                                 <Cable className="h-4 w-4 text-emerald-600" />
-                                {t("app.admin.dashboard.subagents.page.externalWorkers.title")}
+                                <AdminHoverInfo
+                                    content={
+                                        <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                            {t("app.admin.dashboard.subagents.page.externalWorkers.description")}
+                                            <br />
+                                            配置文件事实源：<code>config.json#supervisor.delegation.externalWorkers</code>
+                                        </span>
+                                    }
+                                >
+                                    <span className="cursor-help">{t("app.admin.dashboard.subagents.page.externalWorkers.title")}</span>
+                                </AdminHoverInfo>
                             </CardTitle>
-                            <CardDescription>
-                                {t("app.admin.dashboard.subagents.page.externalWorkers.description")} <code>config.json#supervisor.delegation.externalWorkers</code>.
-                            </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-5">
                             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1813,12 +1847,17 @@ export default function SubagentsPage() {
                         <CardHeader className="space-y-1 p-4 pb-2 border-b">
                             <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                                 <BrainCircuit className="h-4 w-4 text-indigo-600" />
-                                {tg(t, "cd5d78a6")}
+                                <AdminHoverInfo
+                                    content={
+                                        <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                            {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
+                                        </span>
+                                    }
+                                >
+                                    <span className="cursor-help">{tg(t, "cd5d78a6")}</span>
+                                </AdminHoverInfo>
                                 <Badge variant={familyModeEnabled ? "secondary" : "destructive"}>{familyModeEnabled ? "compact" : "full"}</Badge>
                             </CardTitle>
-                            <p className="text-[11px] leading-relaxed text-slate-500">
-                                {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
-                            </p>
                         </CardHeader>
                         <CardContent className="p-4 space-y-4">
                             <div className="space-y-2">
@@ -1843,12 +1882,17 @@ export default function SubagentsPage() {
                         <CardHeader className="space-y-1 p-4 pb-2 border-b">
                             <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
                                 <SearchCheck className="h-4 w-4 text-cyan-600" />
-                                {tg(t, "ed0fa816")}
+                                <AdminHoverInfo
+                                    content={
+                                        <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                            {tg(t, "a1c3fdb1")}
+                                        </span>
+                                    }
+                                >
+                                    <span className="cursor-help">{tg(t, "ed0fa816")}</span>
+                                </AdminHoverInfo>
                                 <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
                             </div>
-                            <p className="text-[11px] leading-relaxed text-slate-500">
-                                {tg(t, "a1c3fdb1")}
-                            </p>
                             <div className="flex flex-wrap gap-1.5 pt-1">
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "6f6a45fc")}</Badge>
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "cfd045a5")}</Badge>
@@ -1902,14 +1946,19 @@ export default function SubagentsPage() {
                         <CardHeader className="space-y-1 p-4 pb-2 border-b">
                             <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
                                 <Cable className="h-4 w-4 text-emerald-600" />
-                                {t("admin.pages.subagents.recursive.title")}
+                                <AdminHoverInfo
+                                    content={
+                                        <span className="text-xs font-normal leading-relaxed text-slate-200">
+                                            {t("admin.pages.subagents.recursive.description")}
+                                        </span>
+                                    }
+                                >
+                                    <span className="cursor-help">{t("admin.pages.subagents.recursive.title")}</span>
+                                </AdminHoverInfo>
                                 <Badge variant={recursiveDelegationEnabled ? "secondary" : "destructive"}>
                                     {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
                                 </Badge>
                             </div>
-                            <p className="text-[11px] leading-relaxed text-slate-500">
-                                {t("admin.pages.subagents.recursive.description")}
-                            </p>
                             <div className="flex flex-wrap gap-1.5 pt-1">
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</Badge>
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</Badge>
@@ -1960,162 +2009,8 @@ export default function SubagentsPage() {
                         </CardContent>
                     </Card>
                 </div>
+            </div>
 
-        {/* 右栏：全局委派与研究参数配置 */}
-        <div className="space-y-6">
-            {/* 1. Specialist Registry 家族配置 Card */}
-            <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                <CardHeader className="space-y-1 p-4 pb-2 border-b">
-                    <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                        <BrainCircuit className="h-4 w-4 text-indigo-600" />
-                        {tg(t, "cd5d78a6")}
-                        <Badge variant={familyModeEnabled ? "secondary" : "destructive"}>{familyModeEnabled ? "compact" : "full"}</Badge>
-                    </CardTitle>
-                    <p className="text-[11px] leading-relaxed text-slate-500">
-                        {familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")}
-                    </p>
-                </CardHeader>
-                <CardContent className="p-4 space-y-4">
-                    <div className="space-y-2">
-                        <SettingToggleCard
-                            title={<span>{tg(t, "7074eefa")}：{maxMembersPerFamily}</span>}
-                            checked={familyModeEnabled}
-                            onCheckedChange={setFamilyModeEnabled}
-                            className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
-                            titleClassName="text-xs font-normal"
-                        />
-                        <Slider value={[maxMembersPerFamily]} min={1} max={MAX_SPECIALIST_FAMILY_MEMBERS} step={1} disabled={!familyModeEnabled} onValueChange={([value]) => setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Math.round(value))))} />
-                    </div>
-                    <Button onClick={() => void handleSaveSpecialistRegistry()} disabled={isSavingSpecialistRegistry} className="w-full">
-                        {isSavingSpecialistRegistry ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                        {tg(t, "a518dc17")}
-                    </Button>
-                </CardContent>
-            </Card>
-
-            {/* 2. Search/Research 搜寻配置 Card */}
-            <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                <CardHeader className="space-y-1 p-4 pb-2 border-b">
-                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
-                        <SearchCheck className="h-4 w-4 text-cyan-600" />
-                        {tg(t, "ed0fa816")}
-                        <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
-                    </div>
-                    <p className="text-[11px] leading-relaxed text-slate-500">
-                        {tg(t, "a1c3fdb1")}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "6f6a45fc")}</Badge>
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{tg(t, "cfd045a5")}</Badge>
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.research.evidenceLedgerTtl")} 6h</Badge>
-                    </div>
-                </CardHeader>
-                <CardContent className="p-4 space-y-4">
-                    <SettingToggleCard
-                        title={<span>{tg(t, "2a5c9f81")}</span>}
-                        checked={researchEnabled}
-                        onCheckedChange={setResearchEnabled}
-                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
-                        titleClassName="text-xs font-normal"
-                    />
-                    <div className="space-y-3">
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs">{tg(t, "d6c520d8")}：{researchDefaultShards}</Label>
-                                <span className="text-xs text-slate-500">1-30</span>
-                            </div>
-                            <Slider value={[researchDefaultShards]} min={1} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => {
-                                const nextDefault = Math.max(1, Math.min(30, Math.round(value)));
-                                setResearchDefaultShards(nextDefault);
-                                setResearchMaxShards(current => Math.max(nextDefault, current));
-                            }} />
-                        </div>
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs">{tg(t, "03514d16")}：{researchMaxShards}</Label>
-                                <span className="text-xs text-slate-500">max 30</span>
-                            </div>
-                            <Slider value={[researchMaxShards]} min={researchDefaultShards} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxShards(Math.max(researchDefaultShards, Math.min(30, Math.round(value))))} />
-                        </div>
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <Label className="text-xs">{tg(t, "d28b7ea4")}：{researchMaxRounds}</Label>
-                                <span className="text-xs text-slate-500">1-5</span>
-                            </div>
-                            <Slider value={[researchMaxRounds]} min={1} max={5} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxRounds(Math.max(1, Math.min(5, Math.round(value))))} />
-                        </div>
-                    </div>
-                    <Button onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch} className="w-full">
-                        {isSavingResearch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                        {tg(t, "cdd9d125")}
-                    </Button>
-                </CardContent>
-            </Card>
-
-            {/* 3. Recursive 递归委派配置 Card */}
-            <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
-                <CardHeader className="space-y-1 p-4 pb-2 border-b">
-                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
-                        <Cable className="h-4 w-4 text-emerald-600" />
-                        {t("admin.pages.subagents.recursive.title")}
-                        <Badge variant={recursiveDelegationEnabled ? "secondary" : "destructive"}>
-                            {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
-                        </Badge>
-                    </div>
-                    <p className="text-[11px] leading-relaxed text-slate-500">
-                        {t("admin.pages.subagents.recursive.description")}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</Badge>
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</Badge>
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</Badge>
-                    </div>
-                </CardHeader>
-                <CardContent className="p-4 space-y-4">
-                    <SettingToggleCard
-                        title={<HoverHelpLabel label={t("admin.pages.subagents.recursive.enableLabel")} tooltip={t("admin.pages.subagents.recursive.enableTooltip")} />}
-                        checked={recursiveDelegationEnabled}
-                        onCheckedChange={setRecursiveDelegationEnabled}
-                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none gap-3 items-center"
-                    />
-                    <div className="space-y-3">
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })} tooltip={t("admin.pages.subagents.recursive.maxDepthTooltip")} />
-                                <span className="text-xs text-slate-500">1-100</span>
-                            </div>
-                            <Slider value={[recursiveMaxDepth]} min={1} max={100} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxDepth(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100))} />
-                        </div>
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip", { value: recursiveMaxChildren })} />
-                                <span className="text-xs text-slate-500">1-50</span>
-                            </div>
-                            <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />
-                        </div>
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })} tooltip={t("admin.pages.subagents.recursive.maxTotalTooltip")} />
-                                <span className="text-xs text-slate-500">1-1000</span>
-                            </div>
-                            <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
-                        </div>
-                        <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-3">
-                                <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })} tooltip={t("admin.pages.subagents.recursive.maxConcurrentTooltip")} />
-                                <span className="text-xs text-slate-500">1-50</span>
-                            </div>
-                            <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
-                        </div>
-                    </div>
-                    <Button onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation} className="w-full">
-                        {isSavingRecursiveDelegation ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                        {t("admin.pages.subagents.recursive.save")}
-                    </Button>
-                </CardContent>
-            </Card>
-        </div>
-    </div>
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">
@@ -2190,7 +2085,17 @@ export default function SubagentsPage() {
 
                         <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(200px,240px)] md:items-start">
                             <div className="space-y-2">
-                                <HoverHelpLabel label={tg(t, "9512faae")} tooltip={tg(t, "5c02fc01")} />
+                                <HoverHelpLabel
+                                    label={tg(t, "9512faae")}
+                                    tooltip={
+                                        <div className="space-y-1 text-xs">
+                                            <div>{tg(t, "5c02fc01")}</div>
+                                            {editingAgent && isBuiltinAgent(editingAgent) && (
+                                                <div className="text-amber-500 font-medium mt-1">⚠️ 内置 Subagent 绑定了系统的核心运行时，可编辑 System Prompt，但无法删除。</div>
+                                            )}
+                                        </div>
+                                    }
+                                />
 
                                 <Input list="subagent-family-options" className="h-10" value={form.specialistFamily} onChange={event => setForm(current => ({
                   ...current,
@@ -2214,10 +2119,6 @@ export default function SubagentsPage() {
                   ...current,
                   agentClass: event.target.value
                 }))} placeholder="researcher / writer / operator" />
-
-                                <p className="min-h-10 text-xs leading-5 text-slate-500">
-                                    {tg(t, "bdfeb614")}
-                                </p>
                             </div>
                             <div className="space-y-2">
                                 <Label>{tg(t, "ec8c5cb6")}</Label>
@@ -2229,9 +2130,6 @@ export default function SubagentsPage() {
 
                                     <span className="font-medium text-slate-900">globalExposure</span>
                                 </label>
-                                <p className="min-h-10 text-xs leading-5 text-slate-500">
-                                    {tg(t, "8b369719")}
-                                </p>
                             </div>
                         </div>
 

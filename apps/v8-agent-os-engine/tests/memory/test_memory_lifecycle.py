@@ -27,6 +27,20 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertIn("maintainer_source", columns)
         self.assertIn("effective_confidence", columns)
 
+    def test_add_knowledge_clears_orphan_fts_row_before_insert(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope) VALUES (?, ?, ?, ?)",
+                    (1, "orphan stale row", "general", "global"),
+                )
+
+            db.add_knowledge("fact-orphan-rowid", "fresh indexed fact", scope="global")
+            matches = db.fts_search("fresh", scope="global")
+
+        self.assertEqual([item["id"] for item in matches], ["fact-orphan-rowid"])
+
     def test_stale_revalidation_blocks_search_until_human_revalidate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = KnowledgeDB(Path(temp_dir) / "knowledge.db")

@@ -114,7 +114,7 @@ def _truncate_text_for_token_limit(text: str, token_limit: int | None, *, label:
     max_chars = int(limit * chars_per_token * 0.9)
     if len(text) <= max_chars:
         return text
-    print(f"[{label}] ⚠️ Truncating text from {len(text)} to {max_chars} chars (model limit: {limit} tokens)")
+    logger.info("[%s] Truncating text from %s to %s chars (model limit: %s tokens)", label, len(text), max_chars, limit)
     return text[:max_chars]
 
 # Re-implementing the embedding and reranker wrappers cleanly
@@ -276,7 +276,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             config["providers"] = providers
             model_control_plane.save_config(config)
         except Exception as exc:
-            print(f"[Embedding] ⚠️ Failed to persist observed input token limit: {exc}")
+            logger.warning("[Embedding] Failed to persist observed input token limit: %s", _safe_log_text(exc))
 
     def _effective_max_tokens(self) -> int | None:
         if not self.max_tokens:
@@ -295,7 +295,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         chars_per_token = 1.0 if cjk_heavy else 2.5
         max_chars = int(limit * chars_per_token * 0.9)
         if len(text) > max_chars:
-            print(f"[Embedding] ⚠️ Truncating text from {len(text)} to {max_chars} chars (model limit: {limit} tokens)")
+            logger.info("[Embedding] Truncating text from %s to %s chars (model limit: %s tokens)", len(text), max_chars, limit)
             return text[:max_chars]
         return text
         
@@ -337,7 +337,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             if observed_limit and observed_limit > 0 and (not current_limit or observed_limit < int(current_limit)):
                 _EMBEDDING_OBSERVED_LIMITS[self._observed_limit_key()] = int(observed_limit)
                 self._persist_observed_limit(int(observed_limit))
-                print(f"[Embedding] ℹ️ Observed provider input token limit {observed_limit}; retrying with smaller truncation.")
+                logger.info("[Embedding] Observed provider input token limit %s; retrying with smaller truncation.", observed_limit)
                 retry_texts = [self._truncate_text(t, token_limit=int(observed_limit)) for t in original_texts]
                 retry_payload = dict(payload)
                 retry_payload["input"] = retry_texts
@@ -352,7 +352,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             if res.status_code == 200:
                 pass
             else:
-                print(f"[Embedding Error] {res.status_code}: {res.text}")
+                logger.warning("[Embedding Error] %s: %s", res.status_code, _safe_log_text(res.text))
                 error_kind = _classify_embedding_provider_error(int(res.status_code or 0), res.text)
                 model_telemetry_service.record_aux_model_invocation(
                     model_id=self.model_name,

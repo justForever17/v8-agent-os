@@ -435,6 +435,11 @@ class KnowledgeDB:
                 
                 # 获取新 rowid 同步到 FTS5
                 new_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                # Historical crashes or schema migrations may leave orphan FTS rows.
+                # Clear the rowid before insert so incremental re-index stays idempotent.
+                conn.execute(
+                    "DELETE FROM knowledge_fts WHERE rowid = ?", (new_rowid,)
+                )
                 conn.execute("""
                     INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope)
                     VALUES (?, ?, ?, ?)

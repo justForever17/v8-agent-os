@@ -313,6 +313,18 @@ def _dedupe_tools(tools: Iterable[Any]) -> list[Any]:
     return result
 
 
+def _route_context_spec_mode_active(route_context: dict[str, Any] | None) -> bool:
+    context = route_context if isinstance(route_context, dict) else {}
+    candidates = [context]
+    nested_context = context.get("current_route_context")
+    if isinstance(nested_context, dict):
+        candidates.append(nested_context)
+    for candidate in candidates:
+        if bool(candidate.get("specMode") or candidate.get("spec_mode")):
+            return True
+    return False
+
+
 def filter_visible_tools_for_actor(
     tools: Iterable[Any],
     *,
@@ -347,6 +359,13 @@ def filter_visible_tools_for_actor(
         if name == "memory_broker":
             if normalized_actor == "supervisor" or name in granted_runtime_tools:
                 visible.append(tool_ref)
+            continue
+        if normalized_actor == "supervisor" and name == "spec_broker":
+            if _route_context_spec_mode_active(route_context):
+                visible.append(tool_ref)
+            continue
+        if normalized_actor == "supervisor" and name == "delegation_broker":
+            visible.append(tool_ref)
             continue
         if normalized_actor != "supervisor" and name == "delegation_broker":
             if name in granted_runtime_tools:

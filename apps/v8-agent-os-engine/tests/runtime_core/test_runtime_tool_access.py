@@ -38,6 +38,8 @@ def _tool(name: str):
 def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_common_tools():
     tools = [
         _tool("runtime_broker"),
+        _tool("delegation_broker"),
+        _tool("spec_broker"),
         _tool("read_native_file"),
         _tool("run_system_command"),
         _tool("http_request"),
@@ -58,7 +60,8 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     names = {tool.name for tool in visible}
 
-    assert {"runtime_broker", "read_native_file", "run_system_command", "http_request"}.issubset(names)
+    assert {"runtime_broker", "delegation_broker", "read_native_file", "run_system_command", "http_request"}.issubset(names)
+    assert "spec_broker" not in names
     assert "delegate_network_task" not in names
     assert "memory_broker" in names
     assert "memory_recall" not in names
@@ -71,6 +74,24 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     assert "creative_media_create_edit_plan" not in names
     assert "creative_media_alpha_inspect" not in names
     assert "creative_media_psd_compose_template" not in names
+
+
+def test_supervisor_spec_broker_requires_request_spec_mode():
+    tools = [
+        _tool("runtime_broker"),
+        _tool("spec_broker"),
+        _tool("memory_broker"),
+    ]
+
+    default_visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
+    assert "spec_broker" not in {tool.name for tool in default_visible}
+
+    visible_after_spec_mode = filter_visible_tools_for_actor(
+        tools,
+        actor="supervisor",
+        route_context={"specMode": True},
+    )
+    assert "spec_broker" in {tool.name for tool in visible_after_spec_mode}
 
 
 def test_network_supervisor_delegate_requires_explicit_runtime_grant():

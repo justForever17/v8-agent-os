@@ -224,7 +224,8 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("Active execution runtimes you may route into", system_content)
         self.assertIn("Passive/support runtimes are not ordinary execution targets", system_content)
         self.assertIn("user/client approval gates are blocking and cannot be self-approved", system_content)
-        self.assertIn("`delegation_broker` is how you dispatch subagents", system_content)
+        self.assertIn("`delegation_broker` is your direct, governed entry for dispatching subagents", system_content)
+        self.assertIn("Do not use it as a shortcut for internal runtimes", system_content)
         self.assertIn("`ask_user` asks the human for missing information", system_content)
         self.assertIn("`wait` is only for a short local stabilization pause", system_content)
         self.assertIn("`manage_cron` creates or changes scheduled tasks only when the user explicitly asks", system_content)
@@ -235,6 +236,39 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
             system_content.index("Custom editable persona prompt."),
             system_content.index("[Supervisor Operating Contract]"),
         )
+
+    def test_supervisor_prompt_explains_delegation_broker_as_governed_subagent_entry(self):
+        agents = [_agent("writer-global", family="writing", global_exposure=True)]
+
+        with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(
+            "graph.supervisor_context._build_workspace_rules_context",
+            return_value=("", []),
+        ), patch(
+            "graph.supervisor_context._build_artifact_awareness_context",
+            return_value=("", []),
+        ), patch(
+            "graph.supervisor_context._render_engineering_context",
+            return_value=("", []),
+        ):
+            result = build_supervisor_system_content(
+                state={},
+                config=SimpleNamespace(system_prompt="Base prompt."),
+                user_query="请派一个子代理调研并写摘要。",
+                current_scope="global",
+                scope_chain=["global"],
+                session_id="sess_test",
+                messages=[],
+                loaded_agents=agents,
+                supervisor_tools=[SimpleNamespace(name="delegation_broker", description="Dispatch subagents.")],
+                memory_runtime=_MemoryRuntimeStub(),
+            )
+
+        system_content = result["system_content"]
+        specialist_context = result["specialist_agents_context"]
+        self.assertIn("selectionRule=Use delegation_broker", specialist_context)
+        self.assertIn("`delegation_broker` is your direct, governed entry", system_content)
+        self.assertIn("Do not use it as a shortcut for internal runtimes", system_content)
+        self.assertIn("- delegation_broker: Dispatch subagents.", system_content)
 
 
 if __name__ == "__main__":

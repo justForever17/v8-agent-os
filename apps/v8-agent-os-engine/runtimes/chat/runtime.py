@@ -115,6 +115,7 @@ from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "ask_user",
     "fetch_skill_instructions",
+    "delegation_broker",
     "memory_broker",
     "research_broker",
     "runtime_broker",
@@ -5709,6 +5710,27 @@ class ChatRuntime:
         compact = re.sub(r"\s+", " ", text)
         stream_state.delegation_claim_samples.append(compact[:240])
 
+    @staticmethod
+    def _runtime_broker_input_routes_delegation(raw_inputs: Any) -> bool:
+        if not isinstance(raw_inputs, dict):
+            return False
+        mode = str(raw_inputs.get("mode") or "").strip().lower()
+        if mode and mode != "route":
+            return False
+        runtime_kind = str(raw_inputs.get("runtime_kind") or raw_inputs.get("runtimeKind") or "").strip().lower()
+        if runtime_kind == "delegation":
+            return True
+        need = raw_inputs.get("need")
+        if isinstance(need, str):
+            try:
+                need = json.loads(need)
+            except Exception:
+                need = {}
+        if not isinstance(need, dict):
+            return False
+        need_kind = str(need.get("kind") or need.get("runtime_kind") or need.get("runtimeKind") or "").strip().lower()
+        return need_kind in {"delegation", "subagent", "subagents"}
+
     def _emit_delegation_claim_diagnostic(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
         if (
             stream_state.delegation_claim_diagnostic_emitted
@@ -5721,10 +5743,10 @@ class ChatRuntime:
             "subagent.delegation.claimed_without_dispatch",
             {
                 "riskCode": "delegation_claim_without_dispatch",
-                "summary": "Supervisor 文本声称派发了子代理，但本轮没有 delegation_broker 或 subagent 事件。",
+                "summary": "Supervisor 文本声称派发了子代理，但本轮没有 delegation runtime route、delegation_broker 或 subagent 事件。",
                 "samples": list(stream_state.delegation_claim_samples),
                 "actualDispatchSeen": False,
-                "recommendedNextAction": "若要派发子代理，必须调用 delegation_broker；若由 Supervisor 直接执行，应明确说明直接执行。",
+                "recommendedNextAction": "若要派发子代理，调用 delegation_broker(mode='dispatch') 并给出完整 workerBriefs；若由 Supervisor 直接执行，应明确说明直接执行。",
             },
             agent_id=stream_state.current_agent,
             node="subagent_swarm",
@@ -5770,7 +5792,7 @@ class ChatRuntime:
                 "projectWriteCount": stream_state.supervisor_project_write_count,
                 "latestTool": normalized_tool,
                 "reasons": exceeded_reasons,
-                "recommendedNextAction": "调用 runtime_broker(mode='route') 创建能力 episode；需要 worker 时再调用 delegation_broker(dispatch)。",
+                "recommendedNextAction": "调用 runtime_broker(mode='route') 创建能力 episode；需要独立 worker/subagent 时调用 delegation_broker(dispatch)。",
             },
             agent_id=stream_state.current_agent,
             node="supervisor_direct_scope_guard",
@@ -7922,7 +7944,10 @@ class ChatRuntime:
             )
             raw_inputs = data.get("input", {})
             inputs = self._compact_tool_display_args(name, raw_inputs)
-            if str(name or "").strip().lower() == "delegation_broker":
+            normalized_start_tool = str(name or "").strip().lower()
+            if normalized_start_tool == "delegation_broker" or (
+                normalized_start_tool == "runtime_broker" and self._runtime_broker_input_routes_delegation(raw_inputs)
+            ):
                 stream_state.delegation_dispatch_seen = True
             callback_run_id = str(event.get("run_id") or "").strip()
             tool_call_id = self._resolve_tool_call_id_for_start(

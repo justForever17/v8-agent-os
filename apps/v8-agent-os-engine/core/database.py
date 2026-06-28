@@ -2037,14 +2037,23 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                SELECT COALESCE(canonical_message_id, message_id) as deleted_id
+                SELECT message_id, canonical_message_id
                 FROM chat_message_deletions
                 WHERE session_id = ?
                   AND deleted_at >= ?
+                ORDER BY deleted_at ASC
                 ''',
                 (session_id, since_ts),
             )
-            return [row["deleted_id"] for row in cursor.fetchall() if row["deleted_id"]]
+            deleted_ids: list[str] = []
+            seen: set[str] = set()
+            for row in cursor.fetchall():
+                for key in ("message_id", "canonical_message_id"):
+                    deleted_id = str(row[key] or "").strip()
+                    if deleted_id and deleted_id not in seen:
+                        seen.add(deleted_id)
+                        deleted_ids.append(deleted_id)
+            return deleted_ids
 
     def get_chat_canonical_max_version(self, session_id: str) -> int:
         with self.get_connection() as conn:

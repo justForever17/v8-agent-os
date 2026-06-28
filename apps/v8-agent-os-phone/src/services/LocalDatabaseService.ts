@@ -1,5 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
+const MESSAGE_DELETIONS_CURSOR_RESET_MIGRATION = 'message_deletions_cursor_reset_v1';
+
 export type LocalMessage = {
     id: string;
     session_id: string;
@@ -38,7 +40,22 @@ class LocalDatabaseService {
                     deleted_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, message_id)
                 );
+                CREATE TABLE IF NOT EXISTS local_schema_migrations (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
             `);
+            const migration = await this.db.getFirstAsync<{ key: string }>(
+                'SELECT key FROM local_schema_migrations WHERE key = ?',
+                [MESSAGE_DELETIONS_CURSOR_RESET_MIGRATION],
+            );
+            if (!migration) {
+                await this.db.runAsync('DELETE FROM local_sync_cursors');
+                await this.db.runAsync(
+                    'INSERT OR REPLACE INTO local_schema_migrations (key, applied_at) VALUES (?, ?)',
+                    [MESSAGE_DELETIONS_CURSOR_RESET_MIGRATION, new Date().toISOString()],
+                );
+            }
             this.initialized = true;
         })();
         return this.initPromise;

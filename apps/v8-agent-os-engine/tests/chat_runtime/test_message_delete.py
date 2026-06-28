@@ -70,6 +70,31 @@ def test_timeline_sync_never_returns_tombstoned_canonical_message(tmp_path: Path
     assert "canon_msg_1" in test_db.get_chat_message_deletions_since(session_id, since)
 
 
+def test_timeline_sync_returns_deleted_alias_and_canonical_ids(tmp_path: Path) -> None:
+    test_db = DatabaseManager(tmp_path / "message-delete-sync-alias.sqlite3")
+    session_id = "session-delete-sync-alias"
+    since = "1970-01-01T00:00:00+00:00"
+    test_db.create_or_update_session(session_id, "Delete sync alias")
+    test_db.create_run_record(run_id="run_1", session_id=session_id, run_type="chat", status="completed")
+    test_db.create_chat_canonical_message(
+        message_id="canon_msg_1",
+        session_id=session_id,
+        run_id="run_1",
+        ordinal=1,
+        role="assistant",
+        state="completed",
+        nodes=[{"id": "canon_msg_1:text", "type": "text", "content": "hello"}],
+        content_text="hello",
+    )
+
+    result = test_db.delete_message("canon_msg_1:text", session_id=session_id)
+    deletions = test_db.get_chat_message_deletions_since(session_id, since)
+
+    assert result["deleted"] is True
+    assert set(deletions) == {"canon_msg_1", "canon_msg_1:text"}
+    assert len(deletions) == 2
+
+
 def test_projection_tombstone_blocks_future_incremental_resurrection(tmp_path: Path) -> None:
     test_db = DatabaseManager(tmp_path / "message-delete-sync-projection.sqlite3")
     session_id = "session-delete-sync-projection"

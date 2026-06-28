@@ -10,6 +10,9 @@ import {
     streamSseWithXmlHttpRequest,
 } from "@/src/lib/admin-client";
 import {
+    AdminConnectionProfile,
+    orderAdminBaseUrlCandidates,
+    readActiveAdminConnectionProfileId,
     readAdminConnectionProfiles,
     upsertAdminConnectionProfile,
     writeActiveAdminConnectionProfileId,
@@ -120,9 +123,55 @@ function getPreferredBrowserAdminBaseUrls(currentBaseUrl: string) {
 
 const SessionContext = React.createContext<SessionContextValue | null>(null);
 
-async function persistSession(baseUrl: string, payload: MobileAuthPayload) {
+function findActiveProfile(profiles: AdminConnectionProfile[], activeProfileId?: string | null) {
+    if (activeProfileId) {
+        const active = profiles.find((profile) => profile.id === activeProfileId);
+        if (active) {
+            return active;
+        }
+    }
+    return profiles[0] || null;
+}
+
+function getConnectionCandidateBaseUrls(
+    currentBaseUrl: string,
+    profiles: AdminConnectionProfile[] = [],
+    activeProfileId?: string | null,
+) {
+    const activeProfile = findActiveProfile(profiles, activeProfileId);
+    const profileCandidates = orderAdminBaseUrlCandidates({
+        primary: currentBaseUrl || activeProfile?.adminBaseUrl || "",
+        adminUrls: activeProfile?.adminUrls || profiles.flatMap((profile) => profile.adminUrls || []),
+        lanUrls: activeProfile?.lanUrls || [],
+        tailscaleUrls: activeProfile?.tailscaleUrls || [],
+    });
+    const browserFallbacks = getPreferredBrowserAdminBaseUrls(currentBaseUrl);
+    return [...profileCandidates, ...browserFallbacks]
+        .filter((candidate, index, all) => Boolean(candidate) && all.indexOf(candidate) === index);
+}
+
+async function persistSession(baseUrl: string, payload: MobileAuthPayload & {
+    instanceId?: string;
+    serverId?: string;
+    adminUrls?: string[];
+    pairingManifest?: { lanUrls?: string[]; tailscaleUrls?: string[] };
+    linkManifest?: { admin?: { baseUrl?: string }; profiles?: Array<{ adminBaseUrl?: string }> };
+}) {
     const profiles = await readAdminConnectionProfiles();
-    const { profile, profiles: nextProfiles } = upsertAdminConnectionProfile(profiles, { adminBaseUrl: baseUrl });
+    const { profile, profiles: nextProfiles } = upsertAdminConnectionProfile(profiles, {
+        adminBaseUrl: baseUrl,
+        serverId: payload.serverId || payload.instanceId || "",
+        instanceId: payload.instanceId || "",
+        adminUrls: [
+            ...(payload.adminUrls || []),
+            payload.linkManifest?.admin?.baseUrl || "",
+            ...((payload.linkManifest?.profiles || []).map((item) => item.adminBaseUrl || "")),
+        ],
+        lanUrls: payload.pairingManifest?.lanUrls || [],
+        tailscaleUrls: payload.pairingManifest?.tailscaleUrls || [],
+        accessToken: payload.accessToken,
+        refreshToken: payload.refreshToken,
+    });
     await Promise.all([
         setStoredValue("adminBaseUrl", baseUrl),
         setStoredValue("accessToken", payload.accessToken),
@@ -144,6 +193,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const bootStartedAtRef = React.useRef(Date.now());
     const statusRef = React.useRef<SessionStatus>("booting");
     const userRef = React.useRef<PhoneUser | null>(null);
+    const connectionCandidatesRef = React.useRef<string[]>([]);
 
     React.useEffect(() => {
         statusRef.current = status;
@@ -170,7 +220,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             return false;
         }
 
-        const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
+        const candidateBaseUrls = connectionCandidatesRef.current.length > 0
+            ? connectionCandidatesRef.current
+            : getPreferredBrowserAdminBaseUrls(baseUrl);
         for (const candidateBaseUrl of candidateBaseUrls) {
             try {
                 const response = await fetchWithTimeout(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/refresh"), {
@@ -210,16 +262,24 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     }, [adminBaseUrl, refreshToken, refreshSessionWithBaseUrl]);
 
     const hydrate = React.useCallback(async () => {
-        const [storedBaseUrl, storedAccessToken, storedRefreshToken, storedUser, storedConversationId] = await Promise.all([
+        const [storedBaseUrl, storedAccessToken, storedRefreshToken, storedUser, storedConversationId, profiles, activeProfileId] = await Promise.all([
             getStoredValue("adminBaseUrl"),
             getStoredValue("accessToken"),
             getStoredValue("refreshToken"),
             getStoredValue("user"),
             getStoredValue("activeConversationId"),
+            readAdminConnectionProfiles(),
+            readActiveAdminConnectionProfileId(),
         ]);
 
         const normalizedBaseUrl = normalizeAdminBaseUrl(storedBaseUrl || "");
-        const preferredBaseUrl = getPreferredBrowserAdminBaseUrls(normalizedBaseUrl)[0] || normalizedBaseUrl;
+        const activeProfile = findActiveProfile(profiles, activeProfileId);
+        const preferredBaseUrl = getConnectionCandidateBaseUrls(
+            normalizedBaseUrl || activeProfile?.adminBaseUrl || "",
+            profiles,
+            activeProfileId,
+        )[0] || normalizedBaseUrl || activeProfile?.adminBaseUrl || "";
+        connectionCandidatesRef.current = getConnectionCandidateBaseUrls(preferredBaseUrl, profiles, activeProfileId);
         setAdminBaseUrlState(preferredBaseUrl);
         setAccessToken(storedAccessToken || "");
         setRefreshToken(storedRefreshToken || "");
@@ -228,9 +288,11 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             await setStoredValue("adminBaseUrl", preferredBaseUrl);
         }
 
+        let parsedStoredUser: PhoneUser | null = null;
         if (storedUser) {
             try {
-                setUser(JSON.parse(storedUser) as PhoneUser);
+                parsedStoredUser = JSON.parse(storedUser) as PhoneUser;
+                setUser(parsedStoredUser);
             } catch {
                 setUser(null);
             }
@@ -243,7 +305,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
 
         try {
-            const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(preferredBaseUrl);
+            const candidateBaseUrls = connectionCandidatesRef.current.length > 0
+                ? connectionCandidatesRef.current
+                : getPreferredBrowserAdminBaseUrls(preferredBaseUrl);
             for (const candidateBaseUrl of candidateBaseUrls) {
                 try {
                     const meResponse = await fetchWithTimeout(buildAdminApiUrl(candidateBaseUrl, "/api/client/auth/me"), {
@@ -269,17 +333,17 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             }
             const refreshed = await refreshSessionWithBaseUrl(preferredBaseUrl, storedRefreshToken || "");
             if (!refreshed) {
-                await clearSessionStorage();
-                setAccessToken("");
-                setRefreshToken("");
-                setUser(null);
-                setActiveConversationIdState(null);
+                if (parsedStoredUser) {
+                    await awaitMinimumBootScreen();
+                    setStatus("authenticated");
+                    return;
+                }
                 await awaitMinimumBootScreen();
                 setStatus("anonymous");
             }
         } catch {
             await awaitMinimumBootScreen();
-            setStatus("anonymous");
+            setStatus(parsedStoredUser ? "authenticated" : "anonymous");
         }
     }, [awaitMinimumBootScreen, refreshSessionWithBaseUrl]);
 
@@ -292,8 +356,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setAdminBaseUrlState(normalized);
         if (normalized) {
             await setStoredValue("adminBaseUrl", normalized);
+            connectionCandidatesRef.current = getConnectionCandidateBaseUrls(normalized);
         } else {
             await removeStoredValue("adminBaseUrl");
+            connectionCandidatesRef.current = [];
         }
     }, []);
 
@@ -314,6 +380,12 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         });
         const baseUrl = normalizeAdminBaseUrl(payload.adminBaseUrl || pairing.adminBaseUrl);
         setAdminBaseUrlState(baseUrl);
+        connectionCandidatesRef.current = orderAdminBaseUrlCandidates({
+            primary: baseUrl,
+            adminUrls: payload.adminUrls || pairing.adminUrls,
+            lanUrls: payload.pairingManifest?.lanUrls || pairing.lanUrls,
+            tailscaleUrls: payload.pairingManifest?.tailscaleUrls || pairing.tailscaleUrls,
+        });
         setAccessToken(payload.accessToken);
         setRefreshToken(payload.refreshToken);
         setUser(payload.user);
@@ -404,7 +476,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 },
             }, 15000) as Promise<Response>;
         const attemptFetch = async (token: string) => {
-            const candidates = getPreferredBrowserAdminBaseUrls(baseUrl);
+            const candidates = connectionCandidatesRef.current.length > 0
+                ? connectionCandidatesRef.current
+                : getPreferredBrowserAdminBaseUrls(baseUrl);
             let lastError: unknown = null;
             for (const candidateBaseUrl of candidates) {
                 try {
@@ -431,7 +505,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
         const refreshed = await refreshSession();
         if (!refreshed) {
-            await signOut();
             throw new Error(translateCurrent("src.providers.app_session.text_6"));
         }
 
@@ -455,10 +528,13 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
 
         const candidateBaseUrls = getPreferredBrowserAdminBaseUrls(baseUrl);
+        const streamCandidateBaseUrls = connectionCandidatesRef.current.length > 0
+            ? connectionCandidatesRef.current
+            : candidateBaseUrls;
 
         const openStream = async (token: string) => {
             let lastError: unknown = null;
-            for (const candidateBaseUrl of candidateBaseUrls) {
+            for (const candidateBaseUrl of streamCandidateBaseUrls) {
                 try {
                     if (Platform.OS === "web") {
                         const response = await fetch(buildAdminApiUrl(candidateBaseUrl, path), {
@@ -528,7 +604,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
         const refreshed = await refreshSession();
         if (!refreshed) {
-            await signOut();
             throw new Error(translateCurrent("src.providers.app_session.text_6"));
         }
 

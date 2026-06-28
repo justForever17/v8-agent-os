@@ -36,7 +36,9 @@ import type {
     AdminProcessRef,
     MusicTrack,
     UploadedWorkspaceFile,
+    DevicePairingManifest,
 } from "@/src/types/admin";
+import { orderAdminBaseUrlCandidates } from "@/src/lib/admin-connection-profiles";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 type AuthorizedRealtimeStream = (
@@ -85,10 +87,81 @@ async function authorizedJson<T>(
     return readJsonOrThrow<T>(response, fallbackMessage);
 }
 
-export function parseDevicePairingUri(pairingUri: string) {
+type ParsedDevicePairing = {
+    adminBaseUrl: string;
+    adminUrls: string[];
+    lanUrls: string[];
+    tailscaleUrls: string[];
+    code: string;
+    instanceId: string;
+    serverId: string;
+    surface: string;
+    manifest?: DevicePairingManifest;
+};
+
+function readManifestFromUnknown(value: unknown): DevicePairingManifest | null {
+    if (!value || typeof value !== "object") {
+        return null;
+    }
+    const record = value as Record<string, unknown>;
+    const manifest: DevicePairingManifest = {
+        kind: typeof record.kind === "string" ? record.kind : "",
+        version: typeof record.version === "string" || typeof record.version === "number" ? record.version : "",
+        serverId: typeof record.serverId === "string" ? record.serverId : "",
+        instanceId: typeof record.instanceId === "string" ? record.instanceId : "",
+        adminUrls: Array.isArray(record.adminUrls) ? record.adminUrls.map((item) => String(item || "")) : [],
+        lanUrls: Array.isArray(record.lanUrls) ? record.lanUrls.map((item) => String(item || "")) : [],
+        tailscaleUrls: Array.isArray(record.tailscaleUrls) ? record.tailscaleUrls.map((item) => String(item || "")) : [],
+        pairingCode: typeof record.pairingCode === "string" ? record.pairingCode : "",
+        code: typeof record.code === "string" ? record.code : "",
+        surface: typeof record.surface === "string" ? record.surface : "",
+    };
+    return manifest;
+}
+
+function parseManifestText(value: string): DevicePairingManifest | null {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+        return null;
+    }
+    try {
+        return readManifestFromUnknown(JSON.parse(normalized));
+    } catch {
+        try {
+            return readManifestFromUnknown(JSON.parse(decodeURIComponent(normalized)));
+        } catch {
+            return null;
+        }
+    }
+}
+
+export function parseDevicePairingUri(pairingUri: string): ParsedDevicePairing {
     const normalized = String(pairingUri || "").trim();
     if (!normalized) {
         throw new Error(translateCurrent("app.login.please_enter_a_pairing_link"));
+    }
+    const rawManifest = parseManifestText(normalized);
+    if (rawManifest) {
+        const adminUrls = orderAdminBaseUrlCandidates({
+            adminUrls: rawManifest.adminUrls || [],
+            lanUrls: rawManifest.lanUrls || [],
+            tailscaleUrls: rawManifest.tailscaleUrls || [],
+        });
+        const code = String(rawManifest.pairingCode || rawManifest.code || "").trim();
+        if (adminUrls.length === 0 || !code) {
+            throw new Error(translateCurrent("app.login.invalid_pairing_link"));
+        }
+        return {
+            adminBaseUrl: adminUrls[0],
+            adminUrls,
+            lanUrls: rawManifest.lanUrls || [],
+            tailscaleUrls: rawManifest.tailscaleUrls || [],
+            code,
+            instanceId: String(rawManifest.instanceId || "").trim(),
+            serverId: String(rawManifest.serverId || rawManifest.instanceId || "").trim(),
+            surface: String(rawManifest.surface || "phone").trim(),
+            manifest: rawManifest,
+        };
     }
     let parsed: URL;
     try {
@@ -96,27 +169,62 @@ export function parseDevicePairingUri(pairingUri: string) {
     } catch {
         throw new Error(translateCurrent("app.login.invalid_pairing_link"));
     }
-    const adminBaseUrl = String(parsed.searchParams.get("admin") || "").trim();
-    const code = String(parsed.searchParams.get("code") || "").trim();
-    const instanceId = String(parsed.searchParams.get("instance") || "").trim();
-    if (!adminBaseUrl || !code) {
+    const urlManifest = parseManifestText(parsed.searchParams.get("manifest") || "");
+    const legacyAdminBaseUrl = String(parsed.searchParams.get("admin") || "").trim();
+    const code = String(urlManifest?.pairingCode || urlManifest?.code || parsed.searchParams.get("code") || "").trim();
+    const instanceId = String(urlManifest?.instanceId || parsed.searchParams.get("instance") || "").trim();
+    const serverId = String(urlManifest?.serverId || instanceId || "").trim();
+    const surface = String(urlManifest?.surface || parsed.searchParams.get("surface") || "phone").trim();
+    const adminUrls = orderAdminBaseUrlCandidates({
+        primary: legacyAdminBaseUrl,
+        adminUrls: urlManifest?.adminUrls || [],
+        lanUrls: urlManifest?.lanUrls || [],
+        tailscaleUrls: urlManifest?.tailscaleUrls || [],
+    });
+    if (adminUrls.length === 0 || !code) {
         throw new Error(translateCurrent("app.login.invalid_pairing_link"));
     }
-    return { adminBaseUrl, code, instanceId };
+    return {
+        adminBaseUrl: adminUrls[0],
+        adminUrls,
+        lanUrls: urlManifest?.lanUrls || [],
+        tailscaleUrls: urlManifest?.tailscaleUrls || [],
+        code,
+        instanceId,
+        serverId,
+        surface,
+        manifest: urlManifest || undefined,
+    };
 }
 
 export async function pairDevice(input: DevicePairingInput): Promise<AuthSessionPayload> {
     const pairing = parseDevicePairingUri(input.pairingUri);
-    const response = await fetch(buildAdminApiUrl(pairing.adminBaseUrl, "/api/client/pairing/consume"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            code: pairing.code,
-            instanceId: pairing.instanceId || undefined,
-            deviceName: input.deviceName || "v8-phone",
-        }),
-    });
-    return readJsonOrThrow<AuthSessionPayload>(response, translateCurrent("app.login.pairing_failed"));
+    let lastError: unknown = null;
+    for (const adminBaseUrl of pairing.adminUrls) {
+        try {
+            const response = await fetch(buildAdminApiUrl(adminBaseUrl, "/api/client/pairing/consume"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    code: pairing.code,
+                    instanceId: pairing.instanceId || undefined,
+                    deviceName: input.deviceName || "v8-phone",
+                }),
+            });
+            const payload = await readJsonOrThrow<AuthSessionPayload>(response, translateCurrent("app.login.pairing_failed"));
+            return {
+                ...payload,
+                adminBaseUrl: payload.adminBaseUrl || adminBaseUrl,
+                serverId: pairing.serverId || payload.serverId || payload.instanceId,
+                instanceId: payload.instanceId || pairing.instanceId,
+                adminUrls: pairing.adminUrls,
+                pairingManifest: pairing.manifest,
+            };
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error(translateCurrent("app.login.pairing_failed"));
 }
 
 export async function getConnectionSummary(authorizedFetch: AuthorizedFetch) {

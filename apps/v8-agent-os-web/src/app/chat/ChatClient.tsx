@@ -12,6 +12,11 @@ import {
 } from "@/lib/chat-stream-state";
 import { normalizeRealtimeEvent } from "@/lib/realtime";
 import {
+    mergeWebConversationSync,
+    readWebConversationCache,
+    writeWebConversationCache,
+} from "@/lib/web-conversation-cache";
+import {
     RuntimeId,
     buildRuntimeStageModel,
     buildRuntimeTimelineEntryFromEvent,
@@ -598,6 +603,7 @@ export default function ChatClient() {
     const latestRealtimeSeqRef = useRef<number>(0);
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const cacheWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const boundProject = useMemo(
@@ -925,7 +931,23 @@ export default function ChatClient() {
             messages,
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
-    }, [messages]);
+        if (!activeConversationId || messages.length === 0) {
+            return;
+        }
+        if (cacheWriteTimerRef.current) {
+            clearTimeout(cacheWriteTimerRef.current);
+        }
+        cacheWriteTimerRef.current = setTimeout(() => {
+            writeWebConversationCache(activeConversationId, normalizeMessagesForState(messages));
+            cacheWriteTimerRef.current = null;
+        }, 500);
+        return () => {
+            if (cacheWriteTimerRef.current) {
+                clearTimeout(cacheWriteTimerRef.current);
+                cacheWriteTimerRef.current = null;
+            }
+        };
+    }, [activeConversationId, messages]);
 
     const isLocalStreamActive = useCallback((sessionId: string | null | undefined) => {
         if (!sessionId) return false;
@@ -971,7 +993,14 @@ export default function ChatClient() {
     }, []);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
-        const detailRes = await fetch(`/api/client/conversations/${conversationId}`, { cache: "no-store" });
+        const cached = readWebConversationCache(conversationId);
+        if (cached?.messages?.length) {
+            const cachedMessages = normalizeMessagesForState(cached.messages);
+            messagesRef.current = cachedMessages;
+            setMessages(cachedMessages);
+        }
+
+        const detailRes = await fetch(`/api/client/conversations/${conversationId}?omitMessages=1`, { cache: "no-store" });
         if (!detailRes.ok) {
             if (detailRes.status === 404) {
                 router.replace("/chat");
@@ -995,22 +1024,59 @@ export default function ChatClient() {
             }
         }
 
-        const authoritativeMessages = Array.isArray((detailPayload as { timeline?: unknown[] } | null | undefined)?.timeline)
+        const detailTimeline = Array.isArray((detailPayload as { timeline?: unknown[] } | null | undefined)?.timeline)
             ? (detailPayload as { timeline: unknown[] }).timeline
             : [];
+        const detailMessages = Array.isArray((detailPayload as { messages?: unknown[] } | null | undefined)?.messages)
+            ? (detailPayload as { messages: unknown[] }).messages
+            : [];
+        const authoritativeMessages = detailTimeline.length > 0 ? detailTimeline : detailMessages;
         const hasTimelineNodes = authoritativeMessages.some((message) =>
             Boolean(message && typeof message === "object" && Array.isArray((message as { nodes?: unknown[] }).nodes)),
         );
-        const normalized = hasTimelineNodes
+        const snapshotMessages = hasTimelineNodes
             ? normalizeMessagesForState(authoritativeMessages as Message[])
             : normalizeProjectedMessages(authoritativeMessages);
-        latestRealtimeSeqRef.current = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
+        const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
+        let normalized = cached?.messages?.length
+            ? mergeWebConversationSync(normalizeMessagesForState(cached.messages), snapshotMessages as Message[])
+            : snapshotMessages;
+
+        if (cached?.syncCursor) {
+            try {
+                const syncRes = await fetch(
+                    `/api/client/conversations/${conversationId}/sync?since=${encodeURIComponent(cached.syncCursor)}`,
+                    { cache: "no-store" },
+                );
+                if (syncRes.ok) {
+                    const syncPayload = await syncRes.json().catch(() => ({}));
+                    const syncMessages = Array.isArray(syncPayload?.messages)
+                        ? normalizeProjectedMessages(syncPayload.messages)
+                        : [];
+                    normalized = mergeWebConversationSync(
+                        normalized as Message[],
+                        syncMessages as Message[],
+                        Array.isArray(syncPayload?.deletions) ? syncPayload.deletions : [],
+                    );
+                    writeWebConversationCache(
+                        conversationId,
+                        normalizeMessagesForState(normalized as Message[]),
+                        String(syncPayload?.syncCursor || cached.syncCursor || ""),
+                    );
+                }
+            } catch (error) {
+                console.warn("[ChatClient] Failed to sync cached conversation delta:", error);
+            }
+        } else {
+            writeWebConversationCache(conversationId, normalizeMessagesForState(normalized as Message[]));
+        }
+        latestRealtimeSeqRef.current = latestSeq;
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
-            normalized,
+            normalized as Message[],
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
-        messagesRef.current = normalizeMessagesForState(normalized);
-        setMessages(normalizeMessagesForState(normalized));
+        messagesRef.current = normalizeMessagesForState(normalized as Message[]);
+        setMessages(normalizeMessagesForState(normalized as Message[]));
         const detailProcesses = Array.isArray(detailPayload?.processes) ? detailPayload.processes : [];
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);

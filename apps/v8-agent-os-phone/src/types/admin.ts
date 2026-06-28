@@ -28,12 +28,29 @@ export type AuthSessionPayload = {
     refreshToken: string;
     user: PhoneUser;
     instanceId?: string;
+    serverId?: string;
     adminBaseUrl?: string;
+    adminUrls?: string[];
+    linkManifest?: V8LinkManifest;
+    pairingManifest?: DevicePairingManifest;
 };
 
 export type DevicePairingInput = {
     pairingUri: string;
     deviceName?: string;
+};
+
+export type DevicePairingManifest = {
+    kind?: string;
+    version?: string | number;
+    serverId?: string;
+    instanceId?: string;
+    adminUrls?: string[];
+    lanUrls?: string[];
+    tailscaleUrls?: string[];
+    pairingCode?: string;
+    code?: string;
+    surface?: string;
 };
 
 export type ConnectionSummary = {
@@ -64,6 +81,7 @@ export type V8LinkDiagnostics = {
 };
 
 export type V8LinkManifest = {
+    serverId?: string;
     instanceId?: string;
     ownerMode?: string;
     clientGateway?: string;
@@ -73,6 +91,13 @@ export type V8LinkManifest = {
         baseUrl?: string;
         apiBaseUrl?: string;
     };
+    profiles?: Array<{
+        id?: string;
+        kind?: string;
+        label?: string;
+        enabled?: boolean;
+        adminBaseUrl?: string;
+    }>;
     engine?: {
         baseUrl?: string;
         apiBaseUrl?: string;

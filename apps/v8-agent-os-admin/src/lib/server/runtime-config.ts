@@ -297,6 +297,7 @@ export function buildClientLinkManifest(requestOrigin?: string) {
         ok: true,
         kind: "v8_client_link_manifest",
         version: manifest.version,
+        serverId: manifest.instanceId,
         instanceId: manifest.instanceId,
         ownerMode: manifest.ownerMode,
         clientGateway: manifest.clientGateway,

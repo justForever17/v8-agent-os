@@ -111,6 +111,17 @@ def _detect_session_preferred_command(command: str) -> str | None:
         r"(^|[;&|]\s*)pnpm\s+(install|i)\b",
         r"(^|[;&|]\s*)yarn\s+(install|add)\b",
         r"(^|[;&|]\s*)bun\s+(install|add)\b",
+        r"(^|[;&|]\s*)python(?:3)?\s+-m\s+pip\s+install\b",
+        r"(^|[;&|]\s*)py\s+-m\s+pip\s+install\b",
+        r"(^|[;&|]\s*)pip(?:3)?\s+install\b",
+        r"(^|[;&|]\s*)uv\s+(?:add|sync|pip\s+install)\b",
+        r"(^|[;&|]\s*)poetry\s+(?:add|install|update)\b",
+        r"(^|[;&|]\s*)pipenv\s+(?:install|sync)\b",
+        r"(^|[;&|]\s*)cargo\s+(?:add|install|build|test|run)\b",
+        r"(^|[;&|]\s*)go\s+(?:get|install|mod\s+tidy|build|test|run)\b",
+        r"(^|[;&|]\s*)mvn(?:\.cmd)?\s+(?:install|package|test|verify|dependency:|spring-boot:run)\b",
+        r"(^|[;&|]\s*)(?:gradle|gradlew|\.\\gradlew|./gradlew)\s+(?:build|test|assemble|install|install\w+|dependencies|run)\b",
+        r"(^|[;&|]\s*)dotnet\s+(?:restore|add\s+package|build|test|run)\b",
     )
     if any(re.search(pattern, lowered) for pattern in install_patterns):
         return f"检测到 `{command}` 是依赖安装类命令，建议进入 session 模式以便轮询、恢复和捕获失败原因。"
@@ -127,6 +138,12 @@ def _detect_session_preferred_command(command: str) -> str | None:
         "vite",
         "tail -f",
         "watch ",
+        "cargo watch",
+        "mvn spring-boot:run",
+        "gradle bootrun",
+        "gradlew bootrun",
+        "go run ",
+        "dotnet watch",
         "python -m http.server",
         "python -m uvicorn",
     )

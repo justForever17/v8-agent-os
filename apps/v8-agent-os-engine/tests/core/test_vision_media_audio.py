@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
-from core.multimodal_payload_adapter import build_multimodal_content
+from core.multimodal_payload_adapter import build_multimodal_content, describe_multimodal_payload_shape
 from core.tools import vision_media_analyzer as vision_module
 
 
@@ -58,6 +58,69 @@ def test_multimodal_adapter_builds_openai_audio_url_payload():
             },
         },
     ]
+
+
+def test_multimodal_adapter_builds_doubao_ark_audio_payload():
+    content = build_multimodal_content(
+        prompt="请识别音频内容。",
+        media_url="https://example.test/audio.mp3",
+        mime_type="audio/mpeg",
+        api_standard="openai",
+        transport_mode="url_reference",
+        provider_id="volcengine-coding",
+        model_id="doubao-seed-2-0-lite",
+    )
+
+    assert content == [
+        {"type": "text", "text": "请识别音频内容。"},
+        {
+            "type": "input_audio",
+            "input_audio": {
+                "url": "https://example.test/audio.mp3",
+                "format": "mp3",
+            },
+        },
+    ]
+    assert (
+        describe_multimodal_payload_shape(
+            mime_type="audio/mpeg",
+            api_standard="openai",
+            provider_id="volcengine-coding",
+            model_id="doubao-seed-2-0-lite",
+            transport_mode="url_reference",
+        )
+        == "audio:ark_input_audio:url_reference"
+    )
+
+
+def test_multimodal_adapter_builds_mimo_audio_url_payload():
+    content = build_multimodal_content(
+        prompt="请识别音频内容。",
+        media_url="AAEC",
+        mime_type="audio/mpeg",
+        api_standard="openai",
+        transport_mode="inline_base64_audio",
+        provider_id="xiaomi-mimo",
+        model_id="mimo-v2.5-pro",
+    )
+
+    assert content == [
+        {"type": "text", "text": "请识别音频内容。"},
+        {
+            "type": "input_audio",
+            "audio_url": "data:audio/mpeg;base64,AAEC",
+        },
+    ]
+    assert (
+        describe_multimodal_payload_shape(
+            mime_type="audio/mpeg",
+            api_standard="openai",
+            provider_id="xiaomi-mimo",
+            model_id="mimo-v2.5-pro",
+            transport_mode="inline_base64_audio",
+        )
+        == "audio:mimo_audio_url:inline_base64_audio"
+    )
 
 
 def test_vision_media_analyzer_accepts_audio_and_strips_reasoning(monkeypatch, tmp_path: Path):
@@ -114,6 +177,93 @@ def test_vision_media_analyzer_accepts_audio_and_strips_reasoning(monkeypatch, t
     assert message_content[1]["input_audio"]["format"] == "mp3"
     assert captured["config"]["metadata"]["mediaKind"] == "audio"
     assert captured["config"]["metadata"]["transportMode"] == "inline_base64_audio"
+    assert captured["config"]["metadata"]["payloadShape"] == "audio:openai_input_audio:inline_base64_audio"
+
+
+def test_vision_media_analyzer_uses_mimo_audio_payload(monkeypatch, tmp_path: Path):
+    audio_path = tmp_path / "voice.mp3"
+    audio_path.write_bytes(b"\x00\x01fake-mp3")
+
+    monkeypatch.setattr(
+        vision_module,
+        "get_runtime_context",
+        lambda: {"session_id": "session-audio", "run_id": "run-audio", "project_id": "test"},
+    )
+    monkeypatch.setattr(
+        vision_module.model_control_plane,
+        "resolve_model_for_role",
+        lambda role: {
+            "resolvedProvider": {"type": "API", "api_standard": "openai"},
+            "resolvedProviderId": "xiaomi-mimo",
+            "resolvedModel": {"capabilityClass": "vision_multimodal"},
+            "resolvedModelId": "mimo-v2.5-pro",
+        },
+    )
+    monkeypatch.setattr(vision_module.model_control_plane, "get_config", lambda: {})
+    monkeypatch.setattr(vision_module.model_budget_service, "enforce_or_raise", lambda **kwargs: None)
+    monkeypatch.setattr(vision_module.artifact_store, "record_local_file", lambda **kwargs: None)
+
+    captured: dict[str, object] = {}
+
+    class FakeVisionModel:
+        def invoke(self, messages, config):
+            captured["messages"] = messages
+            captured["config"] = config
+            return AIMessage(content="转写：你好。")
+
+    monkeypatch.setattr(vision_module.llm_factory, "create_for_role", lambda role, temperature=0.1: FakeVisionModel())
+
+    output = vision_module.vision_media_analyzer.func(file_path=str(audio_path), prompt="请逐字转写音频。")
+
+    assert "转写：你好。" in output
+    message_content = captured["messages"][0].content
+    assert message_content[1]["type"] == "input_audio"
+    assert message_content[1]["audio_url"].startswith("data:audio/mpeg;base64,")
+    assert "input_audio" not in message_content[1]
+    assert captured["config"]["metadata"]["payloadShape"] == "audio:mimo_audio_url:inline_base64_audio"
+
+
+def test_vision_media_analyzer_audio_failure_hides_provider_raw_json(monkeypatch, tmp_path: Path):
+    audio_path = tmp_path / "voice.mp3"
+    audio_path.write_bytes(b"\x00\x01fake-mp3")
+
+    monkeypatch.setattr(
+        vision_module,
+        "get_runtime_context",
+        lambda: {"session_id": "session-audio", "run_id": "run-audio", "project_id": "test"},
+    )
+    monkeypatch.setattr(
+        vision_module.model_control_plane,
+        "resolve_model_for_role",
+        lambda role: {
+            "resolvedProvider": {"type": "API", "api_standard": "openai"},
+            "resolvedProviderId": "volcengine-coding",
+            "resolvedModel": {"capabilityClass": "vision_multimodal"},
+            "resolvedModelId": "doubao-seed-2-0-lite",
+        },
+    )
+    monkeypatch.setattr(vision_module.model_control_plane, "get_config", lambda: {})
+    monkeypatch.setattr(vision_module.model_budget_service, "enforce_or_raise", lambda **kwargs: None)
+    monkeypatch.setattr(vision_module.artifact_store, "record_local_file", lambda **kwargs: None)
+
+    class FakeVisionModel:
+        def invoke(self, messages, config):
+            raise RuntimeError(
+                "capability_mismatch: Error code: 400 - {'error': {'code': 'InvalidParameter', "
+                "'message': 'messages.content.input_audio is not supported by this model'}}"
+            )
+
+    monkeypatch.setattr(vision_module.llm_factory, "create_for_role", lambda role, temperature=0.1: FakeVisionModel())
+
+    output = vision_module.vision_media_analyzer.func(file_path=str(audio_path), prompt="请逐字转写音频。", tool_call_id="call_audio")
+
+    assert "结果：音频识别失败" in output
+    assert "原因：当前模型接口拒绝音频输入" in output
+    assert "下一步：" in output
+    assert "detailRef：tool_call:call_audio" in output
+    assert "InvalidParameter" not in output
+    assert "messages.content.input_audio" not in output
+    assert "{'error'" not in output
 
 
 def test_vision_media_analyzer_transcodes_non_mp3_audio_before_model_call(monkeypatch, tmp_path: Path):

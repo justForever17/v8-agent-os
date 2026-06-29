@@ -86,30 +86,69 @@ def _metadata_supports_audio_input(metadata: dict[str, Any] | None) -> bool:
 
 def _known_audio_input_model(model_id: str) -> bool:
     normalized = normalize_model_capability_key(model_id)
-    compact = _compact_model_key(model_id)
-    if not normalized and not compact:
+    if not normalized:
         return False
+    compact = _compact_model_key(model_id)
     if any(marker in compact for marker in ("tts", "speech28", "speech26", "texttospeech")):
         return False
     known_exact_or_family = (
         "doubao-seed-2-0-lite",
+        "doubao-seed-2.0-lite",
         "doubao-seed-2-1-pro",
+        "doubao-seed-2.1-pro",
         "mimo-v2-5",
+        "mimo-v2.5",
         "gpt-4o-audio",
         "gemini-2-5-flash",
+        "gemini-2.5-flash",
         "gemini-2-5-pro",
+        "gemini-2.5-pro",
     )
-    if any(marker in normalized for marker in known_exact_or_family):
-        return True
-    compact_markers = (
-        "doubaoseed20lite",
-        "doubaoseed21pro",
-        "mimov25",
-        "gpt4oaudio",
-        "gemini25flash",
-        "gemini25pro",
-    )
-    return any(marker in compact for marker in compact_markers)
+    return any(marker in normalized for marker in known_exact_or_family)
+
+
+def _vision_audio_payload_wire_status(
+    *,
+    provider_id: str,
+    provider: dict[str, Any] | None,
+    model_id: str,
+    api_standard: str,
+) -> tuple[bool, str]:
+    normalized_api = str(api_standard or "openai").strip().lower()
+    provider_meta = provider if isinstance(provider, dict) else {}
+    base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").strip().lower()
+    joined = f"{provider_id} {model_id} {base_url}".lower()
+
+    if "/api/coding/" in base_url:
+        return False, "vision_audio_provider_endpoint_not_audio_capable"
+
+    if normalized_api in {"google", "gemini"}:
+        return True, ""
+    if "mimo" in joined or "xiaomi" in joined:
+        return True, ""
+    if "doubao" in joined or "volcengine" in joined or "ark" in joined:
+        return True, ""
+    if "gpt-4o-audio" in normalize_model_capability_key(model_id):
+        return True, ""
+
+    # Generic OpenAI-compatible audio payloads are allowed only when the model
+    # metadata explicitly declares audio input support. The caller decides that
+    # part; this function only rejects known-bad transports.
+    return normalized_api == "openai", "" if normalized_api == "openai" else "vision_audio_provider_protocol_unknown"
+
+
+def _vision_audio_metadata_source(
+    model_meta: dict[str, Any] | None,
+    registry_meta: dict[str, Any] | None,
+    model_id: str,
+) -> str:
+    if _metadata_supports_audio_input(model_meta):
+        return "model_metadata"
+    if _metadata_supports_audio_input(registry_meta):
+        return "capability_registry"
+    if _known_audio_input_model(model_id):
+        return "known_model_family"
+    return ""
 
 
 def _stt_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -143,18 +182,32 @@ def _vision_audio_status() -> dict[str, Any]:
     model_ref = str(resolution.get("resolvedModelRef") or "").strip()
     provider_id = str(resolution.get("resolvedProviderId") or "").strip()
     model_meta = resolution.get("resolvedModel") if isinstance(resolution.get("resolvedModel"), dict) else {}
+    provider_meta = resolution.get("resolvedProvider") if isinstance(resolution.get("resolvedProvider"), dict) else {}
     registry_meta = model_capability_registry.find(model_id) if model_id else None
-    usable = (
-        _metadata_supports_audio_input(model_meta)
-        or _metadata_supports_audio_input(registry_meta)
-        or _known_audio_input_model(model_id)
+    audio_source = _vision_audio_metadata_source(model_meta, registry_meta, model_id)
+    api_standard = str(
+        provider_meta.get("api_standard")
+        or provider_meta.get("apiStandard")
+        or model_meta.get("api_standard")
+        or model_meta.get("apiStandard")
+        or "openai"
     )
+    wire_usable, wire_reason = _vision_audio_payload_wire_status(
+        provider_id=provider_id,
+        provider=provider_meta,
+        model_id=model_id,
+        api_standard=api_standard,
+    )
+    usable = bool(audio_source and wire_usable)
     return {
-        "usable": bool(usable),
+        "usable": usable,
         "modelId": model_id,
         "modelRef": model_ref,
         "providerId": provider_id,
-        "reason": "" if usable else "vision_model_has_no_known_audio_input",
+        "apiStandard": api_standard,
+        "audioSource": audio_source,
+        "wireSupported": wire_usable,
+        "reason": "" if usable else (wire_reason or "vision_model_has_no_known_audio_input"),
     }
 
 

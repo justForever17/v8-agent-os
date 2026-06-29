@@ -8,7 +8,17 @@ from core.workspace_capability import build_workspace_binding
 
 
 _SCAFFOLD_INSTALL_PATTERN = re.compile(
-    r"(?i)(?:^|[;&|]\s*)(?:npx\s+(?:--yes\s+|-y\s+)?create-[\w@./-]+|create-[\w@./-]+|npm\s+create\b|pnpm\s+create\b|yarn\s+create\b|bun\s+create\b|npm\s+(?:install|i)\b|pnpm\s+(?:install|i)\b|yarn\s+(?:install|add)\b|bun\s+(?:install|add)\b)"
+    r"(?i)(?:^|[;&|]\s*)(?:"
+    r"npx\s+(?:--yes\s+|-y\s+)?create-[\w@./-]+|create-[\w@./-]+|"
+    r"npm\s+create\b|pnpm\s+create\b|yarn\s+create\b|bun\s+create\b|"
+    r"npm\s+(?:install|i)\b|pnpm\s+(?:install|i)\b|yarn\s+(?:install|add)\b|bun\s+(?:install|add)\b|"
+    r"python(?:3)?\s+-m\s+pip\s+install\b|py\s+-m\s+pip\s+install\b|pip(?:3)?\s+install\b|"
+    r"uv\s+(?:add|sync|pip\s+install)\b|poetry\s+(?:add|install|update)\b|pipenv\s+(?:install|sync)\b|"
+    r"cargo\s+(?:add|install|build|test|run)\b|go\s+(?:get|install|mod\s+tidy|build|test|run)\b|"
+    r"mvn(?:\.cmd)?\s+(?:install|package|test|verify|dependency:|spring-boot:run)\b|"
+    r"(?:gradle|gradlew|\.\\gradlew|./gradlew)\s+(?:build|test|assemble|install|install\w+|dependencies|run)\b|"
+    r"dotnet\s+(?:restore|add\s+package|build|test|run)\b"
+    r")"
 )
 _BULK_WRITE_PATH_MARKERS = {
     "package.json",

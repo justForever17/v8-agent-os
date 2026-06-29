@@ -51,6 +51,7 @@ def test_audio_input_status_matches_audio_model_by_model_id_under_custom_provide
             "resolvedModelRef": "volcengine-coding::doubao-seed-2-0-lite-260428",
             "resolvedProviderId": "volcengine-coding",
             "resolvedModel": {"capabilities": {"chat": True, "vision": True}},
+            "resolvedProvider": {"api_standard": "openai", "base_url": "https://ark.cn-beijing.volces.com/api/v3"},
         },
     )
 
@@ -59,9 +60,10 @@ def test_audio_input_status_matches_audio_model_by_model_id_under_custom_provide
     assert status["route"] == "vision_audio"
     assert status["visionAudio"]["usable"] is True
     assert status["visionAudio"]["providerId"] == "volcengine-coding"
+    assert status["visionAudio"]["wireSupported"] is True
 
 
-def test_audio_input_status_matches_compact_doubao_audio_model_name(monkeypatch):
+def test_audio_input_status_rejects_unproven_compact_doubao_audio_model_name(monkeypatch):
     monkeypatch.setattr(
         audio_routes.AudioConfigManager,
         "get_config",
@@ -81,6 +83,69 @@ def test_audio_input_status_matches_compact_doubao_audio_model_name(monkeypatch)
             "resolvedModelId": "doubao-seed2.0-lite",
             "resolvedProviderId": "volcengine-coding",
             "resolvedModel": {"capabilities": {"chat": True, "vision": True}},
+            "resolvedProvider": {"api_standard": "openai", "base_url": "https://ark.cn-beijing.volces.com/api/v3"},
+        },
+    )
+
+    status = audio_routes.build_audio_input_status()
+
+    assert status["route"] == "unavailable"
+    assert status["visionAudio"]["usable"] is False
+
+
+def test_audio_input_status_rejects_volcengine_coding_endpoint_for_audio(monkeypatch):
+    monkeypatch.setattr(
+        audio_routes.AudioConfigManager,
+        "get_config",
+        staticmethod(lambda: {
+            "stt": {
+                "active_provider": "baidu",
+                "providers": {
+                    "baidu": {"api_key": "", "secret_key": ""},
+                },
+            },
+        }),
+    )
+    monkeypatch.setattr(
+        audio_routes.model_control_plane,
+        "resolve_model_for_role",
+        lambda role: {
+            "resolvedModelId": "doubao-seed-2-0-lite-260428",
+            "resolvedModelRef": "volcengine-coding::doubao-seed-2-0-lite-260428",
+            "resolvedProviderId": "volcengine-coding",
+            "resolvedModel": {"capabilities": {"chat": True, "vision": True}},
+            "resolvedProvider": {"api_standard": "openai", "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"},
+        },
+    )
+
+    status = audio_routes.build_audio_input_status()
+
+    assert status["route"] == "unavailable"
+    assert status["visionAudio"]["usable"] is False
+    assert status["visionAudio"]["reason"] == "vision_audio_provider_endpoint_not_audio_capable"
+
+
+def test_audio_input_status_allows_explicit_audio_metadata_under_generic_openai(monkeypatch):
+    monkeypatch.setattr(
+        audio_routes.AudioConfigManager,
+        "get_config",
+        staticmethod(lambda: {
+            "stt": {
+                "active_provider": "baidu",
+                "providers": {
+                    "baidu": {"api_key": "", "secret_key": ""},
+                },
+            },
+        }),
+    )
+    monkeypatch.setattr(
+        audio_routes.model_control_plane,
+        "resolve_model_for_role",
+        lambda role: {
+            "resolvedModelId": "custom-audio-vision",
+            "resolvedProviderId": "custom",
+            "resolvedModel": {"audioInput": True, "capabilities": {"chat": True, "vision": True}},
+            "resolvedProvider": {"api_standard": "openai", "base_url": "https://proxy.example.test/v1"},
         },
     )
 
@@ -88,6 +153,7 @@ def test_audio_input_status_matches_compact_doubao_audio_model_name(monkeypatch)
 
     assert status["route"] == "vision_audio"
     assert status["visionAudio"]["usable"] is True
+    assert status["visionAudio"]["audioSource"] == "model_metadata"
 
 
 def test_audio_input_status_reports_unavailable_without_stt_or_audio_model(monkeypatch):

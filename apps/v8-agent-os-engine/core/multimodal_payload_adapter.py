@@ -61,6 +61,42 @@ def _strip_data_url(value: str) -> str:
     return text
 
 
+def _data_url_for_audio(value: str, mime_type: str) -> str:
+    text = str(value or "")
+    if text.startswith("data:"):
+        return text
+    mime = (mime_type or "audio/mpeg").split(";", 1)[0].strip() or "audio/mpeg"
+    return f"data:{mime};base64,{_strip_data_url(text)}"
+
+
+def _audio_payload_profile(*, api_standard: str, provider_id: str = "", model_id: str = "") -> str:
+    normalized_api = (api_standard or "openai").lower()
+    provider = (provider_id or "").lower()
+    model = (model_id or "").lower()
+    joined = f"{provider} {model}"
+    if normalized_api in {"google", "gemini"}:
+        return "gemini_media"
+    if "mimo" in joined or "xiaomi" in joined:
+        return "mimo_audio_url"
+    if "doubao" in joined or "volcengine" in joined or "ark" in joined:
+        return "ark_input_audio"
+    return "openai_input_audio"
+
+
+def describe_multimodal_payload_shape(
+    *,
+    mime_type: str,
+    api_standard: str = "openai",
+    provider_id: str = "",
+    model_id: str = "",
+    transport_mode: str = "url_reference",
+) -> str:
+    kind = infer_media_kind(mime_type)
+    if kind != "audio":
+        return f"{kind}:{(api_standard or 'openai').lower()}:{(transport_mode or 'url_reference').lower()}"
+    return f"audio:{_audio_payload_profile(api_standard=api_standard, provider_id=provider_id, model_id=model_id)}:{(transport_mode or 'url_reference').lower()}"
+
+
 def build_multimodal_content(
     *,
     prompt: str,
@@ -68,6 +104,8 @@ def build_multimodal_content(
     mime_type: str,
     api_standard: str = "openai",
     transport_mode: str = "url_reference",
+    provider_id: str = "",
+    model_id: str = "",
 ) -> List[Dict[str, Any]]:
     normalized_api = (api_standard or "openai").lower()
     normalized_transport = (transport_mode or "url_reference").lower()
@@ -86,14 +124,27 @@ def build_multimodal_content(
         return content
 
     if kind == "audio":
+        payload_profile = _audio_payload_profile(
+            api_standard=normalized_api,
+            provider_id=provider_id,
+            model_id=model_id,
+        )
         if normalized_transport == "inline_base64_audio":
             audio_data = _strip_data_url(media_url)
-            if normalized_api in {"google", "gemini"}:
+            if payload_profile == "gemini_media":
                 content.append(
                     {
                         "type": "media",
                         "data": audio_data,
                         "mime_type": mime_type,
+                    }
+                )
+                return content
+            if payload_profile == "mimo_audio_url":
+                content.append(
+                    {
+                        "type": "input_audio",
+                        "audio_url": _data_url_for_audio(media_url, mime_type),
                     }
                 )
                 return content
@@ -109,12 +160,20 @@ def build_multimodal_content(
             return content
 
         if normalized_transport == "url_reference":
-            if normalized_api in {"google", "gemini"}:
+            if payload_profile == "gemini_media":
                 content.append(
                     {
                         "type": "media",
                         "file_uri": media_url,
                         "mime_type": mime_type,
+                    }
+                )
+                return content
+            if payload_profile == "mimo_audio_url":
+                content.append(
+                    {
+                        "type": "input_audio",
+                        "audio_url": media_url,
                     }
                 )
                 return content
@@ -172,12 +231,21 @@ def build_multimodal_payload_metadata(
     transport_mode: str = "url_reference",
     source_ref: str = "",
     byte_size: int | None = None,
+    provider_id: str = "",
+    model_id: str = "",
 ) -> Dict[str, Any]:
     metadata = {
         "mimeType": mime_type,
         "mediaKind": infer_media_kind(mime_type),
         "apiStandard": (api_standard or "openai").lower(),
         "transportMode": (transport_mode or "url_reference").lower(),
+        "payloadShape": describe_multimodal_payload_shape(
+            mime_type=mime_type,
+            api_standard=api_standard,
+            provider_id=provider_id,
+            model_id=model_id,
+            transport_mode=transport_mode,
+        ),
     }
     if byte_size is not None:
         metadata["byteSize"] = int(byte_size)

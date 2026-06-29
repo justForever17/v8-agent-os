@@ -29,6 +29,7 @@ from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.multimodal_payload_adapter import (
     build_multimodal_content,
     build_multimodal_payload_metadata,
+    describe_multimodal_payload_shape,
     infer_media_kind,
 )
 from core.workspace_resolution import workspace_resolution_service
@@ -181,6 +182,56 @@ def _document_redirect_message(media_kind: str) -> str:
     if media_kind in {"document", "file"}:
         return "当前 vision_media_analyzer 不再承担文档直读，请改用 web_fetch 或文本抽取链路。"
     return "当前 vision_media_analyzer 只处理图片、视频和音频。"
+
+
+def _detail_ref_for_failure(tool_call_id: str = "") -> str:
+    normalized = str(tool_call_id or "").strip()
+    return f"tool_call:{normalized}" if normalized else "tool_call:vision_media_analyzer"
+
+
+def _provider_rejected_audio(reason: str) -> bool:
+    lowered = str(reason or "").lower()
+    return (
+        "input_audio" in lowered
+        and (
+            "not supported" in lowered
+            or "invalidparameter" in lowered
+            or "badrequest" in lowered
+            or "capability_mismatch" in lowered
+        )
+    )
+
+
+def _vision_failure_markdown(
+    *,
+    media_kind: str,
+    reason: str,
+    tool_call_id: str = "",
+    raw_ref: str = "",
+) -> str:
+    if media_kind == "audio" and _provider_rejected_audio(reason):
+        result = "音频识别失败"
+        clean_reason = "当前模型接口拒绝音频输入，模型名可听不等于当前 provider 请求协议已打通。"
+        next_action = "切换到已验证支持音频输入的视觉/多模态模型，或改用系统 STT。"
+    elif media_kind == "audio":
+        result = "音频识别失败"
+        clean_reason = str(reason or "音频链路执行失败。").splitlines()[0][:220]
+        next_action = "确认音频已是 MP3，或先通过受治理的媒体处理流程转码后重试。"
+    else:
+        result = "视觉分析失败"
+        clean_reason = str(reason or "多模态分析失败。").splitlines()[0][:220]
+        next_action = "确认模型支持当前媒体类型，或换用兼容的视觉/多模态模型。"
+    lines = [
+        f"结果：{result}",
+        f"原因：{clean_reason}",
+        f"下一步：{next_action}",
+        f"detailRef：{_detail_ref_for_failure(tool_call_id)}",
+    ]
+    if raw_ref:
+        lines.append(f"rawRef：{raw_ref}")
+    else:
+        lines.append("rawRef：运行时工具详情")
+    return "\n".join(lines)
 
 
 def _audio_requires_mp3_message(mime_type: str) -> str:
@@ -540,6 +591,15 @@ def vision_media_analyzer(
             **media_route_metadata,
             **audio_metadata,
         }
+        payload_provider_id = str(metadata.get("providerId") or "")
+        payload_shape = describe_multimodal_payload_shape(
+            mime_type=mime,
+            api_standard=api_standard,
+            provider_id=payload_provider_id,
+            model_id=resolved_model_id,
+            transport_mode=transport_mode,
+        )
+        metadata["payloadShape"] = payload_shape
         if inline_image_payload is not None:
             metadata["byteSize"] = int((inline_image_payload.get("byteSize") or 0) or 0)
         if inline_media_byte_size is not None:
@@ -587,6 +647,8 @@ def vision_media_analyzer(
             mime_type=mime,
             api_standard=api_standard,
             transport_mode=transport_mode,
+            provider_id=payload_provider_id,
+            model_id=resolved_model_id,
         )
              
         # 4. Invoke LLM
@@ -599,7 +661,12 @@ def vision_media_analyzer(
             transport_mode=transport_mode,
             source_ref=display_source,
             byte_size=inline_media_byte_size,
+            provider_id=payload_provider_id,
+            model_id=resolved_model_id,
         )
+        payload_metadata["providerId"] = payload_provider_id
+        payload_metadata["modelId"] = resolved_model_id
+        payload_metadata["role"] = resolved_role
         for key in (
             "audioInputMimeType",
             "audioOriginalByteSize",
@@ -624,10 +691,23 @@ def vision_media_analyzer(
 
         sanitized = sanitize_background_model_output(response)
         if not sanitized.text:
-            return "Vision Media Analysis Failed: background_output_no_visible_text"
+            return _vision_failure_markdown(
+                media_kind=media_kind,
+                reason="background_output_no_visible_text",
+                tool_call_id=tool_call_id,
+            )
         return f"--- Vision Analysis Complete ---\nSource: {display_source}\n{sanitized.text}"
         
     except ModelGovernanceInterventionRequired:
         raise
     except Exception as e:
-        return f"Vision Media Analysis Failed: {str(e)}"
+        print(f"[VisionMediaAnalyzer] Raw provider/runtime failure: {repr(e)}")
+        try:
+            failed_kind = media_kind
+        except Exception:
+            failed_kind = "file"
+        return _vision_failure_markdown(
+            media_kind=failed_kind,
+            reason=str(e),
+            tool_call_id=tool_call_id,
+        )

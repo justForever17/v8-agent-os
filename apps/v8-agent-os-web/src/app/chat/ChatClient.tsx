@@ -37,7 +37,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
 import { useSession } from "next-auth/react";
 import { LoginDialog } from "@/components/auth/LoginDialog";
-import { Bot, FolderTree, TerminalSquare } from "lucide-react";
+import { Bot, FolderTree, TerminalSquare, PanelRight, X } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { RunControlBar } from "@/components/chat/RunControlBar";
 import { Button } from "@/components/ui/button";
@@ -457,8 +457,35 @@ export default function ChatClient() {
     const lastSessionProcessSurfaceAtRef = useRef(0);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
     const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
+    const [sidebarOpen, setSidebarOpen] = useState(() => {
+        if (typeof window !== "undefined") {
+            const val = localStorage.getItem("v8-web-sidebar-open");
+            return val !== "false";
+        }
+        return true;
+    });
+    const [terminalOpen, setTerminalOpen] = useState(() => {
+        if (typeof window !== "undefined") {
+            const val = localStorage.getItem("v8-web-terminal-open");
+            return val === "true";
+        }
+        return false;
+    });
     const [workbenchOpen, setWorkbenchOpen] = useState(false);
     const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("terminal");
+
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            localStorage.setItem("v8-web-sidebar-open", String(sidebarOpen));
+        }
+    }, [sidebarOpen]);
+
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            localStorage.setItem("v8-web-terminal-open", String(terminalOpen));
+        }
+    }, [terminalOpen]);
+
     const [isContextExpanded, setIsContextExpanded] = useState(false);
     const [localHour, setLocalHour] = useState<number>(9);
     const viewportBaselineRef = useRef(0);
@@ -1773,7 +1800,10 @@ export default function ChatClient() {
 
     return (
         <div className="relative flex h-full min-h-0 w-full overflow-hidden overscroll-none bg-transparent">
-            <div className={cn("mx-auto flex h-full min-h-0 w-full flex-col px-2 pt-0.5 sm:px-4 sm:pt-1 lg:px-6", contentShellClassName)}>
+            {/* 中间+左侧 主工作区 */}
+            <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+                {/* 消息与聊天流窗口 */}
+                <div className={cn("mx-auto flex h-full min-h-0 w-full flex-1 flex-col px-2 pt-0.5 sm:px-4 sm:pt-1 lg:px-6", contentShellClassName)}>
                 <div className="shrink-0 flex flex-col gap-1">
                     <div className="scrollbar-none flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden pb-0.5 sm:gap-1">
                         <button
@@ -1815,20 +1845,32 @@ export default function ChatClient() {
                             }}
                         />
                         <div className="ml-auto flex shrink-0 justify-end gap-1">
+                            {/* 终端开关 */}
                             <button
                                 type="button"
                                 className={cn(
                                     "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
-                                    workbenchOpen && workbenchTab === "terminal" ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                    terminalOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
                                 )}
-                                onClick={() => {
-                                    setWorkbenchTab("terminal");
-                                    setWorkbenchOpen(true);
-                                }}
-                                aria-label={t(lt("终端", "Terminal"))}
-                                title={t(lt("终端", "Terminal"))}
+                                onClick={() => setTerminalOpen((prev) => !prev)}
+                                aria-label={t(lt("终端面板", "Terminal Panel"))}
+                                title={t(lt("终端面板", "Terminal Panel"))}
                             >
                                 <TerminalSquare className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
+                            </button>
+
+                            {/* 侧边栏开关 */}
+                            <button
+                                type="button"
+                                className={cn(
+                                    "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
+                                    sidebarOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                )}
+                                onClick={() => setSidebarOpen((prev) => !prev)}
+                                aria-label={t(lt("侧边栏", "Sidebar"))}
+                                title={t(lt("侧边栏", "Sidebar"))}
+                            >
+                                <PanelRight className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
                             </button>
                         </div>
                     </div>
@@ -2062,58 +2104,120 @@ export default function ChatClient() {
                 </div>
             </div>
 
-            <AskUserModal
-                key={askUserApprovalId || askUserToolCallId || 'default-modal'}
-                isOpen={askUserModalOpen}
-                question={askUserQuestion}
-                toolCallId={askUserToolCallId}
-                onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
-                onCancel={() => {
-                    setAskUserModalOpen(false);
-                }}
-            />
-
-            <GovernanceApprovalModal
-                isOpen={governanceApprovalOpen}
-                approval={governancePendingApproval}
-                busy={governanceApprovalBusy}
-                onApprove={(answer) => handleGovernanceApprovalResolve(answer, true)}
-                onReject={(answer) => handleGovernanceApprovalResolve(answer, false)}
-                onViewDetails={handleGovernanceApprovalViewDetails}
-                onCancel={handleGovernanceApprovalDismiss}
-            />
-
-            <ArtifactsPanel sessionId={activeConversationId} />
-
-            <WorkspaceWorkbenchPanel
-                open={workbenchOpen}
-                activeTab={workbenchTab}
-                onOpenChange={setWorkbenchOpen}
-                onTabChange={setWorkbenchTab}
-                workspacePath={scopeBinding?.workspacePath || mainWorkspacePath}
-                messages={messages}
-                processes={hudProcesses}
-                todos={projectionTodos}
-                todoStale={projectionTodoStale}
-                runtimeModel={runtimeStageModel}
-                selectedRuntimeId={selectedRuntimeId}
-                onSelectRuntime={setSelectedRuntimeId}
-                onOpenRuntimeDetail={() => setIsTimelineOpen(true)}
-            />
-
-            <RuntimeTimelinePanel
-                isOpen={isTimelineOpen}
-                onClose={() => setIsTimelineOpen(false)}
-                model={runtimeStageModel}
-                selectedRuntimeId={selectedRuntimeId}
-                processes={hudProcesses}
-                overallStatus={effectiveStatus}
-                currentStepTitle={sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null}
-                pendingApproval={effectivePendingApproval}
-                contextGovernance={projectionContextGovernanceRaw}
-                contextGovernanceHistory={projectionContextGovernanceHistoryRaw}
-                onSelectRuntime={setSelectedRuntimeId}
-            />
+            {/* 底部折叠式终端栏面板 */}
+            {terminalOpen && (
+                <div className="h-64 shrink-0 border-t border-border/60 bg-background/95 shadow-sm backdrop-blur flex flex-col overflow-hidden sm:max-h-[30vh] z-30">
+                    {/* 终端面板头部 */}
+                    <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2 text-[11px] text-muted-foreground bg-muted/30">
+                        <span className="font-semibold text-foreground">手动终端</span>
+                        <span className="opacity-60">·</span>
+                        <span className="font-mono text-muted-foreground/80 truncate">
+                            {scopeBinding?.workspacePath || mainWorkspacePath || "未绑定工作区"}
+                        </span>
+                        <button
+                            type="button"
+                            className="ml-auto flex h-5 w-5 items-center justify-center rounded hover:bg-muted hover:text-foreground"
+                            onClick={() => setTerminalOpen(false)}
+                            title="折叠终端"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    </div>
+                    {/* 终端面板正文 (符合规则8的待接入/禁用新建终端) */}
+                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-[11px] text-muted-foreground space-y-3 bg-muted/10 font-mono">
+                        <div className="max-w-md p-4 rounded-xl border border-dashed border-border bg-background/50 text-left">
+                            <div className="space-y-1">
+                                <div className="text-green-500 font-semibold">$ v8chat --workspace-init</div>
+                                <div className="text-muted-foreground/70">Workspace: {scopeBinding?.workspacePath || mainWorkspacePath || "Unbound"}</div>
+                                <div className="text-amber-500 font-semibold mt-2">[Warning] 独立用户调试终端暂未开启</div>
+                                <div className="text-muted-foreground/60 leading-relaxed">当前版本尚未打通独立拉起未定义命令的安全 PTY 调试接口。需要交互时，请通过右上角开启【侧边栏】，Agent 启动的后台进程（如 git/shell/python）会在【活跃进程】模块中自动提供实时交互 attach 终端。</div>
+                            </div>
+                        </div>
+                        <Button disabled className="h-8 rounded-lg px-4 text-xs bg-muted text-muted-foreground border border-border cursor-not-allowed">
+                            新建手动终端 (待接入)
+                        </Button>
+                    </div>
+                </div>
+            )}
         </div>
+
+        {/* 右侧可折叠的 Sidebar 栏 */}
+        {sidebarOpen && (
+            <aside className={cn(
+                "w-80 shrink-0 border-l border-border/60 bg-background/95 backdrop-blur-md flex flex-col overflow-hidden z-[60]",
+                // 移动端窄屏覆盖显示
+                "max-sm:absolute max-sm:right-0 max-sm:top-0 max-sm:h-full max-sm:w-[280px] max-sm:shadow-2xl"
+            )}>
+                {/* 右侧边栏头部 */}
+                <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3 shrink-0">
+                    <span className="text-sm font-semibold">工作台侧边栏</span>
+                    <button
+                        type="button"
+                        className="ml-auto flex h-6 w-6 items-center justify-center rounded-lg hover:bg-muted hover:text-foreground"
+                        onClick={() => setSidebarOpen(false)}
+                        title="折叠侧边栏"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+
+                {/* 右侧边栏内容滚动区 */}
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+                    <WorkspaceWorkbenchPanel
+                        open={sidebarOpen}
+                        activeTab={workbenchTab}
+                        onOpenChange={setSidebarOpen}
+                        onTabChange={setWorkbenchTab}
+                        workspacePath={scopeBinding?.workspacePath || mainWorkspacePath}
+                        messages={messages}
+                        processes={hudProcesses}
+                        todos={projectionTodos}
+                        todoStale={projectionTodoStale}
+                        runtimeModel={runtimeStageModel}
+                        selectedRuntimeId={selectedRuntimeId}
+                        onSelectRuntime={setSelectedRuntimeId}
+                        onOpenRuntimeDetail={() => setIsTimelineOpen(true)}
+                    />
+                </div>
+            </aside>
+        )}
+
+        <AskUserModal
+            key={askUserApprovalId || askUserToolCallId || 'default-modal'}
+            isOpen={askUserModalOpen}
+            question={askUserQuestion}
+            toolCallId={askUserToolCallId}
+            onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
+            onCancel={() => {
+                setAskUserModalOpen(false);
+            }}
+        />
+
+        <GovernanceApprovalModal
+            isOpen={governanceApprovalOpen}
+            approval={governancePendingApproval}
+            busy={governanceApprovalBusy}
+            onApprove={(answer) => handleGovernanceApprovalResolve(answer, true)}
+            onReject={(answer) => handleGovernanceApprovalResolve(answer, false)}
+            onViewDetails={handleGovernanceApprovalViewDetails}
+            onCancel={handleGovernanceApprovalDismiss}
+        />
+
+        <ArtifactsPanel sessionId={activeConversationId} />
+
+        <RuntimeTimelinePanel
+            isOpen={isTimelineOpen}
+            onClose={() => setIsTimelineOpen(false)}
+            model={runtimeStageModel}
+            selectedRuntimeId={selectedRuntimeId}
+            processes={hudProcesses}
+            overallStatus={effectiveStatus}
+            currentStepTitle={sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null}
+            pendingApproval={effectivePendingApproval}
+            contextGovernance={projectionContextGovernanceRaw}
+            contextGovernanceHistory={projectionContextGovernanceHistoryRaw}
+            onSelectRuntime={setSelectedRuntimeId}
+        />
+    </div>
     );
 }

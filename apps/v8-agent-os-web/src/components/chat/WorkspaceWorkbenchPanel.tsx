@@ -280,175 +280,140 @@ export function WorkspaceWorkbenchPanel({
         onOpenChange(true);
     };
 
-    const activeMeta = tabMeta[activeTab];
-    const ActiveIcon = activeMeta.icon;
+    const hasRuntimeActivity = useMemo(() => {
+        return runtimeModel.items.some((item) => item.status !== "idle" || item.eventCount > 0);
+    }, [runtimeModel.items]);
+
+    const hasAnyContent = activeProcesses.length > 0 || artifacts.length > 0 || normalizedTodos.length > 0 || diffHints.length > 0 || hasRuntimeActivity;
 
     return (
-        <div className="pointer-events-none fixed right-3 top-[5.75rem] z-[70] flex max-h-[calc(100vh-7rem)] items-start gap-2 lg:right-4">
-            {open ? (
-                <aside className="pointer-events-auto flex max-h-[calc(100vh-7rem)] w-[min(380px,calc(100vw-5.75rem))] flex-col overflow-hidden rounded-[24px] border border-border/70 bg-background/94 shadow-[0_24px_90px_rgba(15,23,42,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/92">
-                    <header className="flex items-center gap-3 border-b border-border/60 px-4 py-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                            <ActiveIcon className="h-4 w-4" />
+        <div className="w-full flex flex-col gap-3">
+            {!hasAnyContent ? (
+                <EmptyLine>
+                    <div className="py-4 space-y-1">
+                        <div className="font-semibold text-foreground/85">工作台无活跃内容</div>
+                        <div className="text-[10px] text-muted-foreground/75 leading-relaxed">
+                            当 Agent 在对话中生成了新文件（产物）、编排了任务、产生了代码变更线索或触发了后台长任务时，对应模块会自动在此浮现。
                         </div>
-                        <div className="min-w-0">
-                            <div className="text-sm font-semibold">{activeMeta.label}</div>
-                            <div className="truncate text-[11px] text-muted-foreground">
-                                {workspacePath || "当前会话未绑定工作区"}
-                            </div>
-                        </div>
-                        <button
-                            type="button"
-                            aria-label="关闭工作台"
-                            title="关闭工作台"
-                            onClick={() => onOpenChange(false)}
-                            className="ml-auto flex h-8 w-8 items-center justify-center rounded-xl text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                        >
-                            <X className="h-4 w-4" />
-                        </button>
-                    </header>
-
-                    <div className="custom-scrollbar flex-1 space-y-3 overflow-y-auto p-3">
-                        {activeTab === "terminal" ? (
-                            <>
-                                <PanelSection title="当前路径" icon={TerminalSquare}>
-                                    <div className="rounded-xl bg-muted/55 px-3 py-2 font-mono text-xs leading-5 text-foreground/85">
-                                        {workspacePath || "未绑定工作区"}
-                                    </div>
-                                </PanelSection>
-                                <PanelSection title="会话进程" icon={TerminalSquare}>
-                                    {processes.length > 0 ? (
-                                        <div className="space-y-2">
-                                            {processes.map((process) => (
-                                                <InteractiveTerminalCard key={process.processId} process={process} compact />
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <EmptyLine>还没有由当前会话启动的终端进程。</EmptyLine>
-                                    )}
-                                </PanelSection>
-                            </>
-                        ) : null}
-
-                        {activeTab === "artifacts" ? (
-                            <PanelSection title="产物" icon={Box}>
-                                {artifacts.length > 0 ? (
-                                    <div className="space-y-2">
-                                        {artifacts.map((artifact) => (
-                                            <button
-                                                key={artifact.id}
-                                                type="button"
-                                                onClick={() => setActiveArtifactId(artifact.id)}
-                                                className="w-full rounded-xl border border-border/60 bg-background px-3 py-2 text-left transition hover:border-primary/35 hover:bg-primary/5"
-                                            >
-                                                <div className="flex items-center gap-2">
-                                                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                                    <span className="min-w-0 truncate text-sm font-medium">
-                                                        {artifact.displayLabel || artifact.title || artifact.id}
-                                                    </span>
-                                                </div>
-                                                <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                                                    {artifact.workspaceRelativePath || artifact.canonicalPath || artifact.displaySubtitle || artifact.kind || "产物"}
-                                                </div>
-                                            </button>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <EmptyLine>当前会话还没有产物。</EmptyLine>
-                                )}
-                            </PanelSection>
-                        ) : null}
-
-                        {activeTab === "todos" ? (
-                            <PanelSection title={todoStale ? "任务进度 · 可能过期" : "任务进度"} icon={ListTodo}>
-                                {normalizedTodos.length > 0 ? (
-                                    <div className="space-y-2">
-                                        {normalizedTodos.map((todo) => {
-                                            const done = todo.status === "done" || todo.status === "skipped";
-                                            return (
-                                                <div key={todo.id} className="flex gap-2 rounded-xl border border-border/60 bg-background px-3 py-2">
-                                                    <span className={cn("mt-1 h-2 w-2 rounded-full", done ? "bg-emerald-500" : todo.status === "in_progress" ? "bg-primary" : "bg-muted-foreground/35")} />
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className={cn("text-sm leading-5", done && "text-muted-foreground line-through")}>{todo.text}</div>
-                                                        <div className="mt-0.5 text-[11px] text-muted-foreground">{todo.status || "pending"}</div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                ) : (
-                                    <EmptyLine>当前没有 Supervisor 编排进度。</EmptyLine>
-                                )}
-                            </PanelSection>
-                        ) : null}
-
-                        {activeTab === "diff" ? (
-                            <PanelSection title="Diff 线索" icon={GitCompareArrows}>
-                                {diffHints.length > 0 ? (
-                                    <div className="space-y-2">
-                                        {diffHints.map((hint) => (
-                                            <div key={hint.id} className="rounded-xl border border-border/60 bg-background px-3 py-2">
-                                                <div className="flex items-center gap-2">
-                                                    <Code2 className={cn("h-4 w-4 shrink-0", hint.tone === "write" ? "text-primary" : "text-muted-foreground")} />
-                                                    <span className="min-w-0 truncate text-sm font-medium">{hint.title}</span>
-                                                </div>
-                                                <div className="mt-1 truncate text-[11px] text-muted-foreground">{hint.subtitle}</div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <EmptyLine>还没有可展示的文件变更线索。</EmptyLine>
-                                )}
-                            </PanelSection>
-                        ) : null}
-
-                        {activeTab === "runtime" ? (
-                            <PanelSection title="Runtime 状态" icon={Route}>
-                                {runtimeModel.items.length > 0 ? (
-                                    <div className="space-y-2">
-                                        {runtimeModel.items.map((item) => (
-                                            <button
-                                                key={item.id}
-                                                type="button"
-                                                onClick={() => onSelectRuntime(item.id)}
-                                                className={cn(
-                                                    "w-full rounded-xl border border-border/60 bg-background px-3 py-2 text-left transition hover:border-primary/35 hover:bg-primary/5",
-                                                    selectedRuntimeId === item.id && "border-primary/35 bg-primary/5",
-                                                )}
-                                            >
-                                                <div className="flex items-center gap-2">
-                                                    <span className={cn(
-                                                        "h-2 w-2 rounded-full",
-                                                        item.status === "active" ? "bg-emerald-500" : item.status === "attention" ? "bg-rose-500" : item.status === "recent" ? "bg-amber-500" : "bg-muted-foreground/30",
-                                                    )} />
-                                                    <span className="min-w-0 truncate text-sm font-medium">{item.label}</span>
-                                                    {item.eventCount > 0 ? <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{item.eventCount}</span> : null}
-                                                </div>
-                                                <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                                                    {item.lastActivity || item.stepTitle || item.description}
-                                                    {item.lastTimestamp ? ` · ${formatRelativeRuntimeTime(item.lastTimestamp)}` : ""}
-                                                </div>
-                                            </button>
-                                        ))}
-                                        <button
-                                            type="button"
-                                            onClick={onOpenRuntimeDetail}
-                                            className="mt-1 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-border/70 bg-muted/40 text-xs font-medium text-foreground transition hover:bg-muted"
-                                        >
-                                            <Maximize2 className="h-3.5 w-3.5" />
-                                            展开执行地图
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <EmptyLine>当前没有 runtime 状态。</EmptyLine>
-                                )}
-                            </PanelSection>
-                        ) : null}
                     </div>
-                </aside>
-            ) : null}
+                </EmptyLine>
+            ) : (
+                <>
+                    {/* 活跃进程 (Active Processes) -> InteractiveTerminalCard */}
+                    {activeProcesses.length > 0 && (
+                        <PanelSection title="活跃进程" icon={TerminalSquare}>
+                            <div className="space-y-2">
+                                {activeProcesses.map((process) => (
+                                    <InteractiveTerminalCard key={process.processId} process={process} compact />
+                                ))}
+                            </div>
+                        </PanelSection>
+                    )}
 
-            <WorkbenchRail activeTab={activeTab} open={open} counts={counts} onSelect={selectTab} />
+                    {/* 产物 (Artifacts) */}
+                    {artifacts.length > 0 && (
+                        <PanelSection title="生成产物" icon={Box}>
+                            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5 custom-scrollbar">
+                                {artifacts.map((artifact) => (
+                                    <button
+                                        key={artifact.id}
+                                        type="button"
+                                        onClick={() => setActiveArtifactId(artifact.id)}
+                                        className="w-full rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-left transition hover:border-primary/35 hover:bg-primary/5"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                            <span className="min-w-0 truncate text-xs font-medium">
+                                                {artifact.displayLabel || artifact.title || artifact.id}
+                                            </span>
+                                        </div>
+                                        <div className="mt-0.5 truncate text-[10px] text-muted-foreground/85">
+                                            {artifact.workspaceRelativePath || artifact.canonicalPath || artifact.displaySubtitle || artifact.kind || "产物"}
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </PanelSection>
+                    )}
+
+                    {/* 任务进度 (Todos) */}
+                    {normalizedTodos.length > 0 && (
+                        <PanelSection title={todoStale ? "任务进度 · 可能过期" : "任务进度"} icon={ListTodo}>
+                            <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5 custom-scrollbar">
+                                {normalizedTodos.map((todo) => {
+                                    const done = todo.status === "done" || todo.status === "skipped";
+                                    return (
+                                        <div key={todo.id} className="flex gap-2 rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-xs">
+                                            <span className={cn("mt-1.5 h-1.5 w-1.5 rounded-full shrink-0", done ? "bg-emerald-500" : todo.status === "in_progress" ? "bg-primary" : "bg-muted-foreground/35")} />
+                                            <div className="min-w-0 flex-1">
+                                                <div className={cn("leading-relaxed", done && "text-muted-foreground line-through")}>{todo.text}</div>
+                                                <div className="mt-0.5 text-[10px] text-muted-foreground/75">{todo.status || "pending"}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </PanelSection>
+                    )}
+
+                    {/* Diff 线索 (Diff Hints) */}
+                    {diffHints.length > 0 && (
+                        <PanelSection title="Diff 线索" icon={GitCompareArrows}>
+                            <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5 custom-scrollbar">
+                                {diffHints.map((hint) => (
+                                    <div key={hint.id} className="rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-xs">
+                                        <div className="flex items-center gap-2">
+                                            <Code2 className={cn("h-4 w-4 shrink-0", hint.tone === "write" ? "text-primary" : "text-muted-foreground")} />
+                                            <span className="min-w-0 truncate font-medium">{hint.title}</span>
+                                        </div>
+                                        <div className="mt-0.5 truncate text-[10px] text-muted-foreground/80">{hint.subtitle}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </PanelSection>
+                    )}
+
+                    {/* Runtime 状态 (Runtime) */}
+                    {hasRuntimeActivity && (
+                        <PanelSection title="Runtime 状态" icon={Route}>
+                            <div className="space-y-1.5">
+                                {runtimeModel.items.map((item) => (
+                                    <button
+                                        key={item.id}
+                                        type="button"
+                                        onClick={() => onSelectRuntime(item.id)}
+                                        className={cn(
+                                            "w-full rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-left transition hover:border-primary/35 hover:bg-primary/5",
+                                            selectedRuntimeId === item.id && "border-primary/35 bg-primary/5",
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <span className={cn(
+                                                "h-1.5 w-1.5 rounded-full shrink-0",
+                                                item.status === "active" ? "bg-emerald-500" : item.status === "attention" ? "bg-rose-500" : item.status === "recent" ? "bg-amber-500" : "bg-muted-foreground/30",
+                                            )} />
+                                            <span className="min-w-0 truncate text-xs font-medium">{item.label}</span>
+                                            {item.eventCount > 0 ? <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{item.eventCount}</span> : null}
+                                        </div>
+                                        <div className="mt-0.5 truncate text-[10px] text-muted-foreground/80">
+                                            {item.lastActivity || item.stepTitle || item.description}
+                                            {item.lastTimestamp ? ` · ${formatRelativeRuntimeTime(item.lastTimestamp)}` : ""}
+                                        </div>
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={onOpenRuntimeDetail}
+                                    className="mt-1 inline-flex h-8 w-full items-center justify-center gap-2 rounded-xl border border-border/70 bg-muted/40 text-[11px] font-medium text-foreground transition hover:bg-muted"
+                                >
+                                    <Maximize2 className="h-3.5 w-3.5" />
+                                    展开执行地图
+                                </button>
+                            </div>
+                        </PanelSection>
+                    )}
+                </>
+            )}
         </div>
     );
 }

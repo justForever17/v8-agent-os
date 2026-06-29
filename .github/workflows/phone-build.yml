@@ -59,7 +59,7 @@ jobs:
 
       - name: Build Android APK
         run: >
-          npx eas-cli build
+          eas build
           --local
           --non-interactive
           --platform android

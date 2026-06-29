@@ -1628,7 +1628,7 @@ export default function ChatClient() {
         }
 
         try {
-            await sendMessage(t(lt("这是一段语音输入，请识别音频内容并继续处理。", "This is a voice input. Please understand the audio and continue.")), {
+            await sendMessage("", {
                 agentId: undefined,
                 userId: session?.user?.id,
                 ...buildScopePayload(activeConversationIdRef.current),

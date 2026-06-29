@@ -38,12 +38,12 @@ export async function POST(req: NextRequest) {
         }
 
         const data = await res.json();
-        // Normalize response to what InputArea expects (Admin returns file object with 'url')
-        // InputArea (old) expected { url, publicUrl }.
-        // InputArea (new) will expect { url: finalUrl }.
-
-        // Admin returns the File object (Prisma). It has 'url' property.
-        return NextResponse.json({ url: data.url, publicUrl: data.url });
+        const normalizedUrl = String(data?.url || data?.publicUrl || data?.workspacePath || data?.path || "").trim();
+        return NextResponse.json({
+            ...data,
+            url: normalizedUrl || data?.url,
+            publicUrl: String(data?.publicUrl || data?.url || normalizedUrl || "").trim() || undefined,
+        });
 
     } catch (error) {
         console.error("Upload Proxy Error:", error);

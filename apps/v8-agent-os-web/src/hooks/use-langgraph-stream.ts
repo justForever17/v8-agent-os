@@ -91,6 +91,24 @@ function applyScopeRequestFields(requestBody: Record<string, unknown>, data?: Re
     }
 }
 
+function attachmentUrl(item: Record<string, unknown>) {
+    return String(item.publicUrl || item.url || item.workspacePath || "").trim();
+}
+
+function attachmentMime(item: Record<string, unknown>) {
+    return String(item.mimeType || item.mime_type || item.type || "").toLowerCase();
+}
+
+function isAudioAttachment(item: Record<string, unknown>) {
+    const url = attachmentUrl(item).toLowerCase();
+    const kind = String(item.mediaKind || item.previewKind || "").toLowerCase();
+    return kind === "audio" || attachmentMime(item).startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(url);
+}
+
+function isAudioUrl(value: string) {
+    return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(String(value || "").trim());
+}
+
 export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
     const { messages, setMessages, isLoading, setIsLoading } = useChatStore();
     const abortControllerRef = useRef<AbortableTransport | null>(null);
@@ -365,16 +383,22 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 }))
                 .filter((item: { name: string; description: string; path: string }) => item.name || item.path);
         }
-        const dataAttachments = Array.isArray(data?.attachments)
+        const dataAttachments: Record<string, unknown>[] = Array.isArray(data?.attachments)
             ? data.attachments.filter((item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
             : [];
-        const nextImages = Array.isArray(data?.fileUrls)
-            ? data.fileUrls
-            : dataAttachments
-                .map((item: Record<string, unknown>) => item.publicUrl || item.url || item.workspacePath)
-                .filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0);
-        const effectiveUserMessage = userMessage.trim()
-            || (nextImages.length === 1 ? '已上传 1 个文件' : nextImages.length > 1 ? `已上传 ${nextImages.length} 个文件` : '');
+        if (dataAttachments.length > 0) {
+            optimisticMetadata.attachments = dataAttachments;
+        }
+        const allFileUrls: string[] = Array.isArray(data?.fileUrls)
+            ? data.fileUrls.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+            : dataAttachments.map(attachmentUrl).filter(Boolean);
+        const nextImages: string[] = dataAttachments.length > 0
+            ? dataAttachments
+                .filter((item: Record<string, unknown>) => !isAudioAttachment(item))
+                .map(attachmentUrl)
+                .filter((item): item is string => Boolean(item))
+            : allFileUrls.filter((url: string) => !isAudioUrl(url));
+        const effectiveUserMessage = userMessage.trim();
         const nextNodes = effectiveUserMessage.trim()
             ? [{ id: createClientId('node'), kind: 'narrative' as const, role: 'user' as const, content: effectiveUserMessage, timestamp: Date.now() }]
             : [];
@@ -405,7 +429,7 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             const requestBody: any = {
                 messages: [...currentMessages, tempUserMsg].map(m => ({ role: m.role, content: m.content })), // Send only history up to user msg
                 data: data, // Keep passing the whole object just in case backend expects it
-                fileUrls: nextImages, // Explicitly pass fileUrls
+                fileUrls: allFileUrls, // Explicitly pass all uploaded refs, including audio
                 attachments: dataAttachments,
             };
             applyScopeRequestFields(requestBody, data);

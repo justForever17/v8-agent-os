@@ -358,7 +358,7 @@ export type UploadedWorkspaceFile = {
     resourceRef?: AdminResourceRef | null;
     localUri?: string;
     previewUri?: string;
-    previewKind?: "image" | "video" | "file";
+    previewKind?: "image" | "video" | "audio" | "file";
     durationLabel?: string;
 };
 

@@ -753,6 +753,129 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual(snapshot["latest_seq"], 7)
 
 
+class AttachmentPreflightContractTest(unittest.TestCase):
+    def _chat_run(self, *, tmp_path: Path, latest_user_content: str, attachments: list[dict]):
+        request = ChatRequest(
+            messages=[{"role": "user", "content": latest_user_content}],
+            session_id="session-attachment",
+            conversationId="session-attachment",
+            user_id="user-attachment",
+            attachments=attachments,
+        )
+        request.attachments = attachments  # type: ignore[assignment]
+        prepared = SimpleNamespace(
+            request=request,
+            lc_messages=[chat_runtime_module.HumanMessage(content=latest_user_content)],
+            session_id="session-attachment",
+            conversation_id="session-attachment",
+            user_id="user-attachment",
+            is_resume_request=False,
+            latest_user_content=latest_user_content,
+            spec_id="",
+            spec_brief={},
+            live_audit_context={},
+        )
+        binding = SimpleNamespace(
+            workspace_path=str(tmp_path),
+            project_id="project-attachment",
+            workspace_id="workspace-attachment",
+            resolved_scope="workspace",
+        )
+        return chat_runtime_module.ChatRunContext(
+            prepared=prepared,
+            run_handle=SimpleNamespace(run_id="run-attachment"),
+            scope_result=SimpleNamespace(binding=binding),
+            transport="http",
+            existing_binding=None,
+            preflight_decision=None,
+        )
+
+    def test_audio_attachment_preflight_uses_voice_prompt_without_fake_user_text(self):
+        import asyncio
+        import tempfile
+
+        runtime = chat_runtime_module.ChatRuntime()
+        stream_state = chat_runtime_module.ChatStreamState()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            voice_path = Path(tmp) / "voice.mp3"
+            voice_path.write_bytes(b"fake-mp3")
+            chat_run = self._chat_run(
+                tmp_path=Path(tmp),
+                latest_user_content="",
+                attachments=[
+                    {
+                        "name": "voice.mp3",
+                        "workspacePath": str(voice_path),
+                        "mimeType": "audio/mpeg",
+                        "mediaKind": "audio",
+                    }
+                ],
+            )
+
+            invoke = mock.Mock(return_value="用户说：测试语音")
+            fake_tool = SimpleNamespace(invoke=invoke)
+            with mock.patch.object(
+                runtime,
+                "_emit_message_targeted_runtime_event",
+                side_effect=lambda _chat_run, _state, **kwargs: {"topic": kwargs["topic"], "payload": kwargs["payload"]},
+            ), mock.patch(
+                "core.tools.vision_media_analyzer.vision_media_analyzer",
+                fake_tool,
+            ):
+                events = asyncio.run(runtime._run_attachment_preflight(chat_run, stream_state))
+
+        self.assertEqual([event["topic"] for event in events], ["tool.started", "tool.finished"])
+        invoke_payload = invoke.call_args.args[0]
+        self.assertEqual(invoke_payload["file_path"], str(voice_path))
+        self.assertEqual(invoke_payload["prompt"], runtime._voice_extract_prompt())
+        final_user_content = chat_run.lc_messages[-1].content
+        self.assertIn("[Attachment preflight results]", final_user_content)
+        self.assertIn("用户说：测试语音", final_user_content)
+        self.assertNotIn("这是一段", final_user_content)
+
+    def test_readable_file_attachment_preflight_reads_file_before_supervisor(self):
+        import asyncio
+        import tempfile
+
+        runtime = chat_runtime_module.ChatRuntime()
+        stream_state = chat_runtime_module.ChatStreamState()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            note_path = Path(tmp) / "note.md"
+            note_path.write_text("# Demo\n需要总结。", encoding="utf-8")
+            chat_run = self._chat_run(
+                tmp_path=Path(tmp),
+                latest_user_content="请总结这个文件",
+                attachments=[
+                    {
+                        "name": "note.md",
+                        "workspacePath": str(note_path),
+                        "mimeType": "text/markdown",
+                        "mediaKind": "file",
+                    }
+                ],
+            )
+
+            invoke = mock.Mock(return_value="文件内容：Demo / 需要总结。")
+            fake_tool = SimpleNamespace(invoke=invoke)
+            with mock.patch.object(
+                runtime,
+                "_emit_message_targeted_runtime_event",
+                side_effect=lambda _chat_run, _state, **kwargs: {"topic": kwargs["topic"], "payload": kwargs["payload"]},
+            ), mock.patch(
+                "core.tools.native.workspace_file.read_native_file",
+                fake_tool,
+            ):
+                events = asyncio.run(runtime._run_attachment_preflight(chat_run, stream_state))
+
+        self.assertEqual([event["topic"] for event in events], ["tool.started", "tool.finished"])
+        invoke.assert_called_once_with({"path": str(note_path)})
+        final_user_content = chat_run.lc_messages[-1].content
+        self.assertIn("Original user text: 请总结这个文件", final_user_content)
+        self.assertIn("文件内容：Demo", final_user_content)
+
+
 if __name__ == "__main__":
     unittest.main()
 

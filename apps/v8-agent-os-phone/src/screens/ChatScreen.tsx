@@ -366,6 +366,22 @@ function buildPhaseRuntimeTimelineEntry(
     );
 }
 
+function isUploadedAudioFile(file: UploadedWorkspaceFile) {
+    const name = String(file.name || file.url || file.publicUrl || file.workspacePath || "").toLowerCase();
+    const type = String(file.type || "").toLowerCase();
+    return file.previewKind === "audio" || type.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(name);
+}
+
+function isUploadedVisualFile(file: UploadedWorkspaceFile) {
+    const name = String(file.name || file.url || file.publicUrl || file.workspacePath || "").toLowerCase();
+    const type = String(file.type || "").toLowerCase();
+    return file.previewKind === "image"
+        || file.previewKind === "video"
+        || type.startsWith("image/")
+        || type.startsWith("video/")
+        || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|mov|m4v|webm|mkv|avi)$/i.test(name);
+}
+
 function buildUserMessage(
     text: string,
     options: {
@@ -380,6 +396,9 @@ function buildUserMessage(
     const now = nowMs;
     const metadata: ChatMessage["metadata"] = {};
     const attachments = buildUploadedFileAttachments(options.files);
+    const attachmentOnlyAudio = attachments.length > 0
+        && options.files.length > 0
+        && options.files.every(isUploadedAudioFile);
     if (options.command) {
         metadata.commandPreset = { name: options.command.name };
     }
@@ -422,15 +441,16 @@ function buildUserMessage(
     return {
         id: metadata.clientMessageId as string,
         role: "user",
-        content: text || (
+        content: text || (attachmentOnlyAudio ? "" : (
             attachments.length === 1
                 ? translateCurrent("shared.upload.uploaded_single")
                 : attachments.length > 1
                     ? translateCurrent("shared.upload.uploaded_count", { count: attachments.length })
                     : ""
-        ),
+        )),
         timestamp: now,
         images: options.files
+            .filter(isUploadedVisualFile)
             .map((file) => file.url || file.publicUrl || "")
             .filter(Boolean),
         artifacts: [],
@@ -446,6 +466,9 @@ function getUploadedFilePreviewKind(name?: string, mimeType?: string): UploadedW
     }
     if (type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(filename)) {
         return "video";
+    }
+    if (type.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(filename)) {
+        return "audio";
     }
     return "file";
 }
@@ -647,6 +670,7 @@ function buildUploadedFileAttachments(files: UploadedWorkspaceFile[]) {
                 workspaceRelativePath: file.workspaceRelativePath,
                 resourceRef: file.resourceRef || undefined,
                 mimeType: file.type,
+                mediaKind: file.previewKind,
                 size: file.size,
                 source: "os_phone_upload",
             };
@@ -5024,14 +5048,14 @@ export default function ChatScreen() {
                     name: uploaded.name || filename,
                     type: uploaded.type || "audio/m4a",
                     localUri: uri,
-                    previewKind: "file",
+                    previewKind: "audio",
                 };
                 const sendVoice = handleSendRef.current;
                 if (!sendVoice) {
                     throw new Error(t("src.screens.chatscreen.unable_to_send_message"));
                 }
                 await sendVoice({
-                    text: t("src.screens.chatscreen.voice_audio_input_prompt"),
+                    text: "",
                     files: [voiceFile],
                     preserveComposer: true,
                 });

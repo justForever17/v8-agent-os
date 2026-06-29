@@ -777,16 +777,10 @@ class ChatRuntime:
         return normalized
 
     def _ensure_latest_user_content_for_attachments(self, request: ChatRequest, attachments: list[dict[str, Any]]) -> None:
-        if not attachments:
-            return
-        for message in reversed(request.messages):
-            if message.role != "user":
-                continue
-            if str(message.content or "").strip():
-                return
-            count = len(attachments)
-            message.content = f"已上传 {count} 个文件" if count != 1 else "已上传 1 个文件"
-            return
+        # Attachments are first-class message metadata.  Do not invent user text
+        # for pure audio/file messages; downstream preflight tools and attachment
+        # renderers provide the readable surface.
+        return
 
     def _inject_uploaded_file_notices(self, request: ChatRequest, lc_messages: list[Any]) -> None:
         attachments = [dict(item) for item in list(request.attachments or []) if isinstance(item, dict)]
@@ -832,6 +826,306 @@ class ChatRuntime:
                 elif isinstance(message.content, list):
                     message.content.append({"type": "text", "text": file_notices})
                 break
+
+    @staticmethod
+    def _attachment_mime(attachment: dict[str, Any]) -> str:
+        return str(
+            attachment.get("mimeType")
+            or attachment.get("mime_type")
+            or attachment.get("type")
+            or ""
+        ).strip().lower()
+
+    @classmethod
+    def _attachment_extension(cls, attachment: dict[str, Any]) -> str:
+        name = cls._attachment_name(attachment).lower()
+        url = cls._attachment_url(attachment).lower().split("?", 1)[0].split("#", 1)[0]
+        suffix = Path(name).suffix or Path(url).suffix
+        return suffix.lower()
+
+    @classmethod
+    def _attachment_media_kind(cls, attachment: dict[str, Any]) -> str:
+        declared = str(attachment.get("mediaKind") or attachment.get("media_kind") or "").strip().lower()
+        if declared in {"audio", "image", "video", "file"}:
+            return declared
+        mime = cls._attachment_mime(attachment)
+        suffix = cls._attachment_extension(attachment)
+        if mime.startswith("audio/") or suffix in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".webm"}:
+            return "audio"
+        if mime.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic", ".heif"}:
+            return "image"
+        if mime.startswith("video/") or suffix in {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}:
+            return "video"
+        return "file"
+
+    @classmethod
+    def _attachment_is_readable_file(cls, attachment: dict[str, Any]) -> bool:
+        if cls._attachment_media_kind(attachment) != "file":
+            return False
+        mime = cls._attachment_mime(attachment)
+        suffix = cls._attachment_extension(attachment)
+        if mime.startswith("text/") or mime in {
+            "application/json",
+            "application/xml",
+            "application/x-yaml",
+            "application/yaml",
+            "text/markdown",
+        }:
+            return True
+        return suffix in {
+            ".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml", ".xml",
+            ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx", ".css",
+            ".html", ".htm", ".vue", ".svelte", ".java", ".kt", ".go", ".rs", ".c",
+            ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".sh", ".ps1", ".toml",
+            ".ini", ".env", ".sql",
+        }
+
+    def _resolve_attachment_local_path(self, chat_run: ChatRunContext, attachment: dict[str, Any]) -> str:
+        direct = str(
+            attachment.get("workspacePath")
+            or attachment.get("workspace_path")
+            or attachment.get("path")
+            or attachment.get("filePath")
+            or attachment.get("file_path")
+            or attachment.get("localPath")
+            or ""
+        ).strip()
+        if direct and not direct.startswith(("http://", "https://", "/api/")):
+            return direct
+
+        url = self._attachment_url(attachment)
+        workspace_root = Path(chat_run.scope_result.binding.workspace_path or "").expanduser()
+        if "/api/workspace/files/" in url or "/api/client/workspace/files/" in url:
+            marker = "/api/client/workspace/files/" if "/api/client/workspace/files/" in url else "/api/workspace/files/"
+            subpath = unquote(url.split(marker)[-1].split("?", 1)[0]).replace("/", os.sep).replace("\\", os.sep)
+            if workspace_root:
+                return str((workspace_root / subpath).absolute().resolve())
+        if "/workspace/" in url and workspace_root:
+            parsed = urlparse(url)
+            subpath = unquote(parsed.path.split("/workspace/", 1)[-1]).replace("/", os.sep).replace("\\", os.sep)
+            return str((workspace_root / subpath).absolute().resolve())
+        if "/workspace/resource" in url:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query or "")
+            try:
+                resolved = resolve_scoped_workspace_resource(
+                    workspace_relative_path=(query.get("workspace_relative_path") or [""])[0],
+                    path_plane=(query.get("path_plane") or [""])[0],
+                    workspace_id=(query.get("workspace_id") or [None])[0],
+                    project_id=(query.get("project_id") or [None])[0],
+                )
+                return str(resolved.absolute_path)
+            except Exception:
+                return ""
+        return ""
+
+    @staticmethod
+    def _attachment_public_ref(attachment: dict[str, Any]) -> str:
+        return str(
+            attachment.get("url")
+            or attachment.get("publicUrl")
+            or attachment.get("public_url")
+            or attachment.get("resourceRef")
+            or attachment.get("workspacePath")
+            or attachment.get("path")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _voice_extract_prompt() -> str:
+        return "请原样提取音频中的语言并转换成文本；不要补写、不要总结、不要猜测缺失内容。"
+
+    def _attachment_preflight_prompt(self, chat_run: ChatRunContext, attachment: dict[str, Any]) -> str:
+        user_text = str(chat_run.prepared.latest_user_content or "").strip()
+        kind = self._attachment_media_kind(attachment)
+        if kind == "audio" and not user_text:
+            return self._voice_extract_prompt()
+        if user_text:
+            return user_text
+        if kind == "audio":
+            return self._voice_extract_prompt()
+        return "请提取这个附件中的关键信息，保持客观，不要补写缺失内容。"
+
+    def _append_attachment_preflight_context(
+        self,
+        chat_run: ChatRunContext,
+        summaries: list[dict[str, str]],
+    ) -> None:
+        if not summaries:
+            return
+        lines = ["", "[Attachment preflight results]"]
+        raw_user_text = str(chat_run.prepared.latest_user_content or "").strip()
+        if raw_user_text:
+            lines.append(f"Original user text: {raw_user_text}")
+        for item in summaries:
+            name = item.get("name") or "attachment"
+            tool_name = item.get("tool") or "attachment_tool"
+            status = item.get("status") or "completed"
+            result = item.get("summary") or ""
+            ref = item.get("ref") or ""
+            lines.append(f"- {name}: {tool_name} {status}.")
+            if result:
+                lines.append(result)
+            if ref:
+                lines.append(f"Attachment ref: {ref}")
+        block = "\n".join(lines).strip()
+        for message in reversed(chat_run.lc_messages):
+            if isinstance(message, HumanMessage):
+                if isinstance(message.content, str):
+                    message.content = f"{message.content}\n\n{block}".strip()
+                elif isinstance(message.content, list):
+                    message.content.append({"type": "text", "text": block})
+                return
+        chat_run.lc_messages.append(HumanMessage(content=block))
+
+    async def _run_attachment_preflight(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> list[dict[str, Any]]:
+        if chat_run.is_resume_request:
+            return []
+        attachments = [dict(item) for item in list(chat_run.request.attachments or []) if isinstance(item, dict)]
+        if not attachments:
+            return []
+
+        from core.tools.native.workspace_file import read_native_file
+        from core.tools.vision_media_analyzer import vision_media_analyzer
+
+        summaries: list[dict[str, str]] = []
+        emitted: list[dict[str, Any]] = []
+        for index, attachment in enumerate(attachments):
+            kind = self._attachment_media_kind(attachment)
+            if kind in {"audio", "image", "video"}:
+                tool_name = "vision_media_analyzer"
+            elif self._attachment_is_readable_file(attachment):
+                tool_name = "read_native_file"
+            else:
+                continue
+
+            tool_call_id = f"call_v8_attachment_preflight_{uuid.uuid4().hex}"
+            name = self._attachment_name(attachment)
+            ref = self._attachment_public_ref(attachment)
+            prompt = self._attachment_preflight_prompt(chat_run, attachment)
+            local_path = self._resolve_attachment_local_path(chat_run, attachment)
+            display_args = {
+                "attachment": name,
+                "mediaKind": kind,
+                "prompt": prompt if tool_name == "vision_media_analyzer" else None,
+                "ref": ref,
+            }
+            display_args = {key: value for key, value in display_args.items() if value not in (None, "", [], {})}
+            start_payload = {
+                "type": "tool_start",
+                "tool": {
+                    "toolCallId": tool_call_id,
+                    "toolInvocationId": tool_call_id,
+                    "toolName": tool_name,
+                    "args": display_args,
+                    "status": "running",
+                },
+                "timestamp": self._now_timestamp_ms(),
+            }
+            start_node = {
+                "id": f"attachment-preflight:{tool_call_id}:start",
+                "kind": "execution",
+                "executionType": "tool_call",
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                "args": display_args,
+                "status": "running",
+                "topic": "tool.started",
+                "timestamp": self._now_timestamp_ms(),
+            }
+            stream_state.active_tool_call_ids.add(tool_call_id)
+            stream_state.watchdog.note_tool_start(tool_call_id)
+            stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": tool_name, "args": display_args})
+            emitted.append(self._emit_message_targeted_runtime_event(
+                chat_run,
+                stream_state,
+                topic="tool.started",
+                payload=start_payload,
+                node=start_node,
+                agent_id="supervisor",
+                runtime_node="attachment_preflight",
+            ))
+
+            try:
+                if tool_name == "read_native_file":
+                    if not local_path:
+                        raise ValueError("无法定位这个附件的本地工作区路径，不能安全读取。")
+                    invoke_payload = {"path": local_path}
+                    with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
+                        output = await asyncio.to_thread(read_native_file.invoke, invoke_payload)
+                else:
+                    invoke_payload = {
+                        "file_path": local_path or None,
+                        "source_url": ref if not local_path else None,
+                        "prompt": prompt,
+                    }
+                    invoke_payload = {key: value for key, value in invoke_payload.items() if value not in (None, "", [], {})}
+                    with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
+                        output = await asyncio.to_thread(vision_media_analyzer.invoke, invoke_payload)
+                status = "completed"
+            except Exception as exc:
+                output = (
+                    "结果：附件预读失败\n"
+                    f"原因：{str(exc).strip() or '工具执行异常'}\n"
+                    "下一步：请检查附件是否可访问，或切换到兼容的读取/多模态模型后重试。"
+                )
+                status = "failed"
+
+            compact_result = self._compact_tool_result_value(tool_name, output)
+            agent_visible_result = self._agent_visible_tool_result_for_event(tool_name, output, compact_result)
+            result_payload = {
+                "type": "tool_result",
+                "tool": {
+                    "toolCallId": tool_call_id,
+                    "toolInvocationId": tool_call_id,
+                    "toolName": tool_name,
+                    "args": display_args,
+                    "status": status,
+                    "result": compact_result,
+                    "agentVisibleResult": agent_visible_result,
+                },
+                "timestamp": self._now_timestamp_ms(),
+            }
+            result_node = {
+                "id": f"attachment-preflight:{tool_call_id}:result",
+                "kind": "execution",
+                "executionType": "tool_result",
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                "args": display_args,
+                "result": compact_result,
+                "agentVisibleResult": agent_visible_result,
+                "status": status,
+                "topic": "tool.finished",
+                "timestamp": self._now_timestamp_ms(),
+            }
+            stream_state.watchdog.note_tool_end(tool_call_id)
+            stream_state.active_tool_call_ids.discard(tool_call_id)
+            emitted.append(self._emit_message_targeted_runtime_event(
+                chat_run,
+                stream_state,
+                topic="tool.finished",
+                payload=result_payload,
+                node=result_node,
+                agent_id="supervisor",
+                runtime_node="attachment_preflight",
+            ))
+            summaries.append({
+                "name": name,
+                "tool": tool_name,
+                "status": status,
+                "summary": agent_visible_result,
+                "ref": ref,
+            })
+            if index >= 4:
+                break
+
+        self._append_attachment_preflight_context(chat_run, summaries)
+        return emitted
 
     def _latest_user_content(self, request: ChatRequest) -> str:
         for candidate in reversed(request.messages):
@@ -4332,8 +4626,6 @@ class ChatRuntime:
                 for index, attachment in enumerate(attachments)
             ]
             latest_user_content = latest_user.content or ""
-            if not latest_user_content.strip() and attachment_nodes:
-                latest_user_content = f"已上传 {len(attachment_nodes)} 个文件"
             user_metadata = self._canonical_message_metadata(
                 chat_run,
                 role="user",
@@ -9667,6 +9959,9 @@ class ChatRuntime:
                 for preflight_event in preflight_events:
                     yield preflight_event
                 return
+
+            for attachment_event in await self._run_attachment_preflight(chat_run, stream_state):
+                yield attachment_event
 
             writing_route = (
                 chat_run.prepared.task_shape_hint.get("writingRoute")

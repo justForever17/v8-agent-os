@@ -35,6 +35,7 @@ import {
 } from "@/src/components/chat/collaboration/CollaborationMicroStageScene";
 import { NodeRenderBoundary } from "@/src/components/chat/NodeRenderBoundary";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
+import { MediaPlayer } from "@/src/components/chat/MediaRenderers";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
 import { SupervisorActivitySummary } from "@/src/components/chat/SupervisorActivitySummary";
 import {
@@ -610,7 +611,7 @@ type UserAttachmentItem = {
     url: string;
     mimeType: string;
     size?: number;
-    kind: "image" | "video" | "file";
+    kind: "image" | "video" | "audio" | "file";
 };
 
 function attachmentKind(name: string, mimeType: string): UserAttachmentItem["kind"] {
@@ -621,6 +622,9 @@ function attachmentKind(name: string, mimeType: string): UserAttachmentItem["kin
     }
     if (normalizedType.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(normalizedName)) {
         return "video";
+    }
+    if (normalizedType.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(normalizedName)) {
+        return "audio";
     }
     return "file";
 }
@@ -805,6 +809,10 @@ export const MessageBubble = memo(function MessageBubble({
     );
     const userMediaAttachments = useMemo(
         () => userAttachments.filter((item) => (item.kind === "image" || item.kind === "video") && item.url),
+        [userAttachments],
+    );
+    const userAudioAttachments = useMemo(
+        () => userAttachments.filter((item) => item.kind === "audio" && item.url),
         [userAttachments],
     );
     const userFileAttachments = useMemo(
@@ -1144,6 +1152,19 @@ export const MessageBubble = memo(function MessageBubble({
                                             >
                                                 <Image source={{ uri: attachment.url }} style={styles.inlineImage} />
                                             </Pressable>
+                                        ))}
+                                    </View>
+                                ) : null}
+
+                                {userAudioAttachments.length > 0 ? (
+                                    <View style={styles.userAudioList}>
+                                        {userAudioAttachments.map((attachment) => (
+                                            <MediaPlayer
+                                                key={attachment.key}
+                                                src={attachment.url}
+                                                type="audio"
+                                                title={attachment.name || "Voice message"}
+                                            />
                                         ))}
                                     </View>
                                 ) : null}
@@ -1719,6 +1740,11 @@ const styles = StyleSheet.create({
         width: 86,
         height: 86,
         borderRadius: 14,
+    },
+    userAudioList: {
+        gap: 8,
+        marginBottom: 10,
+        alignSelf: "stretch",
     },
     userFileList: {
         gap: 8,

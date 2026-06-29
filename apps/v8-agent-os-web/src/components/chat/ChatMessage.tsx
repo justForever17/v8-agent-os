@@ -201,6 +201,52 @@ function normalizeWorkspaceLinks(content: string): string {
     });
 }
 
+type MessageAttachmentRecord = {
+    url: string;
+    name: string;
+    mimeType: string;
+    mediaKind: string;
+};
+
+function resolveAttachmentUrl(value: unknown) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
+}
+
+function extractMessageAttachments(message: Message): MessageAttachmentRecord[] {
+    const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+    const rawAttachments = Array.isArray(metadata.attachments) ? metadata.attachments : [];
+    return rawAttachments
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((item) => {
+            const rawUrl = item.publicUrl || item.public_url || item.url || item.workspacePath || item.workspace_path || item.resourceRef;
+            return {
+                url: resolveAttachmentUrl(rawUrl),
+                name: String(item.name || item.filename || item.displayName || "attachment").trim(),
+                mimeType: String(item.mimeType || item.mime_type || item.type || "").toLowerCase(),
+                mediaKind: String(item.mediaKind || item.previewKind || item.kind || "").toLowerCase(),
+            };
+        })
+        .filter((item) => item.url);
+}
+
+function isAudioAttachmentRecord(item: MessageAttachmentRecord) {
+    return item.mediaKind === "audio"
+        || item.mimeType.startsWith("audio/")
+        || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(item.url);
+}
+
+function isVisualAttachmentRecord(item: MessageAttachmentRecord) {
+    return item.mediaKind === "image"
+        || item.mediaKind === "video"
+        || item.mimeType.startsWith("image/")
+        || item.mimeType.startsWith("video/")
+        || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|webm|mov|m4v)(?:[?#].*)?$/i.test(item.url);
+}
+
 function MessageActionButtons({
     copied,
     onCopy,
@@ -247,6 +293,15 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const copyLabel = t(lt("复制消息", "Copy message"));
     const deleteLabel = t(lt("删除消息", "Delete message"));
     const userDisplayName = String(userName || "").trim() || t(lt("聊天用户", "Chat user"));
+    const attachmentRecords = useMemo(() => extractMessageAttachments(message), [message]);
+    const audioAttachments = useMemo(
+        () => attachmentRecords.filter(isAudioAttachmentRecord),
+        [attachmentRecords],
+    );
+    const visualAttachmentUrls = useMemo(
+        () => attachmentRecords.filter((item) => !isAudioAttachmentRecord(item) && isVisualAttachmentRecord(item)).map((item) => item.url),
+        [attachmentRecords],
+    );
 
     const handleCopy = (content: string) => {
         navigator.clipboard.writeText(content);
@@ -260,7 +315,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
 
     // Prepare media items for Lightbox (if message has images)
     const imagesArray = useMemo(
-        () => (Array.isArray(message.images) ? message.images : [])
+        () => Array.from(new Set([
+            ...(Array.isArray(message.images) ? message.images : []),
+            ...visualAttachmentUrls,
+        ]))
             .map((value) => {
                 const raw = String(value || "").trim();
                 if (!raw) {
@@ -269,7 +327,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
             })
             .filter(Boolean),
-        [message.images],
+        [message.images, visualAttachmentUrls],
     );
     const mediaItems: MediaItem[] = useMemo(() => {
         return imagesArray.map((url) => {
@@ -420,6 +478,26 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                         Spec
                                     </span>
                                 )}
+                            </div>
+                        )}
+                        {!isTool && audioAttachments.length > 0 && (
+                            <div className="mb-3 space-y-2">
+                                {audioAttachments.map((attachment, index) => (
+                                    <div
+                                        key={`${attachment.url}:${index}`}
+                                        className="rounded-2xl border border-white/20 bg-white/15 p-2 backdrop-blur-sm"
+                                    >
+                                        <div className="mb-1 truncate px-1 text-[11px] font-medium text-white/85">
+                                            {attachment.name || t(lt("语音消息", "Voice message"))}
+                                        </div>
+                                        <audio
+                                            controls
+                                            preload="metadata"
+                                            src={attachment.url}
+                                            className="h-9 w-[260px] max-w-full"
+                                        />
+                                    </div>
+                                ))}
                             </div>
                         )}
                         {imagesArray.length > 0 && (

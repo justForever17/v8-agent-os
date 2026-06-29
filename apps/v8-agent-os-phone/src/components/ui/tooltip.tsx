@@ -75,7 +75,7 @@ export const TooltipTrigger = forwardRef<View, PressableProps>(function TooltipT
                 context.setOpen(false);
             }}
         >
-            {renderPressableChildren(children, { pressed: false, hovered: false })}
+            {renderPressableChildren(children, { pressed: false, hovered: false } as any)}
         </Pressable>
     );
 });

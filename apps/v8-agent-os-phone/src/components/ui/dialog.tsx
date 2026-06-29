@@ -53,7 +53,7 @@ export const DialogTrigger = forwardRef<View, PressableProps>(function DialogTri
                 }
             }}
         >
-            {renderPressableChildren(children, { pressed: false, hovered: false })}
+            {renderPressableChildren(children, { pressed: false, hovered: false } as any)}
         </Pressable>
     );
 });
@@ -100,7 +100,7 @@ export const DialogClose = forwardRef<View, PressableProps>(function DialogClose
                 }
             }}
         >
-            {renderPressableChildren(children, { pressed: false, hovered: false })}
+            {renderPressableChildren(children, { pressed: false, hovered: false } as any)}
         </Pressable>
     );
 });

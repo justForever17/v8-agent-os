@@ -77,7 +77,7 @@ export const DropdownMenuTrigger = forwardRef<View, PressableProps>(function Dro
                 }
             }}
         >
-            {renderPressableChildren(children, { pressed: false, hovered: false })}
+            {renderPressableChildren(children, { pressed: false, hovered: false } as any)}
         </Pressable>
     );
 });
@@ -160,12 +160,12 @@ export const DropdownMenuItem = forwardRef<View, PressableProps & { inset?: bool
             style={({ pressed }) => [
                 styles.item,
                 { paddingLeft: inset ? 32 : 10, backgroundColor: pressed ? colors.surfaceMuted : "transparent" },
-                styleResolver ? styleResolver({ pressed, hovered: false }) : staticStyle,
+                styleResolver ? styleResolver({ pressed, hovered: false } as any) : staticStyle,
             ]}
         >
             {typeof children === "string"
                 ? <Text style={[styles.itemText, { color: colors.text }]}>{children}</Text>
-                : renderPressableChildren(children, { pressed: false, hovered: false })}
+                : renderPressableChildren(children, { pressed: false, hovered: false } as any)}
         </Pressable>
     );
 });
@@ -225,13 +225,13 @@ export const DropdownMenuRadioItem = forwardRef<
             style={({ pressed }) => [
                 styles.item,
                 { paddingLeft: 32, backgroundColor: pressed ? colors.surfaceMuted : "transparent" },
-                styleResolver ? styleResolver({ pressed, hovered: false }) : staticStyle,
+                styleResolver ? styleResolver({ pressed, hovered: false } as any) : staticStyle,
             ]}
         >
             <Text style={[styles.indicator, { color: colors.text }]}>{checked ? "●" : ""}</Text>
             {typeof children === "string"
                 ? <Text style={[styles.itemText, { color: colors.text }]}>{children}</Text>
-                : renderPressableChildren(children, { pressed: false, hovered: false })}
+                : renderPressableChildren(children, { pressed: false, hovered: false } as any)}
         </Pressable>
     );
 });
@@ -272,12 +272,12 @@ export const DropdownMenuSubTrigger = forwardRef<View, PressableProps & { inset?
             style={({ pressed }) => [
                 styles.item,
                 { paddingLeft: inset ? 32 : 10, backgroundColor: pressed ? colors.surfaceMuted : "transparent" },
-                styleResolver ? styleResolver({ pressed, hovered: false }) : staticStyle,
+                styleResolver ? styleResolver({ pressed, hovered: false } as any) : staticStyle,
             ]}
         >
             {typeof children === "string"
                 ? <Text style={[styles.itemText, { color: colors.text }]}>{children}</Text>
-                : renderPressableChildren(children, { pressed: false, hovered: false })}
+                : renderPressableChildren(children, { pressed: false, hovered: false } as any)}
             <Text style={[styles.chevron, { color: colors.textSoft }]}>›</Text>
         </Pressable>
     );

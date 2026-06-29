@@ -85,7 +85,7 @@ export const TabsTrigger = forwardRef<View, PressableProps & { value: string }>(
                         : "transparent",
                     opacity: pressed ? 0.88 : 1,
                 },
-                styleResolver ? styleResolver({ pressed, hovered: false }) : staticStyle,
+                styleResolver ? styleResolver({ pressed, hovered: false } as any) : staticStyle,
             ]}
         >
             {typeof children === "string" ? (
@@ -93,7 +93,7 @@ export const TabsTrigger = forwardRef<View, PressableProps & { value: string }>(
                     {children}
                 </Text>
             ) : typeof children === "function" ? (
-                children({ pressed: false, hovered: false } satisfies PressableStateCallbackType)
+                children({ pressed: false, hovered: false } as any)
             ) : (
                 children
             )}

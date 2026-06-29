@@ -123,8 +123,8 @@ export function normalizeRuntimeArtifacts(input: unknown): RuntimeArtifact[] {
 }
 
 export function inferArtifactCardType(artifact: RuntimeArtifact): "code" | "markdown" | "html" | "image" | "video" | "audio" | "music" | "document" | "file" {
-    const kind = artifact.kind.toLowerCase();
-    const metadata = artifact.metadata || {};
+    const kind = String(artifact.kind || "file").toLowerCase();
+    const metadata = artifact.metadata && typeof artifact.metadata === "object" ? artifact.metadata : {};
     const musicProbe = `${kind} ${String(metadata.modality || "")} ${String(metadata.musicKind || metadata.music_kind || "")}`.toLowerCase();
     if (musicProbe.includes("music")) {
         return "music";
@@ -132,7 +132,7 @@ export function inferArtifactCardType(artifact: RuntimeArtifact): "code" | "mark
     if (kind === "image" || kind === "video" || kind === "audio" || kind === "document") {
         return kind;
     }
-    const mime = artifact.mimeType.toLowerCase();
+    const mime = String(artifact.mimeType || "").toLowerCase();
     if (mime.includes("html")) return "html";
     if (mime.includes("markdown")) return "markdown";
     if (mime.startsWith("text/")) return "code";

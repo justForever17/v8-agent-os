@@ -5,39 +5,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 
 import { formatRelativeTime } from "@/src/lib/time";
+import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/src/lib/conversation-groups";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
-import { radii, spacing } from "@/src/theme/tokens";
+import { spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
-
-type GroupKey = "channels" | "cron" | "hooks" | "web";
-
-const GROUP_ORDER: Array<{ key: GroupKey; icon: keyof typeof MaterialCommunityIcons.glyphMap; labelKey: string }> = [
-    { key: "channels", icon: "web", labelKey: "shared.history.group.channels" },
-    { key: "cron", icon: "clock-time-four-outline", labelKey: "shared.history.group.cron" },
-    { key: "hooks", icon: "lightning-bolt-outline", labelKey: "shared.history.group.hooks" },
-    { key: "web", icon: "message-outline", labelKey: "shared.history.group.web" },
-];
-
-function groupConversations(items: ConversationSummary[]) {
-    const groups: Record<GroupKey, ConversationSummary[]> = {
-        channels: [],
-        cron: [],
-        hooks: [],
-        web: [],
-    };
-    for (const item of items) {
-        const key = item.sourceGroup === "cron"
-            ? "cron"
-            : item.sourceGroup === "hooks"
-                ? "hooks"
-                : item.sourceGroup === "channels"
-                    ? "channels"
-                    : "web";
-        groups[key].push(item);
-    }
-    return groups;
-}
 
 export function HistoryDrawer({
     visible,
@@ -52,7 +24,7 @@ export function HistoryDrawer({
 }: {
     visible: boolean;
     items: ConversationSummary[];
-    groups?: Record<GroupKey, ConversationSummary[]>;
+    groups?: ConversationWorkspaceGroup[];
     activeConversationId: string | null;
     loading?: boolean;
     onClose: () => void;
@@ -65,27 +37,23 @@ export function HistoryDrawer({
     const { colors, t, locale } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
     const panelWidth = Math.min(width * 0.86, 352);
-    const groups = useMemo(() => groupedItems || groupConversations(items), [groupedItems, items]);
-    const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({
-        channels: true,
-        cron: false,
-        hooks: false,
-        web: true,
-    });
+    const groups = useMemo(() => groupedItems || groupConversationsByWorkspace(items, locale), [groupedItems, items, locale]);
+    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
     useEffect(() => {
         if (!visible) {
             return;
         }
-        setOpenGroups((current) => ({
-            channels: groups.channels.length > 0 ? current.channels : false,
-            cron: groups.cron.length > 0 ? current.cron : false,
-            hooks: groups.hooks.length > 0 ? current.hooks : false,
-            web: groups.web.length > 0 ? current.web : false,
-        }));
-    }, [groups.channels.length, groups.cron.length, groups.hooks.length, groups.web.length, visible]);
+        setOpenGroups((current) => {
+            const next: Record<string, boolean> = {};
+            groups.forEach((group, index) => {
+                next[group.key] = current[group.key] ?? index === 0;
+            });
+            return next;
+        });
+    }, [groups, visible]);
 
-    const toggleGroup = (key: GroupKey) => {
+    const toggleGroup = (key: string) => {
         setOpenGroups((current) => ({ ...current, [key]: !current[key] }));
     };
 
@@ -123,9 +91,6 @@ export function HistoryDrawer({
                         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
                             <View style={styles.sectionHeader}>
                                 <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>{t("src.components.layout.historydrawer.history")}</Text>
-                                <Pressable onPress={onClose}>
-                                    <MaterialCommunityIcons name="trash-can-outline" size={16} color={colors.textSoft} />
-                                </Pressable>
                             </View>
 
                             {items.length === 0 ? (
@@ -133,9 +98,8 @@ export function HistoryDrawer({
                                     {loading ? t("src.components.layout.historydrawer.syncing_history") : t("src.components.layout.historydrawer.no_history_yet")}
                                 </Text>
                             ) : (
-                                GROUP_ORDER.map((group) => {
-                                    const entries = groups[group.key];
-                                    if (entries.length === 0) return null;
+                                groups.map((group) => {
+                                    const entries = group.items;
                                     const isOpen = openGroups[group.key];
                                     return (
                                         <View key={group.key} style={styles.groupWrap}>
@@ -148,8 +112,8 @@ export function HistoryDrawer({
                                                     size={16}
                                                     color={colors.textMuted}
                                                 />
-                                                <MaterialCommunityIcons name={group.icon} size={14} color={colors.textMuted} />
-                                                <Text style={[styles.groupTitle, { color: colors.textMuted }]}>{t(group.labelKey)}</Text>
+                                                <MaterialCommunityIcons name="folder-outline" size={14} color={colors.textMuted} />
+                                                <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
                                                 <View style={[styles.groupCountPill, { backgroundColor: `${colors.primary}14` }]}>
                                                     <Text style={[styles.groupCount, { color: colors.textSoft }]}>{entries.length}</Text>
                                                 </View>
@@ -160,6 +124,7 @@ export function HistoryDrawer({
                                                     {entries.map((item) => {
                                                         const canonicalSessionId = item.sessionId || item.id;
                                                         const active = canonicalSessionId === activeConversationId;
+                                                        const activityState = getConversationActivityState(item);
                                                     return (
                                                         <Pressable
                                                             key={canonicalSessionId}
@@ -170,7 +135,7 @@ export function HistoryDrawer({
                                                             onPress={() => onSelectConversation(item)}
                                                         >
                                                             <MaterialCommunityIcons
-                                                                name={group.icon}
+                                                                name="message-outline"
                                                                 size={15}
                                                                 color={active ? colors.primary : colors.textMuted}
                                                             />
@@ -179,58 +144,13 @@ export function HistoryDrawer({
                                                                     <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text, flex: 1 }]} numberOfLines={1}>
                                                                         {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
                                                                     </Text>
-                                                                    {(() => {
-                                                                        const activeStatus = String(item.workflowStatus || "").trim().toLowerCase();
-                                                                        const isRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeStatus);
-                                                                        const isFailed = ["failed", "cancelled"].includes(activeStatus);
-                                                                        if (isRunning) {
-                                                                            return <ActivityIndicator size="small" color={colors.primary} style={styles.itemTitleSpinner} />;
-                                                                        } else if (isFailed) {
-                                                                            return <MaterialCommunityIcons name="alert-circle" size={14} color={colors.danger} style={styles.itemTitleError} />;
-                                                                        }
-                                                                        return null;
-                                                                    })()}
+                                                                    {activityState === "active" ? (
+                                                                        <ActivityIndicator size="small" color={colors.primary} style={styles.itemTitleSpinner} />
+                                                                    ) : null}
+                                                                    {activityState === "failed" ? (
+                                                                        <MaterialCommunityIcons name="alert-circle-outline" size={14} color={colors.danger} style={styles.itemTitleError} />
+                                                                    ) : null}
                                                                 </View>
-                                                                {(item.ownerRuntime || item.workflowStatus || Number(item.pendingApprovalCount || 0) > 0 || item.recoverable) ? (
-                                                                    <View style={styles.badgeRow}>
-                                                                        {item.ownerRuntime ? (
-                                                                            <View style={[styles.metaBadge, { backgroundColor: "rgba(16,185,129,0.10)" }]}>
-                                                                                <Text style={[styles.metaBadgeText, { color: "#047857" }]}>{item.ownerRuntime}</Text>
-                                                                            </View>
-                                                                        ) : null}
-                                                                        {(() => {
-                                                                            const activeStatus = String(item.workflowStatus || "").trim().toLowerCase();
-                                                                            const isRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeStatus);
-                                                                            const isFailed = ["failed", "cancelled"].includes(activeStatus);
-                                                                            const isCompleted = ["completed", "idle"].includes(activeStatus);
-                                                                            if (item.workflowStatus && !isRunning && !isFailed && !isCompleted) {
-                                                                                return (
-                                                                                    <View style={[styles.metaBadge, { backgroundColor: "rgba(245,158,11,0.10)" }]}>
-                                                                                        <Text style={[styles.metaBadgeText, { color: "#B45309" }]}>{item.statusLabel || item.workflowStatus}</Text>
-                                                                                    </View>
-                                                                                );
-                                                                            }
-                                                                            return null;
-                                                                        })()}
-                                                                        {item.recoverable ? (
-                                                                            <View style={[styles.metaBadge, { backgroundColor: "rgba(14,165,233,0.10)" }]}>
-                                                                                <Text style={[styles.metaBadgeText, { color: "#0369A1" }]}>{t("src.components.layout.historydrawer.recoverable")}</Text>
-                                                                            </View>
-                                                                        ) : null}
-                                                                        {Number(item.pendingApprovalCount || 0) > 0 ? (
-                                                                            <View style={[styles.metaBadge, { backgroundColor: "rgba(168,85,247,0.10)" }]}>
-                                                                                <Text style={[styles.metaBadgeText, { color: "#7C3AED" }]}>
-                                                                                    {t("src.components.layout.historydrawer.approval")} {Number(item.pendingApprovalCount || 0)}
-                                                                                </Text>
-                                                                            </View>
-                                                                        ) : null}
-                                                                    </View>
-                                                                ) : null}
-                                                                {item.currentStepTitle || item.previewExcerpt ? (
-                                                                    <Text style={[styles.itemExcerpt, { color: colors.textMuted }]} numberOfLines={2}>
-                                                                        {item.currentStepTitle || item.previewExcerpt}
-                                                                    </Text>
-                                                                ) : null}
                                                                 <Text style={[styles.itemMeta, { color: colors.textMuted }]} numberOfLines={1}>
                                                                     {formatRelativeTime(item.historySortAt || item.createdAt || "", locale, getEngineNowMs())}
                                                                 </Text>
@@ -395,24 +315,6 @@ const styles = StyleSheet.create({
     itemMeta: {
         fontSize: 11,
         marginTop: 2,
-    },
-    badgeRow: {
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: 4,
-    },
-    metaBadge: {
-        borderRadius: radii.pill,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
-    },
-    metaBadgeText: {
-        fontSize: 10,
-        fontWeight: "700",
-    },
-    itemExcerpt: {
-        fontSize: 11,
-        lineHeight: 16,
     },
     deleteButton: {
         width: 28,

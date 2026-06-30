@@ -18,20 +18,13 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { conversationGroupOrder, getConversationGroupLabel, groupConversations, type ConversationGroupKey } from "@/src/lib/conversation-groups";
+import { getConversationActivityState, groupConversationsByWorkspace } from "@/src/lib/conversation-groups";
 import { deleteConversation, listConversations } from "@/src/lib/phone-api";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
-
-const groupIcons: Record<ConversationGroupKey, keyof typeof MaterialCommunityIcons.glyphMap> = {
-    channels: "earth",
-    cron: "clock-outline",
-    hooks: "lightning-bolt-outline",
-    web: "message-outline",
-};
 
 export default function SessionsScreen() {
     const { status, user, adminBaseUrl, activeConversationId, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
@@ -41,7 +34,8 @@ export default function SessionsScreen() {
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
-    const grouped = groupConversations(conversations);
+    const grouped = groupConversationsByWorkspace(conversations, locale);
+    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
     const actions: PhoneTopbarAction[] = [
         { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
@@ -133,21 +127,26 @@ export default function SessionsScreen() {
                         <Text style={styles.emptyBody}>{t("src.screens.sessionsscreen.there_are_no_conversations_yet")}</Text>
                     ) : null}
 
-                    {conversationGroupOrder
-                        .filter((groupKey) => grouped[groupKey].length > 0)
-                        .map((groupKey) => (
-                            <View key={groupKey} style={styles.groupSection}>
-                                <View style={styles.groupHeader}>
+                    {grouped.map((group, index) => {
+                        const isOpen = openGroups[group.key] ?? index === 0;
+                        return (
+                            <View key={group.key} style={styles.groupSection}>
+                                <Pressable
+                                    style={styles.groupHeader}
+                                    onPress={() => setOpenGroups((current) => ({ ...current, [group.key]: !isOpen }))}
+                                >
                                     <View style={styles.groupPill}>
-                                        <MaterialCommunityIcons name={groupIcons[groupKey]} size={14} color={colors.textMuted} />
-                                        <Text style={styles.groupLabel}>{getConversationGroupLabel(groupKey, locale)}</Text>
+                                        <MaterialCommunityIcons name={isOpen ? "chevron-down" : "chevron-right"} size={16} color={colors.textMuted} />
+                                        <MaterialCommunityIcons name="folder-outline" size={14} color={colors.textMuted} />
+                                        <Text style={styles.groupLabel} numberOfLines={1}>{group.label}</Text>
                                     </View>
-                                    <Text style={styles.groupCount}>{grouped[groupKey].length}</Text>
-                                </View>
+                                    <Text style={styles.groupCount}>{group.items.length}</Text>
+                                </Pressable>
 
-                                {grouped[groupKey].map((item) => {
+                                {isOpen ? group.items.map((item) => {
                                     const canonicalSessionId = item.sessionId || item.id;
                                     const active = canonicalSessionId === activeConversationId;
+                                    const activityState = getConversationActivityState(item);
                                     return (
                                         <Pressable
                                             key={canonicalSessionId}
@@ -160,9 +159,17 @@ export default function SessionsScreen() {
                                                 <View style={styles.itemHeader}>
                                                     <View style={[styles.itemDot, active && styles.itemDotActive]} />
                                                     <View style={styles.itemBody}>
-                                                        <Text style={styles.itemTitle} numberOfLines={1}>
-                                                            {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
-                                                        </Text>
+                                                        <View style={styles.itemTitleRow}>
+                                                            <Text style={styles.itemTitle} numberOfLines={1}>
+                                                                {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
+                                                            </Text>
+                                                            {activityState === "active" ? (
+                                                                <MaterialCommunityIcons name="progress-clock" size={14} color={colors.primary} />
+                                                            ) : null}
+                                                            {activityState === "failed" ? (
+                                                                <MaterialCommunityIcons name="alert-circle-outline" size={14} color={colors.danger} />
+                                                            ) : null}
+                                                        </View>
                                                         <Text style={styles.itemMeta}>
                                                             {formatRelativeTime(item.historySortAt || item.createdAt || "", locale, getEngineNowMs())}
                                                         </Text>
@@ -174,9 +181,10 @@ export default function SessionsScreen() {
                                             </GlassCard>
                                         </Pressable>
                                     );
-                                })}
+                                }) : null}
                             </View>
-                        ))}
+                        );
+                    })}
                 </ScrollView>
             </SafeAreaView>
         </LinearGradient>
@@ -223,6 +231,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
+        flexShrink: 1,
         borderRadius: radii.pill,
         backgroundColor: colors.surfaceStrong,
         borderWidth: 1,
@@ -236,6 +245,7 @@ const styles = StyleSheet.create({
         fontWeight: "800",
         textTransform: "uppercase",
         letterSpacing: 0.7,
+        maxWidth: 210,
     },
     groupCount: {
         color: colors.textSoft,
@@ -267,9 +277,15 @@ const styles = StyleSheet.create({
         gap: 4,
     },
     itemTitle: {
+        flex: 1,
         color: colors.text,
         fontSize: 15,
         fontWeight: "800",
+    },
+    itemTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
     },
     itemMeta: {
         color: colors.textMuted,

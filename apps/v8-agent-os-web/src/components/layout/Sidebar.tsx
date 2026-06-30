@@ -4,16 +4,15 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
     Plus,
-    MessageSquare,
     Trash2,
     PanelLeftClose,
     PanelLeftOpen,
     MessageCircle,
     ChevronDown,
     ChevronRight,
-    Globe,
-    Clock,
-    Zap,
+    Folder,
+    Loader2,
+    AlertCircle,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -26,10 +25,11 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 
-import { useConversationContext, Conversation } from "@/context/ConversationContext";
+import { useConversationContext } from "@/context/ConversationContext";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
+import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/lib/conversation-groups";
 
 export function Sidebar() {
     const { conversations, deleteConversation, clearConversations } = useConversationContext();
@@ -43,27 +43,18 @@ export function Sidebar() {
     const [deleteId, setDeleteId] = useState<string | null>(null);
     const [isClearing, setIsClearing] = useState(false);
 
-    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-        channels: true,
-        cron: false,
-        hooks: false,
-        web: true,
-    });
+    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
     const toggleGroup = (key: string) => {
         setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
     };
 
-    const groupedConvs = useMemo(() => {
-        const groups = { channels: [], cron: [], hooks: [], web: [] } as Record<string, Conversation[]>;
-        conversations.forEach((conv) => {
-            if (conv.sourceGroup === "cron") groups.cron.push(conv);
-            else if (conv.sourceGroup === "hooks") groups.hooks.push(conv);
-            else if (conv.sourceGroup === "channels") groups.channels.push(conv);
-            else groups.web.push(conv);
-        });
-        return groups;
-    }, [conversations]);
+    const groupedConvs = useMemo(() => groupConversationsByWorkspace(conversations, {
+        mainWorkspace: t(lt("主工作区", "Main workspace")),
+        externalWorkspace: t(lt("外部路径", "External path")),
+        unbound: t(lt("未绑定对话", "Unbound chats")),
+        workspace: t(lt("工作区", "Workspace")),
+    }), [conversations, t]);
 
     const handleNewChat = () => {
         setIsMobileOpen(false);
@@ -90,16 +81,18 @@ export function Sidebar() {
         setIsClearing(false);
     };
 
-    const renderGroup = (key: string, title: string, titleEn: string, iconNode: React.ReactNode, collapsed: boolean) => {
-        const items = groupedConvs[key];
-        const isOpen = openGroups[key];
+    const renderGroup = (group: ConversationWorkspaceGroup, collapsed: boolean, index: number) => {
+        const items = group.items;
+        const hasActiveConversation = items.some((item) => (item.sessionId || item.id) === currentId);
+        const isOpen = openGroups[group.key] ?? (index === 0 || hasActiveConversation);
+        const iconNode = <Folder />;
 
         return (
-            <div className="mb-4">
+            <div className="mb-3">
                 {!collapsed && (
                     <div
                         className="group/header mb-1 flex cursor-pointer items-center rounded-md px-3 py-1.5 transition-colors hover:bg-accent/40"
-                        onClick={() => toggleGroup(key)}
+                        onClick={() => toggleGroup(group.key)}
                     >
                         {isOpen ? (
                             <ChevronDown className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -107,7 +100,7 @@ export function Sidebar() {
                             <ChevronRight className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
                         )}
                         <div className="mr-1.5 flex items-center text-muted-foreground [&>svg]:h-3.5 [&>svg]:w-3.5">{iconNode}</div>
-                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t(lt(title, titleEn))}</span>
+                        <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
                         <span className="ml-auto rounded-full bg-accent/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">{items.length}</span>
                     </div>
                 )}
@@ -116,16 +109,7 @@ export function Sidebar() {
                     <div className="space-y-0.5">
                         {items.map((conv) => {
                             const canonicalSessionId = conv.sessionId || conv.id;
-                            const scopeTags = Array.isArray(conv.scopeTags) ? conv.scopeTags : [];
-                            const ownerRuntime = typeof conv.ownerRuntime === "string" ? conv.ownerRuntime : null;
-                            const workflowStatus = typeof conv.workflowStatus === "string" ? conv.workflowStatus : null;
-                            const statusLabel = typeof conv.statusLabel === "string" ? conv.statusLabel : workflowStatus;
-                            const showWorkflowBadge = workflowStatus && workflowStatus !== "completed";
-                            const showRecoverableBadge = Boolean(conv.recoverable) && workflowStatus && workflowStatus !== "completed";
-                            const pendingApprovalCount = Number(conv.pendingApprovalCount || 0);
-                            const previewExcerpt = typeof conv.previewExcerpt === "string" ? conv.previewExcerpt : "";
-                            const currentStepTitle = typeof conv.currentStepTitle === "string" ? conv.currentStepTitle : "";
-                            const secondaryText = (showWorkflowBadge && currentStepTitle) || previewExcerpt;
+                            const activityState = getConversationActivityState(conv);
 
                             return (
                                 <div
@@ -153,62 +137,11 @@ export function Sidebar() {
                                         {!collapsed && (
                                             <>
                                                 <div className="min-w-0 flex-1">
-                                                    <span className="block truncate text-sm">{conv.title || t(lt("新对话", "New chat"))}</span>
-                                                    {scopeTags.length > 0 && (
-                                                        <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
-                                                            {scopeTags.map((tag) => (
-                                                                <span
-                                                                    key={`${conv.id}-${tag}`}
-                                                                    className="rounded-full bg-accent/70 px-1.5 py-0.5 text-foreground/80"
-                                                                >
-                                                                    {tag}
-                                                                </span>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                    {(ownerRuntime || showWorkflowBadge) && (
-                                                        <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
-                                                            {ownerRuntime && (
-                                                                <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-emerald-700">
-                                                                    {ownerRuntime}
-                                                                </span>
-                                                            )}
-                                                            {showWorkflowBadge && (
-                                                                <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700">
-                                                                    {statusLabel}
-                                                                </span>
-                                                            )}
-                                                            {showRecoverableBadge && (
-                                                                <span className="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-sky-700">
-                                                                    {t(lt("可恢复", "Recoverable"))}
-                                                                </span>
-                                                            )}
-                                                            {pendingApprovalCount > 0 && (
-                                                                <span className="rounded-full bg-fuchsia-500/10 px-1.5 py-0.5 text-fuchsia-700">
-                                                                    {t(lt(`审批 ${pendingApprovalCount}`, `Approval ${pendingApprovalCount}`))}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    )}
-                                                    {secondaryText && (
-                                                        <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground/80">
-                                                            {secondaryText}
-                                                        </p>
-                                                    )}
-                                                    {(conv.controls?.canRetry || conv.controls?.canResume) && (
-                                                        <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
-                                                            {conv.controls?.canResume && (
-                                                                <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-primary">
-                                                                    {t(lt("可继续", "Resume"))}
-                                                                </span>
-                                                            )}
-                                                            {conv.controls?.canRetry && (
-                                                                <span className="rounded-full bg-rose-500/10 px-1.5 py-0.5 text-rose-700">
-                                                                    {t(lt("可重试", "Retry"))}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    )}
+                                                    <span className="flex min-w-0 items-center gap-2">
+                                                        <span className="block min-w-0 flex-1 truncate text-sm">{conv.title || t(lt("新对话", "New chat"))}</span>
+                                                        {activityState === "active" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
+                                                        {activityState === "failed" && <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
+                                                    </span>
                                                 </div>
 
                                                 <Button
@@ -291,10 +224,7 @@ export function Sidebar() {
                         )
                     ) : (
                         <>
-                            {groupedConvs.channels.length > 0 && renderGroup("channels", "第三方渠道", "Channels", <Globe />, collapsed)}
-                            {groupedConvs.cron.length > 0 && renderGroup("cron", "定时任务", "Cron", <Clock />, collapsed)}
-                            {groupedConvs.hooks.length > 0 && renderGroup("hooks", "触发器与钩子", "Hooks", <Zap />, collapsed)}
-                            {groupedConvs.web.length > 0 && renderGroup("web", "网页对话", "Web chat", <MessageSquare />, collapsed)}
+                            {groupedConvs.map((group, index) => renderGroup(group, collapsed, index))}
                         </>
                     )}
                 </div>

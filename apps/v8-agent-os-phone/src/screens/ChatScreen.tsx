@@ -6893,7 +6893,6 @@ export default function ChatScreen() {
                 <HistoryDrawer
                     visible={historyOpen}
                     items={conversations}
-                    groups={projection.sidebarGroups}
                     activeConversationId={activeConversationId}
                     loading={loading}
                     onClose={() => setHistoryOpen(false)}

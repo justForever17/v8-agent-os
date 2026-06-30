@@ -1,55 +1,22 @@
-import type { ConversationSummary } from "@/src/types/admin";
-import type { LocaleCode } from "@/src/providers/ui-prefs";
-import { createTranslator, type TranslationKey } from "@/src/lib/locale";
+import type { Conversation } from "@/context/ConversationContext";
 
-export type ConversationGroupKey = "channels" | "cron" | "hooks" | "web";
 export type ConversationActivityState = "active" | "failed" | null;
+
 export type ConversationWorkspaceGroup = {
     key: string;
     label: string;
     kind: "project" | "workspace" | "unbound";
-    items: ConversationSummary[];
+    items: Conversation[];
 };
 
-export const conversationGroupOrder: ConversationGroupKey[] = [
-    "channels",
-    "cron",
-    "hooks",
-    "web",
-];
-
-export const conversationGroupLabels: Record<ConversationGroupKey, TranslationKey> = {
-    channels: "shared.history.group.channels",
-    cron: "shared.history.group.cron",
-    hooks: "shared.history.group.hooks",
-    web: "shared.history.group.web",
+export type ConversationWorkspaceGroupLabels = {
+    mainWorkspace: string;
+    externalWorkspace: string;
+    unbound: string;
+    workspace: string;
 };
 
-export function getConversationGroupLabel(key: ConversationGroupKey, locale: LocaleCode = "zh-CN") {
-    return createTranslator(locale)(conversationGroupLabels[key]);
-}
-
-export function groupConversations(items: ConversationSummary[]) {
-    const grouped: Record<ConversationGroupKey, ConversationSummary[]> = {
-        channels: [],
-        cron: [],
-        hooks: [],
-        web: [],
-    };
-
-    for (const item of items) {
-        const key = String(item.sourceGroup || "").trim().toLowerCase();
-        if (key === "channels" || key === "cron" || key === "hooks") {
-            grouped[key].push(item);
-        } else {
-            grouped.web.push(item);
-        }
-    }
-
-    return grouped;
-}
-
-function readMetadata(item: ConversationSummary): Record<string, unknown> {
+function readMetadata(item: Conversation): Record<string, unknown> {
     if (item.parsedMetadata && typeof item.parsedMetadata === "object" && !Array.isArray(item.parsedMetadata)) {
         return item.parsedMetadata as Record<string, unknown>;
     }
@@ -67,7 +34,7 @@ function readMetadata(item: ConversationSummary): Record<string, unknown> {
     return {};
 }
 
-function readString(item: ConversationSummary, keys: string[]): string {
+function readString(item: Conversation, keys: string[]): string {
     const record = item as unknown as Record<string, unknown>;
     const metadata = readMetadata(item);
     for (const key of keys) {
@@ -91,8 +58,7 @@ function labelFromProjectId(value: string): string {
     return value.replace(/^project:/i, "").trim() || value;
 }
 
-function workspaceGroupIdentity(item: ConversationSummary, locale: LocaleCode): Omit<ConversationWorkspaceGroup, "items"> {
-    const t = createTranslator(locale);
+function groupIdentity(item: Conversation, labels: ConversationWorkspaceGroupLabels): Omit<ConversationWorkspaceGroup, "items"> {
     const projectId = readString(item, ["projectId", "project_id"]);
     const workspacePath = readString(item, ["workspacePath", "workspace_path"]);
     const workspaceId = readString(item, ["workspaceId", "workspace_id"]);
@@ -110,27 +76,28 @@ function workspaceGroupIdentity(item: ConversationSummary, locale: LocaleCode): 
     if (workspacePath) {
         const key = normalizePathKey(workspacePath);
         if (scope === "workspace:main") {
-            return { key: `workspace:path:${key}`, label: t("shared.history.workspace.main"), kind: "workspace" };
+            return { key: `workspace:path:${key}`, label: labels.mainWorkspace, kind: "workspace" };
         }
-        const fallback = scope.startsWith("workspace:external:")
-            ? t("shared.history.workspace.external")
-            : t("shared.history.workspace.generic");
+        const fallback = scope.startsWith("workspace:external:") ? labels.externalWorkspace : labels.workspace;
         return { key: `workspace:path:${key}`, label: basenameFromPath(workspacePath) || fallback, kind: "workspace" };
     }
 
     if (workspaceId || scope.startsWith("workspace:")) {
         const id = workspaceId || scope.replace(/^workspace:/i, "");
-        const label = id === "main" || scope === "workspace:main" ? t("shared.history.workspace.main") : id || t("shared.history.workspace.generic");
+        const label = id === "main" || scope === "workspace:main" ? labels.mainWorkspace : id || labels.workspace;
         return { key: `workspace:${id || scope}`, label, kind: "workspace" };
     }
 
-    return { key: "unbound", label: t("shared.history.workspace.unbound"), kind: "unbound" };
+    return { key: "unbound", label: labels.unbound, kind: "unbound" };
 }
 
-export function groupConversationsByWorkspace(items: ConversationSummary[], locale: LocaleCode = "zh-CN"): ConversationWorkspaceGroup[] {
+export function groupConversationsByWorkspace(
+    conversations: Conversation[],
+    labels: ConversationWorkspaceGroupLabels,
+): ConversationWorkspaceGroup[] {
     const groups = new Map<string, ConversationWorkspaceGroup>();
-    for (const item of items) {
-        const identity = workspaceGroupIdentity(item, locale);
+    for (const item of conversations) {
+        const identity = groupIdentity(item, labels);
         const existing = groups.get(identity.key);
         if (existing) {
             existing.items.push(item);
@@ -145,7 +112,7 @@ export function groupConversationsByWorkspace(items: ConversationSummary[], loca
     });
 }
 
-export function getConversationActivityState(item: ConversationSummary): ConversationActivityState {
+export function getConversationActivityState(item: Conversation): ConversationActivityState {
     const status = String(item.workflowStatus || item.status || "").trim().toLowerCase();
     if (["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(status)) {
         return "active";

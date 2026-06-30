@@ -11,7 +11,6 @@ import {
     Maximize2,
     Route,
     TerminalSquare,
-    X,
 } from "lucide-react";
 import type { AdminProcessRef } from "@v8/session-realtime";
 
@@ -23,8 +22,6 @@ import { useChatStore } from "@/store/chat-store";
 import { inferArtifactCardType, type RuntimeArtifact } from "@/lib/artifacts";
 import { InteractiveTerminalCard } from "./InteractiveTerminalCard";
 import type { TodoHudItem } from "./TodosHUD";
-
-export type WorkbenchTab = "terminal" | "artifacts" | "todos" | "diff" | "runtime";
 
 type WorkbenchArtifact = RuntimeArtifact & {
     sourceMessageId?: string;
@@ -38,11 +35,6 @@ type DiffHint = {
 };
 
 interface WorkspaceWorkbenchPanelProps {
-    open: boolean;
-    activeTab: WorkbenchTab;
-    onOpenChange: (open: boolean) => void;
-    onTabChange: (tab: WorkbenchTab) => void;
-    workspacePath?: string | null;
     messages: Message[];
     processes: AdminProcessRef[];
     todos: TodoHudItem[];
@@ -52,17 +44,6 @@ interface WorkspaceWorkbenchPanelProps {
     onSelectRuntime: (runtimeId: RuntimeId) => void;
     onOpenRuntimeDetail: () => void;
 }
-
-const tabMeta: Record<WorkbenchTab, {
-    label: string;
-    icon: React.ElementType<{ className?: string }>;
-}> = {
-    terminal: { label: "终端", icon: TerminalSquare },
-    artifacts: { label: "产物", icon: Box },
-    todos: { label: "任务", icon: ListTodo },
-    diff: { label: "Diff", icon: GitCompareArrows },
-    runtime: { label: "运行", icon: Route },
-};
 
 function normalizedStatus(value: unknown) {
     return String(value || "").trim().toLowerCase();
@@ -165,52 +146,6 @@ function normalizeTodos(items: TodoHudItem[]) {
         .filter((item) => item.text);
 }
 
-function WorkbenchRail({
-    activeTab,
-    open,
-    counts,
-    onSelect,
-}: {
-    activeTab: WorkbenchTab;
-    open: boolean;
-    counts: Record<WorkbenchTab, number>;
-    onSelect: (tab: WorkbenchTab) => void;
-}) {
-    const tabs: WorkbenchTab[] = ["terminal", "artifacts", "todos", "diff", "runtime"];
-    return (
-        <div className="pointer-events-auto flex flex-col gap-1.5 rounded-2xl border border-border/70 bg-background/88 p-1.5 shadow-[0_18px_60px_rgba(15,23,42,0.14)] backdrop-blur-xl dark:border-white/10 dark:bg-stone-950/78">
-            {tabs.map((tab) => {
-                const Icon = tabMeta[tab].icon;
-                const selected = open && activeTab === tab;
-                const count = counts[tab] || 0;
-                return (
-                    <button
-                        key={tab}
-                        type="button"
-                        aria-label={tabMeta[tab].label}
-                        title={tabMeta[tab].label}
-                        onClick={() => onSelect(tab)}
-                        className={cn(
-                            "relative flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition-all hover:bg-muted hover:text-foreground",
-                            selected && "bg-primary text-primary-foreground shadow-sm hover:bg-primary hover:text-primary-foreground",
-                        )}
-                    >
-                        <Icon className="h-4 w-4" />
-                        {count > 0 ? (
-                            <span className={cn(
-                                "absolute -right-1 -top-1 min-w-[16px] rounded-full border border-background px-1 text-[9px] font-semibold leading-4",
-                                selected ? "bg-foreground text-background" : "bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900",
-                            )}>
-                                {Math.min(count, 99)}
-                            </span>
-                        ) : null}
-                    </button>
-                );
-            })}
-        </div>
-    );
-}
-
 function PanelSection({
     title,
     icon: Icon,
@@ -248,11 +183,6 @@ function EmptyLine({ children }: { children: React.ReactNode }) {
 }
 
 export function WorkspaceWorkbenchPanel({
-    open,
-    activeTab,
-    onOpenChange,
-    onTabChange,
-    workspacePath,
     messages,
     processes,
     todos,
@@ -267,18 +197,6 @@ export function WorkspaceWorkbenchPanel({
     const diffHints = useMemo(() => collectDiffHints(messages), [messages]);
     const normalizedTodos = useMemo(() => normalizeTodos(todos), [todos]);
     const activeProcesses = useMemo(() => processes.filter(isActiveProcess), [processes]);
-    const counts = useMemo<Record<WorkbenchTab, number>>(() => ({
-        terminal: activeProcesses.length,
-        artifacts: artifacts.length,
-        todos: normalizedTodos.length,
-        diff: diffHints.length,
-        runtime: runtimeModel.items.filter((item) => item.status !== "idle" || item.eventCount > 0).length,
-    }), [activeProcesses.length, artifacts.length, diffHints.length, normalizedTodos.length, runtimeModel.items]);
-
-    const selectTab = (tab: WorkbenchTab) => {
-        onTabChange(tab);
-        onOpenChange(true);
-    };
 
     const hasRuntimeActivity = useMemo(() => {
         return runtimeModel.items.some((item) => item.status !== "idle" || item.eventCount > 0);

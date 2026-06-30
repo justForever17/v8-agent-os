@@ -37,11 +37,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
 import { useSession } from "next-auth/react";
 import { LoginDialog } from "@/components/auth/LoginDialog";
-import { Bot, FolderTree, TerminalSquare, PanelRight, X } from "lucide-react";
+import { Bot, FolderTree, SendHorizontal, Square, TerminalSquare, PanelRight, X } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { RunControlBar } from "@/components/chat/RunControlBar";
 import { Button } from "@/components/ui/button";
-import { WorkspaceWorkbenchPanel, type WorkbenchTab } from "@/components/chat/WorkspaceWorkbenchPanel";
+import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
@@ -114,6 +114,32 @@ type SessionProjectionView = AuthoritativeSessionView & {
     contextGovernance?: Record<string, unknown> | null;
     contextGovernanceHistory?: Record<string, unknown>[];
 };
+
+interface TerminalProfileView {
+    id: string;
+    label: string;
+    command?: string;
+    executable?: string;
+}
+
+interface ManualTerminalSessionView {
+    ok?: boolean;
+    sessionId?: string;
+    commandId?: string;
+    profileId?: string;
+    profileLabel?: string;
+    cwd?: string;
+    status?: string;
+    outputDelta?: string;
+    screenSnapshot?: string;
+    rawScreenSnapshot?: string;
+    isRunning?: boolean;
+    awaitingInput?: boolean;
+    usesTty?: boolean;
+    returnCode?: number | string | null;
+    error?: string;
+    detail?: string;
+}
 
 function isLegacyChatUnsupportedPayload(value: unknown) {
     const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -471,8 +497,13 @@ export default function ChatClient() {
         }
         return false;
     });
-    const [workbenchOpen, setWorkbenchOpen] = useState(false);
-    const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("terminal");
+    const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfileView[]>([]);
+    const [terminalProfileId, setTerminalProfileId] = useState("");
+    const [manualTerminal, setManualTerminal] = useState<ManualTerminalSessionView | null>(null);
+    const [terminalOutput, setTerminalOutput] = useState("");
+    const [terminalInput, setTerminalInput] = useState("");
+    const [terminalBusy, setTerminalBusy] = useState(false);
+    const [terminalError, setTerminalError] = useState("");
 
     useEffect(() => {
         if (typeof window !== "undefined") {
@@ -502,6 +533,168 @@ export default function ChatClient() {
         () => resolveProfileAvatarSrc(clientProfile?.image || session?.user?.image || ""),
         [clientProfile?.image, session?.user?.image],
     );
+    const terminalWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || "";
+    const terminalDisplayText = manualTerminal?.screenSnapshot || terminalOutput;
+
+    const appendTerminalOutput = useCallback((delta?: string) => {
+        if (!delta) {
+            return;
+        }
+        setTerminalOutput((prev) => `${prev}${delta}`.slice(-120000));
+    }, []);
+
+    useEffect(() => {
+        if (!terminalOpen) {
+            return;
+        }
+        let cancelled = false;
+        async function loadTerminalProfiles() {
+            try {
+                const response = await fetch("/api/client/terminal/profiles", { cache: "no-store" });
+                const payload = await response.json().catch(() => ({}));
+                if (cancelled) {
+                    return;
+                }
+                if (!response.ok || payload?.ok === false) {
+                    setTerminalError(String(payload?.error || payload?.detail || "终端配置不可用"));
+                    return;
+                }
+                const profiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
+                setTerminalProfiles(profiles);
+                setTerminalProfileId((prev) => prev || profiles[0]?.id || "");
+            } catch (error) {
+                if (!cancelled) {
+                    setTerminalError(error instanceof Error ? error.message : "终端配置读取失败");
+                }
+            }
+        }
+        void loadTerminalProfiles();
+        return () => {
+            cancelled = true;
+        };
+    }, [terminalOpen]);
+
+    useEffect(() => {
+        if (!terminalOpen || !manualTerminal?.sessionId || manualTerminal.isRunning === false) {
+            return;
+        }
+        let cancelled = false;
+        const pollTerminal = async () => {
+            try {
+                const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(manualTerminal.sessionId || "")}`, { cache: "no-store" });
+                const payload = await response.json().catch(() => ({}));
+                if (cancelled) {
+                    return;
+                }
+                if (!response.ok || payload?.ok === false) {
+                    setTerminalError(String(payload?.error || payload?.detail || "终端状态读取失败"));
+                    return;
+                }
+                appendTerminalOutput(payload?.outputDelta);
+                setManualTerminal(payload);
+            } catch (error) {
+                if (!cancelled) {
+                    setTerminalError(error instanceof Error ? error.message : "终端状态读取失败");
+                }
+            }
+        };
+        void pollTerminal();
+        const timer = window.setInterval(() => {
+            void pollTerminal();
+        }, 900);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [appendTerminalOutput, manualTerminal?.isRunning, manualTerminal?.sessionId, terminalOpen]);
+
+    const startManualTerminal = useCallback(async () => {
+        if (terminalBusy) {
+            return;
+        }
+        setTerminalBusy(true);
+        setTerminalError("");
+        setTerminalOutput("");
+        try {
+            const response = await fetch("/api/client/terminal/sessions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    profileId: terminalProfileId || undefined,
+                    cwd: terminalWorkspacePath || undefined,
+                    conversationId: activeConversationId || undefined,
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.ok === false) {
+                setTerminalError(String(payload?.error || payload?.detail || "终端启动失败"));
+                return;
+            }
+            appendTerminalOutput(payload?.outputDelta);
+            setManualTerminal(payload);
+            setTerminalProfileId((prev) => prev || payload?.profileId || "");
+        } catch (error) {
+            setTerminalError(error instanceof Error ? error.message : "终端启动失败");
+        } finally {
+            setTerminalBusy(false);
+        }
+    }, [activeConversationId, appendTerminalOutput, terminalBusy, terminalProfileId, terminalWorkspacePath]);
+
+    const sendManualTerminalInput = useCallback(async () => {
+        const sessionId = manualTerminal?.sessionId;
+        const inputText = terminalInput;
+        if (!sessionId || !inputText.trim() || terminalBusy) {
+            return;
+        }
+        setTerminalBusy(true);
+        setTerminalError("");
+        setTerminalInput("");
+        try {
+            const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}/input`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ inputText: `${inputText}\n` }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.ok === false) {
+                setTerminalError(String(payload?.error || payload?.detail || "终端输入失败"));
+                return;
+            }
+            appendTerminalOutput(payload?.outputDelta);
+            setManualTerminal(payload);
+        } catch (error) {
+            setTerminalError(error instanceof Error ? error.message : "终端输入失败");
+        } finally {
+            setTerminalBusy(false);
+        }
+    }, [appendTerminalOutput, manualTerminal?.sessionId, terminalBusy, terminalInput]);
+
+    const terminateManualTerminal = useCallback(async () => {
+        const sessionId = manualTerminal?.sessionId;
+        if (!sessionId || terminalBusy) {
+            return;
+        }
+        setTerminalBusy(true);
+        setTerminalError("");
+        try {
+            const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}/terminate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.ok === false) {
+                setTerminalError(String(payload?.error || payload?.detail || "终端终止失败"));
+                return;
+            }
+            appendTerminalOutput(payload?.outputDelta);
+            setManualTerminal(payload);
+        } catch (error) {
+            setTerminalError(error instanceof Error ? error.message : "终端终止失败");
+        } finally {
+            setTerminalBusy(false);
+        }
+    }, [appendTerminalOutput, manualTerminal?.sessionId, terminalBusy]);
 
     useEffect(() => {
         if (typeof window === "undefined") {
@@ -2105,35 +2298,98 @@ export default function ChatClient() {
             {/* 底部折叠式终端栏面板 */}
             {terminalOpen && (
                 <div className="h-64 shrink-0 border-t border-border/60 bg-background/95 shadow-sm backdrop-blur flex flex-col overflow-hidden sm:max-h-[30vh] z-30">
-                    {/* 终端面板头部 */}
                     <div className="flex items-center gap-2 border-b border-border/50 px-4 py-2 text-[11px] text-muted-foreground bg-muted/30">
                         <span className="font-semibold text-foreground">手动终端</span>
                         <span className="opacity-60">·</span>
                         <span className="font-mono text-muted-foreground/80 truncate">
-                            {scopeBinding?.workspacePath || mainWorkspacePath || "未绑定工作区"}
+                            {terminalWorkspacePath || "未绑定工作区"}
                         </span>
+                        {terminalProfiles.length > 1 && (
+                            <select
+                                value={terminalProfileId}
+                                onChange={(event) => setTerminalProfileId(event.target.value)}
+                                disabled={Boolean(manualTerminal?.isRunning)}
+                                className="ml-auto h-7 max-w-44 rounded-md border border-border/50 bg-background px-2 text-[11px] text-foreground outline-none disabled:opacity-60"
+                            >
+                                {terminalProfiles.map((profile) => (
+                                    <option key={profile.id} value={profile.id}>
+                                        {profile.label}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 rounded-md px-2 text-[11px]"
+                            onClick={() => void startManualTerminal()}
+                            disabled={terminalBusy || Boolean(manualTerminal?.isRunning)}
+                        >
+                            新建
+                        </Button>
                         <button
                             type="button"
-                            className="ml-auto flex h-5 w-5 items-center justify-center rounded hover:bg-muted hover:text-foreground"
+                            className={cn(
+                                "flex h-5 w-5 items-center justify-center rounded hover:bg-muted hover:text-foreground",
+                                terminalProfiles.length <= 1 && "ml-auto",
+                            )}
                             onClick={() => setTerminalOpen(false)}
                             title="折叠终端"
                         >
                             <X className="h-3.5 w-3.5" />
                         </button>
                     </div>
-                    {/* 终端面板正文 (符合规则8的待接入/禁用新建终端) */}
-                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-[11px] text-muted-foreground space-y-3 bg-muted/10 font-mono">
-                        <div className="max-w-md p-4 rounded-xl border border-dashed border-border bg-background/50 text-left">
-                            <div className="space-y-1">
-                                <div className="text-green-500 font-semibold">$ v8chat --workspace-init</div>
-                                <div className="text-muted-foreground/70">Workspace: {scopeBinding?.workspacePath || mainWorkspacePath || "Unbound"}</div>
-                                <div className="text-amber-500 font-semibold mt-2">[Warning] 独立用户调试终端暂未开启</div>
-                                <div className="text-muted-foreground/60 leading-relaxed">当前版本尚未打通独立拉起未定义命令的安全 PTY 调试接口。需要交互时，请通过右上角开启【侧边栏】，Agent 启动的后台进程（如 git/shell/python）会在【活跃进程】模块中自动提供实时交互 attach 终端。</div>
+                    <div className="flex min-h-0 flex-1 flex-col bg-[#0c0f14] text-[11px] text-slate-100">
+                        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono leading-5">
+                            {terminalDisplayText || "$ 点击“新建”启动当前工作区终端"}
+                        </pre>
+                        {terminalError && (
+                            <div className="border-t border-red-500/20 bg-red-500/10 px-4 py-1.5 text-[11px] text-red-200">
+                                {terminalError}
                             </div>
+                        )}
+                        <div className="flex items-center gap-2 border-t border-white/10 bg-black/20 px-3 py-2">
+                            <span className={cn(
+                                "h-2 w-2 rounded-full",
+                                manualTerminal?.isRunning ? "bg-emerald-400" : "bg-slate-500",
+                            )} />
+                            <input
+                                value={terminalInput}
+                                onChange={(event) => setTerminalInput(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        void sendManualTerminalInput();
+                                    }
+                                }}
+                                disabled={!manualTerminal?.isRunning || terminalBusy}
+                                placeholder={manualTerminal?.isRunning ? "输入命令后回车" : "终端未运行"}
+                                className="h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-white/5 px-2 font-mono text-[12px] text-slate-100 outline-none placeholder:text-slate-500 disabled:opacity-60"
+                            />
+                            <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 rounded-md text-slate-200 hover:bg-white/10 hover:text-white"
+                                onClick={() => void sendManualTerminalInput()}
+                                disabled={!manualTerminal?.isRunning || !terminalInput.trim() || terminalBusy}
+                                title="发送"
+                            >
+                                <SendHorizontal className="h-4 w-4" />
+                            </Button>
+                            <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 rounded-md text-slate-200 hover:bg-white/10 hover:text-white"
+                                onClick={() => void terminateManualTerminal()}
+                                disabled={!manualTerminal?.isRunning || terminalBusy}
+                                title="终止"
+                            >
+                                <Square className="h-3.5 w-3.5" />
+                            </Button>
                         </div>
-                        <Button disabled className="h-8 rounded-lg px-4 text-xs bg-muted text-muted-foreground border border-border cursor-not-allowed">
-                            新建手动终端 (待接入)
-                        </Button>
                     </div>
                 </div>
             )}
@@ -2162,11 +2418,6 @@ export default function ChatClient() {
                 {/* 右侧边栏内容滚动区 */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
                     <WorkspaceWorkbenchPanel
-                        open={sidebarOpen}
-                        activeTab={workbenchTab}
-                        onOpenChange={setSidebarOpen}
-                        onTabChange={setWorkbenchTab}
-                        workspacePath={scopeBinding?.workspacePath || mainWorkspacePath}
                         messages={messages}
                         processes={hudProcesses}
                         todos={projectionTodos}

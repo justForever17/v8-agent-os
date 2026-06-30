@@ -10,13 +10,15 @@ from unittest import mock
 
 import core.graph_stream_watchdog as watchdog_module
 import runtimes.chat.runtime as chat_runtime_module
+from agents.runners.supervisor_runner import SupervisorExecutionBundle
 from core.graph_stream_watchdog import (
     GraphStreamDownstreamTimeoutError,
     GraphStreamIdleTimeoutError,
     GraphStreamWatchdogState,
     next_graph_stream_event,
 )
-from runtimes.chat.runtime import ChatRuntime, ChatStreamState
+from langchain_core.messages import AIMessage, ToolMessage
+from runtimes.chat.runtime import ChatExecutionBundle, ChatRuntime, ChatStreamState
 
 
 class DownstreamTimeoutIterator:
@@ -225,6 +227,99 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         stalled_payload = next(event["payload"] for event in chat_run.events if event["topic"] == "run.watchdog.runtime_episode_stalled")
         self.assertEqual(stalled_payload["phase"], "runtime_episode_wait")
         self.assertEqual(stalled_payload["failureClass"], "episode_stalled")
+
+    def test_tool_watchdog_timeout_builds_matching_error_tool_message(self):
+        runtime = ChatRuntime()
+        stream_state = ChatStreamState()
+        stream_state.tool_calls_buffer.append({"id": "call_slow", "name": "slow_tool", "args": {"q": "x"}})
+        stream_state.watchdog.note_tool_start("call_slow")
+        exc = GraphStreamIdleTimeoutError(
+            run_id="run_test",
+            session_id="session_test",
+            idle_seconds=360,
+            phase="tool_wait",
+            last_event="on_tool_start:slow_tool",
+        )
+
+        messages = runtime._build_tool_watchdog_timeout_messages(stream_state=stream_state, exc=exc)
+
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], ToolMessage)
+        self.assertEqual(messages[0].tool_call_id, "call_slow")
+        self.assertEqual(messages[0].name, "slow_tool")
+        self.assertEqual(getattr(messages[0], "status", None), "error")
+        self.assertIn("tool_watchdog_timeout", str(messages[0].content))
+
+    async def test_tool_watchdog_continuation_injects_tool_error_observation(self):
+        runtime = ChatRuntime()
+        stream_state = ChatStreamState()
+        stream_state.tool_calls_buffer.append({"id": "call_slow", "name": "slow_tool", "args": {}})
+        stream_state.watchdog.note_tool_start("call_slow")
+        exc = GraphStreamIdleTimeoutError(
+            run_id="run_test",
+            session_id="session_test",
+            idle_seconds=360,
+            phase="tool_wait",
+            last_event="on_tool_start:slow_tool",
+        )
+        previous_bundle = ChatExecutionBundle(
+            run_handle=object(),
+            runner_bundle=SupervisorExecutionBundle(graph=None, payload=None, graph_config={}, diagnostics={}),
+        )
+        binding = SimpleNamespace(
+            project_id="project_test",
+            workspace_id="workspace_test",
+            workspace_path="E:/workspace",
+            resolved_scope="workspace:main",
+        )
+        chat_run = SimpleNamespace(
+            request=SimpleNamespace(config=SimpleNamespace()),
+            session_id="session_test",
+            run_handle=object(),
+            scope_result=SimpleNamespace(binding=binding),
+            prepared=SimpleNamespace(
+                planner_plan={},
+                engineering_context_pack={},
+                task_shape_hint={},
+                explicit_subagent_families=[],
+                context_mentions=[],
+            ),
+            transport="test",
+        )
+        captured: dict[str, object] = {}
+
+        async def fake_get_state_snapshot(_runner_bundle):
+            return {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call_slow", "name": "slow_tool", "args": {}}],
+                    )
+                ],
+                "todos": [],
+                "current_route_context": {},
+            }
+
+        async def fake_create_execution_bundle(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            return SupervisorExecutionBundle(graph=None, payload={"messages": kwargs["messages"]}, graph_config={}, diagnostics={})
+
+        with mock.patch.object(chat_runtime_module.supervisor_runner, "get_state_snapshot", side_effect=fake_get_state_snapshot):
+            with mock.patch.object(chat_runtime_module.supervisor_runner, "create_execution_bundle", side_effect=fake_create_execution_bundle):
+                bundle = await runtime.create_tool_watchdog_continuation_bundle(
+                    chat_run=chat_run,
+                    previous_bundle=previous_bundle,
+                    stream_state=stream_state,
+                    exc=exc,
+                    continuation_count=1,
+                )
+
+        self.assertIsNotNone(bundle)
+        messages = list(captured["messages"])
+        self.assertIsInstance(messages[-1], ToolMessage)
+        self.assertEqual(messages[-1].tool_call_id, "call_slow")
+        self.assertIn("tool_watchdog_timeout", str(messages[-1].content))
+        self.assertEqual(bundle.runner_bundle.diagnostics["continuationReason"], "tool_watchdog_timeout")
 
     async def test_text_flush_keeps_pending_stream_task_alive(self):
         runtime = ChatRuntime()

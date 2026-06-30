@@ -5183,6 +5183,126 @@ class ChatRuntime:
         runner_bundle.diagnostics = diagnostics
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
+    def _build_tool_watchdog_timeout_messages(
+        self,
+        *,
+        stream_state: ChatStreamState,
+        exc: GraphStreamIdleTimeoutError,
+    ) -> list[ToolMessage]:
+        active_ids = [
+            str(item or "").strip()
+            for item in list(stream_state.watchdog.active_tool_call_ids or stream_state.active_tool_call_ids or [])
+            if str(item or "").strip()
+        ]
+        calls_by_id = {
+            str((item or {}).get("id") or "").strip(): dict(item or {})
+            for item in list(stream_state.tool_calls_buffer or [])
+            if str((item or {}).get("id") or "").strip()
+        }
+        ordered_ids: list[str] = []
+        for item in list(stream_state.tool_calls_buffer or []):
+            tool_call_id = str((item or {}).get("id") or "").strip()
+            if tool_call_id and tool_call_id in active_ids and tool_call_id not in ordered_ids:
+                ordered_ids.append(tool_call_id)
+        for tool_call_id in active_ids:
+            if tool_call_id not in ordered_ids:
+                ordered_ids.append(tool_call_id)
+
+        messages: list[ToolMessage] = []
+        idle_seconds = int(float(getattr(exc, "idle_seconds", 0) or 0))
+        for tool_call_id in ordered_ids:
+            call = calls_by_id.get(tool_call_id) or {}
+            tool_name = str(call.get("name") or "unknown_tool").strip() or "unknown_tool"
+            content = (
+                "工具执行超时，系统已停止等待该工具返回。\n"
+                f"- tool: {tool_name}\n"
+                f"- tool_call_id: {tool_call_id}\n"
+                f"- idle_timeout_seconds: {idle_seconds}\n"
+                "- failureClass: tool_watchdog_timeout\n"
+                "- retryable: true\n"
+                "下一步：不要原地盲目重复同一个长耗时工具；请改用更窄的输入、替代工具/Runtime，"
+                "或基于已有证据继续推进并向用户说明缺口。"
+            )
+            messages.append(
+                ToolMessage(
+                    content=content,
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    status="error",
+                )
+            )
+        return messages
+
+    async def create_tool_watchdog_continuation_bundle(
+        self,
+        *,
+        chat_run: ChatRunContext,
+        previous_bundle: ChatExecutionBundle,
+        stream_state: ChatStreamState,
+        exc: GraphStreamIdleTimeoutError,
+        continuation_count: int,
+    ) -> ChatExecutionBundle | None:
+        snapshot = await supervisor_runner.get_state_snapshot(previous_bundle.runner_bundle)
+        if not isinstance(snapshot, dict):
+            return None
+
+        state_messages = list(snapshot.get("messages") or [])
+        if not state_messages:
+            return None
+
+        timeout_messages = self._build_tool_watchdog_timeout_messages(stream_state=stream_state, exc=exc)
+        if not timeout_messages:
+            return None
+
+        existing_tool_message_ids = {
+            str(getattr(message, "tool_call_id", "") or "").strip()
+            for message in state_messages
+            if isinstance(message, ToolMessage)
+        }
+        injected_messages = [
+            message
+            for message in timeout_messages
+            if str(getattr(message, "tool_call_id", "") or "").strip() not in existing_tool_message_ids
+        ]
+        if not injected_messages:
+            return None
+        state_messages.extend(injected_messages)
+
+        if isinstance(snapshot.get("planner_plan"), dict) and snapshot.get("planner_plan"):
+            chat_run.prepared.planner_plan = dict(snapshot.get("planner_plan") or {})
+
+        runner_bundle = await supervisor_runner.create_execution_bundle(
+            config=chat_run.request.config,
+            messages=state_messages,
+            session_id=chat_run.session_id,
+            planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
+            planner_dispatch_status=snapshot.get("planner_dispatch_status") if isinstance(snapshot.get("planner_dispatch_status"), dict) else None,
+            engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
+            task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
+            explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
+            context_mentions=snapshot.get("context_mentions") if isinstance(snapshot.get("context_mentions"), list) else chat_run.prepared.context_mentions,
+            recursion_limit=self._recursion_limit(),
+            transport=chat_run.transport,
+        )
+        diagnostics = dict(runner_bundle.diagnostics or {})
+        diagnostics.update(
+            {
+                "continuationCount": continuation_count,
+                "continuationReason": "tool_watchdog_timeout",
+                "failureClass": "tool_watchdog_timeout",
+                "injectedToolTimeoutCount": len(injected_messages),
+                "activeToolCallIds": [message.tool_call_id for message in injected_messages],
+                "messageCount": len(state_messages),
+                "sessionId": chat_run.session_id,
+                "projectId": chat_run.scope_result.binding.project_id,
+                "workspaceId": chat_run.scope_result.binding.workspace_id,
+                "workspacePath": chat_run.scope_result.binding.workspace_path,
+                "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+            }
+        )
+        runner_bundle.diagnostics = diagnostics
+        return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
+
     @staticmethod
     def _is_spec_continuation_resume(chat_run: ChatRunContext) -> bool:
         if not chat_run.is_resume_request:
@@ -10118,6 +10238,45 @@ class ChatRuntime:
                         continuation_bundle = guidance_bundle
                         continue
                     break
+                except GraphStreamIdleTimeoutError as exc:
+                    if str(getattr(exc, "phase", "") or "") != "tool_wait":
+                        raise
+                    if continuation_count >= max_continuations:
+                        raise
+                    continuation_count += 1
+                    continuation_bundle = await self.create_tool_watchdog_continuation_bundle(
+                        chat_run=chat_run,
+                        previous_bundle=execution_bundle,
+                        stream_state=stream_state,
+                        exc=exc,
+                        continuation_count=continuation_count,
+                    )
+                    if continuation_bundle is None:
+                        raise
+                    active_tool_call_ids = sorted(
+                        str(item)
+                        for item in (stream_state.watchdog.active_tool_call_ids or stream_state.active_tool_call_ids or set())
+                        if str(item or "").strip()
+                    )
+                    stream_state.watchdog.active_tool_call_ids.clear()
+                    stream_state.active_tool_call_ids.clear()
+                    chat_run.emit_runtime_event(
+                        "run.continuation.scheduled",
+                        {
+                            "continuationCount": continuation_count,
+                            "continuationLimit": max_continuations,
+                            "continuationReason": "tool_watchdog_timeout",
+                            "reason": "tool_watchdog_timeout",
+                            "failureClass": "tool_watchdog_timeout",
+                            "activeToolCallIds": active_tool_call_ids,
+                            "lastTool": stream_state.watchdog.last_observed_event,
+                            "summary": "工具长时间没有返回，已把该工具调用转成失败观察并自动续跑。",
+                            "recommendedNextAction": "继续推进；避免原地重复同一个长耗时工具，优先缩小输入、换替代工具或派发匹配 Runtime。",
+                        },
+                        agent_id=None,
+                        node="tool_watchdog_recovery",
+                    )
+                    continue
                 except GraphRecursionError:
                     if continuation_count >= max_continuations:
                         last_todo = None

@@ -9,7 +9,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from langchain_core.tools import InjectedToolCallId, tool
 
@@ -33,7 +33,7 @@ _EXCLUDED_DOWNLOAD_SUFFIXES = {
     ".vtt",
     ".ytdl",
 }
-_URL_IN_TEXT_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>\\\]\}\)]+", re.IGNORECASE)
 _MEDIA_URL_RE = re.compile(
     r"https?://[^\s\"'<>]+?(?:\.mp4|\.mov|\.m4v|\.webm|\.m3u8|\.mpd|\.m4s|\.jpg|\.jpeg|\.png|\.webp)(?:[?#][^\s\"'<>]*)?",
     re.IGNORECASE,
@@ -453,6 +453,107 @@ def _extract_media_urls_from_json_like(value: Any, *, source: str) -> list[dict[
     return hits
 
 
+def _douyin_aweme_id_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    path_match = re.search(r"/video/(\d+)", parsed.path or "")
+    if path_match:
+        return path_match.group(1)
+    query = parse_qs(parsed.query or "")
+    for key in ("aweme_id", "item_ids", "item_id", "modal_id"):
+        value = _safe_text((query.get(key) or [""])[0])
+        if re.fullmatch(r"\d{12,24}", value):
+            return value
+    return ""
+
+
+def _douyin_mobile_headers() -> dict[str, str]:
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+        "Referer": "https://www.douyin.com/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+
+def _resolve_douyin_mobile_share_page(
+    url: str,
+    *,
+    prefer: DownloadMediaPreference,
+) -> dict[str, Any] | None:
+    aweme_id = _douyin_aweme_id_from_url(url)
+    if not aweme_id:
+        return None
+
+    requests, import_error = _load_requests()
+    if requests is None:
+        return {
+            "resolved": False,
+            "platform": "douyin",
+            "strategy": "douyin_mobile_share_page",
+            "error": f"无法解析抖音移动分享页：{import_error}",
+        }
+
+    mobile_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+    try:
+        response = requests.get(
+            mobile_url,
+            headers=_douyin_mobile_headers(),
+            allow_redirects=True,
+            timeout=20,
+        )
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if status_code >= 400:
+            return {
+                "resolved": False,
+                "platform": "douyin",
+                "strategy": "douyin_mobile_share_page",
+                "error": f"抖音移动分享页返回 HTTP {status_code}。",
+            }
+        page_text = _safe_text(getattr(response, "text", ""))
+    except Exception as exc:
+        return {
+            "resolved": False,
+            "platform": "douyin",
+            "strategy": "douyin_mobile_share_page",
+            "error": f"抖音移动分享页解析失败：{exc}",
+        }
+
+    candidates = [
+        hit
+        for hit in _extract_media_urls_from_text(page_text, source="douyin_mobile_share_page")
+        if hit.get("kind") != "video" or _looks_like_douyin_direct_media(hit.get("url"))
+    ]
+    best_candidate = _choose_media_candidate(candidates, prefer=prefer)
+    deduped = _dedupe_media_candidates(candidates)
+    metadata = {
+        "platform": "douyin",
+        "strategy": "douyin_mobile_share_page",
+        "awemeId": aweme_id,
+        "mobileUrl": mobile_url,
+        "candidateCount": len(deduped),
+        "candidates": deduped[:5],
+    }
+    if best_candidate is None:
+        return {
+            "resolved": False,
+            "platform": "douyin",
+            "strategy": "douyin_mobile_share_page",
+            "error": "抖音移动分享页已打开，但未抽取到可下载的视频地址。",
+            "metadata": metadata,
+        }
+    return {
+        "resolved": True,
+        "platform": "douyin",
+        "strategy": "douyin_mobile_share_page",
+        "downloadUrl": best_candidate["url"],
+        "kind": best_candidate.get("kind") or _guess_kind_from_url(best_candidate["url"]),
+        "referer": mobile_url,
+        "metadata": metadata,
+    }
+
+
 def _resolve_platform_share_page(
     url: str,
     *,
@@ -462,8 +563,16 @@ def _resolve_platform_share_page(
     if platform not in {"jimeng", "doubao", "xiaohongshu", "douyin", "bilibili"}:
         return None
 
+    fallback_resolution: dict[str, Any] | None = None
+    if platform == "douyin":
+        fallback_resolution = _resolve_douyin_mobile_share_page(url, prefer=prefer)
+        if fallback_resolution and fallback_resolution.get("resolved"):
+            return fallback_resolution
+
     sync_playwright, browser_engine, import_error = _load_browser_sync()
     if sync_playwright is None:
+        if fallback_resolution is not None:
+            return fallback_resolution
         return {
             "resolved": False,
             "platform": platform,
@@ -703,7 +812,14 @@ def _download_direct_media(
         return False, f"未安装 requests，无法直接下载真实媒体地址：{import_error}"
 
     try:
-        response = requests.get(url, headers=headers or {}, stream=True, timeout=45)
+        request_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+            ),
+            **(headers or {}),
+        }
+        response = requests.get(url, headers=request_headers, stream=True, timeout=45)
         response.raise_for_status()
         content_type = _safe_text(response.headers.get("Content-Type"))
         if not (

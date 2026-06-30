@@ -2,10 +2,12 @@ from core.tools.media_downloader import (
     _choose_media_candidate,
     _extract_first_url,
     _extract_media_urls_from_json_like,
+    _extract_media_urls_from_text,
     _guess_kind_from_url,
     _looks_like_direct_media,
     _looks_like_douyin_direct_media,
     _platform_from_url,
+    _resolve_platform_share_page,
 )
 
 
@@ -17,6 +19,10 @@ DOUYIN_DIRECT_VIDEO_URL = (
     "https://v9-dy.ixigua.com/8bf8b38019cbd6f86e10746a024438bf/6a3025b6/"
     "video/tos/cn/tos-cn-ve-15/4ce0358531a346428f92572a1ef0e044/"
     "?a=6383&mime_type=video_mp4&dy_q=1781535529"
+)
+DOUYIN_PLAYWM_URL = (
+    "https://aweme.snssdk.com/aweme/v1/playwm/"
+    "?line=0&logo_name=aweme_diversion_search&ratio=720p&video_id=v0d00fg10000d8vdinfog65tq8ghtsbg"
 )
 
 
@@ -73,3 +79,51 @@ def test_douyin_candidate_weight_prefers_direct_video_over_short_generic_mp4() -
 
     assert selected is not None
     assert selected["url"] == DOUYIN_DIRECT_VIDEO_URL
+
+
+def test_douyin_mobile_share_text_extracts_playwm_video_without_swallowing_json() -> None:
+    html = (
+        '{"video":{"play_addr":{"url_list":["'
+        + DOUYIN_PLAYWM_URL.replace("/", "\\/").replace("&", "\\u0026")
+        + '"]},"cover":{"url_list":["https:\\/\\/p3-sign.douyinpic.com\\/cover.webp?x=1"]}}}'
+    )
+
+    hits = _extract_media_urls_from_text(html, source="douyin_mobile_share_page")
+    selected = _choose_media_candidate(hits, prefer="video")
+
+    assert any(hit["url"] == DOUYIN_PLAYWM_URL for hit in hits)
+    assert all('"}' not in hit["url"] for hit in hits)
+    assert selected is not None
+    assert selected["url"] == DOUYIN_PLAYWM_URL
+
+
+def test_douyin_mobile_share_page_resolves_without_browser(monkeypatch) -> None:
+    class FakeResponse:
+        status_code = 200
+        text = (
+            '{"video":{"play_addr":{"url_list":["'
+            + DOUYIN_PLAYWM_URL.replace("/", "\\/").replace("&", "\\u0026")
+            + '"]}}}'
+        )
+
+    class FakeRequests:
+        def get(self, url, **kwargs):
+            assert url == "https://www.iesdouyin.com/share/video/7655798900835020918/"
+            assert kwargs["headers"]["Referer"] == "https://www.douyin.com/"
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "core.tools.media_downloader._load_requests",
+        lambda: (FakeRequests(), None),
+    )
+
+    result = _resolve_platform_share_page(
+        "https://www.douyin.com/video/7655798900835020918",
+        platform="douyin",
+        prefer="video",
+    )
+
+    assert result is not None
+    assert result["resolved"] is True
+    assert result["strategy"] == "douyin_mobile_share_page"
+    assert result["downloadUrl"] == DOUYIN_PLAYWM_URL

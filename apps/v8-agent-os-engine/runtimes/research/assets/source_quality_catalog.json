@@ -200,6 +200,7 @@
       "category": "background",
       "displayName": "Background Encyclopedic Sources",
       "hosts": [
+        "baike.baidu.com",
         "wikipedia.org",
         "www.wikipedia.org",
         "britannica.com",

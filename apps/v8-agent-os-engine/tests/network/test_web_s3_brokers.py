@@ -129,6 +129,7 @@ class WebAndS3BrokerTests(unittest.TestCase):
         mocked.assert_called_once()
         self.assertEqual(mocked.call_args.kwargs["intent"], "auto")
         self.assertEqual(mocked.call_args.kwargs["target"], "https://example.com")
+        self.assertEqual(mocked.call_args.kwargs["mode"], "static")
 
     def test_web_broker_debug_mode_moves_transport_fields_under_debug(self):
         with patch(
@@ -444,6 +445,33 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(mocked.call_args.kwargs["intent"], "read")
         self.assertEqual(mocked.call_args.kwargs["mode"], "dynamic")
+
+    def test_web_broker_baidu_baike_is_background_source_hint(self):
+        with patch(
+            "core.tools.web_fetcher.web_fetch.func",
+            return_value=json.dumps(
+                {
+                    "ok": True,
+                    "query": "李白 百度百科",
+                    "provider": "fake",
+                    "results": [
+                        {
+                            "title": "李白_百度百科",
+                            "url": "https://baike.baidu.com/item/%E6%9D%8E%E7%99%BD/1043",
+                            "snippet": "唐代诗人。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        ):
+            result = web_broker.func(target="李白 百度百科", mode="search")
+
+        payload = json.loads(result)
+        hints = payload["results"][0]["sourceQualityHints"]
+        self.assertEqual(hints["host"], "baike.baidu.com")
+        self.assertIn("encyclopedic_background_source", hints["signals"])
+        self.assertEqual(hints["tier"], "secondary")
 
     def test_s3_broker_upload_mode_returns_structured_json(self):
         with patch(

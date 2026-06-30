@@ -2052,6 +2052,13 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
             "github.com",
         )
     )
+    background = host in {
+        "baike.baidu.com",
+        "wikipedia.org",
+        "www.wikipedia.org",
+        "britannica.com",
+        "www.britannica.com",
+    }
     low_quality = any(
         hint in host or hint in str(url or "").lower()
         for hint in (
@@ -2063,13 +2070,15 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
             "csdn.",
         )
     )
-    score = 70 if authoritative else 50
+    score = 70 if authoritative else (55 if background else 50)
     if low_quality:
         score -= 25
     score = max(0, min(score, 100))
     signals = []
     if authoritative:
         signals.append("authoritative_host_hint")
+    if background:
+        signals.append("encyclopedic_background_source")
     if low_quality:
         signals.append("low_quality_host_hint")
     return {
@@ -3724,7 +3733,7 @@ def web_broker(
     extract: WebExtractMode = "article",
     search_engine: WebSearchEngine = "auto",
     search_vertical: WebSearchVertical = "all",
-    fetch_mode: WebFetchMode = "auto",
+    fetch_mode: WebFetchMode = "static",
     headless: bool = True,
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
@@ -3745,6 +3754,11 @@ def web_broker(
     - read: read a single page and return compact cleaned Markdown/title/link results
     - extract: 抽取结构化内容，适合 article / links / metadata / media / raw_html / ui_snapshot
     - search: Source Router 公开搜索，返回清洗后的搜索结果列表和 provider/网络路由质量信号
+
+    fetch_mode:
+    - static is the default first choice for normal article/docs/wiki reading: fastest, cleanest, and no browser dependency
+    - auto/dynamic/stealth are opt-in fallbacks for JS-rendered pages, login-backed pages, or anti-bot/challenge pages
+    - for page code/DOM/UI structure, use mode=extract with extract=raw_html or ui_snapshot instead of normal read
 
     debug:
     - 默认 false，只返回对 agent 真正有价值的精简结果

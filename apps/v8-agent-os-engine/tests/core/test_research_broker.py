@@ -65,6 +65,21 @@ def test_source_quality_gate_keeps_authoritative_docs_with_soft_nav_noise():
     assert not gate["rejectedReason"]
 
 
+def test_baidu_baike_is_ranked_as_background_encyclopedic_source():
+    quality = research_module._source_quality(
+        "https://baike.baidu.com/item/%E6%9D%8E%E7%99%BD/1043",
+        allowed_domains=[],
+        source_policy="authoritative",
+        title="李白_百度百科",
+        snippet="唐代诗人。",
+    )
+
+    assert quality["catalogSourceId"] == "encyclopedic_background"
+    assert quality["catalogCategory"] == "background"
+    assert quality["authorityTier"] == "background"
+    assert "source_catalog:encyclopedic_background" in quality["reasons"]
+
+
 def test_context7_mcp_error_payload_is_not_usable_text():
     payload = {
         "result": {

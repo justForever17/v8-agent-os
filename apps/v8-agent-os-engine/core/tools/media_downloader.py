@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import json
 import mimetypes
 import re
@@ -38,6 +39,28 @@ _MEDIA_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _JIMENG_DIRECT_MEDIA_HINTS = ("mime_type=video_mp4", "/video/tos/", "dreamina", ".mp4")
+_DOUYIN_DIRECT_MEDIA_HINTS = (
+    "mime_type=video_mp4",
+    "/video/tos/",
+    "/tos-cn-ve-",
+    ".ixigua.com/",
+    ".douyinvod.com/",
+    "douyin.com/aweme/v1/play",
+    "aweme.snssdk.com/aweme/v1/play",
+)
+_DOUYIN_SHARE_API_HINTS = (
+    "aweme/v1/web/aweme/detail",
+    "aweme/v1/web/multi/aweme/detail",
+    "aweme/v1/play",
+)
+_DOUYIN_LOW_VALUE_MEDIA_HINTS = (
+    "avatar",
+    "cover",
+    "music",
+    "poster",
+    "douyinpic",
+    "imagex",
+)
 _DOUBAO_SHARE_API_HINT = "get_video_share_info"
 _SHORTLINK_HOSTS = {"xhslink.com", "b23.tv", "v.douyin.com"}
 _DEFAULT_PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
@@ -248,6 +271,8 @@ def _guess_kind_from_url(url: str) -> str:
     normalized = url.lower()
     if any(ext in normalized for ext in (".mp4", ".mov", ".m4v", ".webm", ".m3u8", ".mpd", ".m4s", "mime_type=video_mp4")):
         return "video"
+    if any(hint in normalized for hint in _DOUYIN_DIRECT_MEDIA_HINTS):
+        return "video"
     if any(ext in normalized for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", "poster_url", "cover")):
         return "image"
     if any(ext in normalized for ext in (".mp3", ".wav", ".m4a", ".aac")):
@@ -261,6 +286,11 @@ def _looks_like_direct_media(url: str) -> bool:
         token in normalized
         for token in ("mime_type=video_mp4", "mime_type=image", "mime=image", "content-type=video", "content-type=image")
     )
+
+
+def _looks_like_douyin_direct_media(url: str) -> bool:
+    normalized = _safe_text(url).lower()
+    return any(hint in normalized for hint in _DOUYIN_DIRECT_MEDIA_HINTS)
 
 
 def _collect_media_files(download_dir: Path) -> list[Path]:
@@ -317,6 +347,20 @@ def _choose_media_candidate(
             kind_score += 25
         if source == "jimeng_network_capture":
             kind_score += 20
+        if source.startswith("douyin_") or _looks_like_douyin_direct_media(_safe_text(item.get("url"))):
+            url = _safe_text(item.get("url")).lower()
+            if _looks_like_douyin_direct_media(url):
+                kind_score += 40
+            if "mime_type=video_mp4" in url:
+                kind_score += 25
+            if "/video/tos/" in url or "/tos-cn-ve-" in url:
+                kind_score += 15
+            if source in {"douyin_share_api", "douyin_share_api_text"}:
+                kind_score += 20
+            if kind == "image" and any(hint in url for hint in _DOUYIN_LOW_VALUE_MEDIA_HINTS):
+                kind_score -= 35
+            if kind == "audio" and "music" in url:
+                kind_score -= 20
         return kind_score, -len(_safe_text(item.get("url")))
 
     return sorted(deduped, key=_score, reverse=True)[0]
@@ -336,6 +380,59 @@ def _load_browser_sync():
             return None, "", str(exc)
 
 
+def _normalize_embedded_media_url(url: str) -> str:
+    normalized = _safe_text(url)
+    replacements = {
+        "\\/": "/",
+        "\\u002F": "/",
+        "\\u002f": "/",
+        "\\u003A": ":",
+        "\\u003a": ":",
+        "\\u0026": "&",
+        "\\u0026amp;": "&",
+    }
+    for old, new in replacements.items():
+        normalized = normalized.replace(old, new)
+    normalized = html.unescape(normalized)
+    if re.match(r"^https?%3a", normalized, re.IGNORECASE):
+        normalized = unquote(normalized)
+    return normalized.rstrip("，。；;!！?？）)]}>\"'`,\\")
+
+
+def _text_url_variants(value: str) -> list[str]:
+    raw = _safe_text(value)
+    variants: list[str] = []
+
+    def _add(candidate: str) -> None:
+        candidate = _safe_text(candidate)
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+
+    _add(raw)
+    _add(html.unescape(raw))
+    if re.search(r"https?%3a(?:%2f){2}", raw, re.IGNORECASE):
+        _add(unquote(raw))
+    _add(_normalize_embedded_media_url(raw))
+    return variants
+
+
+def _extract_media_urls_from_text(value: str, *, source: str) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for variant in _text_url_variants(value):
+        for pattern in (_MEDIA_URL_RE, _URL_IN_TEXT_RE):
+            for match in pattern.findall(variant):
+                normalized = _normalize_embedded_media_url(match)
+                if not normalized or normalized in seen:
+                    continue
+                kind = _guess_kind_from_url(normalized)
+                if kind not in {"video", "image", "audio"}:
+                    continue
+                seen.add(normalized)
+                hits.append({"url": normalized, "source": source, "kind": kind})
+    return hits
+
+
 def _extract_media_urls_from_json_like(value: Any, *, source: str) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
 
@@ -350,12 +447,7 @@ def _extract_media_urls_from_json_like(value: Any, *, source: str) -> list[dict[
             return
         if not isinstance(node, str):
             return
-        for match in _URL_IN_TEXT_RE.findall(node):
-            normalized = _safe_text(match)
-            kind = _guess_kind_from_url(normalized)
-            if kind not in {"video", "image", "audio"}:
-                continue
-            hits.append({"url": normalized, "source": source, "kind": kind})
+        hits.extend(_extract_media_urls_from_text(node, source=source))
 
     _walk(value)
     return hits
@@ -396,6 +488,10 @@ def _resolve_platform_share_page(
         if platform == "jimeng" and not any(hint in normalized.lower() for hint in _JIMENG_DIRECT_MEDIA_HINTS):
             if _guess_kind_from_url(normalized) != "image":
                 return
+        if platform == "douyin":
+            guessed_kind = kind or _guess_kind_from_url(normalized)
+            if guessed_kind == "video" and not _looks_like_douyin_direct_media(normalized):
+                return
         if platform == "bilibili" and ".m4s" in normalized.lower():
             return
         candidates.append(
@@ -415,7 +511,10 @@ def _resolve_platform_share_page(
 
                 def _on_request(request) -> None:
                     request_url = _safe_text(getattr(request, "url", ""))
-                    if request_url and _guess_kind_from_url(request_url) in {"video", "image"}:
+                    if request_url and (
+                        _guess_kind_from_url(request_url) in {"video", "image"}
+                        or (platform == "douyin" and _looks_like_douyin_direct_media(request_url))
+                    ):
                         _register_candidate(request_url, source=f"{platform}_network_capture")
 
                 def _on_response(response) -> None:
@@ -435,6 +534,19 @@ def _resolve_platform_share_page(
                             with contextlib.suppress(Exception):
                                 body_text = response.text()
                                 for hit in _extract_media_urls_from_json_like(body_text, source="doubao_share_api_text"):
+                                    _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
+                    if platform == "douyin" and any(hint in lowered for hint in _DOUYIN_SHARE_API_HINTS):
+                        try:
+                            payload = response.json()
+                        except Exception:
+                            payload = None
+                        if payload is not None:
+                            for hit in _extract_media_urls_from_json_like(payload, source="douyin_share_api"):
+                                _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
+                        else:
+                            with contextlib.suppress(Exception):
+                                body_text = response.text()
+                                for hit in _extract_media_urls_from_json_like(body_text, source="douyin_share_api_text"):
                                     _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
 
                 page.on("request", _on_request)

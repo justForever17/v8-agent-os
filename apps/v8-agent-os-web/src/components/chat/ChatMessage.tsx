@@ -7,11 +7,14 @@ import { useState, memo, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
     buildCollaborationMicroStages,
+    buildCollaborationMicroStagesFromMessageBoundNodes,
+    buildMessageBoundExecutionNodes,
     coerceAdminResourceRef,
     isRuntimeEpisodeGraphActivity,
     resolveAdminResourceUrl,
     type AdminProcessRef,
     type CollaborationMicroStageActivityInput,
+    type MessageBoundExecutionMessage,
 } from "@v8/session-realtime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { Message, UiExecutionNode, UiTimelineNode } from "@/store/chat-types";
@@ -362,7 +365,23 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             : []),
         [isLast, message.role, runtimeActivities],
     );
-    const visibleBubbleMicroStages = useMemo(
+    const messageBoundExecutionNodes = useMemo(
+        () => buildMessageBoundExecutionNodes([message as unknown as MessageBoundExecutionMessage]),
+        [message],
+    );
+    const messageBoundMicroStages = useMemo(
+        () => buildCollaborationMicroStagesFromMessageBoundNodes(
+            messageBoundExecutionNodes,
+            {
+                runId: message.runId,
+                locale: "zh-CN",
+                limit: 10,
+                maxStepsPerStage: 4,
+            },
+        ),
+        [message.runId, messageBoundExecutionNodes],
+    );
+    const liveFallbackMicroStages = useMemo(
         () => buildCollaborationMicroStages(
             bubbleExecutionActivities.map(toMicroStageActivityInput),
             {
@@ -374,6 +393,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         ),
         [bubbleExecutionActivities, message.runId],
     );
+    const visibleBubbleMicroStages = messageBoundMicroStages.length > 0
+        ? messageBoundMicroStages
+        : liveFallbackMicroStages;
     const microStageSupervisorSpeech = useMemo(
         () => extractSupervisorMicroStageSpeech(message.nodes || []),
         [message.nodes],

@@ -5,9 +5,12 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import {
     buildCollaborationMicroStages,
+    buildCollaborationMicroStagesFromMessageBoundNodes,
+    buildMessageBoundExecutionNodes,
     buildMessageTimelineSegments,
     type AdminProcessRef,
     type CollaborationMicroStageActivityInput,
+    type MessageBoundExecutionMessage,
 } from "@v8/session-realtime";
 import Animated, {
     Easing,
@@ -903,7 +906,23 @@ export const MessageBubble = memo(function MessageBubble({
         }
         return rawFallbackBlocks.some((block) => block.type !== "voice" && block.content.trim().length > 0);
     }, [rawFallbackBlocks, rawHasStructuredNodes, rawRenderableNodes]);
-    const visibleBubbleMicroStages = useMemo(
+    const messageBoundExecutionNodes = useMemo(
+        () => buildMessageBoundExecutionNodes([message as unknown as MessageBoundExecutionMessage]),
+        [message],
+    );
+    const messageBoundMicroStages = useMemo(
+        () => buildCollaborationMicroStagesFromMessageBoundNodes(
+            messageBoundExecutionNodes,
+            {
+                runId: message.runId,
+                locale,
+                limit: 10,
+                maxStepsPerStage: 4,
+            },
+        ),
+        [locale, message.runId, messageBoundExecutionNodes],
+    );
+    const liveFallbackMicroStages = useMemo(
         () => buildCollaborationMicroStages(
             hasSupervisorVisibleActivity && !isUser && isLast
                 ? runtimeActivities.map(toMicroStageActivityInput)
@@ -917,6 +936,9 @@ export const MessageBubble = memo(function MessageBubble({
         ),
         [hasSupervisorVisibleActivity, isLast, isUser, locale, message.runId, runtimeActivities],
     );
+    const visibleBubbleMicroStages = messageBoundMicroStages.length > 0
+        ? messageBoundMicroStages
+        : liveFallbackMicroStages;
     const microStageSupervisorSpeech = useMemo(
         () => extractSupervisorMicroStageSpeech(rawRenderableNodes),
         [rawRenderableNodes],

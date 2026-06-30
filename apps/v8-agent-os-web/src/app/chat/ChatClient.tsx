@@ -1063,7 +1063,7 @@ export default function ChatClient() {
             clearTimeout(cacheWriteTimerRef.current);
         }
         cacheWriteTimerRef.current = setTimeout(() => {
-            writeWebConversationCache(activeConversationId, normalizeMessagesForState(messages));
+            void writeWebConversationCache(activeConversationId, normalizeMessagesForState(messages));
             cacheWriteTimerRef.current = null;
         }, 500);
         return () => {
@@ -1118,7 +1118,7 @@ export default function ChatClient() {
     }, []);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
-        const cached = readWebConversationCache(conversationId);
+        const cached = await readWebConversationCache(conversationId);
         if (cached?.messages?.length) {
             const cachedMessages = normalizeMessagesForState(cached.messages);
             messagesRef.current = cachedMessages;
@@ -1149,51 +1149,40 @@ export default function ChatClient() {
             }
         }
 
-        const detailTimeline = Array.isArray((detailPayload as { timeline?: unknown[] } | null | undefined)?.timeline)
-            ? (detailPayload as { timeline: unknown[] }).timeline
-            : [];
-        const detailMessages = Array.isArray((detailPayload as { messages?: unknown[] } | null | undefined)?.messages)
-            ? (detailPayload as { messages: unknown[] }).messages
-            : [];
-        const authoritativeMessages = detailTimeline.length > 0 ? detailTimeline : detailMessages;
-        const hasTimelineNodes = authoritativeMessages.some((message) =>
-            Boolean(message && typeof message === "object" && Array.isArray((message as { nodes?: unknown[] }).nodes)),
-        );
-        const snapshotMessages = hasTimelineNodes
-            ? normalizeMessagesForState(authoritativeMessages as Message[])
-            : normalizeProjectedMessages(authoritativeMessages);
         const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
         let normalized = cached?.messages?.length
-            ? mergeWebConversationSync(normalizeMessagesForState(cached.messages), snapshotMessages as Message[])
-            : snapshotMessages;
+            ? normalizeMessagesForState(cached.messages)
+            : [];
 
-        if (cached?.syncCursor) {
-            try {
-                const syncRes = await fetch(
-                    `/api/client/conversations/${conversationId}/sync?since=${encodeURIComponent(cached.syncCursor)}`,
-                    { cache: "no-store" },
+        try {
+            const syncRes = await fetch(
+                `/api/client/conversations/${conversationId}/sync?since=${encodeURIComponent(cached?.syncCursor || "")}`,
+                { cache: "no-store" },
+            );
+            if (syncRes.ok) {
+                const syncPayload = await syncRes.json().catch(() => ({}));
+                const syncItems = Array.isArray(syncPayload?.messages) ? syncPayload.messages : [];
+                const syncHasTimelineNodes = syncItems.some((message: unknown) =>
+                    Boolean(message && typeof message === "object" && Array.isArray((message as { nodes?: unknown[] }).nodes)),
                 );
-                if (syncRes.ok) {
-                    const syncPayload = await syncRes.json().catch(() => ({}));
-                    const syncMessages = Array.isArray(syncPayload?.messages)
-                        ? normalizeProjectedMessages(syncPayload.messages)
-                        : [];
-                    normalized = mergeWebConversationSync(
-                        normalized as Message[],
-                        syncMessages as Message[],
-                        Array.isArray(syncPayload?.deletions) ? syncPayload.deletions : [],
-                    );
-                    writeWebConversationCache(
-                        conversationId,
-                        normalizeMessagesForState(normalized as Message[]),
-                        String(syncPayload?.syncCursor || cached.syncCursor || ""),
-                    );
-                }
-            } catch (error) {
-                console.warn("[ChatClient] Failed to sync cached conversation delta:", error);
+                const syncMessages = syncHasTimelineNodes
+                    ? normalizeMessagesForState(syncItems as Message[])
+                    : normalizeProjectedMessages(syncItems);
+                normalized = mergeWebConversationSync(
+                    normalized as Message[],
+                    syncMessages as Message[],
+                    Array.isArray(syncPayload?.deletions) ? syncPayload.deletions : [],
+                );
+                await writeWebConversationCache(
+                    conversationId,
+                    normalizeMessagesForState(normalized as Message[]),
+                    String(syncPayload?.syncCursor || cached?.syncCursor || ""),
+                );
+            } else if (!cached?.messages?.length) {
+                console.warn("[ChatClient] Conversation sync failed during initial load:", syncRes.status);
             }
-        } else {
-            writeWebConversationCache(conversationId, normalizeMessagesForState(normalized as Message[]));
+        } catch (error) {
+            console.warn("[ChatClient] Failed to sync cached conversation delta:", error);
         }
         latestRealtimeSeqRef.current = latestSeq;
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(

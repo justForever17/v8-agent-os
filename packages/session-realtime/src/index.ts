@@ -15,3 +15,4 @@ export * from "./timeline-node-identity.js";
 export * from "./message-segments.js";
 export * from "./client-tool-surface.js";
 export * from "./collaboration-micro-stage.js";
+export * from "./message-bound-execution-node.js";

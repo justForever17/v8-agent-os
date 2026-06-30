@@ -26,7 +26,7 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 - `v8os link` 是设备/客户端连接入口，优先服务 Phone、Custom Client，以及开发/回归用 Web；桌面 GUI 本地组件不要求用户手动 link。
 - `v8os doctor` 不只是诊断，还要能生成修复计划、备份、修复、回滚配置错误。
 - `v8os sessions`、`v8os schedule`、`v8os inbox` 默认只作用于当前工作区；`--all` 才进入全局治理视角。
-- Phone、Web shell、CyberCore companion、自定义客户端都只连接 Admin BFF，不直连 Engine，也不接触内部 secret。
+- 本地可信客户端边界：桌面 GUI 内置的 Web shell / CyberCore companion 可以直连 Engine WebSocket 获取实时事件，但不得直连数据库、不得接触 `systemBase.bridge.internalSecret`；Phone 和外部自定义客户端仍只连接 Admin BFF。
 
 这套设计借鉴 Claude Code 的“薄 CLI shim + 当前目录作为项目上下文 + 可额外添加工作目录”的模型，但不照搬它的裸命令行为。V8OS 裸命令承担系统启动职责，避免用户只想开系统时意外把某个目录绑定成会话工作区。
 
@@ -137,8 +137,8 @@ CyberCore companion 当前定位：
 
 结论：
 
-- Phone / Web shell / CyberCore companion 都不应该直连 Engine。
-- 它们都不应该接触 `NEXTAUTH_SECRET` 或 `systemBase.bridge.internalSecret`。
+- Phone 不应该直连 Engine；它是远程设备身份，所有连接、配对、刷新和同步都走 Admin BFF。
+- 桌面 GUI 内置的 Web shell / CyberCore companion 可以直连 Engine WebSocket 获取本机实时事件，但不能直连 DB，也不能接触 `NEXTAUTH_SECRET` 或 `systemBase.bridge.internalSecret`。
 - 个人实例只创建一个 Owner，不开放普通用户注册；Phone 是移动设备身份，Web shell 是本地/桌面会话，CyberCore 是桌面 companion 身份。
 - 自定义客户端只需要单次配对信息、后续 client auth token、可选 session/workspace scope。
 
@@ -759,7 +759,7 @@ CLI 处理阻塞交互时必须：
 ### Phase 5：TUI 终端交互客户端
 
 - 提供类似 `out/Claude` 的终端会话体验。
-- 通过 Admin BFF 连接，不直连 Engine。
+- 默认通过 Admin BFF 连接；若未来作为本机桌面 GUI 的一部分运行，可以复用同一条本地可信 Engine WebSocket 边界，但仍不得直连 DB。
 - 支持工作区信任、聊天、实时事件、approval/ask_user、简洁工具/运行态。
 - 与 Phone/桌面 GUI 共享 session、device、workspace 语义。
 
@@ -852,7 +852,7 @@ CLI 处理阻塞交互时必须：
 - 不要让 `v8os` 裸命令绑定 cwd，否则用户在任意目录启动系统都会污染 session/workspace 语义。
 - 不要保留公开 `ask/run` 入口叙事，否则 CLI 语义会继续分裂。
 - 不要让 `--yes` 在未知 cwd 上静默创建工作区。
-- 不要让 Phone/TUI/Web shell/CyberCore companion 直连 Engine；否则权限、CORS、internal secret、runtime gate 都会变脆。
+- 不要让 Phone 或外部自定义客户端直连 Engine；桌面 GUI 内置的 Web shell / CyberCore companion 只允许直连 Engine WebSocket 这类本地实时通道，不允许直连 DB 或读取内部 secret。
 - 不要为了 CLI 方便绕过工作区边界、审批、Spec、runtime handoff 和 proof 链；CLI 只是入口，不改变 `Supervisor First, Runtime Grounded`。
 - 不要把 Admin/Web 的 `.env` 当 runtime truth；它只是 Next.js 启动环境。
 - 不要让定时任务成为无 scope 的全局 agent 活动；所有 schedule 都必须绑定工作区或明确是治理任务。

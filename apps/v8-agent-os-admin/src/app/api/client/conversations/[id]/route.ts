@@ -13,6 +13,20 @@ function asRecord(value: unknown) {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
+function stripMessagesForProjection(value: Record<string, unknown>) {
+    const projection = { ...value };
+    delete projection.messages;
+    delete projection.timeline;
+    const snapshot = asRecord(projection.snapshot);
+    if (Object.keys(snapshot).length > 0) {
+        const nextSnapshot = { ...snapshot };
+        delete nextSnapshot.messages;
+        delete nextSnapshot.timeline;
+        projection.snapshot = nextSnapshot;
+    }
+    return projection;
+}
+
 export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> },
@@ -50,26 +64,35 @@ export async function GET(
             await snapshotResponse.json().catch(() => ({})),
             { publicBaseUrl },
         ) as Record<string, unknown>;
+        const projectionData = omitMessages ? stripMessagesForProjection(snapshotData) : snapshotData;
         const historyData = historyResponse && historyResponse.ok
             ? await historyResponse.json().catch(() => ({}))
             : null;
         const historyRecord = asRecord(historyData);
-        const snapshotMessages = Array.isArray(asRecord(snapshotData.snapshot).messages)
-            ? asRecord(snapshotData.snapshot).messages
-            : Array.isArray(snapshotData.messages)
-                ? snapshotData.messages
-                : [];
+        const snapshotMessages = omitMessages
+            ? []
+            : (
+                Array.isArray(asRecord(snapshotData.snapshot).messages)
+                    ? asRecord(snapshotData.snapshot).messages
+                    : Array.isArray(snapshotData.messages)
+                        ? snapshotData.messages
+                        : []
+            );
         const historyTimeline = Array.isArray(historyRecord.timeline)
             ? historyRecord.timeline.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl }))
             : [];
         const historyMessages = Array.isArray(historyRecord.messages)
             ? historyRecord.messages.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl }))
             : [];
-        const detailMessages = historyTimeline.length > 0
-            ? historyTimeline
-            : historyMessages.length > 0
-                ? historyMessages
-                : snapshotMessages;
+        const detailMessages = omitMessages
+            ? []
+            : (
+                historyTimeline.length > 0
+                    ? historyTimeline
+                    : historyMessages.length > 0
+                        ? historyMessages
+                        : snapshotMessages
+            );
         const historyProcesses = Array.isArray(historyRecord.processes)
             ? historyRecord.processes
                 .map((process: unknown) => normalizeProcessForRealtimeSurface(process))
@@ -112,7 +135,7 @@ export async function GET(
                 : Array.isArray(snapshotData.contextGovernanceHistory)
                     ? snapshotData.contextGovernanceHistory
                     : [],
-            projection: snapshotData,
+            projection: projectionData,
             _profile: {
                 snapshot: snapshotData._profile,
                 history: historyRecord._profile,

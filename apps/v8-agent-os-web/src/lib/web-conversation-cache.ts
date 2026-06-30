@@ -1,7 +1,10 @@
 import type { Message } from "@/store/chat-types";
 
 const CACHE_PREFIX = "v8-agent-os.webConversation.";
-const MAX_CACHED_MESSAGES = 240;
+const DB_NAME = "v8-agent-os-web";
+const DB_VERSION = 1;
+const STORE_NAME = "conversationCache";
+const MAX_CACHED_MESSAGES = 2000;
 
 export type WebConversationCache = {
     sessionId: string;
@@ -11,16 +14,81 @@ export type WebConversationCache = {
 };
 
 function isBrowser() {
-    return typeof window !== "undefined" && Boolean(window.localStorage);
+    return typeof window !== "undefined";
 }
 
 function cacheKey(sessionId: string) {
     return `${CACHE_PREFIX}${encodeURIComponent(sessionId)}`;
 }
 
-export function readWebConversationCache(sessionId: string): WebConversationCache | null {
+function hasIndexedDb() {
+    return isBrowser() && Boolean(window.indexedDB);
+}
+
+function openWebConversationDb(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+        if (!hasIndexedDb()) {
+            reject(new Error("IndexedDB unavailable"));
+            return;
+        }
+        const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME, { keyPath: "sessionId" });
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
+    });
+}
+
+async function readIndexedDbCache(sessionId: string): Promise<WebConversationCache | null> {
+    const db = await openWebConversationDb();
+    try {
+        return await new Promise<WebConversationCache | null>((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, "readonly");
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.get(sessionId);
+            request.onsuccess = () => {
+                const parsed = request.result as Partial<WebConversationCache> | undefined;
+                if (!parsed || !Array.isArray(parsed.messages)) {
+                    resolve(null);
+                    return;
+                }
+                resolve({
+                    sessionId,
+                    messages: parsed.messages as Message[],
+                    syncCursor: String(parsed.syncCursor || ""),
+                    updatedAt: String(parsed.updatedAt || ""),
+                });
+            };
+            request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
+        });
+    } finally {
+        db.close();
+    }
+}
+
+async function writeIndexedDbCache(payload: WebConversationCache): Promise<void> {
+    const db = await openWebConversationDb();
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, "readwrite");
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.put(payload);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error || new Error("IndexedDB write failed"));
+        });
+    } finally {
+        db.close();
+    }
+}
+
+function readLocalStorageCache(sessionId: string): WebConversationCache | null {
     if (!isBrowser() || !sessionId) return null;
     try {
+        if (!window.localStorage) return null;
         const raw = window.localStorage.getItem(cacheKey(sessionId));
         if (!raw) return null;
         const parsed = JSON.parse(raw) as Partial<WebConversationCache>;
@@ -36,20 +104,48 @@ export function readWebConversationCache(sessionId: string): WebConversationCach
     }
 }
 
-export function writeWebConversationCache(sessionId: string, messages: Message[], syncCursor?: string) {
-    if (!isBrowser() || !sessionId) return;
-    const capped = messages.slice(-MAX_CACHED_MESSAGES);
-    const payload: WebConversationCache = {
-        sessionId,
-        messages: capped,
-        syncCursor: String(syncCursor || new Date().toISOString()),
-        updatedAt: new Date().toISOString(),
-    };
+function writeLocalStorageCache(payload: WebConversationCache) {
+    if (!isBrowser() || !payload.sessionId) return;
     try {
-        window.localStorage.setItem(cacheKey(sessionId), JSON.stringify(payload));
+        if (!window.localStorage) return;
+        window.localStorage.setItem(cacheKey(payload.sessionId), JSON.stringify(payload));
     } catch {
         // Local cache is an acceleration layer only.
     }
+}
+
+export async function readWebConversationCache(sessionId: string): Promise<WebConversationCache | null> {
+    if (!isBrowser() || !sessionId) return null;
+    if (hasIndexedDb()) {
+        try {
+            const indexedDbCache = await readIndexedDbCache(sessionId);
+            if (indexedDbCache) return indexedDbCache;
+        } catch {
+            // Fall through to the legacy cache below.
+        }
+    }
+    return readLocalStorageCache(sessionId);
+}
+
+export async function writeWebConversationCache(sessionId: string, messages: Message[], syncCursor?: string): Promise<void> {
+    if (!isBrowser() || !sessionId) return;
+    const capped = messages.slice(-MAX_CACHED_MESSAGES);
+    const existing = syncCursor === undefined ? await readWebConversationCache(sessionId) : null;
+    const payload: WebConversationCache = {
+        sessionId,
+        messages: capped,
+        syncCursor: String(syncCursor ?? existing?.syncCursor ?? ""),
+        updatedAt: new Date().toISOString(),
+    };
+    if (hasIndexedDb()) {
+        try {
+            await writeIndexedDbCache(payload);
+            return;
+        } catch {
+            // Fall through to localStorage as a degraded acceleration layer.
+        }
+    }
+    writeLocalStorageCache(payload);
 }
 
 export function mergeWebConversationSync(

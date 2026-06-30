@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -40,15 +41,51 @@ def test_phone_connection_failure_keeps_cached_identity_readable() -> None:
     assert "signOut()" not in refresh_failure_block
 
 
+def test_local_trusted_client_boundary_is_documented() -> None:
+    doc = _read_repo_file("docs/V8OS/V8OS_BINARY_CLI_WORKSPACE_AND_CLIENT_CONNECT_ZH.md")
+
+    assert "Web shell / CyberCore companion 可以直连 Engine WebSocket" in doc
+    assert "不能直连 DB" in doc or "不得直连数据库" in doc
+    assert "Phone 不应该直连 Engine" in doc
+    assert "Web shell / CyberCore companion 都不应该直连 Engine" not in doc
+
+
 def test_web_history_load_uses_omit_messages_and_local_delta_cache() -> None:
     chat_client = _read_repo_file("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx")
     cache = _read_repo_file("apps/v8-agent-os-web/src/lib/web-conversation-cache.ts")
+    detail_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/route.ts")
 
     assert "?omitMessages=1" in chat_client
-    assert "readWebConversationCache(conversationId)" in chat_client
+    assert "await readWebConversationCache(conversationId)" in chat_client
     assert "/sync?since=" in chat_client
     assert "writeWebConversationCache(activeConversationId" in chat_client
+    assert "const authoritativeMessages" not in chat_client
 
     assert "MAX_CACHED_MESSAGES" in cache
+    assert "indexedDB.open" in cache
+    assert "STORE_NAME = \"conversationCache\"" in cache
     assert "deletedIds.has(message.id)" in cache
     assert "mergeWebConversationSync" in cache
+    assert "syncCursor: String(syncCursor ?? existing?.syncCursor ?? \"\")" in cache
+
+    assert "stripMessagesForProjection" in detail_route
+    assert "projection: projectionData" in detail_route
+    assert re.search(r"const detailMessages = omitMessages\s*\?\s*\[\]", detail_route)
+
+
+def test_shared_message_bound_execution_contract_exists_for_phone_web_renderers() -> None:
+    index = _read_repo_file("packages/session-realtime/src/index.ts")
+    contract = _read_repo_file("packages/session-realtime/src/message-bound-execution-node.ts")
+    web_message = _read_repo_file("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx")
+    phone_message = _read_repo_file("apps/v8-agent-os-phone/src/components/chat/MessageBubble.tsx")
+
+    assert "message-bound-execution-node" in index
+    assert "MessageBoundExecutionNode" in contract
+    assert "buildMessageBoundExecutionNodes" in contract
+    assert "buildCollaborationMicroStagesFromMessageBoundNodes" in contract
+    assert "messageId" in contract
+    assert "detailRef" in contract
+    assert "buildMessageBoundExecutionNodes" in web_message
+    assert "buildCollaborationMicroStagesFromMessageBoundNodes" in web_message
+    assert "buildMessageBoundExecutionNodes" in phone_message
+    assert "buildCollaborationMicroStagesFromMessageBoundNodes" in phone_message

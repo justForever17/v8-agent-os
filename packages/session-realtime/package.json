@@ -14,7 +14,8 @@
     "prepare": "npm run build",
     "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs && node scripts/verify-runtime-timeline-dedupe.mjs",
     "verify:episode-graph": "npm run build && node scripts/verify-runtime-episode-graph.mjs",
-    "verify:micro-stage": "npm run build && node scripts/verify-collaboration-micro-stage.mjs"
+    "verify:micro-stage": "npm run build && node scripts/verify-collaboration-micro-stage.mjs",
+    "verify:message-bound-execution": "npm run build && node scripts/verify-message-bound-execution-node.mjs"
   },
   "exports": {
     ".": {
@@ -80,6 +81,10 @@
     "./collaboration-micro-stage": {
       "types": "./dist/collaboration-micro-stage.d.ts",
       "default": "./dist/collaboration-micro-stage.js"
+    },
+    "./message-bound-execution-node": {
+      "types": "./dist/message-bound-execution-node.d.ts",
+      "default": "./dist/message-bound-execution-node.js"
     }
   },
   "devDependencies": {

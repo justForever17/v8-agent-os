@@ -44,19 +44,22 @@ interface ManualTerminalPanelProps {
     onProfileChange: (profileId: string) => void;
     onStart: () => void;
     onActivate: (sessionId: string) => void;
-    onSessionSnapshot: (session: ManualTerminalSessionView) => void;
-    onSendInputFallback: (sessionId: string, inputText: string) => Promise<void> | void;
-    onTerminate: (sessionId: string) => Promise<void> | void;
     onCloseSession: (sessionId: string) => Promise<void> | void;
     onClosePanel: () => void;
 }
 
-function buildTerminalWsUrl(commandId?: string) {
-    if (!commandId || typeof window === 'undefined') {
+function buildTerminalSessionWsUrl(sessionId?: string) {
+    if (!sessionId || typeof window === 'undefined') {
         return '';
     }
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}/api/client/bg_processes/${encodeURIComponent(commandId)}/ws`;
+    const configured = String(
+        process.env.NEXT_PUBLIC_V8_ENGINE_WS_BASE_URL
+        || process.env.NEXT_PUBLIC_V8_AGENT_OS_ENGINE_WS_BASE_URL
+        || '',
+    ).trim();
+    const base = configured || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname || '127.0.0.1'}:9530`;
+    const normalizedBase = base.replace(/\/$/, '').endsWith('/v1') ? base.replace(/\/$/, '') : `${base.replace(/\/$/, '')}/v1`;
+    return `${normalizedBase}/terminal/sessions/${encodeURIComponent(sessionId)}/ws`;
 }
 
 function formatTerminalTitle(session: ManualTerminalSessionView) {
@@ -77,52 +80,70 @@ function writePlainSnapshot(term: Terminal, text: string) {
 interface ManualTerminalXtermProps {
     session: ManualTerminalSessionView;
     error?: string;
-    onSnapshot: (session: ManualTerminalSessionView) => void;
-    onSendInputFallback: (sessionId: string, inputText: string) => Promise<void> | void;
-    onTerminate: (sessionId: string) => Promise<void> | void;
 }
 
-function ManualTerminalXterm({
-    session,
-    error,
-    onSnapshot,
-    onSendInputFallback,
-    onTerminate,
-}: ManualTerminalXtermProps) {
+function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
     const terminalHostRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
-    const lastSnapshotRef = useRef('');
-    const [fallbackMode, setFallbackMode] = useState(false);
+    const resizeTimerRef = useRef<number | null>(null);
+    const wroteInitialSnapshotRef = useRef(false);
+    const [connected, setConnected] = useState(false);
+    const [running, setRunning] = useState(session.isRunning !== false);
+    const [socketError, setSocketError] = useState('');
 
     const sessionId = String(session.sessionId || '').trim();
-    const commandId = String(session.commandId || session.sessionId || '').trim();
-    const snapshotText = String(session.rawScreenSnapshot || session.screenSnapshot || '').trim();
 
-    const sendInput = useCallback((data: string) => {
-        if (!data || !sessionId) {
-            return;
-        }
+    const sendFrame = useCallback((payload: Record<string, unknown>) => {
         const socket = wsRef.current;
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(data);
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return false;
+        }
+        socket.send(JSON.stringify(payload));
+        return true;
+    }, []);
+
+    const sendResize = useCallback(() => {
+        const term = terminalRef.current;
+        const fitAddon = fitAddonRef.current;
+        if (!term || !fitAddon) {
             return;
         }
-        void onSendInputFallback(sessionId, data);
-    }, [onSendInputFallback, sessionId]);
+        try {
+            fitAddon.fit();
+        } catch {}
+        sendFrame({ type: 'resize', cols: term.cols, rows: term.rows });
+    }, [sendFrame]);
+
+    const scheduleResize = useCallback(() => {
+        if (resizeTimerRef.current !== null) {
+            window.clearTimeout(resizeTimerRef.current);
+        }
+        resizeTimerRef.current = window.setTimeout(() => {
+            resizeTimerRef.current = null;
+            sendResize();
+        }, 80);
+    }, [sendResize]);
 
     const pasteClipboard = useCallback(async () => {
         try {
             const text = await navigator.clipboard?.readText?.();
             if (text) {
-                sendInput(text);
+                sendFrame({ type: 'input', data: text });
             }
             terminalRef.current?.focus();
         } catch {
             terminalRef.current?.focus();
         }
-    }, [sendInput]);
+    }, [sendFrame]);
+
+    const terminate = useCallback(() => {
+        if (sendFrame({ type: 'terminate' })) {
+            setRunning(false);
+        }
+        terminalRef.current?.focus();
+    }, [sendFrame]);
 
     useEffect(() => {
         const host = terminalHostRef.current;
@@ -131,7 +152,7 @@ function ManualTerminalXterm({
         }
 
         host.innerHTML = '';
-        const resetFallbackTimer = window.setTimeout(() => setFallbackMode(false), 0);
+        wroteInitialSnapshotRef.current = false;
 
         const fitAddon = new FitAddon();
         const term = new Terminal({
@@ -140,7 +161,7 @@ function ManualTerminalXterm({
             fontFamily: 'SF Mono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
             fontSize: 12,
             lineHeight: 1.18,
-            scrollback: 8000,
+            scrollback: 10000,
             theme: {
                 background: '#05070b',
                 foreground: '#e5e7eb',
@@ -160,28 +181,13 @@ function ManualTerminalXterm({
         term.open(host);
         terminalRef.current = term;
         fitAddonRef.current = fitAddon;
-        lastSnapshotRef.current = '';
 
-        const fit = () => {
-            try {
-                fitAddon.fit();
-            } catch {}
-        };
-        window.setTimeout(fit, 30);
-        const resizeObserver = new ResizeObserver(fit);
+        window.setTimeout(scheduleResize, 30);
+        const resizeObserver = new ResizeObserver(scheduleResize);
         resizeObserver.observe(host);
 
-        const sendThroughTransport = (data: string) => {
-            const socket = wsRef.current;
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(data);
-            } else {
-                void onSendInputFallback(sessionId, data);
-            }
-        };
-
-        term.onData((data) => {
-            sendThroughTransport(data);
+        const dataDisposable = term.onData((data) => {
+            sendFrame({ type: 'input', data });
         });
         term.attachCustomKeyEventHandler((event) => {
             if (
@@ -196,38 +202,86 @@ function ManualTerminalXterm({
         });
         term.focus();
 
-        const wsUrl = buildTerminalWsUrl(commandId);
+        const wsUrl = buildTerminalSessionWsUrl(sessionId);
         if (!wsUrl) {
-            const fallbackTimer = window.setTimeout(() => setFallbackMode(true), 0);
+            term.write('Terminal session is missing a connection URL.\r\n');
             return () => {
-                window.clearTimeout(resetFallbackTimer);
-                window.clearTimeout(fallbackTimer);
                 resizeObserver.disconnect();
+                dataDisposable.dispose();
                 term.dispose();
+                terminalRef.current = null;
+                fitAddonRef.current = null;
             };
         }
 
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
         ws.onopen = () => {
-            setFallbackMode(false);
+            setConnected(true);
+            setSocketError('');
+            scheduleResize();
         };
         ws.onmessage = (event) => {
-            if (typeof event.data === 'string') {
+            if (typeof event.data !== 'string') {
+                return;
+            }
+            let payload: Record<string, unknown> | null = null;
+            try {
+                payload = JSON.parse(event.data) as Record<string, unknown>;
+            } catch {
                 term.write(event.data);
+                wroteInitialSnapshotRef.current = true;
+                return;
+            }
+            const type = String(payload?.type || '');
+            if (type === 'output') {
+                const data = String(payload.data || '');
+                if (data) {
+                    term.write(data);
+                    wroteInitialSnapshotRef.current = true;
+                }
+                return;
+            }
+            if (type === 'snapshot') {
+                const nextSession = (payload.session || {}) as ManualTerminalSessionView;
+                setRunning(nextSession.isRunning !== false);
+                const delta = String(nextSession.outputDelta || '');
+                if (delta) {
+                    term.write(delta);
+                    wroteInitialSnapshotRef.current = true;
+                    return;
+                }
+                const snapshot = String(nextSession.rawScreenSnapshot || nextSession.screenSnapshot || '');
+                if (!wroteInitialSnapshotRef.current && snapshot) {
+                    writePlainSnapshot(term, snapshot);
+                    wroteInitialSnapshotRef.current = true;
+                }
+                return;
+            }
+            if (type === 'status') {
+                const nextSession = (payload.session || {}) as ManualTerminalSessionView;
+                setRunning(nextSession.isRunning !== false);
+                return;
+            }
+            if (type === 'error') {
+                setSocketError(String(payload.message || '终端连接异常'));
             }
         };
         ws.onerror = () => {
-            setFallbackMode(true);
+            setSocketError('终端连接异常。');
         };
         ws.onclose = () => {
             wsRef.current = null;
-            setFallbackMode(true);
+            setConnected(false);
         };
 
         return () => {
-            window.clearTimeout(resetFallbackTimer);
+            if (resizeTimerRef.current !== null) {
+                window.clearTimeout(resizeTimerRef.current);
+                resizeTimerRef.current = null;
+            }
             resizeObserver.disconnect();
+            dataDisposable.dispose();
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 ws.close();
             }
@@ -235,37 +289,7 @@ function ManualTerminalXterm({
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [commandId, onSendInputFallback, pasteClipboard, sessionId]);
-
-    useEffect(() => {
-        if (!fallbackMode || !terminalRef.current || !snapshotText || snapshotText === lastSnapshotRef.current) {
-            return;
-        }
-        lastSnapshotRef.current = snapshotText;
-        writePlainSnapshot(terminalRef.current, snapshotText);
-    }, [fallbackMode, snapshotText]);
-
-    useEffect(() => {
-        if (!fallbackMode || !sessionId || session.isRunning === false) {
-            return;
-        }
-        let cancelled = false;
-        const poll = async () => {
-            try {
-                const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}`, { cache: 'no-store' });
-                const payload = await response.json().catch(() => ({}));
-                if (!cancelled && response.ok && payload?.ok !== false) {
-                    onSnapshot(payload as ManualTerminalSessionView);
-                }
-            } catch {}
-        };
-        void poll();
-        const timer = window.setInterval(() => void poll(), 1200);
-        return () => {
-            cancelled = true;
-            window.clearInterval(timer);
-        };
-    }, [fallbackMode, onSnapshot, session.isRunning, sessionId]);
+    }, [pasteClipboard, scheduleResize, sendFrame, session.isRunning, sessionId]);
 
     return (
         <div
@@ -276,24 +300,22 @@ function ManualTerminalXterm({
             }}
         >
             <div ref={terminalHostRef} className="min-h-0 flex-1 px-2 py-2" />
-            {(error || fallbackMode) && (
-                <div className="flex items-center gap-2 border-t border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-300">
-                    <span className={cn("h-2 w-2 rounded-full", session.isRunning ? "bg-emerald-400" : "bg-slate-500")} />
-                    <span className="truncate">
-                        {error || (fallbackMode ? "WebSocket 不可用，已使用 HTTP 降级输入/轮询。" : "")}
-                    </span>
-                    {session.isRunning && sessionId && (
-                        <button
-                            type="button"
-                            className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded hover:bg-white/10"
-                            title="终止"
-                            onClick={() => void onTerminate(sessionId)}
-                        >
-                            <Square className="h-3.5 w-3.5" />
-                        </button>
-                    )}
-                </div>
-            )}
+            <div className="flex items-center gap-2 border-t border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-300">
+                <span className={cn("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-slate-500")} />
+                <span className="truncate">
+                    {error || socketError || (connected ? (running ? '已连接' : '已停止') : '正在连接')}
+                </span>
+                {running && sessionId && (
+                    <button
+                        type="button"
+                        className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded hover:bg-white/10"
+                        title="终止"
+                        onClick={terminate}
+                    >
+                        <Square className="h-3.5 w-3.5" />
+                    </button>
+                )}
+            </div>
         </div>
     );
 }
@@ -309,9 +331,6 @@ export function ManualTerminalPanel({
     onProfileChange,
     onStart,
     onActivate,
-    onSessionSnapshot,
-    onSendInputFallback,
-    onTerminate,
     onCloseSession,
     onClosePanel,
 }: ManualTerminalPanelProps) {
@@ -321,11 +340,11 @@ export function ManualTerminalPanel({
     );
 
     return (
-        <div className="h-72 shrink-0 border-t border-border/60 bg-background/95 shadow-sm backdrop-blur flex flex-col overflow-hidden sm:max-h-[36vh] z-30">
+        <div className="z-30 flex h-72 shrink-0 flex-col overflow-hidden border-t border-border/60 bg-background/95 shadow-sm backdrop-blur sm:max-h-[36vh]">
             <div className="flex min-h-10 items-center gap-2 border-b border-border/50 bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground">
                 <div className="flex min-w-0 items-center gap-2">
                     <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
-                    <span className="font-semibold text-foreground">手动终端</span>
+                    <span className="font-semibold text-foreground">终端</span>
                     <span className="max-w-[28vw] truncate font-mono text-muted-foreground/80">
                         {workspacePath || "未绑定工作区"}
                     </span>
@@ -370,7 +389,7 @@ export function ManualTerminalPanel({
                                             void onCloseSession(sessionId);
                                         }
                                     }}
-                                    title="关闭终端"
+                                    title="关闭标签"
                                 >
                                     <X className="h-3 w-3" />
                                 </span>
@@ -415,9 +434,6 @@ export function ManualTerminalPanel({
                     key={activeSession.sessionId}
                     session={activeSession}
                     error={error}
-                    onSnapshot={onSessionSnapshot}
-                    onSendInputFallback={onSendInputFallback}
-                    onTerminate={onTerminate}
                 />
             ) : (
                 <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-[#05070b] text-[12px] text-slate-400">

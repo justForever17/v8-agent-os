@@ -1624,6 +1624,43 @@ class _SimpleTerminalScreen:
     def _blank_line(self) -> list[str]:
         return [" "] * self.cols
 
+    def resize(self, cols: int, rows: int) -> None:
+        next_cols = max(int(cols or self.cols or 80), 20)
+        next_rows = max(int(rows or self.rows or 24), 4)
+        if next_cols == self.cols and next_rows == self.rows:
+            return
+
+        def _resize_buffer(buffer: list[list[str]]) -> list[list[str]]:
+            source = list(buffer or [])
+            if len(source) < next_rows:
+                source = source + [[" "] * self.cols for _ in range(next_rows - len(source))]
+            else:
+                source = source[-next_rows:]
+            resized: list[list[str]] = []
+            for row in source:
+                next_row = list(row[:next_cols])
+                if len(next_row) < next_cols:
+                    next_row.extend([" "] * (next_cols - len(next_row)))
+                resized.append(next_row)
+            return resized
+
+        self._primary = _resize_buffer(self._primary)
+        self._alternate = _resize_buffer(self._alternate)
+        self.cols = next_cols
+        self.rows = next_rows
+        self.scroll_top = 0
+        self.scroll_bottom = self.rows - 1
+        self.cursor_row = max(0, min(self.rows - 1, self.cursor_row))
+        self.cursor_col = max(0, min(self.cols - 1, self.cursor_col))
+        self._saved_primary_cursor = (
+            max(0, min(self.rows - 1, self._saved_primary_cursor[0])),
+            max(0, min(self.cols - 1, self._saved_primary_cursor[1])),
+        )
+        self._saved_alternate_cursor = (
+            max(0, min(self.rows - 1, self._saved_alternate_cursor[0])),
+            max(0, min(self.cols - 1, self._saved_alternate_cursor[1])),
+        )
+
     def _buffer(self) -> list[list[str]]:
         return self._alternate if self.alternate_screen else self._primary
 
@@ -2449,6 +2486,49 @@ class BackgroundProcess:
             normalized_data = _normalize_background_input(normalized_input)
             self.proc.stdin.write(normalized_data)
             self.proc.stdin.flush()
+
+    def resize_terminal(self, cols: int, rows: int) -> dict[str, int]:
+        next_cols = max(20, min(int(cols or self.cols or 80), 240))
+        next_rows = max(4, min(int(rows or self.rows or 24), 120))
+        if next_cols == self.cols and next_rows == self.rows:
+            return {"cols": self.cols, "rows": self.rows}
+
+        self.cols = next_cols
+        self.rows = next_rows
+        try:
+            self.screen.resize(next_cols, next_rows)
+            self.screen_snapshot_cache = self._compute_screen_snapshot()
+            self.screen_version += 1
+            self.last_screen_at = time.time()
+        except Exception:
+            pass
+
+        if sys.platform == "win32" and HAS_WINPTY and self.pty_win is not None:
+            for method_name in ("set_size", "resize"):
+                method = getattr(self.pty_win, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    method(next_cols, next_rows)
+                    break
+                except TypeError:
+                    try:
+                        method(next_rows, next_cols)
+                        break
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+        elif sys.platform != "win32" and self.fd is not None:
+            try:
+                import fcntl
+                import struct
+                import termios
+
+                fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", next_rows, next_cols, 0, 0))
+            except Exception:
+                pass
+        return {"cols": self.cols, "rows": self.rows}
 
     def _compute_screen_snapshot(self) -> str:
         if self.uses_tty:

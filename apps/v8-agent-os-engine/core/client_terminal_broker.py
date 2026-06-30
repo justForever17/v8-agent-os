@@ -199,6 +199,34 @@ def read_terminal_session(session_id: str) -> dict[str, Any]:
     return _snapshot_for_session(session_id, output_delta=output_delta)
 
 
+def consume_terminal_session_output(session_id: str) -> dict[str, Any]:
+    return read_terminal_session(session_id)
+
+
+def write_terminal_session_input(session_id: str, input_text: str) -> dict[str, Any]:
+    session = _manual_terminal_sessions.get(str(session_id or "").strip())
+    if not session:
+        return _snapshot_for_session(session_id)
+    process = _bg_processes.get(str(session.get("commandId") or ""))
+    if not process:
+        return _snapshot_for_session(session_id)
+    process.write_input(str(input_text or ""))
+    return _snapshot_for_session(str(session_id))
+
+
+def resize_terminal_session(session_id: str, *, cols: int | None = None, rows: int | None = None) -> dict[str, Any]:
+    session = _manual_terminal_sessions.get(str(session_id or "").strip())
+    if not session:
+        return _snapshot_for_session(session_id)
+    process = _bg_processes.get(str(session.get("commandId") or ""))
+    if not process:
+        return _snapshot_for_session(session_id)
+    resize = getattr(process, "resize_terminal", None)
+    if callable(resize):
+        resize(int(cols or 80), int(rows or 24))
+    return _snapshot_for_session(str(session_id))
+
+
 def send_terminal_input(session_id: str, input_text: str) -> dict[str, Any]:
     session = _manual_terminal_sessions.get(str(session_id or "").strip())
     if not session:

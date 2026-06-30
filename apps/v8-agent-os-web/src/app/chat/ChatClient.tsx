@@ -513,10 +513,6 @@ export default function ChatClient() {
         [clientProfile?.image, session?.user?.image],
     );
     const terminalWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || "";
-    const activeManualTerminal = useMemo(
-        () => manualTerminalSessions.find((item) => item.sessionId === activeManualTerminalId) || manualTerminalSessions[0] || null,
-        [activeManualTerminalId, manualTerminalSessions],
-    );
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
         const sessionId = String(payload?.sessionId || "").trim();
@@ -568,39 +564,6 @@ export default function ChatClient() {
         };
     }, [terminalOpen]);
 
-    useEffect(() => {
-        if (!terminalOpen || !activeManualTerminal?.sessionId || activeManualTerminal.isRunning === false) {
-            return;
-        }
-        let cancelled = false;
-        const pollTerminal = async () => {
-            try {
-                const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(activeManualTerminal.sessionId || "")}`, { cache: "no-store" });
-                const payload = await response.json().catch(() => ({}));
-                if (cancelled) {
-                    return;
-                }
-                if (!response.ok || payload?.ok === false) {
-                    setTerminalError(String(payload?.error || payload?.detail || "终端状态读取失败"));
-                    return;
-                }
-                upsertManualTerminalSession(payload, false);
-            } catch (error) {
-                if (!cancelled) {
-                    setTerminalError(error instanceof Error ? error.message : "终端状态读取失败");
-                }
-            }
-        };
-        void pollTerminal();
-        const timer = window.setInterval(() => {
-            void pollTerminal();
-        }, 900);
-        return () => {
-            cancelled = true;
-            window.clearInterval(timer);
-        };
-    }, [activeManualTerminal?.isRunning, activeManualTerminal?.sessionId, terminalOpen, upsertManualTerminalSession]);
-
     const startManualTerminal = useCallback(async () => {
         if (terminalBusy) {
             return;
@@ -631,64 +594,13 @@ export default function ChatClient() {
         }
     }, [activeConversationId, terminalBusy, terminalProfileId, terminalWorkspacePath, upsertManualTerminalSession]);
 
-    const sendManualTerminalInputFallback = useCallback(async (sessionId: string, inputText: string) => {
-        if (!sessionId || !inputText) {
-            return;
-        }
-        setTerminalError("");
-        try {
-            const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}/input`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ inputText }),
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.ok === false) {
-                setTerminalError(String(payload?.error || payload?.detail || "终端输入失败"));
-                return;
-            }
-            upsertManualTerminalSession(payload, false);
-        } catch (error) {
-            setTerminalError(error instanceof Error ? error.message : "终端输入失败");
-        }
-    }, [upsertManualTerminalSession]);
-
-    const terminateManualTerminal = useCallback(async (sessionId: string) => {
-        if (!sessionId || terminalBusy) {
-            return;
-        }
-        setTerminalBusy(true);
-        setTerminalError("");
-        try {
-            const response = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}/terminate`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({}),
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.ok === false) {
-                setTerminalError(String(payload?.error || payload?.detail || "终端终止失败"));
-                return;
-            }
-            upsertManualTerminalSession(payload, false);
-        } catch (error) {
-            setTerminalError(error instanceof Error ? error.message : "终端终止失败");
-        } finally {
-            setTerminalBusy(false);
-        }
-    }, [terminalBusy, upsertManualTerminalSession]);
-
-    const closeManualTerminalSession = useCallback(async (sessionId: string) => {
-        const session = manualTerminalSessions.find((item) => item.sessionId === sessionId);
-        if (session?.isRunning) {
-            await terminateManualTerminal(sessionId);
-        }
+    const closeManualTerminalSession = useCallback((sessionId: string) => {
         setManualTerminalSessions((prev) => {
             const next = prev.filter((item) => item.sessionId !== sessionId);
             setActiveManualTerminalId((current) => current === sessionId ? (next[0]?.sessionId || "") : current);
             return next;
         });
-    }, [manualTerminalSessions, terminateManualTerminal]);
+    }, []);
 
     useEffect(() => {
         if (typeof window === "undefined") {
@@ -2270,9 +2182,6 @@ export default function ChatClient() {
                     onProfileChange={setTerminalProfileId}
                     onStart={() => void startManualTerminal()}
                     onActivate={setActiveManualTerminalId}
-                    onSessionSnapshot={(payload) => upsertManualTerminalSession(payload, false)}
-                    onSendInputFallback={sendManualTerminalInputFallback}
-                    onTerminate={terminateManualTerminal}
                     onCloseSession={closeManualTerminalSession}
                     onClosePanel={() => setTerminalOpen(false)}
                 />

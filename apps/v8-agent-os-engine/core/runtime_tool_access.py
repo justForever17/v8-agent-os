@@ -144,6 +144,12 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
 RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_search"}
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_")
+SUBAGENT_RUNTIME_BINDING_KINDS = {"research", "engineering", "creative_media"}
+SUBAGENT_RUNTIME_BINDING_DEFAULT_GROUPS: dict[str, list[str]] = {
+    "research": ["research.core"],
+    "engineering": [],
+    "creative_media": ["creative_media.core"],
+}
 
 
 def utc_now_iso() -> str:
@@ -227,6 +233,104 @@ def normalize_runtime_access(values: Any, *, runtime_kind: str | None = None) ->
         seen.add(group_name)
         groups.append(group_name)
     return groups
+
+
+def normalize_subagent_runtime_kind(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"creative", "media", "multimedia", "creative_media_runtime"}:
+        normalized = "creative_media"
+    if normalized in {"code", "coding", "software_engineering", "project_coding", "engineering_runtime"}:
+        normalized = "engineering"
+    if normalized in {"web_research", "research_runtime"}:
+        normalized = "research"
+    return normalized if normalized in SUBAGENT_RUNTIME_BINDING_KINDS else ""
+
+
+def normalize_subagent_runtime_bindings(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        raw_items: list[Any] = []
+    elif isinstance(value, (str, dict)):
+        raw_items = [value]
+    else:
+        raw_items = list(value or [])
+
+    bindings: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for item in raw_items:
+        if isinstance(item, str):
+            runtime_kind = normalize_subagent_runtime_kind(item)
+            requested_groups: list[Any] = []
+            source = "admin_config"
+            label = ""
+        elif isinstance(item, dict):
+            runtime_kind = normalize_subagent_runtime_kind(
+                item.get("runtimeKind")
+                or item.get("runtime_kind")
+                or item.get("kind")
+                or item.get("runtime")
+            )
+            requested_groups = []
+            for key in ("grantGroups", "grant_groups", "toolGroups", "tool_groups", "groups"):
+                raw_groups = item.get(key)
+                if isinstance(raw_groups, (list, tuple, set)):
+                    requested_groups.extend(list(raw_groups))
+                elif raw_groups:
+                    requested_groups.append(raw_groups)
+            if item.get("group") or item.get("toolGroup") or item.get("name"):
+                requested_groups.append(item)
+            source = str(item.get("source") or item.get("bindingSource") or "admin_config").strip() or "admin_config"
+            label = str(item.get("label") or "").strip()
+        else:
+            continue
+        if not runtime_kind:
+            continue
+        grant_groups = normalize_runtime_access(requested_groups, runtime_kind=runtime_kind)
+        if not grant_groups:
+            grant_groups = list(SUBAGENT_RUNTIME_BINDING_DEFAULT_GROUPS.get(runtime_kind) or [])
+        key = (runtime_kind, tuple(grant_groups))
+        if key in seen:
+            continue
+        seen.add(key)
+        bindings.append(
+            {
+                "runtimeKind": runtime_kind,
+                "grantGroups": grant_groups,
+                "source": source,
+                **({"label": label} if label else {}),
+            }
+        )
+    return bindings
+
+
+def resolve_subagent_runtime_access(
+    agent_data: dict[str, Any] | None,
+    requested_runtime_access: Any = None,
+) -> list[str]:
+    """Merge explicit task grants with the subagent's semantic runtime bindings.
+
+    `specialistFamily` and `runtimeAffinities` remain routing hints. Only
+    `runtimeBindings` is authoritative for automatic subagent runtime grants.
+    """
+
+    requested_groups = normalize_runtime_access(requested_runtime_access)
+    agent = agent_data if isinstance(agent_data, dict) else {}
+    snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+    bindings = normalize_subagent_runtime_bindings(
+        snapshot.get("runtimeBindings")
+        or snapshot.get("runtime_bindings")
+        or agent.get("runtimeBindings")
+        or agent.get("runtime_bindings")
+    )
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group_name in [*requested_groups, *[group for binding in bindings for group in list(binding.get("grantGroups") or [])]]:
+        normalized = normalize_runtime_access([group_name])
+        for item in normalized:
+            if item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return merged
 
 
 def runtime_tool_names_for_groups(groups: Iterable[Any]) -> set[str]:

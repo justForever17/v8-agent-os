@@ -41,6 +41,7 @@ from agents.memory_agent import (
 from core import memory_store as memory_store_module
 from core.memory_canonicalization import canonicalize_memory_extraction_result
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
+from core.v8_agent_os_paths import WORKSPACE_HOME
 from runtimes.memory.models import ProjectDescriptor, SessionScopeBinding
 from runtimes.memory.scope_resolution import ScopeBindingConflictError, ScopeResolutionService
 
@@ -547,13 +548,31 @@ class MemoryScopeResolutionTests(unittest.TestCase):
 
         result = service.resolve(
             session_id="session-main",
-            workspace_path=r"C:\Users\sunny\.v8-agent-os\workspace",
+            workspace_path=str(WORKSPACE_HOME),
             scope_hint="global",
         )
 
         self.assertEqual(result.binding.resolved_scope, "workspace:main")
         self.assertEqual(result.scope_chain, ["global", "workspace:main"])
         self.assertIsNone(result.binding.project_id)
+
+    def test_unregistered_explicit_workspace_path_does_not_impersonate_main_scope(self):
+        service = ScopeResolutionService(
+            project_registry=_FakeProjectRegistry(None),
+            binding_service=_FakeBindingService(),
+            resolution_repo=_FakeResolutionRepo(),
+        )
+
+        result = service.resolve(
+            session_id="session-external",
+            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+            scope_hint="global",
+        )
+
+        self.assertTrue(result.binding.resolved_scope.startswith("workspace:external:"))
+        self.assertNotEqual(result.binding.resolved_scope, "workspace:main")
+        self.assertIn(result.binding.resolved_scope, result.scope_chain)
+        self.assertEqual(result.binding.workspace_path, r"E:\Projects\v8chat\v8-agent-os")
 
     def test_bound_session_rejects_workspace_project_switch(self):
         project = ProjectDescriptor(

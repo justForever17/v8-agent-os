@@ -23,6 +23,8 @@ from core.native_tools import (
 from core.runtime_tool_access import (
     RUNTIME_TOOL_GROUPS,
     filter_visible_tools_for_actor,
+    normalize_subagent_runtime_bindings,
+    resolve_subagent_runtime_access,
     runtime_access_from_route_context,
 )
 from core.spec_service import spec_service
@@ -1150,6 +1152,75 @@ def test_subagent_task_brief_runtime_access_grants_only_requested_memory_group()
     names = {tool.name for tool in visible}
 
     assert names == {"memory_broker", "memory_recall", "memory_read_day", "memory_map_expand"}
+
+
+def test_subagent_runtime_binding_auto_grants_research_core():
+    tools = [_tool("read_native_file"), _tool("research_broker"), _tool("creative_media_create_job"), _tool("delegation_broker")]
+    agent = {
+        "id": "web-research-architect",
+        "capabilitySnapshot": {
+            "runtimeBindings": [{"runtimeKind": "research", "source": "system_default"}],
+        },
+    }
+
+    runtime_access = resolve_subagent_runtime_access(agent, [])
+    visible = filter_visible_tools_for_actor(tools, actor="subagent", runtime_access=runtime_access)
+    names = {tool.name for tool in visible}
+
+    assert runtime_access == ["research.core"]
+    assert "read_native_file" in names
+    assert "research_broker" in names
+    assert "creative_media_create_job" not in names
+    assert "delegation_broker" not in names
+
+
+def test_subagent_runtime_binding_merges_explicit_task_grant_without_duplicates():
+    agent = {
+        "id": "creative-media-director",
+        "capabilitySnapshot": {
+            "runtimeBindings": ["creative-media"],
+        },
+    }
+
+    runtime_access = resolve_subagent_runtime_access(agent, ["research.core", "creative_media.core"])
+
+    assert runtime_access == ["research.core", "creative_media.core"]
+    assert normalize_subagent_runtime_bindings(["creative-media"])[0]["runtimeKind"] == "creative_media"
+
+
+def test_unbound_custom_subagent_does_not_auto_receive_runtime_tools():
+    tools = [_tool("read_native_file"), _tool("research_broker"), _tool("creative_media_create_job"), _tool("delegation_broker")]
+    custom_agent = {
+        "id": "custom-researcher",
+        "createdBy": "human",
+        "capabilitySnapshot": {
+            "specialistFamily": "research",
+            "runtimeAffinities": ["research"],
+        },
+    }
+
+    runtime_access = resolve_subagent_runtime_access(custom_agent, [])
+    visible = filter_visible_tools_for_actor(tools, actor="subagent", runtime_access=runtime_access)
+    names = {tool.name for tool in visible}
+
+    assert runtime_access == []
+    assert names == {"read_native_file"}
+
+
+def test_local_subagent_dispatch_only_adds_recursive_grant_when_child_delegation_allowed():
+    from core.tools.native.delegation import _with_recursive_delegation_access
+
+    plain = _with_recursive_delegation_access({"taskBriefId": "task-1", "goal": "Review the patch"})
+    recursive = _with_recursive_delegation_access(
+        {
+            "taskBriefId": "task-2",
+            "goal": "Split this task further",
+            "delegationPolicy": {"allowChildDelegation": True},
+        }
+    )
+
+    assert plain["runtimeAccess"] == []
+    assert recursive["runtimeAccess"] == ["delegation.recursive"]
 
 
 def test_memory_broker_is_default_supervisor_read_only_entry_but_not_default_subagent_tool():

@@ -242,7 +242,16 @@ def _with_recursive_delegation_access(task_brief: dict[str, Any]) -> dict[str, A
         for item in list(normalized.get("runtimeAccess") or normalized.get("runtime_access") or [])
         if str(item).strip()
     ]
-    if "delegation.recursive" not in runtime_access:
+    policy = _delegation_policy_from_task(normalized)
+    allow_child_delegation = bool(
+        normalized.get("allowChildDelegation")
+        or normalized.get("allow_child_delegation")
+        or normalized.get("childDelegationBudget")
+        or policy.get("allowChildDelegation")
+        or policy.get("allow_child_delegation")
+        or policy.get("childDelegationBudget")
+    )
+    if allow_child_delegation and "delegation.recursive" not in runtime_access:
         runtime_access.append("delegation.recursive")
     normalized["runtimeAccess"] = runtime_access
     return normalized
@@ -617,6 +626,7 @@ def delegation_broker(
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card.
     Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit tasks/worker_briefs. Each task must name the goal, useful context, expected output, acceptance criteria, constraints/boundaries, and detailRefs/source refs. Do not dispatch vague ID-only tasks.
+    Runtime-bound Research and Creative Media subagents receive their registered runtime tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     Subagents may request child work only through their brokered runtime path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
     Use `mode='observe'` or `mode='resume'` to collect results, degraded handoffs, or recovery hints before you synthesize a final answer.
     """

@@ -22,6 +22,7 @@ from core.host_load import render_host_load_line
 from core.memory_store import VOICE_INTERACTION_EXECUTION_HINT
 from core.safety_active_defense import render_host_alerts_line
 from core.system_base import get_engine_origin
+from core.runtime_tool_access import normalize_subagent_runtime_bindings
 from core.time_truth import utc_now_iso
 from core.v8_agent_os_identity import render_system_identity_line
 from core.workspace_capability import WorkspaceBinding, build_workspace_binding
@@ -719,6 +720,11 @@ def build_supervisor_system_content(
             values = [str(item).strip() for item in list(snapshot.get(key) or []) if str(item).strip()]
             if values:
                 parts.append(f"{label}={','.join(values[:4])}")
+        runtime_bindings = normalize_subagent_runtime_bindings(snapshot.get("runtimeBindings"))
+        if runtime_bindings:
+            runtime_labels = [str(item.get("runtimeKind") or "").strip() for item in runtime_bindings if str(item.get("runtimeKind") or "").strip()]
+            if runtime_labels:
+                parts.append(f"boundRuntimes={','.join(runtime_labels[:3])}")
         policy = str(snapshot.get("toolExposurePolicy") or "").strip()
         if policy:
             parts.append(f"toolPolicy={policy}")
@@ -843,7 +849,14 @@ def build_supervisor_system_content(
         prefix = f"{agent_id}"
         if include_family:
             prefix += f" | family={_agent_family(agent)}"
-        return f"- {prefix} | class={_agent_class(agent)} | ops={_agent_ops(agent)}"
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        runtime_bindings = normalize_subagent_runtime_bindings(snapshot.get("runtimeBindings"))
+        runtime_text = ",".join(
+            str(item.get("runtimeKind") or "").strip()
+            for item in runtime_bindings
+            if str(item.get("runtimeKind") or "").strip()
+        )
+        return f"- {prefix} | class={_agent_class(agent)} | ops={_agent_ops(agent)}" + (f" | boundRuntime={runtime_text}" if runtime_text else "")
 
     def _family_summary(family: str, members: list[dict]) -> str:
         snapshots = [agent.get("capabilitySnapshot") for agent in members if isinstance(agent.get("capabilitySnapshot"), dict)]
@@ -1350,6 +1363,7 @@ def build_supervisor_system_content(
         "You are a general-purpose intelligent Supervisor: follow the user's current instruction, plan, coordinate, ask clarifying questions, and handle clear tasks directly when that best serves the user. Use Planner/Memory/runtime hints as supporting evidence, not as commands.\n"
         "Improving delivery quality is your first principle. For clear and bounded tasks, direct Supervisor execution can be appropriate even if the task has many steps; for vague, hard-to-diagnose, multi-file, multi-source, media, desktop, reusable RPA, or specialist-parallel work, choose the higher-quality runtime/subagent route that can return typed handoff/proof.\n"
         "Active execution runtimes: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. Passive/support runtimes: Memory, Automation/Cron/Hook, Extensions, PluginHost, Network Supervisor. Query/configure passive runtimes only when the user or the current task actually needs them.\n"
+        "Subagent runtime bindings are automatic execution rails, not extra Supervisor chores: when you dispatch a bound Research or Creative Media subagent, the engine grants its registered runtime tools to that subagent. Do not spend an extra turn calling runtime_broker only to grant research.core or creative_media.core for an already-bound subagent. Custom subagents without bindings receive only baseline tools unless the task explicitly grants more.\n"
         "Planner is a weak route/noise-reduction adviser. It may suggest runtime needs or risks, but it does not approve, command, or replace your judgment; do not spend extra turns obeying a stale planner suggestion when the user's current instruction is clear.\n"
         "You are responsible for final delivery judgment. Treat runtime/subagent handoffs as evidence to inspect: verify changed files, tests, artifacts, warnings, and residual risks before telling the user the work is complete.\n"
         "Treat limits stated by the user, such as maximum tool calls, cost, files, or retries, as task constraints. Stop before exceeding them; ask or change approach instead of silently overrunning the limit.\n"

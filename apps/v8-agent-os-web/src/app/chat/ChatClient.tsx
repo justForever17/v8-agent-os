@@ -168,6 +168,10 @@ function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     };
 }
 
+function normalizeWorkspacePathForCompare(value?: string | null) {
+    return String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+}
+
 function normalizeWorkflowStatusForRunBar(status?: string | null): string | undefined {
     if (!status) return undefined;
     if (status === "recoverable_failed") return "failed";
@@ -830,6 +834,24 @@ export default function ChatClient() {
         () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
         [projects, scopeBinding?.projectId],
     );
+    const workspaceKindLabel = useMemo(() => {
+        if (boundProject) {
+            return boundProject.name || t(lt("项目工作区", "Project workspace"));
+        }
+        const resolvedScope = String(scopeBinding?.resolvedScope || "").trim();
+        const boundPath = normalizeWorkspacePathForCompare(scopeBinding?.workspacePath);
+        const mainPath = normalizeWorkspacePathForCompare(mainWorkspacePath);
+        if (resolvedScope === "workspace:main" && (!boundPath || !mainPath || boundPath === mainPath)) {
+            return t(lt("主工作区", "Main workspace"));
+        }
+        if (resolvedScope.startsWith("workspace:external:")) {
+            return t(lt("外部路径", "External path"));
+        }
+        if (resolvedScope.startsWith("workspace:")) {
+            return t(lt("工作区", "Workspace"));
+        }
+        return t(lt("未绑定", "Unbound"));
+    }, [boundProject, mainWorkspacePath, scopeBinding?.resolvedScope, scopeBinding?.workspacePath, t]);
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
@@ -2095,7 +2117,7 @@ export default function ChatClient() {
                                         }
                                     </span>
                                     <span className="rounded-full bg-accent px-2.5 py-1 text-accent-foreground">
-                                        {t(lt("工作区类型", "Workspace kind"))}: {boundProject?.name || t(lt("主工作区", "Main workspace"))}
+                                        {t(lt("工作区类型", "Workspace kind"))}: {workspaceKindLabel}
                                     </span>
                                     <span className="rounded-full bg-secondary px-2.5 py-1 text-secondary-foreground">
                                         Scope: {scopeBinding?.resolvedScope || "global"}

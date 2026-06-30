@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.database import db
+from core.v8_agent_os_paths import WORKSPACE_HOME
 from persistence.repositories.scope_binding_repository import ScopeBindingRepository
 from persistence.repositories.scope_resolution_repository import ScopeResolutionRepository
 from runtimes.memory.models import (
@@ -122,6 +125,31 @@ def _scope_for_workspace(workspace_id: Optional[str]) -> Optional[str]:
         return None
     safe = str(token).replace(":", "_").replace("/", "_").replace("\\", "_")
     return f"workspace:{safe}"
+
+
+def _normalized_workspace_path_for_scope(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        normalized = str(Path(text).expanduser().resolve(strict=False))
+    except Exception:
+        normalized = str(Path(text).expanduser())
+    normalized = normalized.replace("\\", "/").rstrip("/")
+    return normalized.lower()
+
+
+def _is_canonical_main_workspace_path(workspace_path: Optional[str]) -> bool:
+    normalized = _normalized_workspace_path_for_scope(workspace_path)
+    if not normalized:
+        return False
+    return normalized == _normalized_workspace_path_for_scope(str(WORKSPACE_HOME))
+
+
+def _scope_for_external_workspace_path(workspace_path: Optional[str]) -> str:
+    normalized = _normalized_workspace_path_for_scope(workspace_path)
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12] if normalized else "unknown"
+    return f"workspace:external:{digest}"
 
 
 def _scope_for_channel(channel_type: Optional[str], remote_id: Optional[str]) -> Optional[str]:
@@ -564,7 +592,11 @@ class ScopeResolutionService:
             )
             if workspace_project:
                 return workspace_project.default_scope or _scope_for_project(workspace_project.project_id) or "global", workspace_project
-            return _scope_for_workspace(workspace_id or "main") or "workspace:main", None
+            if workspace_id:
+                return _scope_for_workspace(workspace_id) or "workspace:main", None
+            if _is_canonical_main_workspace_path(workspace_path):
+                return "workspace:main", None
+            return _scope_for_external_workspace_path(workspace_path), None
 
         return "workspace:main", None
 

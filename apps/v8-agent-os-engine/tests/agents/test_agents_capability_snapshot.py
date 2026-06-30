@@ -49,6 +49,7 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         for agent in defaults:
             self.assertEqual(agent.tool_mode, "contextual_auto")
             self.assertTrue(agent.capabilitySnapshot.get("agentClass"))
+            self.assertIn("runtimeBindings", agent.capabilitySnapshot)
             self.assertIn("delegated task brief", agent.system_prompt)
             self.assertIn("Keep the solution surgical", agent.system_prompt)
             self.assertIn("Define evidence before claiming completion", agent.system_prompt)
@@ -77,6 +78,17 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertFalse(agent.globalExposure)
             self.assertEqual(agent.tool_mode, "contextual_auto")
             self.assertIn("creative_media", agent.capabilitySnapshot.get("domainTags", []))
+            self.assertEqual(
+                agent.capabilitySnapshot.get("runtimeBindings"),
+                [
+                    {
+                        "runtimeKind": "creative_media",
+                        "grantGroups": ["creative_media.core"],
+                        "label": "Creative Media",
+                        "source": "system_default",
+                    }
+                ],
+            )
             self.assertIn("docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md", agent.promptSourceRefs)
             self.assertIn("Provider-facing image/video/music prompts default to English", agent.system_prompt)
             self.assertIn("Seedance 2.0 exact models", agent.system_prompt)
@@ -100,6 +112,21 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         self.assertIn("creative_media_alpha_inspect", psd_agent.system_prompt)
         self.assertIn("creative_media_psd_compose_template", psd_agent.system_prompt)
         self.assertIn("provider raw JSON", psd_agent.system_prompt)
+
+    def test_web_research_architect_has_research_runtime_binding(self):
+        research_agent = next(agent for agent in default_subagent_configs() if agent.id == "web-research-architect")
+
+        self.assertEqual(
+            research_agent.capabilitySnapshot.get("runtimeBindings"),
+            [
+                {
+                    "runtimeKind": "research",
+                    "grantGroups": ["research.core"],
+                    "label": "Research",
+                    "source": "system_default",
+                }
+            ],
+        )
 
     def test_creative_media_tool_descriptions_explain_music_3d_job_flow(self):
         create_desc = creative_media_create_job.description

@@ -20,7 +20,12 @@ from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
-from core.runtime_tool_access import filter_visible_tools_for_actor, normalize_runtime_access, runtime_tool_names_for_groups
+from core.runtime_tool_access import (
+    filter_visible_tools_for_actor,
+    normalize_runtime_access,
+    resolve_subagent_runtime_access,
+    runtime_tool_names_for_groups,
+)
 from core.time_truth import utc_now_iso
 from core.workspace_capability import build_workspace_binding
 from erc.runtime_context import get_runtime_context
@@ -706,6 +711,7 @@ def _merged_route_context(state: dict | None, overlay: dict | None) -> dict:
 def build_contextual_auto_tool_node(
     *,
     base_tools: list,
+    agent_data: dict | None = None,
     all_native_tools: list | None = None,
     static_extra_tools: list | None = None,
     all_mcp_tools: list,
@@ -724,7 +730,10 @@ def build_contextual_auto_tool_node(
             list(route_context.get("selectedPluginHostTools") or []),
         )
         task_brief = route_context.get("taskBrief") if isinstance(route_context.get("taskBrief"), dict) else {}
-        runtime_access = normalize_runtime_access((task_brief or {}).get("runtimeAccess"))
+        runtime_access = resolve_subagent_runtime_access(
+            agent_data,
+            (task_brief or {}).get("runtimeAccess") or route_context.get("runtimeAccess"),
+        )
         actor_base_tools = filter_visible_tools_for_actor(
             list(all_native_tools or base_tools or []),
             actor="subagent",
@@ -740,6 +749,7 @@ def build_contextual_auto_tool_node(
 def build_agent_node(
     *,
     agent_id: str,
+    agent_data: dict | None,
     agent_name: str,
     agent_system_prompt: str,
     agent_tool_selectors: list[str],
@@ -823,7 +833,15 @@ def build_agent_node(
             delegated_query = _extract_delegated_query(task_messages)
             inherited_route_context = _resolve_inherited_route_context(state, task_messages, agent_id=agent_id)
             delegated_task_brief = inherited_route_context.get("taskBrief") if isinstance(inherited_route_context.get("taskBrief"), dict) else None
-            delegated_runtime_access = normalize_runtime_access((delegated_task_brief or {}).get("runtimeAccess"))
+            delegated_runtime_access = resolve_subagent_runtime_access(
+                agent_data,
+                (delegated_task_brief or {}).get("runtimeAccess"),
+            )
+            if delegated_runtime_access:
+                delegated_task_brief = {
+                    **dict(delegated_task_brief or {}),
+                    "runtimeAccess": delegated_runtime_access,
+                }
             delegated_planner_context = inherited_route_context.get("plannerContext") if isinstance(inherited_route_context.get("plannerContext"), dict) else None
             delegated_plan_context = _format_delegated_plan_context(delegated_task_brief, delegated_planner_context)
             inherited_query = str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
@@ -946,6 +964,7 @@ def build_agent_node(
                     planner_context=delegated_planner_context,
                 ),
                 "toolMode": agent_tool_mode,
+                "runtimeAccess": delegated_runtime_access,
                 "inheritedSkillIds": inherited_skill_ids,
                 "inheritedSkillNames": inherited_skill_names,
                 "delegatedFullQuery": delegated_query,
@@ -1248,6 +1267,7 @@ def build_specialist_agent_components(
             tool_node_tools = contextual_base_tools
             tool_node_func = build_contextual_auto_tool_node(
                 base_tools=contextual_base_tools,
+                agent_data=agent_data,
                 all_native_tools=list(filtered_native_tools) + [fetch_skill_instructions],
                 static_extra_tools=[],
                 all_mcp_tools=all_mcp_tools,
@@ -1267,6 +1287,7 @@ def build_specialist_agent_components(
             )
             tool_node_func = build_contextual_auto_tool_node(
                 base_tools=tool_node_tools,
+                agent_data=agent_data,
                 all_native_tools=list(filtered_native_tools) + [fetch_skill_instructions],
                 static_extra_tools=_resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
                 + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors),
@@ -1279,6 +1300,7 @@ def build_specialist_agent_components(
         agent_nodes_map[agent_id] = {
             "node_func": build_agent_node(
                 agent_id=agent_id,
+                agent_data=agent_data,
                 agent_name=agent_name,
                 agent_system_prompt=agent_sys,
                 agent_tool_selectors=tool_selectors,

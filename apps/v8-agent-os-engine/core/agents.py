@@ -3,7 +3,7 @@ import yaml
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-06-26-creative-psd"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-06-30-runtime-bindings"
 DEFAULT_SUBAGENT_IDS = {
     "project-planner",
     "implementation-engineer",
@@ -326,6 +326,38 @@ CREATIVE_MEDIA_PSD_DISCIPLINE = """PSD/layered asset discipline:
 - Agent-visible handoff should be concise Markdown: PSD artifact/ref, preview PNG, layer manifest summary, alpha cleanup status, source asset refs, limitations, and next action. Keep provider raw JSON and full PSD/layer internals behind detail refs."""
 
 
+def _default_runtime_bindings_for_snapshot(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    family = normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family") or "")
+    if family == "research":
+        return [
+            {
+                "runtimeKind": "research",
+                "grantGroups": ["research.core"],
+                "label": "Research",
+                "source": "system_default",
+            }
+        ]
+    if family == "creative_media":
+        return [
+            {
+                "runtimeKind": "creative_media",
+                "grantGroups": ["creative_media.core"],
+                "label": "Creative Media",
+                "source": "system_default",
+            }
+        ]
+    if family == "engineering":
+        return [
+            {
+                "runtimeKind": "engineering",
+                "grantGroups": [],
+                "label": "Engineering",
+                "source": "system_default",
+            }
+        ]
+    return []
+
+
 DEFAULT_AGENT_DISCIPLINE = """Shared V8 subagent discipline:
 - Start from the delegated task brief, not the whole supervisor conversation. Restate only the assumptions that affect your slice.
 - Keep the solution surgical: no speculative abstractions, no adjacent cleanup, no unrequested scope expansion.
@@ -352,6 +384,8 @@ def _default_agent(
     extra_guidance: str = "",
     global_exposure: bool = False,
 ) -> AgentConfig:
+    capability_snapshot = dict(capability_snapshot or {})
+    capability_snapshot.setdefault("runtimeBindings", _default_runtime_bindings_for_snapshot(capability_snapshot))
     system_prompt = f"""You are {name}, a V8 Agent OS specialist subagent.
 
 {DEFAULT_AGENT_DISCIPLINE}

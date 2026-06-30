@@ -179,6 +179,7 @@ type AgentFormState = {
   tools: string[];
   toolMode: "explicit" | "contextual_auto";
   specialistFamily: string;
+  runtimeBindingKinds: string[];
   globalExposure: boolean;
   agentClass: string;
   domainTagsText: string;
@@ -244,6 +245,7 @@ const DEFAULT_FORM_STATE: AgentFormState = {
   tools: [],
   toolMode: "contextual_auto",
   specialistFamily: "engineering",
+  runtimeBindingKinds: [],
   globalExposure: false,
   agentClass: "specialist",
   domainTagsText: "",
@@ -254,6 +256,26 @@ const DEFAULT_FORM_STATE: AgentFormState = {
   reflectionEnabled: false,
   maxReflections: 3
 };
+const RUNTIME_BINDING_OPTIONS = [
+  {
+    kind: "research",
+    label: "研究",
+    description: "允许该 Agent 使用研究运行时整理来源与证据。",
+    grantGroups: ["research.core"],
+  },
+  {
+    kind: "engineering",
+    label: "工程",
+    description: "标记为工程执行角色；文件和命令仍受当前工作区边界限制。",
+    grantGroups: [],
+  },
+  {
+    kind: "creative_media",
+    label: "创作媒体",
+    description: "允许该 Agent 使用创作媒体运行时管理素材、配方和媒体任务。",
+    grantGroups: ["creative_media.core"],
+  },
+];
 const DEFAULT_EXTERNAL_WORKER_FORM: ExternalWorkerFormState = {
   id: "",
   name: "",
@@ -408,6 +430,52 @@ function splitListText(value: string) {
 }
 function stringListFromSnapshot(value: unknown) {
   return Array.isArray(value) ? value.map(item => String(item || "").trim()).filter(Boolean) : [];
+}
+function normalizeRuntimeBindingKind(value: unknown) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (normalized === "creative" || normalized === "media" || normalized === "multimedia") return "creative_media";
+  if (normalized === "code" || normalized === "coding" || normalized === "software_engineering") return "engineering";
+  if (normalized === "web_research") return "research";
+  return RUNTIME_BINDING_OPTIONS.some(option => option.kind === normalized) ? normalized : "";
+}
+function runtimeBindingKindsFromSnapshot(snapshot: Record<string, unknown>) {
+  const raw = snapshot.runtimeBindings || snapshot.runtime_bindings;
+  const kinds: string[] = [];
+  const pushKind = (value: unknown) => {
+    const kind = normalizeRuntimeBindingKind(value);
+    if (kind && !kinds.includes(kind)) kinds.push(kind);
+  };
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === "string") {
+        pushKind(item);
+      } else if (item && typeof item === "object" && !Array.isArray(item)) {
+        const record = item as Record<string, unknown>;
+        pushKind(record.runtimeKind || record.runtime_kind || record.kind || record.runtime);
+      }
+    }
+  } else if (typeof raw === "string") {
+    pushKind(raw);
+  }
+  return kinds;
+}
+function runtimeBindingsFromKinds(kinds: string[]) {
+  return kinds
+    .map(kind => RUNTIME_BINDING_OPTIONS.find(option => option.kind === kind))
+    .filter((option): option is typeof RUNTIME_BINDING_OPTIONS[number] => Boolean(option))
+    .map(option => ({
+      runtimeKind: option.kind,
+      grantGroups: option.grantGroups,
+      label: option.label,
+      source: "admin_config",
+    }));
+}
+function runtimeBindingLabel(snapshot: Record<string, unknown>) {
+  const kinds = runtimeBindingKindsFromSnapshot(snapshot);
+  if (!kinds.length) return "基础工具";
+  return kinds
+    .map(kind => RUNTIME_BINDING_OPTIONS.find(option => option.kind === kind)?.label || kind)
+    .join(" / ");
 }
 function normalizeExternalWorkerDescriptor(value: unknown): ExternalWorkerDescriptor {
   const payload = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -751,6 +819,7 @@ export default function SubagentsPage() {
       tools: Array.isArray(agent.tools) ? agent.tools : [],
       toolMode: agent.tool_mode === "explicit" ? "explicit" : "contextual_auto",
       specialistFamily: typeof capabilitySnapshot.specialistFamily === "string" && capabilitySnapshot.specialistFamily.trim() ? capabilitySnapshot.specialistFamily.trim() : "engineering",
+      runtimeBindingKinds: runtimeBindingKindsFromSnapshot(capabilitySnapshot),
       globalExposure: Boolean(agent.globalExposure),
       agentClass: typeof capabilitySnapshot.agentClass === "string" && capabilitySnapshot.agentClass.trim() ? capabilitySnapshot.agentClass.trim() : "specialist",
       domainTagsText: stringListFromSnapshot(capabilitySnapshot.domainTags).join(", "),
@@ -959,6 +1028,7 @@ export default function SubagentsPage() {
       domainTags: splitListText(form.domainTagsText),
       operationCapabilities: splitListText(form.operationCapabilitiesText),
       runtimeAffinities: splitListText(form.runtimeAffinitiesText),
+      runtimeBindings: runtimeBindingsFromKinds(form.runtimeBindingKinds),
       toolExposurePolicy: form.toolExposurePolicy.trim() || "contextual_auto"
     };
     setIsSaving(true);
@@ -1522,6 +1592,7 @@ export default function SubagentsPage() {
                                                     content={
                                                         <div className="space-y-2 text-xs leading-relaxed text-slate-200 p-1 max-w-[280px]">
                                                             <div><strong>专家族 (Family):</strong> {specialistFamily || "无"}</div>
+                                                            <div><strong>绑定运行时:</strong> {runtimeBindingLabel(capabilitySnapshot)}</div>
                                                             {isBuiltin && <div className="text-amber-400 font-medium">⚠️ 内置 Subagent 绑定核心运行，无法删除。</div>}
                                                             <div><strong>分类 (Class):</strong> {agentClass || "无"}</div>
                                                             <div><strong>工具策略:</strong> {resolveToolModeLabel(toolMode)}</div>
@@ -2116,6 +2187,39 @@ export default function SubagentsPage() {
 
                                     <span className="font-medium text-slate-900">globalExposure</span>
                                 </label>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                            <div className="space-y-1">
+                                <Label>运行能力</Label>
+                                <p className="text-xs leading-5 text-slate-500">
+                                    这是底层自动授权依据：研究和创作媒体会在派发给该 Agent 时自动接入对应运行时；未选择时只使用基础工具。
+                                </p>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-3">
+                                {RUNTIME_BINDING_OPTIONS.map(option => {
+                                    const checked = form.runtimeBindingKinds.includes(option.kind);
+                                    return (
+                                        <label key={option.kind} className="flex min-h-[88px] cursor-pointer gap-3 rounded-2xl border border-slate-200 bg-white/80 p-3 text-sm shadow-sm transition hover:border-slate-300">
+                                            <Checkbox
+                                                checked={checked}
+                                                onCheckedChange={next => setForm(current => {
+                                                    const enabled = Boolean(next);
+                                                    const currentKinds = current.runtimeBindingKinds.filter(kind => kind !== option.kind);
+                                                    return {
+                                                        ...current,
+                                                        runtimeBindingKinds: enabled ? [...currentKinds, option.kind] : currentKinds,
+                                                    };
+                                                })}
+                                            />
+                                            <span className="space-y-1">
+                                                <span className="block font-medium text-slate-900">{option.label}</span>
+                                                <span className="block text-xs leading-5 text-slate-500">{option.description}</span>
+                                            </span>
+                                        </label>
+                                    );
+                                })}
                             </div>
                         </div>
 

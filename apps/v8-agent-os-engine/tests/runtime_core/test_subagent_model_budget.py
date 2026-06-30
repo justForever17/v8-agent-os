@@ -128,6 +128,7 @@ def test_explicit_agent_and_reviewer_initial_models_use_subagent_factory(monkeyp
 
     build_agent_node(
         agent_id="worker",
+        agent_data={"id": "worker", "capabilitySnapshot": {}},
         agent_name="Worker",
         agent_system_prompt="",
         agent_tool_selectors=[],

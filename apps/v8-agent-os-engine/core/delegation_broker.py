@@ -10,6 +10,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
+from core.runtime_tool_access import normalize_subagent_runtime_bindings
+
 
 _WORD_PATTERN = re.compile(r"[a-z0-9_+.-]+", re.IGNORECASE)
 
@@ -1140,6 +1142,7 @@ def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, lim
                     "artifactCapabilities": _normalize_scope_values(snapshot.get("artifactCapabilities"))[:8],
                     "operationCapabilities": _normalize_scope_values(snapshot.get("operationCapabilities"))[:8],
                     "runtimeAffinities": _normalize_scope_values(snapshot.get("runtimeAffinities"))[:8],
+                    "runtimeBindings": normalize_subagent_runtime_bindings(snapshot.get("runtimeBindings"))[:4],
                     "plannerSuitability": snapshot.get("plannerSuitability"),
                 },
                 "capabilitySummary": summarize_capability_snapshot(snapshot),
@@ -1158,7 +1161,7 @@ def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, lim
         "memberCount": len(family_agents),
         "members": members,
         "suggestedRequiredCapabilities": suggested_capabilities[:12],
-        "selectionRule": "Dispatch with familyHint plus requiredCapabilities; runtimeAccess remains a separate taskBrief field.",
+        "selectionRule": "Dispatch with familyHint plus requiredCapabilities. Bound research/creative-media subagents receive their runtime tools automatically; unbound custom subagents stay on baseline tools unless the task explicitly grants more.",
     }
 
 

@@ -10,7 +10,6 @@ import {
     MessageCircle,
     ChevronDown,
     ChevronRight,
-    Folder,
     Loader2,
     AlertCircle,
 } from "lucide-react";
@@ -85,10 +84,9 @@ export function Sidebar() {
         const items = group.items;
         const hasActiveConversation = items.some((item) => (item.sessionId || item.id) === currentId);
         const isOpen = openGroups[group.key] ?? (index === 0 || hasActiveConversation);
-        const iconNode = <Folder />;
 
         return (
-            <div className="mb-3">
+            <div key={group.key} className="mb-3">
                 {!collapsed && (
                     <div
                         className="group/header mb-1 flex cursor-pointer items-center rounded-md px-3 py-1.5 transition-colors hover:bg-accent/40"
@@ -99,7 +97,6 @@ export function Sidebar() {
                         ) : (
                             <ChevronRight className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
                         )}
-                        <div className="mr-1.5 flex items-center text-muted-foreground [&>svg]:h-3.5 [&>svg]:w-3.5">{iconNode}</div>
                         <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
                         <span className="ml-auto rounded-full bg-accent/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">{items.length}</span>
                     </div>
@@ -125,15 +122,16 @@ export function Sidebar() {
                                     title={conv.title || t(lt("新对话", "New chat"))}
                                 >
                                     <div className="flex w-full items-center">
-                                        <div
-                                            className={cn(
-                                                "shrink-0 text-muted-foreground/70 transition-colors [&>svg]:h-4 [&>svg]:w-4",
-                                                currentId === canonicalSessionId && "text-primary",
-                                                !collapsed && "mr-3",
-                                            )}
-                                        >
-                                            {iconNode}
-                                        </div>
+                                        {collapsed && (
+                                            <div
+                                                className={cn(
+                                                    "shrink-0 text-muted-foreground/70 transition-colors [&>svg]:h-4 [&>svg]:w-4",
+                                                    currentId === canonicalSessionId && "text-primary",
+                                                )}
+                                            >
+                                                <MessageCircle className="h-4 w-4" />
+                                            </div>
+                                        )}
                                         {!collapsed && (
                                             <>
                                                 <div className="min-w-0 flex-1">

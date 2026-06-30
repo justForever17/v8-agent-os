@@ -39,7 +39,6 @@ import { useSession } from "next-auth/react";
 import { LoginDialog } from "@/components/auth/LoginDialog";
 import { Bot, FolderTree, SendHorizontal, Square, TerminalSquare, PanelRight, X } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
-import { RunControlBar } from "@/components/chat/RunControlBar";
 import { Button } from "@/components/ui/button";
 import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
@@ -467,7 +466,6 @@ export default function ChatClient() {
     const [askUserQuestion, setAskUserQuestion] = useState("");
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
     const [askUserApprovalId, setAskUserApprovalId] = useState("");
-    const [askUserRunId, setAskUserRunId] = useState("");
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
@@ -480,7 +478,6 @@ export default function ChatClient() {
     const [scopeLoading, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
-    const [runActionLoading, setRunActionLoading] = useState(false);
     const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
@@ -760,7 +757,7 @@ export default function ChatClient() {
     }, []);
 
     // Initialize Hook
-    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand } = useLangGraphStream({
+    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
         onFinish: () => {
             refreshConversations();
@@ -865,7 +862,6 @@ export default function ChatClient() {
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
     const hasAskUserPending = Boolean(askUserApprovalId);
     const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
-    const effectiveRunId = currentRun?.id || askUserRunId || projectionRunId;
     const effectiveStatus = hasAskUserPending
         ? "waiting_input"
         : governancePendingApprovalId || currentRun?.status === "waiting_approval"
@@ -1020,7 +1016,6 @@ export default function ChatClient() {
         setAskUserApprovalId("");
         setAskUserQuestion("");
         setAskUserToolCallId("");
-        setAskUserRunId("");
         if (options?.closeModal !== false) {
             setAskUserModalOpen(false);
         }
@@ -1061,7 +1056,6 @@ export default function ChatClient() {
         setAskUserApprovalId(approvalId);
         setAskUserToolCallId(approval.toolCallId || request.toolCallId || "");
         setAskUserQuestion(question);
-        setAskUserRunId(approval.run_id || approval.runId || "");
         const shouldOpenModal =
             typeof options?.openModal === "boolean"
                 ? options.openModal
@@ -1706,42 +1700,6 @@ export default function ChatClient() {
         }
     };
 
-    const handleInterruptRun = useCallback(async () => {
-        const targetRunId = currentRun?.id || projectionRunId;
-        if (!targetRunId) {
-            return;
-        }
-        setRunActionLoading(true);
-        try {
-            await dispatchRunCommand(targetRunId, "interrupt", "web_interrupt");
-            if (activeConversationIdRef.current) {
-                await loadRuns(activeConversationIdRef.current);
-            }
-        } catch (error) {
-            console.error("[ChatClient] Failed to interrupt run:", error);
-        } finally {
-            setRunActionLoading(false);
-        }
-    }, [currentRun?.id, dispatchRunCommand, loadRuns, projectionRunId]);
-
-    const handleRetryRun = useCallback(async () => {
-        const targetRunId = currentRun?.id || projectionRunId;
-        if (!targetRunId) {
-            return;
-        }
-        setRunActionLoading(true);
-        try {
-            await dispatchRunCommand(targetRunId, "retry", "web_retry");
-            if (activeConversationIdRef.current) {
-                await loadRuns(activeConversationIdRef.current);
-            }
-        } catch (error) {
-            console.error("[ChatClient] Failed to retry run:", error);
-        } finally {
-            setRunActionLoading(false);
-        }
-    }, [currentRun?.id, dispatchRunCommand, loadRuns, projectionRunId]);
-
     // Handle New Message Sound Effect
     useEffect(() => {
         if (messages.length === 0) return;
@@ -2046,17 +2004,6 @@ export default function ChatClient() {
                         >
                             <FolderTree className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
                         </button>
-                        <RunControlBar
-                            runId={effectiveRunId}
-                            status={effectiveStatus}
-                            pendingApproval={effectivePendingApproval}
-                            isBusy={runActionLoading || isLoading}
-                            onInterrupt={handleInterruptRun}
-                            onRetry={handleRetryRun}
-                            onOpenApproval={() => {
-                                openGovernanceApproval();
-                            }}
-                        />
                         <div className="ml-auto flex shrink-0 justify-end gap-1">
                             {/* 终端开关 */}
                             <button

@@ -68,6 +68,59 @@ class SessionHistoryTimeTruthTests(unittest.TestCase):
             gc.collect()
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_get_sessions_hides_prompt_cache_live_audit_sessions(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session(
+                "sess_planner_live",
+                "Planner Prompt Cache Live Audit",
+                user_id="prompt_cache_live",
+                agent_id="planner_prompt_cache_live",
+                metadata={"source": "planner_prompt_cache_live"},
+            )
+            db.add_message("msg_planner_live", "sess_planner_live", "user", "diagnostic run")
+
+            sessions = db.get_sessions()
+
+            self.assertNotIn("sess_planner_live", {item["id"] for item in sessions})
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_get_sessions_repairs_planner_runtime_title_from_latest_user_message(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session("sess_planner_title", "Planner · route draft", user_id="user")
+            db.add_message("msg_planner_title", "sess_planner_title", "user", "请整理 DeepSeek prompt cache 命中率")
+
+            sessions = db.get_sessions()
+            by_id = {item["id"]: item for item in sessions}
+
+            self.assertEqual(by_id["sess_planner_title"]["title"], "请整理 DeepSeek prompt cache 命中率")
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_internal_runtime_title_does_not_overwrite_existing_user_title(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session("sess_existing_title", "用户标题", user_id="user")
+            db.create_or_update_session("sess_existing_title", "Planner · route draft", user_id="user")
+
+            sessions = db.get_sessions()
+            by_id = {item["id"]: item for item in sessions}
+
+            self.assertEqual(by_id["sess_existing_title"]["title"], "用户标题")
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_materialized_record_keeps_history_sort_at_stable_when_runtime_is_newer(self):
         record = build_session_history_materialized_record(
             session_row={

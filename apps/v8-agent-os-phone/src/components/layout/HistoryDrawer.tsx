@@ -112,7 +112,6 @@ export function HistoryDrawer({
                                                     size={16}
                                                     color={colors.textMuted}
                                                 />
-                                                <MaterialCommunityIcons name="folder-outline" size={14} color={colors.textMuted} />
                                                 <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
                                                 <View style={[styles.groupCountPill, { backgroundColor: `${colors.primary}14` }]}>
                                                     <Text style={[styles.groupCount, { color: colors.textSoft }]}>{entries.length}</Text>

@@ -1147,6 +1147,37 @@ class DatabaseManager:
 
     # --- Session Operations ---
 
+    def _is_diagnostic_history_metadata(self, metadata: dict[str, Any], *, user_id: str | None = None, agent_id: str | None = None) -> bool:
+        source = str(metadata.get("source") or metadata.get("diagnosticSource") or metadata.get("runtime") or "").strip()
+        run_type = str(metadata.get("runType") or metadata.get("run_type") or "").strip()
+        user = str(user_id or metadata.get("userId") or metadata.get("user_id") or "").strip()
+        agent = str(agent_id or metadata.get("agentId") or metadata.get("agent_id") or "").strip()
+        diagnostic_sources = {
+            "planner_prompt_cache_live",
+            "prompt_cache_streaming_live_matrix",
+        }
+        return (
+            source in diagnostic_sources
+            or run_type in diagnostic_sources
+            or user == "prompt_cache_live"
+            or agent in diagnostic_sources
+        )
+
+    def _should_hide_session_from_client_history(self, metadata: dict[str, Any], *, user_id: str | None = None, agent_id: str | None = None) -> bool:
+        return bool(
+            metadata.get("hiddenFromHistory") is True
+            or metadata.get("hidden_from_history") is True
+            or metadata.get("nonChatRun") is True
+            or metadata.get("non_chat_run") is True
+            or metadata.get("internalProbe") is True
+            or metadata.get("internal_probe") is True
+            or metadata.get("manualRpaRun") is True
+            or metadata.get("manual_rpa_run") is True
+            or metadata.get("governanceOnly") is True
+            or metadata.get("governance_only") is True
+            or self._is_diagnostic_history_metadata(metadata, user_id=user_id, agent_id=agent_id)
+        )
+
     def _backfill_internal_computer_use_probe_sessions(self, conn: sqlite3.Connection) -> None:
         """Hide legacy Computer Use observe/probe sessions from chat history.
 
@@ -1239,6 +1270,13 @@ class DatabaseManager:
             cursor.execute('SELECT id, metadata FROM sessions WHERE id = ?', (session_id,))
             existing = cursor.fetchone()
             merged_metadata = metadata or {}
+            if self._is_diagnostic_history_metadata(merged_metadata, user_id=user_id, agent_id=agent_id):
+                merged_metadata = {
+                    **merged_metadata,
+                    "hiddenFromHistory": True,
+                    "nonChatRun": True,
+                    "diagnosticSession": True,
+                }
             if existing:
                 current_meta = {}
                 if existing["metadata"]:
@@ -1249,7 +1287,7 @@ class DatabaseManager:
                 current_meta.update(merged_metadata)
                 meta_str = json.dumps(current_meta, ensure_ascii=False)
                 now_iso = utc_now_iso()
-                if title and title not in ("New Chat", "新对话"):
+                if title and title not in ("New Chat", "新对话") and not self._is_internal_runtime_title(title):
                     cursor.execute('''
                         UPDATE sessions 
                         SET updated_at = ?, title = ?, agent_id = COALESCE(?, agent_id), metadata = ?
@@ -1267,12 +1305,20 @@ class DatabaseManager:
                 cursor.execute('''
                     INSERT INTO sessions (id, title, user_id, agent_id, metadata, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (session_id, title, user_id, agent_id, meta_str, now_iso, now_iso))
+                ''', (session_id, title or "新对话", user_id, agent_id, meta_str, now_iso, now_iso))
             conn.commit()
 
     def _is_internal_runtime_title(self, title: str | None) -> bool:
         normalized = str(title or "").strip()
-        return normalized.startswith(("Hook · ", "Cron · ", "Automation · "))
+        return normalized.startswith((
+            "Hook · ",
+            "Cron · ",
+            "Automation · ",
+            "Planner · ",
+            "Planner lane · ",
+            "Planner Prompt Cache Live Audit",
+            "Prompt Cache Live Matrix",
+        ))
 
     def _derive_latest_user_session_title(self, conn: sqlite3.Connection, session_id: str) -> Optional[str]:
         cursor = conn.cursor()
@@ -1306,6 +1352,12 @@ class DatabaseManager:
             for row in cursor.fetchall():
                 data = dict(row)
                 data["metadata"] = json.loads(data["metadata"]) if data.get("metadata") else {}
+                if self._should_hide_session_from_client_history(
+                    data["metadata"],
+                    user_id=data.get("user_id"),
+                    agent_id=data.get("agent_id"),
+                ):
+                    continue
                 data["created_at"] = normalize_utc_iso(data.get("created_at")) or data.get("created_at")
                 data["updated_at"] = normalize_utc_iso(data.get("updated_at")) or data.get("updated_at")
 

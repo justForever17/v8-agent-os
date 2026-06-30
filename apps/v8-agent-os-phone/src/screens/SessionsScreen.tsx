@@ -137,7 +137,6 @@ export default function SessionsScreen() {
                                 >
                                     <View style={styles.groupPill}>
                                         <MaterialCommunityIcons name={isOpen ? "chevron-down" : "chevron-right"} size={16} color={colors.textMuted} />
-                                        <MaterialCommunityIcons name="folder-outline" size={14} color={colors.textMuted} />
                                         <Text style={styles.groupLabel} numberOfLines={1}>{group.label}</Text>
                                     </View>
                                     <Text style={styles.groupCount}>{group.items.length}</Text>

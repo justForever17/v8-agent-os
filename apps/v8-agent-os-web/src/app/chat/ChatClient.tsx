@@ -1616,7 +1616,7 @@ export default function ChatClient() {
         }
     };
 
-    const handleVoiceAudioMessage = async (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>> }) => {
+    const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>> }) => {
         const hasFiles = Array.isArray(data.fileUrls) && data.fileUrls.length > 0;
         if (status !== 'authenticated' || !hasFiles || isLoading) return;
         if (!activeConversationIdRef.current) {
@@ -1627,16 +1627,14 @@ export default function ChatClient() {
             return;
         }
 
-        try {
-            await sendMessage("", {
-                agentId: undefined,
-                userId: session?.user?.id,
-                ...buildScopePayload(activeConversationIdRef.current),
-                ...data,
-            });
-        } catch (error) {
+        void sendMessage("", {
+            agentId: undefined,
+            userId: session?.user?.id,
+            ...buildScopePayload(activeConversationIdRef.current),
+            ...data,
+        }).catch((error) => {
             console.error("[ChatClient] Failed to send voice audio message:", error);
-        }
+        });
     };
 
     // Fetch history when ID changes

@@ -5688,7 +5688,7 @@ export default function ChatScreen() {
         if (pendingTaskPlanningMode) {
             setTaskPlanningMode(false);
         }
-        const effectiveText = text || (
+        const previewText = text || (
             pendingFiles.length === 1
                 ? t("shared.upload.uploaded_single")
                 : pendingFiles.length > 1
@@ -5716,7 +5716,7 @@ export default function ChatScreen() {
                 void startRealtimeRef.current(currentConversationId);
             }
 
-            const userMessage = buildUserMessage(effectiveText, {
+            const userMessage = buildUserMessage(text, {
                 command: pendingCommand,
                 skills: pendingSkills,
                 subagentFamilies: pendingSubagentFamilies,
@@ -5735,7 +5735,7 @@ export default function ChatScreen() {
                     sessionId: currentConversationId,
                     runId: activeRunId || undefined,
                     clientMessageId,
-                    content: effectiveText,
+                    content: previewText,
                     state: "pending",
                     ordinal: queuedMessages.length + 1,
                     createdAt: engineNowIso,
@@ -5757,17 +5757,17 @@ export default function ChatScreen() {
                     setUploadedFiles([]);
                 }
 
-                if (effectiveText) {
+                if (previewText) {
                     setConversations((current) => current.map((conversation) =>
                         conversation.id === currentConversationId
                             ? {
                                 ...conversation,
                                 title: isPlaceholderConversationTitle(conversation.title)
-                                    ? (effectiveText.slice(0, 36) || conversation.title || "")
+                                    ? (previewText.slice(0, 36) || conversation.title || "")
                                     : conversation.title,
                                 updatedAt: engineNowIso,
                                 historySortAt: engineNowIso,
-                                previewExcerpt: effectiveText.slice(0, 120),
+                                previewExcerpt: previewText.slice(0, 120),
                             }
                             : conversation,
                     ));
@@ -5775,7 +5775,7 @@ export default function ChatScreen() {
 
                 const submitResult = await submitChatMessage(
                     authorizedFetch,
-                    effectiveText,
+                    text,
                     {
                         messages: historyMessages,
                         conversationId: currentConversationId,
@@ -5920,17 +5920,17 @@ export default function ChatScreen() {
                 setUploadedFiles([]);
             }
 
-            if (effectiveText) {
+            if (previewText) {
                 setConversations((current) => current.map((conversation) =>
                     conversation.id === currentConversationId
                         ? {
                             ...conversation,
                             title: isPlaceholderConversationTitle(conversation.title)
-                                ? (effectiveText.slice(0, 36) || conversation.title || "")
+                                ? (previewText.slice(0, 36) || conversation.title || "")
                                 : conversation.title,
                             updatedAt: engineNowIso,
                             historySortAt: engineNowIso,
-                            previewExcerpt: effectiveText.slice(0, 120),
+                            previewExcerpt: previewText.slice(0, 120),
                         }
                         : conversation,
                 ));
@@ -5938,7 +5938,7 @@ export default function ChatScreen() {
 
             const submitResult = await submitChatMessage(
                 authorizedFetch,
-                effectiveText,
+                text,
                 {
                     messages: historyMessages,
                     conversationId: currentConversationId,

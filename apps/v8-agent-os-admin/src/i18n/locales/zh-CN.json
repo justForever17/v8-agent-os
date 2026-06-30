@@ -3340,7 +3340,7 @@
   "components.models.ModelCardV2.connectionWarning": "需确认",
   "components.models.ModelCardV2.defaultCategory.embedding": "向量默认",
   "components.models.ModelCardV2.defaultCategory.reranker": "重排默认",
-  "components.models.ModelCardV2.defaultCategory.text_generation": "文本默认",
+  "components.models.ModelCardV2.defaultCategory.text_generation": "通用默认",
   "components.models.ModelCardV2.defaultCategory.vision_multimodal": "视觉默认",
   "components.models.ModelCardV2.k4f162e67": "未知供应商",
   "components.models.ModelCardV2.k526071af": "RPA 摸索",

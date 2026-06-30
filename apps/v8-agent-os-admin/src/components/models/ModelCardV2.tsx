@@ -9,6 +9,12 @@ import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ik, ir } from "@/i18n/admin-legacy";
 import type { TranslationKey } from "@/lib/locale";
 interface ModelCardV2Props {
@@ -107,10 +113,18 @@ type ControlPlaneModelWithDoctor = ControlPlaneModel & {
 type ModelWithDoctor = ModelCardV2Props["model"] & {
   roleDoctor?: RoleDoctorState | null;
 };
-function inferDefaultCategory(modelType: string, controlMeta?: ControlPlaneModel | null): string | null {
+type DefaultCategoryOption = {
+  key: string;
+  labelKey: TranslationKey;
+};
+function modelCategoryShape(modelType: string, controlMeta?: ControlPlaneModel | null) {
   const normalizedType = String(modelType || controlMeta?.type || "").toUpperCase();
   const capabilityClass = String(controlMeta?.capabilityClass || "").toLowerCase();
   const capabilities = controlMeta?.capabilities || null;
+  return { normalizedType, capabilityClass, capabilities };
+}
+function isMediaOnlyModel(modelType: string, controlMeta?: ControlPlaneModel | null): boolean {
+  const { normalizedType, capabilityClass, capabilities } = modelCategoryShape(modelType, controlMeta);
   const isMediaType = new Set(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"]).has(normalizedType);
   const mediaCapability = Boolean(
     capabilities?.image ||
@@ -121,19 +135,58 @@ function inferDefaultCategory(modelType: string, controlMeta?: ControlPlaneModel
     capabilities?.workflow ||
     capabilities?.model3d
   );
-  if (capabilityClass === "media_generation" || isMediaType || (mediaCapability && !capabilities?.chat && !capabilities?.vision && !capabilities?.multimodal)) {
-    return null;
-  }
+  return capabilityClass === "media_generation" || isMediaType || (mediaCapability && !capabilities?.chat && !capabilities?.vision && !capabilities?.multimodal);
+}
+function buildDefaultCategoryOptions(
+  modelType: string,
+  controlMeta?: ControlPlaneModel | null,
+  assignedRoles: string[] = [],
+): DefaultCategoryOption[] {
+  const { normalizedType, capabilityClass, capabilities } = modelCategoryShape(modelType, controlMeta);
+  const options: DefaultCategoryOption[] = [];
+  const add = (key: string) => {
+    const labelKey = DEFAULT_CATEGORY_LABEL_KEYS[key];
+    if (labelKey && !options.some((option) => option.key === key)) {
+      options.push({ key, labelKey });
+    }
+  };
   if (capabilityClass === "embedding" || normalizedType === "EMBEDDING" || capabilities?.embedding) {
-    return "embedding";
+    add("embedding");
+    return options;
   }
   if (capabilityClass === "reranker" || capabilityClass === "rerank" || normalizedType === "RERANK" || normalizedType === "RERANKER" || capabilities?.rerank) {
-    return "reranker";
+    add("reranker");
+    return options;
   }
-  if (capabilityClass === "vision_multimodal" || normalizedType === "MULTIMODAL" || capabilities?.vision || capabilities?.multimodal) {
-    return "vision_multimodal";
+  if (isMediaOnlyModel(modelType, controlMeta)) {
+    return options;
   }
-  return "text_generation";
+  const canUseAsGeneral = Boolean(
+    !controlMeta ||
+    capabilities?.chat ||
+    capabilities?.reasoning ||
+    capabilities?.toolCalling ||
+    capabilities?.streaming ||
+    capabilities?.vision ||
+    capabilities?.multimodal ||
+    ["TEXT", "CHAT", "VISION", "MULTIMODAL"].includes(normalizedType) ||
+    ["chat_general", "chat_tool_calling", "chat_reasoning", "vision_multimodal"].includes(capabilityClass)
+  );
+  const canUseAsVision = Boolean(
+    capabilities?.vision ||
+    capabilities?.multimodal ||
+    normalizedType === "VISION" ||
+    normalizedType === "MULTIMODAL" ||
+    capabilityClass === "vision_multimodal" ||
+    assignedRoles.includes("vision")
+  );
+  if (canUseAsGeneral) {
+    add("text_generation");
+  }
+  if (canUseAsVision) {
+    add("vision_multimodal");
+  }
+  return options;
 }
 function defaultCategoryLabel(category: Pick<ModelDefaultCategory, "key" | "label">, t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
   const labelKey = DEFAULT_CATEGORY_LABEL_KEYS[String(category.key || "")];
@@ -216,12 +269,12 @@ export function ModelCardV2({
         badge: "sky"
       }]
       : [];
-  const defaultCategoryToSet = inferDefaultCategory(model.type, controlMeta);
-  const isDefaultForInferredCategory = Boolean(
-    defaultCategoryToSet &&
-    (defaultBadges.some((category) => category.key === defaultCategoryToSet) ||
-      (defaultCategoryToSet === "text_generation" && isDefault))
-  );
+  const defaultCategoryKeys = new Set(defaultBadges.map((category) => String(category.key || "")));
+  if (isDefault) {
+    defaultCategoryKeys.add("text_generation");
+  }
+  const defaultCategoryOptions = buildDefaultCategoryOptions(model.type, controlMeta, assignedRoles)
+    .filter((option) => !defaultCategoryKeys.has(option.key));
   const modelIcon = resolveModelIcon({
     modelId: model.modelId,
     providerId: model.provider?.id,
@@ -294,11 +347,20 @@ export function ModelCardV2({
           }} title={noThinkDisabled ? "恢复模型默认思考" : "请求时关闭 think 模式"}>
                                 <Brain className="h-3.5 w-3.5" />
                             </Button>}
-                        {!isDefaultForInferredCategory && defaultCategoryToSet && onSetDefault && <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" onClick={() => onSetDefault(modelRef, defaultCategoryToSet)} title={t("components.models.ModelCardV2.setCategoryDefault", {
-              category: t(DEFAULT_CATEGORY_LABEL_KEYS[defaultCategoryToSet])
-            })}>
-                                <Star className="h-3.5 w-3.5" aria-hidden="true" />
-                            </Button>}
+                        {defaultCategoryOptions.length > 0 && onSetDefault && <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" title={defaultCategoryOptions.map((option) => t(option.labelKey)).join(" / ")}>
+                                        <Star className="h-3.5 w-3.5" aria-hidden="true" />
+                                    </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-36">
+                                    {defaultCategoryOptions.map((option) => <DropdownMenuItem key={`${modelRef}:${option.key}`} className="cursor-pointer" onClick={() => onSetDefault(modelRef, option.key)}>
+                                            {t("components.models.ModelCardV2.setCategoryDefault", {
+                                                category: t(option.labelKey),
+                                            })}
+                                        </DropdownMenuItem>)}
+                                </DropdownMenuContent>
+                            </DropdownMenu>}
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigator.clipboard.writeText(model.modelId)} title={t("components.models.ModelCardV2.ke0b2f296")}>
                             <Copy className="h-3.5 w-3.5" />
                         </Button>

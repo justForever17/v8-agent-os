@@ -588,7 +588,7 @@ export function InputArea({
         if (!url) {
             throw new Error(t(lt("语音文件上传后没有返回可用链接。", "Voice upload did not return a usable URL.")));
         }
-        await onVoiceAudioMessage({
+        const messageData = {
             fileUrls: [url],
             attachments: [{
                 url,
@@ -599,18 +599,25 @@ export function InputArea({
                 mediaKind: "audio",
                 source: "os_web_voice_upload",
             }],
-        });
-    }, [onVoiceAudioMessage, t]);
+        };
+        try {
+            const result = onVoiceAudioMessage(messageData);
+            void Promise.resolve(result).catch((error) => {
+                const message = error instanceof Error ? error.message : t(lt("语音发送失败", "Voice send failed"));
+                showInlineNotice("error", t(lt(`语音暂不可用：${message}`, `Voice is unavailable: ${message}`)));
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t(lt("语音发送失败", "Voice send failed"));
+            showInlineNotice("error", t(lt(`语音暂不可用：${message}`, `Voice is unavailable: ${message}`)));
+        }
+    }, [onVoiceAudioMessage, showInlineNotice, t]);
 
     const transcribeAudio = React.useCallback(async (blob: Blob) => {
         try {
             setIsTranscribing(true);
-            showInlineNotice("info", t(lt("正在检查语音输入能力...", "Checking voice input...")), 0);
             const status = await getAudioInputStatus();
             if (status.route === "vision_audio") {
-                showInlineNotice("info", t(lt("正在发送语音给多模态模型理解...", "Sending voice to the multimodal model...")), 0);
                 await uploadAndSendVoiceAudio(blob);
-                showInlineNotice("success", t(lt("语音已发送给多模态模型理解。", "Voice was sent to the multimodal model.")));
                 return;
             }
             if (status.route !== "stt") {
@@ -620,7 +627,6 @@ export function InputArea({
                 );
             }
 
-            showInlineNotice("info", t(lt("正在转写语音...", "Transcribing voice...")), 0);
             const file = new File([blob], "voice-input.wav", { type: "audio/wav" });
             const formData = new FormData();
             formData.append("file", file);
@@ -646,7 +652,6 @@ export function InputArea({
             }
 
             onVoiceTranscript?.(text);
-            showInlineNotice("success", t(lt("语音已转成文字并填入输入框。", "Voice was transcribed and inserted into the input.")));
         } catch (error) {
             const message = error instanceof Error ? error.message : t(lt("语音转写失败", "Voice transcription failed"));
             showInlineNotice("error", t(lt(`语音暂不可用：${message}`, `Voice is unavailable: ${message}`)));

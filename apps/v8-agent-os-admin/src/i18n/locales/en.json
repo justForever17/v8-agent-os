@@ -3340,7 +3340,7 @@
   "components.models.ModelCardV2.connectionWarning": "Check route",
   "components.models.ModelCardV2.defaultCategory.embedding": "Embedding default",
   "components.models.ModelCardV2.defaultCategory.reranker": "Rerank default",
-  "components.models.ModelCardV2.defaultCategory.text_generation": "Text default",
+  "components.models.ModelCardV2.defaultCategory.text_generation": "General default",
   "components.models.ModelCardV2.defaultCategory.vision_multimodal": "Vision default",
   "components.models.ModelCardV2.k4f162e67": "Unknown provider",
   "components.models.ModelCardV2.k526071af": "RPA scout",

@@ -26,6 +26,16 @@ function resolveAdminApiBaseUrl() {
   return "http://127.0.0.1:9528/api";
 }
 
+function resolveEngineOrigin() {
+  try {
+    const value = String(readCanonicalBridge().engineBaseUrl || "").trim();
+    if (value) {
+      return value.replace(/\/v1\/?$/, "").replace(/\/$/, "");
+    }
+  } catch {}
+  return "http://127.0.0.1:9530";
+}
+
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
@@ -35,6 +45,14 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     return [
+      {
+        source: "/api/client/bg_processes/:path*",
+        destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
+      },
+      {
+        source: "/api/bg_processes/:path*",
+        destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
+      },
       ...localApiNamespaces.map((namespace) => ({
         source: `/api/${namespace}/:path*`,
         destination: `/api/${namespace}/:path*`,

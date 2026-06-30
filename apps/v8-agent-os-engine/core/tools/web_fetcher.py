@@ -107,6 +107,52 @@ EXTRACT_CONTAINER_SELECTORS: dict[str, tuple[str, ...]] = {
         "body",
     ),
 }
+BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
+    "baike.baidu.com": {
+        "description": "Baidu Baike lemma pages: prefer lemma summary plus body paragraphs; skip catalog, relation/sidebar/module/table chrome.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "body",
+                    "main",
+                    ".main-content",
+                    ".J-lemma-content",
+                ),
+                "articleSelectors": (
+                    ".lemma-summary",
+                    ".lemmaWgt-lemmaSummary",
+                    "[class*='lemmaSummary']",
+                    ".para",
+                    "[class*='para-title']",
+                    "[class*='lemma-content'] .para",
+                    ".J-lemma-content .para",
+                ),
+                "removeSelectors": (
+                    ".lemma-catalog",
+                    ".lemmaWgt-lemmaCatalog",
+                    ".catalog-list",
+                    "[class*='catalog']",
+                    ".basic-info",
+                    "table",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    ".side-content",
+                    "[class*='side']",
+                    ".lemmaWgt-relation",
+                    "[class*='relation']",
+                    "[class*='module']",
+                    ".lemmaWgt-promotion-vbaike",
+                    ".top-tool",
+                    ".share",
+                    ".toolbar",
+                    ".album-list",
+                ),
+            }
+        },
+    },
+}
 
 MAX_TEXT_CHARS = 12000
 MAX_LINKS = 20
@@ -1170,19 +1216,154 @@ def _fetch_with_scrapling_internal(
         agent_browser_profile_dir=agent_browser_profile_dir,
     )
 
+    auto_degraded_pages: list[tuple[str, WebPagePayload, str]] = []
+
     for label, runner in plans:
         if time.monotonic() - started_at >= total_timeout:
             errors[label] = f"deadline_exceeded_after_{round(time.monotonic() - started_at, 2)}s"
             break
         attempted_modes.append(label)
         try:
-            return runner()
+            page = runner()
+            if mode == "auto":
+                reject_reason = _auto_fetch_reject_reason(page)
+                if reject_reason:
+                    auto_degraded_pages.append((label, page, reject_reason))
+                    errors[f"{label}_quality"] = reject_reason
+                    continue
+                _attach_auto_quality_warnings(
+                    page,
+                    attempted_modes=attempted_modes,
+                    degraded_pages=auto_degraded_pages,
+                    returned_degraded=False,
+                )
+                return page
+            return page
         except Exception as exc:
             errors[label] = str(exc)
+
+    if auto_degraded_pages:
+        _label, page, _reason = max(auto_degraded_pages, key=lambda item: len(str(item[1].text or "")))
+        _attach_auto_quality_warnings(
+            page,
+            attempted_modes=attempted_modes,
+            degraded_pages=auto_degraded_pages,
+            returned_degraded=True,
+        )
+        return page
 
     elapsed = round(time.monotonic() - started_at, 2)
     details = "; ".join(f"{key}={value}" for key, value in errors.items())
     raise RuntimeError(f"网页抓取失败。attempted={attempted_modes}; elapsed={elapsed}s; deadline={total_timeout}s; errors={details}")
+
+
+def _builtin_site_profile(url: str) -> dict[str, Any]:
+    host = _site_profile_key(url)
+    for profile_host, profile in BUILTIN_WEB_FETCH_SITE_PROFILES.items():
+        if host == profile_host or host.endswith(f".{profile_host}"):
+            return profile
+    return {}
+
+
+def _builtin_extract_profile(url: str, extract: WebExtractMode) -> dict[str, Any]:
+    profile = _builtin_site_profile(url)
+    return dict(((profile.get("extracts") or {}).get(extract) or {}))
+
+
+def _builtin_container_selectors(url: str, extract: WebExtractMode) -> tuple[str, ...]:
+    profile = _builtin_extract_profile(url, extract)
+    selectors = profile.get("containerSelectors") or ()
+    return tuple(_safe_text(selector) for selector in selectors if _safe_text(selector))
+
+
+def _apply_site_profile_cleanup(node: BeautifulSoup, *, url: str, extract: WebExtractMode) -> None:
+    profile = _builtin_extract_profile(url, extract)
+    remove_selectors = profile.get("removeSelectors") or ()
+    for selector in remove_selectors:
+        normalized = _safe_text(selector)
+        if not normalized:
+            continue
+        try:
+            matches = list(node.select(normalized))
+        except Exception:
+            continue
+        for match in matches:
+            match.decompose()
+
+
+def _append_profiled_text_node(fragment: BeautifulSoup, parent: Any, node: Any) -> None:
+    text = _safe_text(node.get_text(" ", strip=True))
+    if not text:
+        return
+    clone = BeautifulSoup(str(node), "html.parser")
+    if clone.find(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "blockquote", "tr"]):
+        for child in list(clone.contents):
+            parent.append(child)
+        return
+    paragraph = fragment.new_tag("p")
+    paragraph.string = text
+    parent.append(paragraph)
+
+
+def _site_profile_node_should_skip(node: Any, *, url: str, extract: WebExtractMode) -> bool:
+    if not _builtin_extract_profile(url, extract):
+        return False
+    noisy_tokens = (
+        "catalog",
+        "relation",
+        "module",
+        "side-content",
+        "basic-info",
+        "toolbar",
+        "album-list",
+        "top-tool",
+        "promotion",
+    )
+    current = node
+    while current is not None and getattr(current, "name", None):
+        name = _safe_text(getattr(current, "name", "")).lower()
+        if name in {"table", "aside", "nav", "footer", "header"}:
+            return True
+        classes = current.get("class") if hasattr(current, "get") else []
+        class_text = " ".join(classes) if isinstance(classes, list) else _safe_text(classes)
+        id_text = _safe_text(current.get("id")) if hasattr(current, "get") else ""
+        marker = f"{class_text} {id_text}".lower()
+        if any(token in marker for token in noisy_tokens):
+            return True
+        current = getattr(current, "parent", None)
+    return False
+
+
+def _profiled_article_container(soup: BeautifulSoup, *, url: str) -> BeautifulSoup | None:
+    profile = _builtin_extract_profile(url, "article")
+    selectors = profile.get("articleSelectors") or ()
+    if not selectors:
+        return None
+
+    fragment = BeautifulSoup("<main></main>", "html.parser")
+    main = fragment.find("main")
+    if main is None:
+        return None
+    seen_nodes: set[int] = set()
+    for selector in selectors:
+        normalized = _safe_text(selector)
+        if not normalized:
+            continue
+        try:
+            matches = list(soup.select(normalized))
+        except Exception:
+            continue
+        for match in matches:
+            node_id = id(match)
+            if node_id in seen_nodes:
+                continue
+            seen_nodes.add(node_id)
+            if _site_profile_node_should_skip(match, url=url, extract="article"):
+                continue
+            _append_profiled_text_node(fragment, main, match)
+    if not _safe_text(main.get_text(" ", strip=True)):
+        return None
+    return fragment
 
 
 def _build_payload(
@@ -1215,7 +1396,7 @@ def _build_payload(
         except Exception:
             title = ""
 
-    text = _extract_main_text(soup)
+    text = _extract_main_text(soup, final_url)
     links = _extract_links(soup, final_url)
     metadata = _extract_metadata(soup)
     media = _extract_media(soup, final_url)
@@ -1245,8 +1426,10 @@ def _build_payload(
     )
 
 
-def _extract_main_text(soup: BeautifulSoup) -> str:
-    candidate = soup.find("main") or soup.find("article") or soup.body or soup
+def _extract_main_text(soup: BeautifulSoup, url: str = "") -> str:
+    candidate = _profiled_article_container(soup, url=url) or soup.find("main") or soup.find("article") or soup.body or soup
+    candidate = BeautifulSoup(str(candidate), "html.parser")
+    _apply_site_profile_cleanup(candidate, url=url, extract="article")
     for tag in candidate(["script", "style", "noscript", "svg", "canvas", "nav", "footer", "header"]):
         tag.decompose()
     text = _html_to_markdown(candidate)
@@ -1334,6 +1517,63 @@ def _page_quality_fields(page: WebPagePayload, *, text: str = "", html: str = ""
         "contentFormat": "markdown" if mode in {"read", "article"} else mode,
         "usedBrowserProfile": bool(page.agent_browser_profile_used),
     }
+
+
+def _auto_fetch_reject_reason(page: WebPagePayload) -> str:
+    login_wall = _detect_login_wall(page)
+    if login_wall:
+        return _safe_text(login_wall.get("reason")) or "login_wall_detected"
+
+    status = int(page.status or 0)
+    if status in {403, 429, 503}:
+        return f"http_status_{status}"
+
+    final_url = _safe_text(page.final_url or page.url).lower()
+    title = _safe_text(page.title).lower()
+    text = _safe_text(page.text).lower()
+    haystack = " ".join([final_url, title, text[:1200]])
+    verification_needles = (
+        "anticrawl",
+        "captchaview",
+        "captcha",
+        "captcha challenge",
+        "security challenge",
+        "cf-challenge",
+        "security check",
+        "访问验证",
+        "安全验证",
+        "验证码",
+        "百度百科-验证",
+        "请输入验证码",
+        "验证页面",
+    )
+    if any(needle in haystack for needle in verification_needles):
+        return "verification_or_anti_crawl"
+
+    quality = _page_quality_fields(page, text=page.text, html=page.html, mode="read")
+    missing_reason = _safe_text(quality.get("missingContentReason"))
+    if missing_reason:
+        return missing_reason
+    return ""
+
+
+def _attach_auto_quality_warnings(
+    page: WebPagePayload,
+    *,
+    attempted_modes: list[str],
+    degraded_pages: list[tuple[str, WebPagePayload, str]],
+    returned_degraded: bool,
+) -> None:
+    page.attempted_modes = list(attempted_modes)
+    if not degraded_pages:
+        return
+    reasons = ", ".join(f"{label}={reason}" for label, _page, reason in degraded_pages)
+    warning = (
+        f"auto 未找到更高质量 fallback，已返回最佳降级结果：{reasons}"
+        if returned_degraded
+        else f"auto 已跳过低质量抓取结果并使用后续 fallback：{reasons}"
+    )
+    page.warnings = [*page.warnings, warning]
 
 
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[dict[str, str]]:
@@ -1451,6 +1691,8 @@ def _site_selector_candidates(url: str, extract: WebExtractMode) -> tuple[str, l
             reverse=True,
         )
     ]
+    builtin_selectors = list(_builtin_container_selectors(url, extract))
+    ordered_profile_selectors = [*builtin_selectors, *ordered_profile_selectors]
     defaults = [*EXTRACT_CONTAINER_SELECTORS.get(extract, ()), *DEFAULT_CONTAINER_SELECTORS]
     candidates: list[str] = []
     seen: set[str] = set()
@@ -1888,7 +2130,7 @@ def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
     text = page.text
     if not text and page.html:
         try:
-            text = _extract_main_text(BeautifulSoup(page.html, "html.parser"))
+            text = _extract_main_text(BeautifulSoup(page.html, "html.parser"), page.final_url or page.url)
         except Exception:
             text = page.text
     result = {
@@ -3126,7 +3368,7 @@ def web_extract(
                 title_node = container.select_one("h1, title")
                 title = _safe_text(title_node.get_text(" ", strip=True) if title_node else "")
             result["title"] = title
-            result["text"] = _extract_main_text(container)
+            result["text"] = _extract_main_text(container, payload.final_url or payload.url)
             result["metadata"] = payload.metadata
             result["media"] = _extract_media(container, payload.final_url)
         result.update(

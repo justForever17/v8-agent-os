@@ -67,6 +67,83 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertNotIn("Top nav", payload["text"])
         self.assertNotIn("bad()", payload["text"])
 
+    def test_web_read_auto_skips_anti_crawl_static_result(self):
+        class _StaticFetcher:
+            @staticmethod
+            def get(_url, **_kwargs):
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "html_content": "<html><head><title>百度百科-验证</title></head><body>验证码</body></html>",
+                        "url": "https://baike.baidu.com/anticrawl/captchaview",
+                        "status": 200,
+                    },
+                )()
+
+        class _DynamicFetcher:
+            @staticmethod
+            def fetch(url, **_kwargs):
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "html_content": (
+                            "<html><head><title>Clean page</title></head><body><main>"
+                            "<h1>Clean page</h1>"
+                            "<p>This dynamic fallback contains enough article text to be accepted by the "
+                            "quality-aware auto fetch path instead of returning a blocked verification page. "
+                            "It also keeps a second sentence so the extracted Markdown is safely above "
+                            "the weak-content threshold used by auto mode.</p>"
+                            "</main></body></html>"
+                        ),
+                        "url": url,
+                        "status": 200,
+                    },
+                )()
+
+        with patch("core.tools.web_fetcher._try_import_static_fetcher", return_value=(_StaticFetcher, None)), patch(
+            "core.tools.web_fetcher._try_import_dynamic_fetcher",
+            return_value=(_DynamicFetcher, None),
+        ), patch("core.tools.web_fetcher._resolve_verify_candidates", return_value=[("default", True)]):
+            payload = json.loads(web_read.func(url="https://baike.baidu.com/item/demo", mode="auto"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["fetchMode"], "dynamic")
+        self.assertEqual(payload["attemptedModes"], ["static", "dynamic"])
+        self.assertIn("dynamic fallback", payload["text"])
+        self.assertTrue(payload["fallbackUsed"])
+        self.assertIn("verification_or_anti_crawl", " ".join(payload["warnings"]))
+
+    def test_web_read_baidu_baike_profile_prefers_summary_and_paragraphs(self):
+        html = """
+        <html><head><title>李白_百度百科</title></head><body>
+        <main>
+          <div class="lemma-catalog"><a>目录</a><ol><li>噪声目录项</li></ol></div>
+          <div class="lemma-summary">李白，字太白，号青莲居士。</div>
+          <table class="basic-info"><tr><td>表格噪声</td></tr></table>
+          <div class="para">李白是唐代伟大的浪漫主义诗人。</div>
+          <div class="lemmaWgt-relation"><div class="para">关系模块噪声</div></div>
+          <aside class="side-content"><div class="para">侧栏噪声</div></aside>
+          <div class="some-module"><div class="para">模块噪声</div></div>
+        </main>
+        </body></html>
+        """
+        with patch(
+            "core.tools.web_fetcher._fetch_with_scrapling_internal",
+            return_value=self._page(html=html, url="https://baike.baidu.com/item/%E6%9D%8E%E7%99%BD"),
+        ):
+            payload = json.loads(web_read.func(url="https://baike.baidu.com/item/%E6%9D%8E%E7%99%BD"))
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("李白，字太白", payload["text"])
+        self.assertIn("李白是唐代伟大的浪漫主义诗人", payload["text"])
+        self.assertNotIn("噪声目录项", payload["text"])
+        self.assertNotIn("表格噪声", payload["text"])
+        self.assertNotIn("关系模块噪声", payload["text"])
+        self.assertNotIn("侧栏噪声", payload["text"])
+        self.assertNotIn("模块噪声", payload["text"])
+
     def test_web_extract_raw_html_keeps_dom_preview_for_ui_reference(self):
         html = "<html><body><main><button id='submit'>Submit</button><form><input name='email'></form></main></body></html>"
         with patch("core.tools.web_fetcher._fetch_with_scrapling_internal", return_value=self._page(html=html)):

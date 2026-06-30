@@ -45,6 +45,8 @@ type PositionedStageActorItem = StageActorItem & {
     scale: number;
 };
 
+type SupervisorAction = "idle" | "walk" | "summon" | "command" | "read" | "type" | "receive" | "celebrate";
+
 const MAX_STAGE_ACTORS = 10;
 const STAGE_HEIGHTS: Record<CollaborationMicroStageLayout, number> = {
     singleRow: 150,
@@ -54,6 +56,24 @@ const STAGE_HEIGHTS: Record<CollaborationMicroStageLayout, number> = {
 const WORK_CELL_WIDTH = 98;
 const WORK_CELL_HEIGHT = 106;
 const SUPERVISOR_BASE_TOP = 52;
+const SUPERVISOR_SPRITE_SRC = "/supervisor_spritesheet.png";
+const SUPERVISOR_SHEET = {
+    columns: 7,
+    rows: 5,
+    frameWidth: 68,
+    frameHeight: 68,
+};
+
+const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, number[]> = {
+    idle: [0, 1, 2, 3],
+    walk: [4, 5, 6, 7, 8, 9],
+    summon: [10, 11, 12, 13],
+    command: [14, 15, 16],
+    read: [17, 18, 19, 20],
+    type: [21, 22, 23, 24],
+    receive: [25, 26],
+    celebrate: [27, 30, 31, 32, 33, 34],
+};
 
 function readLatestStep(stage: CollaborationMicroStage) {
     return stage.steps[stage.steps.length - 1];
@@ -356,6 +376,61 @@ function cueToSupervisorAction(items: StageActorItem[]) {
     return "patrolling";
 }
 
+function spriteActionForStage(action: string): SupervisorAction {
+    if (action === "summoning") return "summon";
+    if (action === "working") return "type";
+    if (action === "reading") return "read";
+    if (action === "receiving") return "receive";
+    if (action === "patrolling") return "walk";
+    return "idle";
+}
+
+function SupervisorSprite({
+    action,
+    facingLeft,
+}: {
+    action: string;
+    facingLeft: boolean;
+}) {
+    const spriteAction = spriteActionForStage(action);
+    const frames = SUPERVISOR_ACTION_FRAMES[spriteAction] || SUPERVISOR_ACTION_FRAMES.idle;
+    const [frameIndex, setFrameIndex] = useState(0);
+
+    useEffect(() => {
+        const duration = spriteAction === "walk" ? 120 : spriteAction === "summon" ? 150 : 180;
+        const timer = window.setInterval(() => {
+            setFrameIndex((current) => (current + 1) % frames.length);
+        }, duration);
+        return () => window.clearInterval(timer);
+    }, [frames.length, spriteAction]);
+
+    const frame = frames[frameIndex] ?? 0;
+    const column = frame % SUPERVISOR_SHEET.columns;
+    const row = Math.floor(frame / SUPERVISOR_SHEET.columns);
+
+    return (
+        <div
+            className={cn(
+                "absolute bottom-0 left-0 h-[68px] w-[68px] overflow-hidden transition-transform duration-300",
+                action === "summoning" && "animate-[microStagePulse_1.2s_ease-in-out_infinite]",
+                action === "receiving" && "animate-[microStageHop_1.1s_ease-in-out_infinite]",
+            )}
+            style={{ transform: facingLeft ? "scaleX(-1)" : "scaleX(1)" }}
+        >
+            <div
+                aria-hidden="true"
+                className="absolute left-0 top-0 h-[340px] w-[476px] bg-no-repeat"
+                style={{
+                    backgroundImage: `url(${SUPERVISOR_SPRITE_SRC})`,
+                    backgroundPosition: `-${column * SUPERVISOR_SHEET.frameWidth}px -${row * SUPERVISOR_SHEET.frameHeight}px`,
+                    backgroundSize: `${SUPERVISOR_SHEET.frameWidth * SUPERVISOR_SHEET.columns}px ${SUPERVISOR_SHEET.frameHeight * SUPERVISOR_SHEET.rows}px`,
+                    imageRendering: "auto",
+                }}
+            />
+        </div>
+    );
+}
+
 function SupervisorAvatar({
     speech,
     x,
@@ -380,17 +455,7 @@ function SupervisorAvatar({
                 </div>
             ) : null}
             <div className="absolute bottom-1 left-3 h-2 w-12 rounded-full bg-slate-900/15 blur-[1px] dark:bg-black/35" />
-            <div
-                className={cn(
-                    "absolute bottom-1 left-1 grid h-14 w-14 place-items-center rounded-[22px] border border-white/60 bg-gradient-to-br from-violet-500 via-fuchsia-400 to-cyan-300 text-lg font-black text-white shadow-[0_10px_26px_rgba(124,58,237,0.28)] transition-transform duration-300 dark:border-white/20",
-                    action === "summoning" && "animate-[microStagePulse_1.2s_ease-in-out_infinite]",
-                    action === "receiving" && "animate-[microStageHop_1.1s_ease-in-out_infinite]",
-                )}
-                style={{ transform: facingLeft ? "scaleX(-1)" : "scaleX(1)" }}
-            >
-                <span className="drop-shadow-sm">主</span>
-                <span className="absolute -right-1 top-2 h-2.5 w-2.5 rounded-full bg-white/90 shadow-[0_0_12px_rgba(255,255,255,0.9)]" />
-            </div>
+            <SupervisorSprite action={action} facingLeft={facingLeft} />
         </div>
     );
 }

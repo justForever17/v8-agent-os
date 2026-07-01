@@ -3,6 +3,7 @@ from core.tools.media_downloader import (
     _load_platform_strategies,
     _platform_from_url,
     _resolve_platform_profile,
+    download_media_for_vision,
 )
 
 
@@ -66,3 +67,17 @@ def test_canonicalization_preserves_signed_direct_media_query() -> None:
 
     assert metadata["strategy"] == "skip_direct_media_or_empty"
     assert canonical == direct
+
+
+def test_download_media_tool_description_is_agent_actionable() -> None:
+    schema = download_media_for_vision.args_schema.model_json_schema()
+    description = schema.get("description") or ""
+    properties = schema.get("properties") or {}
+
+    assert "pasted social share text" in description
+    assert "vision_media_analyzer" in description
+    assert "does not perform visual/audio understanding" in description
+
+    assert "Media page/share text" in properties["url"]["description"]
+    assert "Select the target media type" in properties["prefer"]["description"]
+    assert "does not automatically call vision_media_analyzer" in properties["auto_chain_to_vision"]["description"]

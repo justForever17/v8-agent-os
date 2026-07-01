@@ -919,21 +919,53 @@ def _platform_from_url(url: str) -> str:
 
 @tool
 def download_media_for_vision(
-    url: str,
-    prefer: DownloadMediaPreference = "auto",
-    cookies_from_browser: str = "",
-    referer: str = "",
-    max_items: int = 6,
-    auto_chain_to_vision: bool = False,
-    analysis_prompt: str = "",
+    url: Annotated[
+        str,
+        "Media page/share text/short link/direct media URL. Accepts pasted share text containing a URL.",
+    ],
+    prefer: Annotated[
+        DownloadMediaPreference,
+        "Select the target media type: auto uses the platform default; video prefers videos; images prefers images; all keeps the first available media from mixed posts.",
+    ] = "auto",
+    cookies_from_browser: Annotated[
+        str,
+        "Optional browser cookie source for platforms that require it, e.g. chrome or chrome:Profile 1. Leave empty unless a previous attempt asks for cookies.",
+    ] = "",
+    referer: Annotated[
+        str,
+        "Optional HTTP Referer override. Usually leave empty because platform strategies provide the correct referer.",
+    ] = "",
+    max_items: Annotated[
+        int,
+        "Maximum media items to download from albums/playlists. Keep the default for a single video or ordinary share link.",
+    ] = 6,
+    auto_chain_to_vision: Annotated[
+        bool,
+        "Compatibility flag only. This tool does not automatically call vision_media_analyzer; call it explicitly after download when visual/audio understanding is needed.",
+    ] = False,
+    analysis_prompt: Annotated[
+        str,
+        "Optional analysis intent to preserve in the result message. It does not trigger analysis by itself; pass the downloaded file to vision_media_analyzer next.",
+    ] = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Resolve share pages and download remote media into the current workspace.
+    """Resolve a media share link/page/direct URL and download the media into the current workspace.
 
-    Important:
-    - Downloaded media is written directly into the resolved workspace `downloaded_media` directory.
-    - The returned artifact is already the canonical surface artifact for chat/web/phone display.
-    - Do not use shell commands to move or rename the file unless the user explicitly asks for it.
+    Use this when the user gives a video/image/audio link or a pasted social share text from platforms
+    such as Douyin, YouTube, X/Twitter, TikTok, Instagram, Bilibili, Xiaohongshu, Doubao, or Jimeng.
+    The tool extracts the first URL from pasted text, expands known short links, cleans platform share
+    tracking parameters, resolves supported share pages to real media URLs when possible, then downloads
+    the media into the workspace `downloaded_media` area and returns JSON with the artifact/file path.
+
+    If the user wants to know what is in the image/video/audio after downloading, call
+    `vision_media_analyzer` explicitly with the returned `workspacePath` or `workspaceRelativePath`.
+    This tool only downloads and registers media; it does not perform visual/audio understanding by
+    itself.
+
+    Prefer `prefer="video"` for video shares, `prefer="images"` for image posts, `prefer="all"` for
+    mixed albums, and `prefer="auto"` when unsure. Leave `cookies_from_browser` and `referer` empty
+    unless the platform requires login/cookies or a previous error says a referer/cookie retry is needed.
+    Do not use shell commands to move or rename the downloaded file unless the user explicitly asks for it.
     """
 
     raw_input = _safe_text(url)

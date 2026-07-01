@@ -125,6 +125,16 @@ function isLegacyChatUnsupportedPayload(value: unknown) {
     return Boolean(root.legacyChatUnsupported || snapshot.legacyChatUnsupported);
 }
 
+function asPlainRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function readString(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
+}
+
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
     if (!raw || typeof raw !== "object") {
         return null;
@@ -179,6 +189,58 @@ function deriveHistoryPreview(
         }
     }
     return undefined;
+}
+
+function findPendingAskUserToolCall(messages: Message[]) {
+    const completedToolCallIds = new Set<string>();
+    for (const message of messages) {
+        for (const node of message.nodes || []) {
+            if (node.kind !== "execution" || node.executionType !== "tool_result") {
+                continue;
+            }
+            const toolName = readString(node.toolName);
+            const toolCallId = readString(node.toolCallId);
+            if (toolName === "ask_user" && toolCallId) {
+                completedToolCallIds.add(toolCallId);
+            }
+        }
+    }
+
+    for (const message of [...messages].reverse()) {
+        for (const node of [...(message.nodes || [])].reverse()) {
+            if (node.kind !== "execution" || node.executionType !== "tool_call") {
+                continue;
+            }
+            const toolName = readString(node.toolName);
+            const toolCallId = readString(node.toolCallId);
+            if (toolName !== "ask_user" || !toolCallId || completedToolCallIds.has(toolCallId)) {
+                continue;
+            }
+            const args = asPlainRecord(node.args);
+            const request = asPlainRecord(args.request);
+            const question =
+                readString(args.question)
+                || readString(args.prompt)
+                || readString(request.question)
+                || readString(request.prompt);
+            if (!question) {
+                continue;
+            }
+            return {
+                toolCallId,
+                question,
+                request: {
+                    ...request,
+                    ...args,
+                    question,
+                    prompt: readString(args.prompt) || readString(request.prompt) || question,
+                    toolCallId,
+                    interactionKind: "ask_user",
+                },
+            };
+        }
+    }
+    return null;
 }
 
 function buildWebMessageComparisonKeys(message: Message) {
@@ -696,15 +758,23 @@ export default function ChatClient() {
         },
         onCustomEvent: (event) => {
             if (event.name === "ask_user") {
+                const eventData = asPlainRecord(event.data);
+                const request = asPlainRecord(eventData.request);
+                const interactionId = readString(eventData.interactionId) || readString(eventData.id) || readString(eventData.approvalId);
                 applyAskUserPendingApproval({
-                    id: event.data.interactionId || event.data.id || "",
-                    interactionId: event.data.interactionId || event.data.id || "",
-                    run_id: event.run_id || event.data.runId || "",
-                    interactionKind: event.data.interactionKind || "",
+                    id: interactionId,
+                    interactionId,
+                    approvalId: readString(eventData.approvalId),
+                    run_id: readString(event.run_id) || readString(eventData.runId),
+                    interactionKind: "ask_user",
+                    question: readString(eventData.question),
+                    toolCallId: readString(eventData.toolCallId),
                     request: {
-                        question: event.data.question,
-                        toolCallId: event.data.toolCallId,
-                        interactionKind: event.data.interactionKind,
+                        ...request,
+                        question: readString(request.question) || readString(eventData.question),
+                        prompt: readString(request.prompt) || readString(eventData.prompt) || readString(eventData.question),
+                        toolCallId: readString(request.toolCallId) || readString(eventData.toolCallId),
+                        interactionKind: "ask_user",
                     },
                 });
                 const conversationId = activeConversationIdRef.current;
@@ -766,7 +836,7 @@ export default function ChatClient() {
     );
     const governancePendingApproval = governanceApprovals[0] || null;
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
-    const hasAskUserPending = Boolean(askUserApprovalId);
+    const hasAskUserPending = Boolean(askUserApprovalId || askUserToolCallId);
     const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
     const effectiveStatus = hasAskUserPending
         ? "waiting_input"
@@ -931,6 +1001,7 @@ export default function ChatClient() {
     const applyAskUserPendingApproval = useCallback((approval: {
         id?: string;
         interactionId?: string;
+        approvalId?: string;
         approval_id?: string;
         run_id?: string;
         runId?: string;
@@ -940,34 +1011,54 @@ export default function ChatClient() {
         prompt?: string;
         toolCallId?: string;
         status?: string;
-        request?: { question?: string; prompt?: string; toolCallId?: string; approvalKind?: string; interactionKind?: string; [key: string]: unknown };
+        request?: { question?: string; prompt?: string; toolCallId?: string; approvalKind?: string; interactionKind?: string; approvalId?: string; interactionId?: string; [key: string]: unknown };
     } | null, options?: { openModal?: boolean }) => {
         if (!approval) {
             clearApprovalState();
             return;
         }
 
-        const request = approval.request || {};
-        const interactionKind = approval.interactionKind || request.interactionKind || approval.approval_kind || request.approvalKind || "";
-        if (String(interactionKind).trim() !== "ask_user") {
+        const request = asPlainRecord(approval.request);
+        const interactionKind = readString(approval.interactionKind)
+            || readString(request.interactionKind)
+            || readString(approval.approval_kind)
+            || readString(request.approvalKind);
+        const approvalId =
+            readString(approval.id)
+            || readString(approval.interactionId)
+            || readString(approval.approvalId)
+            || readString(approval.approval_id)
+            || readString(request.interactionId)
+            || readString(request.approvalId);
+        const question =
+            readString(approval.question)
+            || readString(approval.prompt)
+            || readString(request.question)
+            || readString(request.prompt);
+        const toolCallId = readString(approval.toolCallId) || readString(request.toolCallId);
+        const hasAskUserShape = Boolean(approvalId || question || toolCallId);
+        if (interactionKind && interactionKind !== "ask_user") {
             clearApprovalState({ closeModal: false });
             return;
         }
-        const approvalId = approval.id || approval.interactionId || approval.approval_id || "";
-        const question = approval.question || approval.prompt || request.question || request.prompt || "";
-        if (!approvalId || !question) {
+        if (!interactionKind && !hasAskUserShape) {
+            clearApprovalState({ closeModal: false });
+            return;
+        }
+        if (!(approvalId || toolCallId) || !question) {
             clearApprovalState();
             return;
         }
 
         setAskUserApprovalId(approvalId);
-        setAskUserToolCallId(approval.toolCallId || request.toolCallId || "");
+        setAskUserToolCallId(toolCallId);
         setAskUserQuestion(question);
         setAskUserRequest({
             ...request,
             question,
-            prompt: request.prompt || question,
-            toolCallId: approval.toolCallId || request.toolCallId || "",
+            prompt: readString(request.prompt) || question,
+            toolCallId,
+            interactionKind: "ask_user",
         });
         const shouldOpenModal =
             typeof options?.openModal === "boolean"
@@ -987,9 +1078,42 @@ export default function ChatClient() {
             return;
         }
         if (nextAskUserApprovalId !== askUserApprovalId) {
-            applyAskUserPendingApproval(askUserPendingProjection, { openModal: false });
+            applyAskUserPendingApproval(askUserPendingProjection);
         }
     }, [applyAskUserPendingApproval, askUserApprovalId, askUserPendingProjection, clearApprovalState]);
+
+    const pendingAskUserToolCall = useMemo(
+        () => findPendingAskUserToolCall(messages),
+        [messages],
+    );
+
+    useEffect(() => {
+        if (askUserPendingProjection || askUserApprovalId) {
+            return;
+        }
+        if (!pendingAskUserToolCall) {
+            if (askUserToolCallId) {
+                clearApprovalState({ closeModal: true });
+            }
+            return;
+        }
+        if (pendingAskUserToolCall.toolCallId === askUserToolCallId) {
+            return;
+        }
+        applyAskUserPendingApproval({
+            toolCallId: pendingAskUserToolCall.toolCallId,
+            question: pendingAskUserToolCall.question,
+            interactionKind: "ask_user",
+            request: pendingAskUserToolCall.request,
+        });
+    }, [
+        applyAskUserPendingApproval,
+        askUserApprovalId,
+        askUserPendingProjection,
+        askUserToolCallId,
+        clearApprovalState,
+        pendingAskUserToolCall,
+    ]);
 
     useEffect(() => {
         if (!governancePendingApprovalId) {
@@ -1153,7 +1277,8 @@ export default function ChatClient() {
         if (projection?.askUserInteractions?.length) {
             const askUserInteraction = projection.askUserInteractions.find((item) => String(item.status || "pending").toLowerCase() === "pending") || null;
             if (askUserInteraction) {
-                applyAskUserPendingApproval(askUserInteraction, { openModal: false });
+                const nextAskUserApprovalId = readString(askUserInteraction.id) || readString(askUserInteraction.interactionId);
+                applyAskUserPendingApproval(askUserInteraction, { openModal: !askUserApprovalId || nextAskUserApprovalId !== askUserApprovalId });
             }
         }
 
@@ -1203,7 +1328,7 @@ export default function ChatClient() {
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);
         }
-    }, [applyAskUserPendingApproval, applySessionProcessSurface, router, setMessages]);
+    }, [applyAskUserPendingApproval, applySessionProcessSurface, askUserApprovalId, router, setMessages]);
 
     const loadProjects = useCallback(async () => {
         setProjectsLoading(true);
@@ -1440,12 +1565,22 @@ export default function ChatClient() {
             const eventData = typeof normalizedEvent.data === "object" && normalizedEvent.data !== null
                 ? normalizedEvent.data as Record<string, unknown>
                 : {};
+            const request = asPlainRecord(eventData.request);
+            const interactionId = readString(eventData.interactionId) || readString(eventData.id) || readString(eventData.approvalId);
             applyAskUserPendingApproval({
-                id: String(eventData.approvalId || ""),
+                id: interactionId,
+                interactionId,
+                approvalId: readString(eventData.approvalId),
                 run_id: String((normalizedEvent as Record<string, unknown>).run_id || ""),
+                interactionKind: "ask_user",
+                question: readString(eventData.question),
+                toolCallId: readString(eventData.toolCallId),
                 request: {
-                    question: String(eventData.question || ""),
-                    toolCallId: String(eventData.toolCallId || ""),
+                    ...request,
+                    question: readString(request.question) || readString(eventData.question),
+                    prompt: readString(request.prompt) || readString(eventData.prompt) || readString(eventData.question),
+                    toolCallId: readString(request.toolCallId) || readString(eventData.toolCallId),
+                    interactionKind: "ask_user",
                 },
             });
         }
@@ -1611,7 +1746,7 @@ export default function ChatClient() {
         // 1. Filter out user messages & system messages
         if (latestMsg.role !== 'assistant') {
             lastMessageIdRef.current = latestMsg.id;
-            lastMessageLengthRef.current = latestMsg.nodes.length; // Approximate
+            lastMessageLengthRef.current = latestMsg.nodes?.length || 0; // Approximate
             return;
         }
 
@@ -1631,10 +1766,10 @@ export default function ChatClient() {
             // So for streaming, we see: ID_NEW, Length 0. -> Then Length > 0.
 
             lastMessageIdRef.current = latestMsg.id;
-            lastMessageLengthRef.current = latestMsg.content.length;
+            lastMessageLengthRef.current = String(latestMsg.content || "").length;
         } else {
             // Same message object, content updating.
-            const currentLength = latestMsg.content.length;
+            const currentLength = String(latestMsg.content || "").length;
             const previousLength = lastMessageLengthRef.current;
 
             // 3. Trigger Sound: If length transitions from 0 to > 0

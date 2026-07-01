@@ -119,7 +119,7 @@ function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
         }
         if (node.executionType === "tool_call" || node.executionType === "tool_result") {
             const toolName = getExecutionToolName(node);
-            return toolName !== "write_todos" && toolName !== "update_todo";
+            return toolName !== "write_todos" && toolName !== "update_todo" && toolName !== "ask_user";
         }
         if (node.executionType === "runtime_progress") {
             return Boolean(String(node.label || node.topic || "").trim());

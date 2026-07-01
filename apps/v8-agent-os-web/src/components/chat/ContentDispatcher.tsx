@@ -162,6 +162,10 @@ function isTodoLikeExecutionNode(node: UiExecutionNode) {
     );
 }
 
+function isAskUserExecutionNode(node: UiExecutionNode) {
+    return String(node.toolName || '').trim() === 'ask_user';
+}
+
 function isNoticeableContextGovernance(requestInfo: unknown) {
     if (!requestInfo || typeof requestInfo !== "object" || Array.isArray(requestInfo)) {
         return false;
@@ -229,7 +233,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             }
 
             if (node.executionType === 'tool_call' || node.executionType === 'tool_result') {
-                if (isTodoLikeExecutionNode(node)) {
+                if (isTodoLikeExecutionNode(node) || isAskUserExecutionNode(node)) {
                     return null;
                 }
                 const resultExecNode = resultNode as UiExecutionNode | undefined;

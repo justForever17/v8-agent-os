@@ -1,9 +1,7 @@
-import { memo, useEffect, useMemo, useState } from "react";
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { memo, useMemo, useState } from "react";
+import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
-import { Button } from "@/src/components/ui/button";
-import { Textarea } from "@/src/components/ui/textarea";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
@@ -71,12 +69,24 @@ function optionKey(option: AskUserOption, index: number) {
     return asText(option.id) || asText(option.value) || asText(option.title) || asText(option.label) || `option-${index}`;
 }
 
+function optionLabel(option: AskUserOption, index: number) {
+    return asText(option.title) || asText(option.label) || asText(option.value) || `option-${index + 1}`;
+}
+
 function mediaKey(item: AskUserMedia, index: number) {
     return asText(item.id) || asText(item.artifactId) || asText(item.url) || asText(item.previewUrl) || `media-${index}`;
 }
 
+function mediaLabel(item: AskUserMedia, index: number) {
+    return asText(item.title) || asText(item.name) || asText(item.artifactId) || `media-${index + 1}`;
+}
+
+function questionKey(questionItem: AskUserQuestion, index: number) {
+    return asText(questionItem.id) || asText(questionItem.title) || asText(questionItem.question) || `q${index + 1}`;
+}
+
 function normalizeQuestions(question: string, request?: AskUserRequest | null): AskUserQuestion[] {
-    const source = Array.isArray(request?.questions) ? request?.questions : [];
+    const source = Array.isArray(request?.questions) ? request.questions : [];
     const normalized = source
         .filter((item) => item && typeof item === "object")
         .map((item, index) => ({
@@ -97,8 +107,8 @@ function normalizeQuestions(question: string, request?: AskUserRequest | null): 
 
 function normalizeMedia(request?: AskUserRequest | null) {
     const merged = [
-        ...(Array.isArray(request?.media) ? request?.media : []),
-        ...(Array.isArray(request?.artifacts) ? request?.artifacts : []),
+        ...(Array.isArray(request?.media) ? request.media : []),
+        ...(Array.isArray(request?.artifacts) ? request.artifacts : []),
     ];
     const seen = new Set<string>();
     return merged.filter((item, index) => {
@@ -134,35 +144,49 @@ export const AskUserModal = memo(function AskUserModal({
     const questions = useMemo(() => normalizeQuestions(question, request), [question, request]);
     const mediaItems = useMemo(() => normalizeMedia(request), [request]);
     const mediaSelectionMode = asText(request?.selectionMode).toLowerCase() === "multiple" ? "multiple" : "single";
-    const [answer, setAnswer] = useState("");
+    const [pageIndex, setPageIndex] = useState(0);
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
     const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
+    const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
     const [selectedMedia, setSelectedMedia] = useState<string[]>([]);
-
-    useEffect(() => {
-        if (visible) {
-            setAnswer("");
-            setExpanded({});
-            setSelectedOptions({});
-            setSelectedMedia([]);
-        }
-    }, [visible, toolCallId]);
 
     if (!visible) return null;
 
-    const toggleOption = (questionItem: AskUserQuestion, option: AskUserOption, index: number) => {
-        const qid = asText(questionItem.id) || "answer";
+    const resetForm = () => {
+        setPageIndex(0);
+        setExpanded({});
+        setSelectedOptions({});
+        setCustomAnswers({});
+        setSelectedMedia([]);
+    };
+
+    const closePanel = () => {
+        resetForm();
+        onCancel?.();
+    };
+
+    const goToPage = (nextIndex: number) => {
+        setPageIndex(Math.min(Math.max(nextIndex, 0), Math.max(questions.length - 1, 0)));
+    };
+
+    const toggleOption = (questionItem: AskUserQuestion, qIndex: number, option: AskUserOption, index: number) => {
+        const qid = questionKey(questionItem, qIndex);
         const key = optionKey(option, index);
         const multi = Boolean(questionItem.multiSelect || questionItem.multiple);
+        const alreadySelected = (selectedOptions[qid] || []).includes(key);
+        const selectedAfterClick = !alreadySelected;
         setSelectedOptions((current) => {
             const values = current[qid] || [];
-            const nextValues = values.includes(key)
+            const nextValues = alreadySelected
                 ? values.filter((item) => item !== key)
                 : multi
                     ? [...values, key]
                     : [key];
             return { ...current, [qid]: nextValues };
         });
+        if (!multi && selectedAfterClick && qIndex < questions.length - 1) {
+            setTimeout(() => goToPage(qIndex + 1), 180);
+        }
     };
 
     const toggleMedia = (item: AskUserMedia, index: number) => {
@@ -173,46 +197,71 @@ export const AskUserModal = memo(function AskUserModal({
         });
     };
 
+    const isQuestionAnswered = (item: AskUserQuestion, index: number) => {
+        const qid = questionKey(item, index);
+        return Boolean((selectedOptions[qid] || []).length || asText(customAnswers[qid]));
+    };
+
     const buildAnswer = () => {
         const lines: string[] = [];
-        for (const item of questions) {
-            const qid = asText(item.id) || "answer";
+        for (const [index, item] of questions.entries()) {
+            const qid = questionKey(item, index);
             const chosen = (selectedOptions[qid] || [])
                 .map((key) => {
-                    const option = (item.options || []).find((candidate, index) => optionKey(candidate, index) === key);
-                    return asText(option?.title) || asText(option?.label) || asText(option?.value) || key;
+                    const optionIndex = (item.options || []).findIndex((candidate, candidateIndex) => optionKey(candidate, candidateIndex) === key);
+                    const option = optionIndex >= 0 ? (item.options || [])[optionIndex] : null;
+                    return option ? optionLabel(option, optionIndex) : key;
                 })
                 .filter(Boolean);
-            if (chosen.length) {
-                lines.push(`${asText(item.title) || asText(item.question) || qid}: ${chosen.join("、")}`);
+            const custom = asText(customAnswers[qid]);
+            const parts = [...chosen];
+            if (custom) parts.push(custom);
+            if (parts.length) {
+                lines.push(`${index + 1}. ${asText(item.title) || asText(item.question) || qid}: ${parts.join("；")}`);
             }
         }
-        if (selectedMedia.length) lines.push(`选择的参考产物: ${selectedMedia.join("、")}`);
-        if (answer.trim()) lines.push(answer.trim());
+        if (selectedMedia.length) {
+            const labels = selectedMedia.map((key) => {
+                const foundIndex = mediaItems.findIndex((item, index) => mediaKey(item, index) === key);
+                return foundIndex >= 0 ? mediaLabel(mediaItems[foundIndex], foundIndex) : key;
+            });
+            lines.unshift(`${t("src.components.chat.askusermodal.selected_media")}: ${labels.join("、")}`);
+        }
         return lines.join("\n").trim();
     };
 
-    const hasOptions = questions.some((item) => (item.options || []).length > 0);
-    const canSubmit = Boolean(buildAnswer());
+    const currentQuestion = questions[Math.min(pageIndex, Math.max(questions.length - 1, 0))];
+    const currentQuestionKey = currentQuestion ? questionKey(currentQuestion, pageIndex) : "answer";
+    const currentOptions = currentQuestion?.options || [];
+    const currentDetail = asText(currentQuestion?.detail) || asText(currentQuestion?.description);
+    const currentMulti = Boolean(currentQuestion?.multiSelect || currentQuestion?.multiple);
+    const currentAnswered = currentQuestion ? isQuestionAnswered(currentQuestion, pageIndex) : true;
+    const isLastPage = pageIndex >= questions.length - 1;
+    const canSubmit = Boolean(buildAnswer()) && questions.every(isQuestionAnswered);
+    const title = asText(request?.question) || question || t("src.components.chat.askusermodal.one_quick_answer_before_we_continue");
+    const details = asText(request?.details);
 
     return (
-        <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-            <View style={[styles.overlay, { backgroundColor: themeMode === "dark" ? "rgba(0,0,0,0.58)" : "rgba(15,23,42,0.36)" }]}>
-                <Pressable style={StyleSheet.absoluteFill} onPress={onCancel} />
-                <View style={[styles.card, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+        <Modal visible={visible} transparent animationType="slide" onRequestClose={closePanel}>
+            <View style={[styles.overlay, { backgroundColor: themeMode === "dark" ? "rgba(0,0,0,0.32)" : "rgba(15,23,42,0.16)" }]}>
+                <Pressable style={StyleSheet.absoluteFill} onPress={closePanel} />
+                <View style={[styles.sheet, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
                     <View style={[styles.header, { borderBottomColor: colors.border }]}>
-                        <View style={[styles.headerIcon, { backgroundColor: "rgba(124,58,237,0.12)" }]}>
-                            <MaterialCommunityIcons name="message-processing-outline" size={18} color={colors.primary} />
-                        </View>
                         <View style={styles.headerText}>
-                            <Text numberOfLines={1} style={[styles.title, { color: colors.text }]}>
-                                {asText(request?.question) || question || t("src.components.chat.askusermodal.one_quick_answer_before_we_continue")}
-                            </Text>
-                            {asText(request?.details) ? (
-                                <Text numberOfLines={1} style={[styles.subtitle, { color: colors.textMuted }]}>
-                                    {asText(request?.details)}
-                                </Text>
-                            ) : null}
+                            <Text numberOfLines={1} style={[styles.title, { color: colors.text }]}>{title}</Text>
+                            {details ? <Text numberOfLines={1} style={[styles.subtitle, { color: colors.textMuted }]}>{details}</Text> : null}
+                        </View>
+                        <View style={styles.headerActions}>
+                            <Pressable onPress={() => goToPage(pageIndex - 1)} disabled={pageIndex <= 0} style={styles.iconButton}>
+                                <MaterialCommunityIcons name="chevron-left" size={20} color={pageIndex <= 0 ? colors.textMuted : colors.text} />
+                            </Pressable>
+                            <Text style={[styles.counter, { color: colors.textMuted }]}>{pageIndex + 1}/{Math.max(questions.length, 1)}</Text>
+                            <Pressable onPress={() => goToPage(pageIndex + 1)} disabled={pageIndex >= questions.length - 1} style={styles.iconButton}>
+                                <MaterialCommunityIcons name="chevron-right" size={20} color={pageIndex >= questions.length - 1 ? colors.textMuted : colors.text} />
+                            </Pressable>
+                            <Pressable onPress={closePanel} style={styles.iconButton}>
+                                <MaterialCommunityIcons name="close" size={18} color={colors.textMuted} />
+                            </Pressable>
                         </View>
                     </View>
 
@@ -230,7 +279,7 @@ export const AskUserModal = memo(function AskUserModal({
                                     const selected = selectedMedia.includes(key);
                                     const kind = mediaKind(item);
                                     const url = mediaUrl(item);
-                                    const title = asText(item.title) || asText(item.name) || key;
+                                    const label = mediaLabel(item, index);
                                     return (
                                         <Pressable
                                             key={key}
@@ -246,17 +295,17 @@ export const AskUserModal = memo(function AskUserModal({
                                                 <View style={styles.mediaFallback}>
                                                     <MaterialCommunityIcons
                                                         name={kind === "video" ? "movie-open-outline" : "music-note-outline"}
-                                                        size={24}
+                                                        size={20}
                                                         color={colors.textMuted}
                                                     />
                                                 </View>
                                             )}
                                             <View style={styles.mediaLabel}>
-                                                <Text numberOfLines={1} style={styles.mediaLabelText}>{title}</Text>
+                                                <Text numberOfLines={1} style={styles.mediaLabelText}>{label}</Text>
                                             </View>
                                             {selected ? (
                                                 <View style={[styles.checkBadge, { backgroundColor: colors.primary }]}>
-                                                    <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
+                                                    <MaterialCommunityIcons name="check" size={11} color="#FFFFFF" />
                                                 </View>
                                             ) : null}
                                         </Pressable>
@@ -265,75 +314,92 @@ export const AskUserModal = memo(function AskUserModal({
                             </ScrollView>
                         ) : null}
 
-                        {questions.map((item, qIndex) => {
-                            const qid = asText(item.id) || `q${qIndex + 1}`;
-                            const title = asText(item.title) || asText(item.question) || `${qIndex + 1}`;
-                            const detail = asText(item.detail) || asText(item.description);
-                            const options = item.options || [];
-                            const isExpanded = Boolean(expanded[qid]);
-                            return (
-                                <View key={qid} style={[styles.questionBlock, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                                    <Pressable
-                                        style={styles.questionHeader}
-                                        onPress={() => setExpanded((current) => ({ ...current, [qid]: !current[qid] }))}
-                                    >
-                                        <Text numberOfLines={2} style={[styles.questionTitle, { color: colors.text }]}>{title}</Text>
-                                        {detail ? (
-                                            <MaterialCommunityIcons
-                                                name={isExpanded ? "chevron-up" : "chevron-down"}
-                                                size={20}
-                                                color={colors.textMuted}
-                                            />
-                                        ) : null}
-                                    </Pressable>
-                                    {detail && isExpanded ? (
-                                        <Text style={[styles.questionDetail, { color: colors.textMuted }]}>{detail}</Text>
+                        {currentQuestion ? (
+                            <View style={[styles.questionBlock, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                                <Pressable
+                                    style={styles.questionHeader}
+                                    onPress={() => setExpanded((current) => ({ ...current, [currentQuestionKey]: !current[currentQuestionKey] }))}
+                                >
+                                    <Text numberOfLines={2} style={[styles.questionTitle, { color: colors.text }]}>
+                                        {asText(currentQuestion.title) || asText(currentQuestion.question) || `${pageIndex + 1}`}
+                                    </Text>
+                                    {currentMulti ? (
+                                        <Text style={[styles.multiBadge, { color: colors.textMuted, backgroundColor: colors.surfaceStrong }]}>
+                                            {t("src.components.chat.askusermodal.multi")}
+                                        </Text>
                                     ) : null}
-                                    {options.length ? (
-                                        <View style={styles.optionsGrid}>
-                                            {options.map((option, index) => {
-                                                const key = optionKey(option, index);
-                                                const selected = (selectedOptions[qid] || []).includes(key);
-                                                const label = asText(option.title) || asText(option.label) || asText(option.value) || key;
-                                                return (
-                                                    <Pressable
-                                                        key={key}
-                                                        style={[
-                                                            styles.option,
-                                                            {
-                                                                borderColor: selected ? colors.primary : colors.border,
-                                                                backgroundColor: selected ? "rgba(124,58,237,0.12)" : colors.surfaceStrong,
-                                                            },
-                                                        ]}
-                                                        onPress={() => toggleOption(item, option, index)}
-                                                    >
-                                                        <Text style={[styles.optionText, { color: selected ? colors.primary : colors.text }]}>{label}</Text>
-                                                        {selected ? <MaterialCommunityIcons name="check" size={16} color={colors.primary} /> : null}
-                                                    </Pressable>
-                                                );
-                                            })}
-                                        </View>
+                                    {currentDetail ? (
+                                        <MaterialCommunityIcons
+                                            name={expanded[currentQuestionKey] ? "chevron-up" : "chevron-down"}
+                                            size={18}
+                                            color={colors.textMuted}
+                                        />
                                     ) : null}
-                                </View>
-                            );
-                        })}
-
-                        <Textarea
-                            value={answer}
-                            onChangeText={setAnswer}
-                            placeholder={hasOptions ? t("src.components.chat.askusermodal.answer_briefly_or_provide_the_missing_information_needed_to_continue") : t("src.components.chat.askusermodal.answer_briefly_or_provide_the_missing_information_needed_to_continue")}
-                            style={styles.textarea}
-                            editable={!busy}
-                        />
+                                </Pressable>
+                                {currentDetail && expanded[currentQuestionKey] ? (
+                                    <Text style={[styles.questionDetail, { color: colors.textMuted }]}>{currentDetail}</Text>
+                                ) : null}
+                                {currentOptions.length ? (
+                                    <View style={styles.optionsGrid}>
+                                        {currentOptions.map((option, index) => {
+                                            const key = optionKey(option, index);
+                                            const selected = (selectedOptions[currentQuestionKey] || []).includes(key);
+                                            return (
+                                                <Pressable
+                                                    key={key}
+                                                    style={[
+                                                        styles.option,
+                                                        {
+                                                            borderColor: selected ? colors.primary : colors.border,
+                                                            backgroundColor: selected ? "rgba(124,58,237,0.12)" : colors.surfaceStrong,
+                                                        },
+                                                    ]}
+                                                    onPress={() => toggleOption(currentQuestion, pageIndex, option, index)}
+                                                >
+                                                    <Text numberOfLines={1} style={[styles.optionText, { color: selected ? colors.primary : colors.text }]}>
+                                                        {optionLabel(option, index)}
+                                                    </Text>
+                                                    {selected ? <MaterialCommunityIcons name="check" size={14} color={colors.primary} /> : null}
+                                                </Pressable>
+                                            );
+                                        })}
+                                    </View>
+                                ) : null}
+                                <TextInput
+                                    value={customAnswers[currentQuestionKey] || ""}
+                                    onChangeText={(value) => setCustomAnswers((current) => ({ ...current, [currentQuestionKey]: value }))}
+                                    placeholder={currentOptions.length ? t("src.components.chat.askusermodal.other_or_note") : t("src.components.chat.askusermodal.type_your_answer")}
+                                    placeholderTextColor={colors.textMuted}
+                                    style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}
+                                    editable={!busy}
+                                />
+                            </View>
+                        ) : null}
                     </ScrollView>
 
                     <View style={[styles.footer, { borderTopColor: colors.border }]}>
-                        <Button variant="ghost" onPress={onCancel} disabled={busy}>
-                            {t("src.components.chat.askusermodal.dismiss")}
-                        </Button>
-                        <Button onPress={() => void onSubmit(toolCallId, buildAnswer(), true)} disabled={busy || !canSubmit}>
-                            {busy ? t("src.components.chat.askusermodal.sending") : t("src.components.chat.askusermodal.send_and_continue")}
-                        </Button>
+                        <Pressable onPress={closePanel} disabled={busy} style={styles.secondaryButton}>
+                            <Text style={[styles.secondaryButtonText, { color: colors.textMuted }]}>
+                                {t("src.components.chat.askusermodal.dismiss")}
+                            </Text>
+                        </Pressable>
+                        <Pressable
+                            onPress={() => {
+                                if (!isLastPage) {
+                                    goToPage(pageIndex + 1);
+                                    return;
+                                }
+                                const answer = buildAnswer();
+                                resetForm();
+                                void onSubmit(toolCallId, answer, true);
+                            }}
+                            disabled={busy || (!isLastPage && !currentAnswered) || (isLastPage && !canSubmit)}
+                            style={[styles.primaryButton, { backgroundColor: colors.primary, opacity: busy || (!isLastPage && !currentAnswered) || (isLastPage && !canSubmit) ? 0.45 : 1 }]}
+                        >
+                            <Text style={styles.primaryButtonText}>
+                                {isLastPage ? (busy ? t("src.components.chat.askusermodal.sending") : t("src.components.chat.askusermodal.send_and_continue")) : t("src.components.chat.askusermodal.next")}
+                            </Text>
+                        </Pressable>
                     </View>
                 </View>
             </View>
@@ -344,70 +410,73 @@ export const AskUserModal = memo(function AskUserModal({
 const styles = StyleSheet.create({
     overlay: {
         flex: 1,
-        justifyContent: "center",
-        alignItems: "center",
-        paddingHorizontal: 14,
-        paddingVertical: 22,
+        justifyContent: "flex-end",
     },
-    card: {
-        width: "100%",
-        maxWidth: 560,
-        maxHeight: "88%",
-        borderRadius: 26,
+    sheet: {
+        maxHeight: "72%",
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
         borderWidth: 1,
         overflow: "hidden",
         shadowColor: "#0F172A",
-        shadowOpacity: 0.18,
-        shadowRadius: 24,
-        shadowOffset: { width: 0, height: 14 },
-        elevation: 20,
+        shadowOpacity: 0.16,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: -8 },
+        elevation: 18,
     },
     header: {
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.sm,
         paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
+        paddingVertical: 10,
         borderBottomWidth: StyleSheet.hairlineWidth,
-    },
-    headerIcon: {
-        width: 36,
-        height: 36,
-        borderRadius: 14,
-        alignItems: "center",
-        justifyContent: "center",
     },
     headerText: {
         flex: 1,
         minWidth: 0,
     },
     title: {
-        fontSize: 16,
+        fontSize: 14,
         fontWeight: "800",
-        lineHeight: 22,
+        lineHeight: 20,
     },
     subtitle: {
-        marginTop: 2,
+        marginTop: 1,
         fontSize: 11,
-        lineHeight: 16,
+        lineHeight: 15,
+    },
+    headerActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 2,
+    },
+    iconButton: {
+        padding: 4,
+    },
+    counter: {
+        minWidth: 28,
+        textAlign: "center",
+        fontSize: 11,
+        fontWeight: "700",
     },
     scroll: {
-        maxHeight: 560,
+        maxHeight: 420,
     },
     content: {
         paddingHorizontal: spacing.md,
-        paddingVertical: spacing.md,
+        paddingVertical: 10,
         gap: spacing.sm,
     },
     mediaStrip: {
-        gap: spacing.sm,
+        gap: 8,
         paddingBottom: 2,
     },
     mediaThumb: {
-        width: 118,
-        height: 88,
+        width: 98,
+        height: 62,
         borderWidth: 1,
-        borderRadius: 18,
+        borderRadius: 14,
         overflow: "hidden",
     },
     mediaImage: {
@@ -424,57 +493,63 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         bottom: 0,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
+        paddingHorizontal: 6,
+        paddingVertical: 4,
         backgroundColor: "rgba(15,23,42,0.68)",
     },
     mediaLabelText: {
         color: "#FFFFFF",
-        fontSize: 10,
+        fontSize: 9,
         fontWeight: "700",
     },
     checkBadge: {
         position: "absolute",
-        top: 7,
-        right: 7,
-        width: 20,
-        height: 20,
-        borderRadius: 10,
+        top: 5,
+        right: 5,
+        width: 18,
+        height: 18,
+        borderRadius: 9,
         alignItems: "center",
         justifyContent: "center",
     },
     questionBlock: {
         borderRadius: radii.lg,
         borderWidth: StyleSheet.hairlineWidth,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
         gap: 8,
     },
     questionHeader: {
         flexDirection: "row",
         alignItems: "center",
-        justifyContent: "space-between",
-        gap: 8,
+        gap: 6,
     },
     questionTitle: {
         flex: 1,
-        fontSize: 14,
+        fontSize: 13,
         fontWeight: "800",
-        lineHeight: 20,
-    },
-    questionDetail: {
-        fontSize: 12,
         lineHeight: 18,
     },
+    multiBadge: {
+        borderRadius: 999,
+        overflow: "hidden",
+        paddingHorizontal: 7,
+        paddingVertical: 2,
+        fontSize: 10,
+        fontWeight: "700",
+    },
+    questionDetail: {
+        fontSize: 11,
+        lineHeight: 17,
+    },
     optionsGrid: {
-        gap: 8,
+        gap: 6,
     },
     option: {
-        minHeight: 42,
+        height: 36,
         borderWidth: 1,
-        borderRadius: 14,
-        paddingHorizontal: 12,
-        paddingVertical: 9,
+        borderRadius: 12,
+        paddingHorizontal: 10,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
@@ -482,20 +557,42 @@ const styles = StyleSheet.create({
     },
     optionText: {
         flex: 1,
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: "700",
-        lineHeight: 18,
     },
-    textarea: {
-        minHeight: 92,
-        textAlignVertical: "top",
+    input: {
+        height: 34,
+        borderWidth: 1,
+        borderRadius: 12,
+        paddingHorizontal: 10,
+        fontSize: 12,
     },
     footer: {
         flexDirection: "row",
         justifyContent: "flex-end",
         gap: spacing.sm,
         paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
+        paddingVertical: 9,
         borderTopWidth: StyleSheet.hairlineWidth,
+    },
+    secondaryButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    secondaryButtonText: {
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    primaryButton: {
+        minWidth: 84,
+        alignItems: "center",
+        borderRadius: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+    },
+    primaryButtonText: {
+        color: "#FFFFFF",
+        fontSize: 12,
+        fontWeight: "800",
     },
 });

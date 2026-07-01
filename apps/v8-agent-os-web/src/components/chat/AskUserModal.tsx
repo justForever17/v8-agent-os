@@ -1,10 +1,7 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, Check, MessageCircleMore, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { lt } from "@/lib/locale";
 
@@ -75,8 +72,12 @@ function mediaKey(item: AskUserMedia, index: number) {
     return asText(item.id) || asText(item.artifactId) || asText(item.url) || asText(item.previewUrl) || `media-${index}`;
 }
 
+function questionKey(questionItem: AskUserQuestion, index: number) {
+    return asText(questionItem.id) || asText(questionItem.title) || asText(questionItem.question) || `q${index + 1}`;
+}
+
 function normalizeQuestions(question: string, request?: AskUserRequest | null): AskUserQuestion[] {
-    const source = Array.isArray(request?.questions) ? request?.questions : [];
+    const source = Array.isArray(request?.questions) ? request.questions : [];
     const normalized = source
         .filter((item) => item && typeof item === "object")
         .map((item, index) => ({
@@ -89,18 +90,20 @@ function normalizeQuestions(question: string, request?: AskUserRequest | null): 
     if (normalized.length) {
         return normalized;
     }
-    return [{
-        id: "answer",
-        title: asText(request?.question) || asText(request?.prompt) || question,
-        detail: asText(request?.details),
-        options: [],
-    }];
+    return [
+        {
+            id: "answer",
+            title: asText(request?.question) || asText(request?.prompt) || question,
+            detail: asText(request?.details),
+            options: [],
+        },
+    ];
 }
 
 function normalizeMedia(request?: AskUserRequest | null): AskUserMedia[] {
     const merged = [
-        ...(Array.isArray(request?.media) ? request?.media : []),
-        ...(Array.isArray(request?.artifacts) ? request?.artifacts : []),
+        ...(Array.isArray(request?.media) ? request.media : []),
+        ...(Array.isArray(request?.artifacts) ? request.artifacts : []),
     ];
     const seen = new Set<string>();
     return merged.filter((item, index) => {
@@ -123,36 +126,72 @@ function mediaUrl(item: AskUserMedia) {
     return asText(item.previewUrl) || asText(item.thumbnailUrl) || asText(item.url) || asText(item.contentUrl) || asText(item.href);
 }
 
+function mediaLabel(item: AskUserMedia, index: number) {
+    return asText(item.title) || asText(item.name) || asText(item.artifactId) || `media-${index + 1}`;
+}
+
+function optionLabel(option: AskUserOption, index: number) {
+    return asText(option.title) || asText(option.label) || asText(option.value) || `option-${index + 1}`;
+}
+
+function optionDetail(option: AskUserOption) {
+    return asText(option.detail) || asText(option.description);
+}
+
+function questionTitle(questionItem: AskUserQuestion, index: number) {
+    return asText(questionItem.title) || asText(questionItem.question) || `${index + 1}`;
+}
+
+function questionDetail(questionItem: AskUserQuestion) {
+    return asText(questionItem.detail) || asText(questionItem.description);
+}
+
 export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, onCancel }: AskUserModalProps) {
     const t = useT();
     const questions = useMemo(() => normalizeQuestions(question, request), [question, request]);
     const mediaItems = useMemo(() => normalizeMedia(request), [request]);
     const mediaSelectionMode = asText(request?.selectionMode).toLowerCase() === "multiple" ? "multiple" : "single";
-    const [textAnswer, setTextAnswer] = useState("");
+    const [pageIndex, setPageIndex] = useState(0);
     const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
+    const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
     const [selectedMedia, setSelectedMedia] = useState<string[]>([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
+    const currentQuestion = questions[Math.min(pageIndex, Math.max(questions.length - 1, 0))];
+    const currentQuestionKey = currentQuestion ? questionKey(currentQuestion, pageIndex) : "answer";
+    const currentQuestionOptions = currentQuestion?.options || [];
+    const currentQuestionMulti = Boolean(currentQuestion?.multiSelect || currentQuestion?.multiple);
+
     const resetForm = () => {
-        setTextAnswer("");
+        setPageIndex(0);
         setSelectedOptions({});
+        setCustomAnswers({});
         setSelectedMedia([]);
         setIsSubmitting(false);
     };
 
-    const toggleOption = (questionItem: AskUserQuestion, option: AskUserOption, index: number) => {
-        const qid = asText(questionItem.id) || asText(questionItem.title) || "answer";
-        const key = optionKey(option, index);
+    const goToPage = (nextIndex: number) => {
+        setPageIndex(Math.min(Math.max(nextIndex, 0), Math.max(questions.length - 1, 0)));
+    };
+
+    const toggleOption = (questionItem: AskUserQuestion, qIndex: number, option: AskUserOption, optionIndex: number) => {
+        const qid = questionKey(questionItem, qIndex);
+        const key = optionKey(option, optionIndex);
         const multi = Boolean(questionItem.multiSelect || questionItem.multiple);
+        const alreadySelected = (selectedOptions[qid] || []).includes(key);
+        const selectedAfterClick = !alreadySelected;
         setSelectedOptions((current) => {
             const currentValues = current[qid] || [];
-            const nextValues = currentValues.includes(key)
+            const nextValues = alreadySelected
                 ? currentValues.filter((item) => item !== key)
                 : multi
                     ? [...currentValues, key]
                     : [key];
             return { ...current, [qid]: nextValues };
         });
+        if (!multi && selectedAfterClick && qIndex < questions.length - 1) {
+            window.setTimeout(() => goToPage(qIndex + 1), 180);
+        }
     };
 
     const toggleMedia = (item: AskUserMedia, index: number) => {
@@ -163,188 +202,266 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
         });
     };
 
+    const isQuestionAnswered = (questionItem: AskUserQuestion, qIndex: number) => {
+        const qid = questionKey(questionItem, qIndex);
+        return Boolean((selectedOptions[qid] || []).length || asText(customAnswers[qid]));
+    };
+
     const buildAnswer = () => {
         const lines: string[] = [];
-        for (const q of questions) {
-            const qid = asText(q.id) || asText(q.title) || "answer";
+        for (const [index, q] of questions.entries()) {
+            const qid = questionKey(q, index);
             const chosen = (selectedOptions[qid] || [])
                 .map((key) => {
-                    const option = (q.options || []).find((candidate, index) => optionKey(candidate, index) === key);
-                    return asText(option?.title) || asText(option?.label) || asText(option?.value) || key;
+                    const optionIndex = (q.options || []).findIndex((candidate, index) => optionKey(candidate, index) === key);
+                    const option = optionIndex >= 0 ? (q.options || [])[optionIndex] : null;
+                    return option ? optionLabel(option, optionIndex) : key;
                 })
                 .filter(Boolean);
-            if (chosen.length) {
-                lines.push(`${asText(q.title) || asText(q.question) || qid}: ${chosen.join("、")}`);
+            const custom = asText(customAnswers[qid]);
+            const parts = [...chosen];
+            if (custom) parts.push(custom);
+            if (parts.length) {
+                lines.push(`${index + 1}. ${questionTitle(q, index)}: ${parts.join("；")}`);
             }
         }
         if (selectedMedia.length) {
-            lines.push(`选择的参考产物: ${selectedMedia.join("、")}`);
-        }
-        if (textAnswer.trim()) {
-            lines.push(textAnswer.trim());
+            const labels = selectedMedia.map((key) => {
+                const foundIndex = mediaItems.findIndex((item, index) => mediaKey(item, index) === key);
+                return foundIndex >= 0 ? mediaLabel(mediaItems[foundIndex], foundIndex) : key;
+            });
+            lines.unshift(`参考产物: ${labels.join("、")}`);
         }
         return lines.join("\n").trim();
     };
 
-    const hasOptionQuestion = questions.some((item) => (item.options || []).length > 0);
-    const canSubmit = Boolean(buildAnswer());
+    const allQuestionsAnswered = questions.length ? questions.every(isQuestionAnswered) : true;
+    const canSubmit = Boolean(buildAnswer()) && allQuestionsAnswered;
 
-    const handleSubmit = (approve: boolean) => {
+    const handleSubmit = () => {
         const answer = buildAnswer();
-        if (approve && !answer) return;
+        if (!answer || !allQuestionsAnswered) return;
         setIsSubmitting(true);
         resetForm();
-        onSubmit(toolCallId, answer, approve);
+        onSubmit(toolCallId, answer, true);
     };
 
-    const handleOpenChange = (open: boolean) => {
-        if (open) return;
+    const handleCancel = () => {
         resetForm();
         onCancel?.();
     };
 
+    const handleNext = () => {
+        if (pageIndex < questions.length - 1) {
+            goToPage(pageIndex + 1);
+            return;
+        }
+        handleSubmit();
+    };
+
+    if (!isOpen) {
+        return null;
+    }
+
+    const title = asText(request?.question) || question || t(lt("需要你的输入", "Input needed"));
+    const details = asText(request?.details);
+    const currentAnswered = currentQuestion ? isQuestionAnswered(currentQuestion, pageIndex) : true;
+    const isLastPage = pageIndex >= questions.length - 1;
+
     return (
         <TooltipProvider delayDuration={180}>
-            <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-                <DialogContent className="flex max-h-[88vh] w-[min(94vw,640px)] flex-col overflow-hidden border border-border/70 bg-background/95 p-0 shadow-2xl backdrop-blur-2xl sm:rounded-3xl">
-                    <DialogHeader className="border-b border-border/50 px-4 py-3 sm:px-5">
-                        <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                                <MessageCircleMore className="h-4.5 w-4.5" />
+            <div className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-[70] flex justify-center px-3 sm:bottom-24">
+                <section
+                    className="pointer-events-auto w-[min(94vw,900px)] overflow-hidden rounded-2xl border border-border/70 bg-background/98 shadow-[0_16px_48px_rgba(15,23,42,0.16)] animate-in fade-in slide-in-from-bottom-2 duration-200"
+                    role="dialog"
+                    aria-modal="false"
+                    aria-label={title}
+                >
+                    <div className="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 sm:px-4">
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                                <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <h2 className="truncate text-sm font-semibold text-foreground">{title}</h2>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="max-w-sm text-xs leading-5">
+                                        {details || title}
+                                    </TooltipContent>
+                                </Tooltip>
                             </div>
-                            <div className="min-w-0">
-                                <DialogTitle className="truncate text-base font-semibold tracking-tight text-foreground">
-                                    {asText(request?.question) || question || t(lt("需要你的输入", "Input needed"))}
-                                </DialogTitle>
-                                {asText(request?.details) ? (
-                                    <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{asText(request?.details)}</p>
-                                ) : null}
-                            </div>
+                            {details ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{details}</p> : null}
                         </div>
-                    </DialogHeader>
+                        <div className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+                            <button
+                                type="button"
+                                onClick={() => goToPage(pageIndex - 1)}
+                                disabled={pageIndex <= 0}
+                                className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
+                                aria-label={t(lt("上一题", "Previous"))}
+                            >
+                                <ChevronLeft className="h-4 w-4" />
+                            </button>
+                            <span>{pageIndex + 1}/{Math.max(questions.length, 1)}</span>
+                            <button
+                                type="button"
+                                onClick={() => goToPage(pageIndex + 1)}
+                                disabled={pageIndex >= questions.length - 1}
+                                className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
+                                aria-label={t(lt("下一题", "Next"))}
+                            >
+                                <ChevronRight className="h-4 w-4" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleCancel}
+                                className="ml-1 rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                aria-label={t(lt("关闭", "Close"))}
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                    </div>
 
-                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5">
+                    <div className="max-h-[min(52vh,430px)] overflow-y-auto px-3 py-2.5 sm:px-4">
                         {mediaItems.length ? (
-                            <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+                            <div className="mb-2.5 flex gap-2 overflow-x-auto pb-1">
                                 {mediaItems.map((item, index) => {
                                     const key = mediaKey(item, index);
                                     const selected = selectedMedia.includes(key);
                                     const url = mediaUrl(item);
                                     const kind = mediaKind(item);
-                                    const title = asText(item.title) || asText(item.name) || key;
+                                    const label = mediaLabel(item, index);
                                     return (
-                                        <button
-                                            key={key}
-                                            type="button"
-                                            onClick={() => toggleMedia(item, index)}
-                                            className={`group relative h-24 w-32 shrink-0 overflow-hidden rounded-2xl border text-left transition ${selected ? "border-primary ring-2 ring-primary/25" : "border-border/70 hover:border-primary/50"}`}
-                                        >
-                                            {kind === "image" && url ? (
-                                                // eslint-disable-next-line @next/next/no-img-element
-                                                <img src={url} alt={title} className="h-full w-full object-cover" />
-                                            ) : (
-                                                <div className="flex h-full w-full items-center justify-center bg-muted text-xs font-semibold uppercase text-muted-foreground">
-                                                    {kind}
-                                                </div>
-                                            )}
-                                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-5 text-[11px] font-medium text-white">
-                                                <span className="line-clamp-1">{title}</span>
-                                            </div>
-                                            {selected ? (
-                                                <span className="absolute right-2 top-2 rounded-full bg-primary p-1 text-primary-foreground">
-                                                    <Check className="h-3 w-3" />
-                                                </span>
-                                            ) : null}
-                                        </button>
+                                        <Tooltip key={key}>
+                                            <TooltipTrigger asChild>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => toggleMedia(item, index)}
+                                                    className={`group relative h-16 w-28 shrink-0 overflow-hidden rounded-xl border text-left transition ${selected ? "border-primary ring-2 ring-primary/20" : "border-border/70 hover:border-primary/50"}`}
+                                                >
+                                                    {kind === "image" && url ? (
+                                                        // eslint-disable-next-line @next/next/no-img-element
+                                                        <img src={url} alt={label} className="h-full w-full object-cover" />
+                                                    ) : (
+                                                        <div className="flex h-full w-full items-center justify-center bg-muted text-[11px] font-semibold uppercase text-muted-foreground">
+                                                            {kind}
+                                                        </div>
+                                                    )}
+                                                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-5 text-[10px] font-medium text-white">
+                                                        <span className="block truncate">{label}</span>
+                                                    </div>
+                                                    {selected ? (
+                                                        <span className="absolute right-1.5 top-1.5 rounded-full bg-primary p-0.5 text-primary-foreground">
+                                                            <Check className="h-3 w-3" />
+                                                        </span>
+                                                    ) : null}
+                                                </button>
+                                            </TooltipTrigger>
+                                            <TooltipContent side="top" className="max-w-xs text-xs leading-5">
+                                                {label}
+                                            </TooltipContent>
+                                        </Tooltip>
                                     );
                                 })}
                             </div>
                         ) : null}
 
-                        <div className="space-y-2.5">
-                            {questions.map((q, qIndex) => {
-                                const qid = asText(q.id) || `q${qIndex + 1}`;
-                                const options = q.options || [];
-                                const title = asText(q.title) || asText(q.question) || `${qIndex + 1}`;
-                                const detail = asText(q.detail) || asText(q.description);
-                                return (
-                                    <section key={qid} className="rounded-2xl bg-muted/25 p-2.5">
-                                        <div className="mb-2 flex items-center justify-between gap-2">
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <div className="min-w-0 cursor-help truncate text-sm font-semibold text-foreground">
-                                                        {title}
-                                                    </div>
-                                                </TooltipTrigger>
-                                                {detail ? (
-                                                    <TooltipContent side="top" className="max-w-xs text-xs leading-5">
-                                                        {detail}
-                                                    </TooltipContent>
-                                                ) : null}
-                                            </Tooltip>
-                                            {q.multiSelect || q.multiple ? (
-                                                <span className="shrink-0 rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-                                                    {t(lt("多选", "Multi"))}
-                                                </span>
-                                            ) : null}
-                                        </div>
-                                        {options.length ? (
-                                            <div className="grid gap-2 sm:grid-cols-2">
-                                                {options.map((option, index) => {
-                                                    const key = optionKey(option, index);
-                                                    const selected = (selectedOptions[qid] || []).includes(key);
-                                                    const label = asText(option.title) || asText(option.label) || asText(option.value) || key;
-                                                    const optionDetail = asText(option.detail) || asText(option.description);
-                                                    return (
-                                                        <Tooltip key={key}>
-                                                            <TooltipTrigger asChild>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => toggleOption(q, option, index)}
-                                                                    className={`flex min-h-10 items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-sm transition ${selected ? "border-primary bg-primary/10 text-primary" : "border-border/70 bg-background hover:border-primary/40"}`}
-                                                                >
-                                                                    <span className="line-clamp-2">{label}</span>
-                                                                    {selected ? <Check className="h-4 w-4 shrink-0" /> : null}
-                                                                </button>
-                                                            </TooltipTrigger>
-                                                            {optionDetail ? (
-                                                                <TooltipContent side="top" className="max-w-xs text-xs leading-5">
-                                                                    {optionDetail}
-                                                                </TooltipContent>
-                                                            ) : null}
-                                                        </Tooltip>
-                                                    );
-                                                })}
-                                            </div>
+                        {currentQuestion ? (
+                            <div className="rounded-xl bg-muted/25 p-2.5">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <h3 className="min-w-0 truncate text-xs font-semibold text-foreground">
+                                                {questionTitle(currentQuestion, pageIndex)}
+                                            </h3>
+                                        </TooltipTrigger>
+                                        {questionDetail(currentQuestion) ? (
+                                            <TooltipContent side="top" className="max-w-sm text-xs leading-5">
+                                                {questionDetail(currentQuestion)}
+                                            </TooltipContent>
                                         ) : null}
-                                    </section>
-                                );
-                            })}
-                        </div>
+                                    </Tooltip>
+                                    {currentQuestionMulti ? (
+                                        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                                            {t(lt("多选", "Multi"))}
+                                        </span>
+                                    ) : null}
+                                </div>
 
-                        <Textarea
-                            value={textAnswer}
-                            onChange={(event) => setTextAnswer(event.target.value)}
-                            placeholder={hasOptionQuestion ? t(lt("补充说明，可留空", "Optional note")) : t(lt("输入你的回答", "Type your answer"))}
-                            className="mt-3 min-h-[88px] resize-none rounded-2xl border-border/70 bg-background/90 text-sm leading-6 focus-visible:ring-primary/35"
-                            autoFocus={!hasOptionQuestion}
-                        />
+                                {currentQuestionOptions.length ? (
+                                    <div className="grid gap-1.5 sm:grid-cols-3">
+                                        {currentQuestionOptions.map((option, index) => {
+                                            const key = optionKey(option, index);
+                                            const selected = (selectedOptions[currentQuestionKey] || []).includes(key);
+                                            const label = optionLabel(option, index);
+                                            const detail = optionDetail(option);
+                                            return (
+                                                <Tooltip key={key}>
+                                                    <TooltipTrigger asChild>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleOption(currentQuestion, pageIndex, option, index)}
+                                                            className={`flex h-8 min-w-0 items-center justify-between gap-1 rounded-lg border px-2 text-left text-xs transition ${selected ? "border-primary bg-primary/10 text-primary" : "border-border/70 bg-background hover:border-primary/40"}`}
+                                                        >
+                                                            <span className="min-w-0 truncate">{label}</span>
+                                                            {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                                                        </button>
+                                                    </TooltipTrigger>
+                                                    {(detail || label) ? (
+                                                        <TooltipContent side="top" className="max-w-sm text-xs leading-5">
+                                                            {detail || label}
+                                                        </TooltipContent>
+                                                    ) : null}
+                                                </Tooltip>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+
+                                <input
+                                    value={customAnswers[currentQuestionKey] || ""}
+                                    onChange={(event) => setCustomAnswers((current) => ({ ...current, [currentQuestionKey]: event.target.value }))}
+                                    placeholder={currentQuestionOptions.length ? t(lt("其他 / 补充说明", "Other / note")) : t(lt("输入你的回答", "Type your answer"))}
+                                    className="mt-2 h-8 w-full rounded-lg border border-border/70 bg-background px-2 text-xs outline-none transition placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/10"
+                                    autoFocus={!currentQuestionOptions.length}
+                                />
+                            </div>
+                        ) : null}
                     </div>
 
-                    <DialogFooter className="border-t border-border/50 bg-background/98 px-4 py-3 sm:px-5">
-                        <div className="flex w-full justify-end gap-2">
-                            <Button variant="ghost" onClick={onCancel} disabled={isSubmitting} className="rounded-xl">
-                                <X className="mr-1.5 h-4 w-4" />
-                                {t(lt("稍后", "Later"))}
-                            </Button>
-                            <Button onClick={() => handleSubmit(true)} disabled={isSubmitting || !canSubmit} className="rounded-xl">
-                                <ArrowRight className="mr-2 h-4 w-4" />
-                                {isSubmitting ? t(lt("发送中", "Sending")) : t(lt("发送", "Send"))}
-                            </Button>
+                    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2 sm:px-4">
+                        <button
+                            type="button"
+                            onClick={handleCancel}
+                            disabled={isSubmitting}
+                            className="rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+                        >
+                            {t(lt("稍后", "Later"))}
+                        </button>
+                        <div className="flex items-center gap-1.5">
+                            <button
+                                type="button"
+                                onClick={() => goToPage(pageIndex - 1)}
+                                disabled={pageIndex <= 0 || isSubmitting}
+                                className="inline-flex items-center gap-1 rounded-lg border border-border/70 px-2 py-1.5 text-xs text-foreground transition hover:bg-muted disabled:opacity-40"
+                            >
+                                <ArrowLeft className="h-3.5 w-3.5" />
+                                {t(lt("返回", "Back"))}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleNext}
+                                disabled={isSubmitting || (!isLastPage && !currentAnswered) || (isLastPage && !canSubmit)}
+                                className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                {isLastPage ? (isSubmitting ? t(lt("发送中", "Sending")) : t(lt("发送", "Send"))) : t(lt("下一题", "Next"))}
+                                <ArrowRight className="h-3.5 w-3.5" />
+                            </button>
                         </div>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+                    </div>
+                </section>
+            </div>
         </TooltipProvider>
     );
 }

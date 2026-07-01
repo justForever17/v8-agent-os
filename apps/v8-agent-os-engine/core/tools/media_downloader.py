@@ -4,8 +4,10 @@ import contextlib
 import html
 import json
 import mimetypes
+import os
 import re
 import shutil
+import sys
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -298,6 +300,11 @@ def _looks_like_douyin_direct_media(url: str) -> bool:
     return any(hint.lower() in normalized for hint in _platform_strategy_list("douyin", "directMediaHints"))
 
 
+def _looks_like_platform_direct_media(platform: str, url: str) -> bool:
+    normalized = _safe_text(url).lower()
+    return any(hint.lower() in normalized for hint in _platform_strategy_list(platform, "directMediaHints"))
+
+
 def _collect_media_files(download_dir: Path) -> list[Path]:
     files: list[Path] = []
     for candidate in sorted(download_dir.rglob("*")):
@@ -351,24 +358,30 @@ def _choose_media_candidate(
         source_weights = _strategy_global().get("candidateSourceWeights")
         if isinstance(source_weights, dict):
             kind_score += _strategy_int(source_weights.get(source))
-        if source.startswith("douyin_") or _looks_like_douyin_direct_media(_safe_text(item.get("url"))):
+        candidate_platform = _resolve_platform_alias(source.split("_", 1)[0]) if "_" in source else ""
+        if not _platform_strategy(candidate_platform):
+            detected_platform = _platform_from_url(_safe_text(item.get("url")))
+            if _platform_strategy(detected_platform):
+                candidate_platform = detected_platform
+        platform_weight = _platform_strategy(candidate_platform).get("candidateWeight")
+        platform_weight = platform_weight if isinstance(platform_weight, dict) else {}
+        if platform_weight:
             url = _safe_text(item.get("url")).lower()
-            douyin_weight = _platform_strategy("douyin").get("candidateWeight")
-            douyin_weight = douyin_weight if isinstance(douyin_weight, dict) else {}
-            if _looks_like_douyin_direct_media(url):
-                kind_score += _strategy_int(douyin_weight.get("directMediaHint"))
-            hint_weights = douyin_weight.get("hintWeights")
+            if _looks_like_platform_direct_media(candidate_platform, url):
+                kind_score += _strategy_int(platform_weight.get("directMediaHint"))
+            hint_weights = platform_weight.get("hintWeights")
             if isinstance(hint_weights, dict):
                 for hint, weight in hint_weights.items():
                     if _safe_text(hint).lower() in url:
                         kind_score += _strategy_int(weight)
-            douyin_source_weights = douyin_weight.get("sourceExact")
-            if isinstance(douyin_source_weights, dict):
-                kind_score += _strategy_int(douyin_source_weights.get(source))
-            if kind == "image" and any(hint.lower() in url for hint in _platform_strategy_list("douyin", "lowValueMediaHints")):
-                kind_score += _strategy_int(douyin_weight.get("lowValueImagePenalty"))
+            source_exact_weights = platform_weight.get("sourceExact")
+            if isinstance(source_exact_weights, dict):
+                kind_score += _strategy_int(source_exact_weights.get(source))
+            low_value_hints = [hint.lower() for hint in _platform_strategy_list(candidate_platform, "lowValueMediaHints")]
+            if kind == "image" and any(hint in url for hint in low_value_hints):
+                kind_score += _strategy_int(platform_weight.get("lowValueImagePenalty"))
             if kind == "audio" and "music" in url:
-                kind_score += _strategy_int(douyin_weight.get("audioMusicPenalty"))
+                kind_score += _strategy_int(platform_weight.get("audioMusicPenalty"))
         return kind_score, -len(_safe_text(item.get("url")))
 
     return sorted(deduped, key=_score, reverse=True)[0]
@@ -386,6 +399,61 @@ def _load_browser_sync():
             return sync_playwright, "playwright", None
         except Exception as exc:  # pragma: no cover
             return None, "", str(exc)
+
+
+def _system_chromium_executable_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    if os.name == "nt":
+        for key, suffix in (
+            ("PROGRAMFILES", "Google/Chrome/Application/chrome.exe"),
+            ("PROGRAMFILES(X86)", "Google/Chrome/Application/chrome.exe"),
+            ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
+            ("PROGRAMFILES", "Microsoft/Edge/Application/msedge.exe"),
+            ("PROGRAMFILES(X86)", "Microsoft/Edge/Application/msedge.exe"),
+            ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
+        ):
+            base = _safe_text(os.environ.get(key))
+            if base:
+                candidates.append(Path(base) / suffix)
+    elif sys.platform == "darwin":
+        candidates.extend(
+            [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            ]
+        )
+    else:
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+            resolved = shutil.which(name)
+            if resolved:
+                candidates.append(Path(resolved))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen and candidate.exists():
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def _launch_chromium_browser(pw):
+    attempts: list[tuple[str, dict[str, Any]]] = [
+        ("bundled", {"headless": True}),
+        ("channel:chrome", {"headless": True, "channel": "chrome"}),
+        ("channel:msedge", {"headless": True, "channel": "msedge"}),
+    ]
+    attempts.extend(
+        (f"executable:{candidate.name}", {"headless": True, "executable_path": str(candidate)})
+        for candidate in _system_chromium_executable_candidates()
+    )
+    errors: list[str] = []
+    for label, kwargs in attempts:
+        try:
+            return pw.chromium.launch(**kwargs), label, errors
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+    raise RuntimeError("; ".join(errors))
 
 
 def _normalize_embedded_media_url(url: str) -> str:
@@ -561,6 +629,245 @@ def _resolve_douyin_mobile_share_page(
     }
 
 
+def _bilibili_id_from_url(url: str) -> tuple[str, str]:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query or "")
+    bvid = _safe_text((query.get("bvid") or [""])[0])
+    aid = _safe_text((query.get("aid") or [""])[0])
+    path = parsed.path or ""
+    if not bvid:
+        match = re.search(r"/(?:video/)?(BV[0-9A-Za-z]+)", path)
+        if match:
+            bvid = match.group(1)
+    if not aid:
+        match = re.search(r"/(?:video/)?(?:av)?(\d{5,})", path, re.IGNORECASE)
+        if match:
+            aid = match.group(1)
+    return bvid, aid
+
+
+def _resolve_bilibili_playurl_api(
+    url: str,
+    *,
+    prefer: DownloadMediaPreference,
+) -> dict[str, Any] | None:
+    bvid, aid = _bilibili_id_from_url(url)
+    if not bvid and not aid:
+        return None
+
+    requests, import_error = _load_requests()
+    if requests is None:
+        return {
+            "resolved": False,
+            "platform": "bilibili",
+            "strategy": "bilibili_playurl_api",
+            "error": f"无法解析 B 站播放地址：{import_error}",
+        }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "Referer": url,
+    }
+    view_params = {"bvid": bvid} if bvid else {"aid": aid}
+    metadata: dict[str, Any] = {
+        "platform": "bilibili",
+        "strategy": "bilibili_playurl_api",
+        "bvid": bvid,
+        "aid": aid,
+        "cid": "",
+        "candidateCount": 0,
+        "candidates": [],
+    }
+    try:
+        view_response = requests.get(
+            "https://api.bilibili.com/x/web-interface/view",
+            params=view_params,
+            headers=headers,
+            timeout=20,
+        )
+        view_response.raise_for_status()
+        view_payload = view_response.json()
+        view_data = view_payload.get("data") if isinstance(view_payload, dict) else {}
+        if not isinstance(view_data, dict):
+            view_data = {}
+        cid = _safe_text(view_data.get("cid"))
+        bvid = _safe_text(view_data.get("bvid")) or bvid
+        aid = _safe_text(view_data.get("aid")) or aid
+        metadata.update({"bvid": bvid, "aid": aid, "cid": cid})
+        if not cid:
+            return {
+                "resolved": False,
+                "platform": "bilibili",
+                "strategy": "bilibili_playurl_api",
+                "error": "B 站 view API 未返回 cid。",
+                "metadata": metadata,
+            }
+
+        play_params = {
+            "cid": cid,
+            "qn": "64",
+            "fnval": "1",
+            "fourk": "1",
+            "platform": "html5",
+        }
+        if bvid:
+            play_params["bvid"] = bvid
+        elif aid:
+            play_params["avid"] = aid
+        play_response = requests.get(
+            "https://api.bilibili.com/x/player/playurl",
+            params=play_params,
+            headers=headers,
+            timeout=20,
+        )
+        play_response.raise_for_status()
+        play_payload = play_response.json()
+    except Exception as exc:
+        return {
+            "resolved": False,
+            "platform": "bilibili",
+            "strategy": "bilibili_playurl_api",
+            "error": f"B 站播放地址解析失败：{exc}",
+            "metadata": metadata,
+        }
+
+    excluded_hints = [hint.lower() for hint in _platform_strategy_list("bilibili", "excludedMediaHints")]
+    candidates = [
+        hit
+        for hit in _extract_media_urls_from_json_like(play_payload, source="bilibili_share_api")
+        if not any(hint in hit["url"].lower() for hint in excluded_hints)
+    ]
+    best_candidate = _choose_media_candidate(candidates, prefer=prefer)
+    deduped = _dedupe_media_candidates(candidates)
+    metadata["candidateCount"] = len(deduped)
+    metadata["candidates"] = deduped[:5]
+    if best_candidate is None:
+        return {
+            "resolved": False,
+            "platform": "bilibili",
+            "strategy": "bilibili_playurl_api",
+            "error": "B 站 playurl API 已返回，但未抽取到可下载的 MP4 地址。",
+            "metadata": metadata,
+        }
+    return {
+        "resolved": True,
+        "platform": "bilibili",
+        "strategy": "bilibili_playurl_api",
+        "downloadUrl": best_candidate["url"],
+        "kind": best_candidate.get("kind") or _guess_kind_from_url(best_candidate["url"]),
+        "referer": url,
+        "metadata": metadata,
+    }
+
+
+def _kuaishou_photo_id_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query or "")
+    value = _safe_text((query.get("photoId") or [""])[0])
+    if value:
+        return value
+    match = re.search(r"/short-video/([^/?#]+)", parsed.path or "")
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _resolve_kuaishou_graphql_api(
+    url: str,
+    *,
+    prefer: DownloadMediaPreference,
+) -> dict[str, Any] | None:
+    photo_id = _kuaishou_photo_id_from_url(url)
+    if not photo_id:
+        return None
+
+    requests, import_error = _load_requests()
+    if requests is None:
+        return {
+            "resolved": False,
+            "platform": "kuaishou",
+            "strategy": "kuaishou_graphql_api",
+            "error": f"无法解析快手播放地址：{import_error}",
+        }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "Referer": url,
+        "Origin": "https://www.kuaishou.com",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "operationName": "visionVideoDetail",
+        "variables": {
+            "photoId": photo_id,
+            "type": "video",
+            "page": "detail",
+            "webPageArea": "detail",
+        },
+        "query": (
+            "query visionVideoDetail($photoId: String, $type: String, $page: String, $webPageArea: String) {"
+            " visionVideoDetail(photoId: $photoId, type: $type, page: $page, webPageArea: $webPageArea) {"
+            " status type photo { id caption coverUrl photoUrl croppedPhotoUrl photoH265Url croppedPhotoH265Url"
+            " manifest { adaptationSet { representation { url backupUrl height width avgBitrate qualityLabel defaultSelect } } }"
+            " videoResource } } }"
+        ),
+    }
+    metadata: dict[str, Any] = {
+        "platform": "kuaishou",
+        "strategy": "kuaishou_graphql_api",
+        "photoId": photo_id,
+        "candidateCount": 0,
+        "candidates": [],
+        "attempts": [],
+    }
+    candidates: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for endpoint in ("https://www.kuaishou.com/graphql", "https://video.kuaishou.com/graphql"):
+        try:
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=20)
+            response.raise_for_status()
+            response_payload = response.json()
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+            continue
+        metadata["attempts"].append(
+            {
+                "endpoint": endpoint,
+                "result": response_payload.get("result") if isinstance(response_payload, dict) else None,
+                "errorCount": len(response_payload.get("errors") or []) if isinstance(response_payload, dict) else 0,
+            }
+        )
+        candidates.extend(_extract_media_urls_from_json_like(response_payload, source="kuaishou_share_api"))
+
+    direct_hints = [hint.lower() for hint in _platform_strategy_list("kuaishou", "directMediaHints")]
+    candidates = [
+        hit
+        for hit in candidates
+        if any(hint in hit["url"].lower() for hint in direct_hints)
+    ]
+    best_candidate = _choose_media_candidate(candidates, prefer=prefer)
+    deduped = _dedupe_media_candidates(candidates)
+    metadata["candidateCount"] = len(deduped)
+    metadata["candidates"] = deduped[:5]
+    if best_candidate is None:
+        return {
+            "resolved": False,
+            "platform": "kuaishou",
+            "strategy": "kuaishou_graphql_api",
+            "error": "快手 GraphQL 已请求，但未抽取到可下载的 kwimgs 视频地址。",
+            "metadata": {**metadata, "errors": errors[:3]},
+        }
+    return {
+        "resolved": True,
+        "platform": "kuaishou",
+        "strategy": "kuaishou_graphql_api",
+        "downloadUrl": best_candidate["url"],
+        "kind": best_candidate.get("kind") or _guess_kind_from_url(best_candidate["url"]),
+        "referer": url,
+        "metadata": metadata,
+    }
+
+
 def _resolve_platform_share_page(
     url: str,
     *,
@@ -576,6 +883,14 @@ def _resolve_platform_share_page(
     fallback_resolution: dict[str, Any] | None = None
     if resolver_strategy.get("fallback") == "douyin_mobile_share_page":
         fallback_resolution = _resolve_douyin_mobile_share_page(url, prefer=prefer)
+        if fallback_resolution and fallback_resolution.get("resolved"):
+            return fallback_resolution
+    if resolver_strategy.get("fallback") == "bilibili_playurl_api":
+        fallback_resolution = _resolve_bilibili_playurl_api(url, prefer=prefer)
+        if fallback_resolution and fallback_resolution.get("resolved"):
+            return fallback_resolution
+    if resolver_strategy.get("fallback") == "kuaishou_graphql_api":
+        fallback_resolution = _resolve_kuaishou_graphql_api(url, prefer=prefer)
         if fallback_resolution and fallback_resolution.get("resolved"):
             return fallback_resolution
 
@@ -595,10 +910,20 @@ def _resolve_platform_share_page(
         "platform": platform,
         "strategy": "browser_network_capture",
         "browserEngine": browser_engine,
+        "browserLaunch": "",
         "finalUrl": "",
         "title": "",
         "candidateCount": 0,
     }
+    if fallback_resolution is not None:
+        fallback_metadata = fallback_resolution.get("metadata")
+        metadata["fallbackAttempt"] = {
+            "strategy": fallback_resolution.get("strategy"),
+            "resolved": bool(fallback_resolution.get("resolved")),
+            "error": fallback_resolution.get("error"),
+            "candidateCount": fallback_metadata.get("candidateCount") if isinstance(fallback_metadata, dict) else None,
+            "attempts": fallback_metadata.get("attempts") if isinstance(fallback_metadata, dict) else None,
+        }
 
     def _register_candidate(candidate_url: str, *, source: str, kind: str = "") -> None:
         normalized = _safe_text(candidate_url)
@@ -627,7 +952,10 @@ def _resolve_platform_share_page(
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser, browser_launch, launch_errors = _launch_chromium_browser(pw)
+            metadata["browserLaunch"] = browser_launch
+            if launch_errors:
+                metadata["browserLaunchFallbacks"] = launch_errors[:3]
             try:
                 context = browser.new_context()
                 page = context.new_page()

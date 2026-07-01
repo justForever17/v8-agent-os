@@ -27,11 +27,11 @@
     }
   ],
   "global": {
-    "shortlinkHosts": ["xhslink.com", "b23.tv", "v.douyin.com", "t.co", "vm.tiktok.com", "vt.tiktok.com"],
+    "shortlinkHosts": ["xhslink.com", "b23.tv", "v.kuaishou.com", "v.douyin.com", "t.co", "vm.tiktok.com", "vt.tiktok.com"],
     "trackingQueryKeys": ["app", "feature", "fbclid", "gclid", "igsh", "igshid", "pp", "ref", "si", "s", "source", "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term"],
     "directMediaHints": ["mime_type=video_mp4", "mime_type=image", "mime=image", "content-type=video", "content-type=image"],
     "videoUrlHints": [".mp4", ".mov", ".m4v", ".webm", ".m3u8", ".mpd", ".m4s", "mime_type=video_mp4"],
-    "imageUrlHints": [".jpg", ".jpeg", ".png", ".webp", ".gif", "poster_url", "cover"],
+    "imageUrlHints": [".jpg", ".jpeg", ".png", ".webp", ".gif", "poster_url", "cover_url", "coverUrl", "cover="],
     "audioUrlHints": [".mp3", ".wav", ".m4a", ".aac"],
     "candidateSourceWeights": {
       "doubao_share_api": 25,
@@ -176,7 +176,7 @@
       }
     },
     "xiaohongshu": {
-      "hostContains": ["xiaohongshu", "xhslink"],
+      "hostContains": ["xiaohongshu", "xhslink", "xhscdn"],
       "profile": {
         "defaultPrefer": "all",
         "defaultReferer": "https://www.xiaohongshu.com/",
@@ -184,13 +184,31 @@
         "cookieOptional": false,
         "retryOrder": ["cookie_first", "referer_required"]
       },
+      "directMediaHints": ["xhscdn.com", "sns-video", "/stream/", ".mp4"],
+      "shareApiHints": ["api/sns/web/v1/feed", "api/sns/web/v1/note", "web/v1/feed"],
+      "lowValueMediaHints": ["avatar", "cover", "imageview2", "notes_pre_post", "sns-webpic", "thumbnail"],
       "sharePageResolver": {
         "enabled": true,
         "browserCapture": true
+      },
+      "candidateWeight": {
+        "directMediaHint": 35,
+        "sourceExact": {
+          "xiaohongshu_network_capture": 18,
+          "xiaohongshu_share_api": 20,
+          "xiaohongshu_share_api_text": 18,
+          "xiaohongshu_html_scan": 10
+        },
+        "hintWeights": {
+          "sns-video": 25,
+          "xhscdn.com/stream/": 20,
+          ".mp4": 12
+        },
+        "lowValueImagePenalty": -25
       }
     },
     "bilibili": {
-      "hostContains": ["bilibili", "b23.tv"],
+      "hostContains": ["bilibili", "b23.tv", "bilivideo", "upos"],
       "profile": {
         "defaultPrefer": "video",
         "defaultReferer": "https://www.bilibili.com/",
@@ -198,10 +216,67 @@
         "cookieOptional": true,
         "retryOrder": ["no_cookie", "cookie_if_needed"]
       },
+      "directMediaHints": ["bilivideo.com", "upgcxcode", "/upgcxcode/", "platform=html5", ".mp4"],
+      "shareApiHints": ["x/player/playurl", "x/player/wbi/playurl", "x/web-interface/view"],
+      "lowValueMediaHints": ["avatar", "cover", "hdslb.com/bfs/archive", "jpg", "jpeg", "png", "webp"],
       "excludedMediaHints": [".m4s"],
       "sharePageResolver": {
         "enabled": true,
-        "browserCapture": true
+        "browserCapture": true,
+        "fallback": "bilibili_playurl_api"
+      },
+      "candidateWeight": {
+        "directMediaHint": 35,
+        "sourceExact": {
+          "bilibili_network_capture": 18,
+          "bilibili_share_api": 22,
+          "bilibili_share_api_text": 18,
+          "bilibili_html_scan": 8
+        },
+        "hintWeights": {
+          "bilivideo.com": 25,
+          "/upgcxcode/": 20,
+          "platform=html5": 10,
+          ".mp4": 12
+        },
+        "lowValueImagePenalty": -25
+      }
+    },
+    "kuaishou": {
+      "hostContains": ["kuaishou", "kwai", "gifshow", "kwimgs"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://www.kuaishou.com/",
+        "defaultCookiesFromBrowser": "",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "directMediaHints": ["kwimgs.com", "/upic/", "clientCacheKey=", ".mp4"],
+      "shareApiHints": ["graphql", "rest/n/photo", "photo/info", "short-video"],
+      "lowValueMediaHints": ["avatar", "cover", "poster", "thumbnail", "profile", "jpg", "jpeg", "png", "webp"],
+      "sharePageResolver": {
+        "enabled": true,
+        "browserCapture": true,
+        "fallback": "kuaishou_graphql_api"
+      },
+      "candidateWeight": {
+        "directMediaHint": 35,
+        "sourceExact": {
+          "kuaishou_network_capture": 18,
+          "kuaishou_share_api": 20,
+          "kuaishou_share_api_text": 18,
+          "kuaishou_html_scan": 8
+        },
+        "hintWeights": {
+          "kwimgs.com": 25,
+          "/upic/": 18,
+          "clientCacheKey=": 12,
+          ".mp4": 12
+        },
+        "lowValueImagePenalty": -25
+      },
+      "canonical": {
+        "stripAllQuery": true
       }
     },
     "xhslink": {

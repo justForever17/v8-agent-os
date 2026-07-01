@@ -20,7 +20,7 @@ import sys
 import logging
 from collections import deque
 from pathlib import Path
-from typing import Any, Optional, Annotated, Dict
+from typing import Any, Optional, Annotated, Dict, List
 from core.time_truth import utc_now_iso
 
 if sys.platform == "win32":
@@ -311,8 +311,24 @@ def tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
 
 
 @tool
-def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
-    """Ask the user for mandatory input or confirmation and pause the graph until a response is provided."""
+def ask_user(
+    question: str,
+    details: Optional[str] = None,
+    questions: Optional[List[Dict[str, Any]]] = None,
+    media: Optional[List[Dict[str, Any]]] = None,
+    artifacts: Optional[List[Dict[str, Any]]] = None,
+    selection_mode: Optional[str] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    """Ask the human for missing input and pause until they answer.
+
+    Use `question` for the short overall prompt. For structured choices, pass
+    `questions=[{"id": "...", "title": "...", "detail": "...", "options":
+    [{"id": "...", "title": "...", "detail": "..."}], "multiSelect": false}]`.
+    For creative-media review, pass `media` or `artifacts` with thumbnail/url
+    refs; `selection_mode` may be "single" or "multiple". This is user input,
+    not Safety approval and not Spec approval.
+    """
     runtime_context = get_runtime_context() or {}
     session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
     run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
@@ -378,6 +394,18 @@ def ask_user(question: str, details: Optional[str] = None, tool_call_id: Annotat
     }
     if details:
         request["details"] = details
+    if isinstance(questions, list) and questions:
+        request["questions"] = questions[:8]
+    merged_media: list[dict[str, Any]] = []
+    if isinstance(media, list):
+        merged_media.extend(item for item in media if isinstance(item, dict))
+    if isinstance(artifacts, list):
+        merged_media.extend(item for item in artifacts if isinstance(item, dict))
+    if merged_media:
+        request["media"] = merged_media[:24]
+    normalized_selection_mode = str(selection_mode or "").strip().lower()
+    if normalized_selection_mode in {"single", "multiple", "multi"}:
+        request["selectionMode"] = "multiple" if normalized_selection_mode in {"multiple", "multi"} else "single"
 
     try:
         response = interrupt(request)

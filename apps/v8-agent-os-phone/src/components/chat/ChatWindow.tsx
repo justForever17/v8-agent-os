@@ -316,12 +316,23 @@ export const ChatWindow = memo(function ChatWindow({
 
             {pendingApproval && isAskUserApproval(pendingApproval) ? (
                 <AskUserModal
+                    key={String(
+                        pendingApproval.id
+                        || ("interactionId" in pendingApproval ? pendingApproval.interactionId : "")
+                        || ("toolCallId" in pendingApproval ? pendingApproval.toolCallId : "")
+                        || "ask-user",
+                    )}
                     visible={askUserOpen}
                     question={String(
                         pendingApproval.request?.question
                         || pendingApproval.request?.prompt
                         || "",
                     )}
+                    request={
+                        pendingApproval.request && typeof pendingApproval.request === "object"
+                            ? pendingApproval.request as Record<string, unknown>
+                            : null
+                    }
                     toolCallId={String(
                         pendingApproval.request?.toolCallId
                         || pendingApproval.id

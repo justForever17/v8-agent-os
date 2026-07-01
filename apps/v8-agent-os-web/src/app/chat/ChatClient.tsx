@@ -445,6 +445,7 @@ export default function ChatClient() {
     const [askUserQuestion, setAskUserQuestion] = useState("");
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
     const [askUserApprovalId, setAskUserApprovalId] = useState("");
+    const [askUserRequest, setAskUserRequest] = useState<Record<string, unknown> | null>(null);
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
@@ -921,6 +922,7 @@ export default function ChatClient() {
         setAskUserApprovalId("");
         setAskUserQuestion("");
         setAskUserToolCallId("");
+        setAskUserRequest(null);
         if (options?.closeModal !== false) {
             setAskUserModalOpen(false);
         }
@@ -938,7 +940,7 @@ export default function ChatClient() {
         prompt?: string;
         toolCallId?: string;
         status?: string;
-        request?: { question?: string; prompt?: string; toolCallId?: string; approvalKind?: string; interactionKind?: string };
+        request?: { question?: string; prompt?: string; toolCallId?: string; approvalKind?: string; interactionKind?: string; [key: string]: unknown };
     } | null, options?: { openModal?: boolean }) => {
         if (!approval) {
             clearApprovalState();
@@ -961,6 +963,12 @@ export default function ChatClient() {
         setAskUserApprovalId(approvalId);
         setAskUserToolCallId(approval.toolCallId || request.toolCallId || "");
         setAskUserQuestion(question);
+        setAskUserRequest({
+            ...request,
+            question,
+            prompt: request.prompt || question,
+            toolCallId: approval.toolCallId || request.toolCallId || "",
+        });
         const shouldOpenModal =
             typeof options?.openModal === "boolean"
                 ? options.openModal
@@ -2217,6 +2225,7 @@ export default function ChatClient() {
             key={askUserApprovalId || askUserToolCallId || 'default-modal'}
             isOpen={askUserModalOpen}
             question={askUserQuestion}
+            request={askUserRequest}
             toolCallId={askUserToolCallId}
             onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
             onCancel={() => {

@@ -89,6 +89,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
     const wsRef = useRef<WebSocket | null>(null);
     const resizeTimerRef = useRef<number | null>(null);
     const wroteInitialSnapshotRef = useRef(false);
+    const pendingInputRef = useRef('');
     const [connected, setConnected] = useState(false);
     const [running, setRunning] = useState(session.isRunning !== false);
     const [socketError, setSocketError] = useState('');
@@ -103,6 +104,26 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
         socket.send(JSON.stringify(payload));
         return true;
     }, []);
+
+    const sendTerminalInput = useCallback((data: string) => {
+        const text = String(data || '');
+        if (!text) {
+            return;
+        }
+        if (!sendFrame({ type: 'input', data: text })) {
+            pendingInputRef.current += text;
+        }
+    }, [sendFrame]);
+
+    const flushPendingInput = useCallback(() => {
+        const buffered = pendingInputRef.current;
+        if (!buffered) {
+            return;
+        }
+        if (sendFrame({ type: 'input', data: buffered })) {
+            pendingInputRef.current = '';
+        }
+    }, [sendFrame]);
 
     const sendResize = useCallback(() => {
         const term = terminalRef.current;
@@ -130,13 +151,13 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
         try {
             const text = await navigator.clipboard?.readText?.();
             if (text) {
-                sendFrame({ type: 'input', data: text });
+                sendTerminalInput(text);
             }
             terminalRef.current?.focus();
         } catch {
             terminalRef.current?.focus();
         }
-    }, [sendFrame]);
+    }, [sendTerminalInput]);
 
     const terminate = useCallback(() => {
         if (sendFrame({ type: 'terminate' })) {
@@ -153,6 +174,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
 
         host.innerHTML = '';
         wroteInitialSnapshotRef.current = false;
+        pendingInputRef.current = '';
 
         const fitAddon = new FitAddon();
         const term = new Terminal({
@@ -187,7 +209,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
         resizeObserver.observe(host);
 
         const dataDisposable = term.onData((data) => {
-            sendFrame({ type: 'input', data });
+            sendTerminalInput(data);
         });
         term.attachCustomKeyEventHandler((event) => {
             if (
@@ -220,6 +242,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             setConnected(true);
             setSocketError('');
             scheduleResize();
+            flushPendingInput();
         };
         ws.onmessage = (event) => {
             if (typeof event.data !== 'string') {
@@ -289,11 +312,12 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [pasteClipboard, scheduleResize, sendFrame, session.isRunning, sessionId]);
+    }, [flushPendingInput, pasteClipboard, scheduleResize, sendFrame, sendTerminalInput, session.isRunning, sessionId]);
 
     return (
         <div
             className="flex min-h-0 flex-1 flex-col bg-[#05070b]"
+            onPointerDownCapture={() => terminalRef.current?.focus()}
             onContextMenu={(event) => {
                 event.preventDefault();
                 void pasteClipboard();

@@ -576,6 +576,7 @@ export default function ChatClient() {
         [clientProfile?.image, session?.user?.image],
     );
     const terminalWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || "";
+    const hasActiveWorkbenchSession = Boolean(activeConversationId);
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
         const sessionId = String(payload?.sessionId || "").trim();
@@ -2041,35 +2042,37 @@ export default function ChatClient() {
                         >
                             <FolderTree className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
                         </button>
-                        <div className="ml-auto flex shrink-0 justify-end gap-1">
-                            {/* 终端开关 */}
-                            <button
-                                type="button"
-                                className={cn(
-                                    "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
-                                    terminalOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
-                                )}
-                                onClick={() => setTerminalOpen((prev) => !prev)}
-                                aria-label={t(lt("终端面板", "Terminal Panel"))}
-                                title={t(lt("终端面板", "Terminal Panel"))}
-                            >
-                                <TerminalSquare className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
-                            </button>
+                        {hasActiveWorkbenchSession && (
+                            <div className="ml-auto flex shrink-0 justify-end gap-1">
+                                {/* 终端开关 */}
+                                <button
+                                    type="button"
+                                    className={cn(
+                                        "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
+                                        terminalOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                    )}
+                                    onClick={() => setTerminalOpen((prev) => !prev)}
+                                    aria-label={t(lt("终端面板", "Terminal Panel"))}
+                                    title={t(lt("终端面板", "Terminal Panel"))}
+                                >
+                                    <TerminalSquare className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
+                                </button>
 
-                            {/* 侧边栏开关 */}
-                            <button
-                                type="button"
-                                className={cn(
-                                    "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
-                                    sidebarOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
-                                )}
-                                onClick={() => setSidebarOpen((prev) => !prev)}
-                                aria-label={t(lt("侧边栏", "Sidebar"))}
-                                title={t(lt("侧边栏", "Sidebar"))}
-                            >
-                                <PanelRight className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
-                            </button>
-                        </div>
+                                {/* 侧边栏开关 */}
+                                <button
+                                    type="button"
+                                    className={cn(
+                                        "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
+                                        sidebarOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                    )}
+                                    onClick={() => setSidebarOpen((prev) => !prev)}
+                                    aria-label={t(lt("侧边栏", "Sidebar"))}
+                                    title={t(lt("侧边栏", "Sidebar"))}
+                                >
+                                    <PanelRight className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     {activeConversationId && isContextExpanded && (
@@ -2302,7 +2305,7 @@ export default function ChatClient() {
             </div>
 
             {/* 底部折叠式终端栏面板 */}
-            {terminalOpen && (
+            {hasActiveWorkbenchSession && terminalOpen && (
                 <ManualTerminalPanel
                     workspacePath={terminalWorkspacePath}
                     profiles={terminalProfiles}
@@ -2321,7 +2324,7 @@ export default function ChatClient() {
         </div>
 
         {/* 右侧可折叠的 Sidebar 栏 */}
-        {sidebarOpen && (
+        {hasActiveWorkbenchSession && sidebarOpen && (
             <aside className={cn(
                 "w-80 shrink-0 border-l border-border/60 bg-background/95 backdrop-blur-md flex flex-col overflow-hidden z-[60]",
                 // 移动端窄屏覆盖显示

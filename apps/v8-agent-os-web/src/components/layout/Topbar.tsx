@@ -1,6 +1,5 @@
 "use client";
 
-import { DesktopLiveButton } from "@/components/layout/DesktopLiveButton";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
@@ -37,7 +36,6 @@ export function Topbar() {
             </div>
 
             <div className="flex items-center gap-2 sm:gap-4">
-                <DesktopLiveButton />
                 <Link href="/rpa">
                     <Button variant="ghost" size="sm" className="gap-2 px-2 sm:px-3">
                         <Workflow className="h-4 w-4" />

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import api.chat_realtime_routes as routes
+import erc.run_service as run_service_module
 from api.models import ChatMessage, ChatRequest, ChatRequestData
 from core.database import DatabaseManager
 
@@ -14,6 +15,7 @@ from core.database import DatabaseManager
 def _install_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DatabaseManager:
     test_db = DatabaseManager(tmp_path / "queue-guidance.sqlite3")
     monkeypatch.setattr(routes, "db", test_db)
+    monkeypatch.setattr(run_service_module, "db", test_db)
     return test_db
 
 
@@ -255,6 +257,73 @@ def test_background_system_resume_worker_failure_triggers_runtime_recovery(monke
     topics = [event["topic"] for event in test_db.get_runtime_events("session-runtime-resume")]
     assert "run.resume.worker.failed" in topics
     assert "run.resume.worker.recovery_scheduled" in topics
+
+
+def test_background_resume_first_event_timeout_fails_still_running_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-timeout-running", "Resume Timeout")
+    test_db.create_run_record(
+        run_id="run-timeout-running",
+        session_id="session-timeout-running",
+        run_type="chat",
+        status="running",
+    )
+    request = ChatRequest(
+        messages=[],
+        session_id="session-timeout-running",
+        conversation_id="session-timeout-running",
+        resume_run_id="run-timeout-running",
+    )
+
+    async def never_iter_chat_events(*_args, **_kwargs):
+        await asyncio.Event().wait()
+        yield {}
+
+    monkeypatch.setattr(routes, "iter_chat_events", never_iter_chat_events)
+    monkeypatch.setattr(routes, "_BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(routes, "_fire_on_chat_end_if_terminal", lambda *_args, **_kwargs: None)
+
+    asyncio.run(routes._drain_chat_run(request, transport="system_resume", run_id="run-timeout-running"))
+
+    run_record = test_db.get_run_record("run-timeout-running") or {}
+    assert run_record.get("status") == "failed"
+    assert (run_record.get("metadata") or {}).get("resume_worker_timeout") is True
+    topics = [event["topic"] for event in test_db.get_runtime_events("session-timeout-running")]
+    assert "run.resume.worker.first_event_timeout" in topics
+
+
+def test_background_resume_first_event_timeout_does_not_overwrite_completed_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-timeout-completed", "Resume Timeout")
+    test_db.create_run_record(
+        run_id="run-timeout-completed",
+        session_id="session-timeout-completed",
+        run_type="chat",
+        status="completed",
+    )
+    request = ChatRequest(
+        messages=[],
+        session_id="session-timeout-completed",
+        conversation_id="session-timeout-completed",
+        resume_run_id="run-timeout-completed",
+    )
+
+    async def never_iter_chat_events(*_args, **_kwargs):
+        await asyncio.Event().wait()
+        yield {}
+
+    monkeypatch.setattr(routes, "iter_chat_events", never_iter_chat_events)
+    monkeypatch.setattr(routes, "_BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(routes, "_fire_on_chat_end_if_terminal", lambda *_args, **_kwargs: None)
+
+    asyncio.run(routes._drain_chat_run(request, transport="system_resume", run_id="run-timeout-completed"))
+
+    run_record = test_db.get_run_record("run-timeout-completed") or {}
+    assert run_record.get("status") == "completed"
+    assert (run_record.get("metadata") or {}).get("resume_worker_timeout") is None
+    topics = [event["topic"] for event in test_db.get_runtime_events("session-timeout-completed")]
+    assert "run.resume.worker.first_event_timeout" in topics
+    assert "run.resume.worker.first_event_timeout_ignored" in topics
 
 
 def test_background_non_resume_worker_failure_still_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

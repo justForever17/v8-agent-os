@@ -4251,7 +4251,7 @@ def fetch_skill_instructions(
     script_args: list[str] | None = None,
     timeout_seconds: int = 120,
 ) -> str:
-    """Read/list installed Skills, or run a declared Skill script under workspace and Safety checks.
+    """Read/list installed Skills with complete SKILL.md instructions and relative_path follow-ups, or run a declared Skill script under workspace and Safety checks.
 
     Tool arguments are structured fields; examples use JSON-style double quotes for consistency.
     Use an exact skill name/path when it is already known; prefilter selection is helpful but not required.

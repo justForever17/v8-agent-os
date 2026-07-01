@@ -439,12 +439,25 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
                 payload={"timeoutSeconds": _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS},
             )
             if active_run_id:
-                run_service.transition_run(
+                transition = run_service.transition_run_if_status(
                     active_run_id,
+                    expected_statuses={"running"},
                     status="failed",
                     error_message=timeout_message,
                     metadata={"resume_worker_timeout": True, "transport": transport},
                 )
+                if not transition.get("updated"):
+                    _emit_background_chat_run_event(
+                        "run.resume.worker.first_event_timeout_ignored",
+                        request,
+                        transport=transport,
+                        run_id=active_run_id,
+                        payload={
+                            "timeoutSeconds": _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS,
+                            "reason": transition.get("reason"),
+                            "currentStatus": transition.get("currentStatus"),
+                        },
+                    )
             return
         _emit_background_chat_run_event(
             "run.resume.worker.first_event",

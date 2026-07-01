@@ -2214,6 +2214,69 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
 
+    def update_run_record_if_status(
+        self,
+        run_id: str,
+        *,
+        expected_statuses: set[str],
+        status: str,
+        error_message: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        normalized_expected = {str(item or "").strip() for item in set(expected_statuses or set()) if str(item or "").strip()}
+        meta_str = json.dumps(metadata) if metadata else None
+        terminal = status in {"completed", "failed", "cancelled"}
+        finished_at = utc_now_iso() if terminal else None
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone()
+                if not row:
+                    conn.rollback()
+                    return {"updated": False, "reason": "run_not_found"}
+                run_record = dict(row)
+                current_status = str(run_record.get("status") or "").strip()
+                if normalized_expected and current_status not in normalized_expected:
+                    conn.rollback()
+                    return {
+                        "updated": False,
+                        "reason": f"status_mismatch:{current_status or 'unknown'}",
+                        "currentStatus": current_status,
+                        "run_record": run_record,
+                    }
+                conn.execute(
+                    '''
+                    UPDATE run_records
+                    SET status = ?,
+                        error_message = CASE
+                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, error_message)
+                            ELSE ?
+                        END,
+                        metadata = COALESCE(?, metadata),
+                        finished_at = CASE
+                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, finished_at)
+                            ELSE NULL
+                        END
+                    WHERE id = ?
+                    ''',
+                    (
+                        status,
+                        status,
+                        error_message,
+                        error_message,
+                        meta_str,
+                        status,
+                        finished_at,
+                        run_id,
+                    ),
+                )
+                conn.commit()
+                refreshed = dict(conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone() or {})
+                return {"updated": True, "run_record": refreshed, "previousStatus": current_status}
+
+        return self._run_write_with_retry(_write)
+
     def update_run_metadata_key_if_state(
         self,
         run_id: str,

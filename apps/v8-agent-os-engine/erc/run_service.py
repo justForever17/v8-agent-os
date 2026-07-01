@@ -72,6 +72,48 @@ class RunService:
             payload={"status": status, "errorMessage": error_message, "metadata": metadata or {}},
         )
 
+    def transition_run_if_status(
+        self,
+        run_id: str,
+        *,
+        expected_statuses: set[str],
+        status: str,
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        persisted_metadata: Optional[Dict[str, Any]] = None
+        if metadata is not None:
+            existing = db.get_run_record(run_id) or {}
+            persisted_metadata = dict(existing.get("metadata") or {})
+            persisted_metadata.update(metadata or {})
+        result = db.update_run_record_if_status(
+            run_id,
+            expected_statuses=expected_statuses,
+            status=status,
+            error_message=error_message,
+            metadata=persisted_metadata,
+        )
+        if not result.get("updated"):
+            return result
+        run_record = result.get("run_record") or db.get_run_record(run_id) or {}
+        run_ledger_service.record_event(
+            event_type=f"run.status.{status}",
+            run_id=run_id,
+            session_id=run_record.get("session_id"),
+            runtime_kind=run_record.get("run_type"),
+            source="erc.run_service",
+            summary=error_message or f"Run status changed to {status}",
+            refs={"runId": run_id, "sessionId": run_record.get("session_id")},
+            payload={
+                "status": status,
+                "errorMessage": error_message,
+                "metadata": metadata or {},
+                "conditional": True,
+                "previousStatus": result.get("previousStatus"),
+            },
+        )
+        return result
+
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         return db.get_run_record(run_id)
 

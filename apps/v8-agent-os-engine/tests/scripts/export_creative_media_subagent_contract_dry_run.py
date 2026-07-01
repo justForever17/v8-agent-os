@@ -37,6 +37,11 @@ from core.tools.native.creative_media import (  # noqa: E402
     creative_media_create_job,
     creative_media_get_job,
     creative_media_job_artifacts,
+    creative_media_production_pack,
+    creative_media_qa_check,
+    creative_media_rank_models,
+    creative_media_reference_media_brief,
+    creative_media_sample_approval_packet,
 )
 from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context  # noqa: E402
 
@@ -105,6 +110,11 @@ def build_matrix() -> dict[str, Any]:
         "creative_media_create_job": creative_media_create_job.description,
         "creative_media_get_job": creative_media_get_job.description,
         "creative_media_job_artifacts": creative_media_job_artifacts.description,
+        "creative_media_production_pack": creative_media_production_pack.description,
+        "creative_media_rank_models": creative_media_rank_models.description,
+        "creative_media_reference_media_brief": creative_media_reference_media_brief.description,
+        "creative_media_sample_approval_packet": creative_media_sample_approval_packet.description,
+        "creative_media_qa_check": creative_media_qa_check.description,
     }
     joined_tool_descriptions = "\n".join(str(value or "") for value in tool_descriptions.values())
     validations = {
@@ -124,6 +134,18 @@ def build_matrix() -> dict[str, Any]:
             prompt,
             ["artifact IDs", "provider raw JSON", "acceptance status"],
         ),
+        "prompt_has_production_charter": _contains_all(
+            prompt,
+            ["CreativeMediaProductionPack", "sample before batch", "provider/model", "Artifact proof"],
+        ),
+        "prompt_explains_sample_approval_and_qa": _contains_all(
+            prompt,
+            ["creative_media_sample_approval_packet", "ask_user", "creative_media_qa_check"],
+        ),
+        "prompt_explains_reference_preflight_and_selector": _contains_all(
+            prompt,
+            ["creative_media_reference_media_brief", "creative_media_rank_models", "clean Markdown"],
+        ),
         "tool_descriptions_explain_operation_parameters": _contains_all(
             joined_tool_descriptions,
             ["request.modality", "request.operationKind", "music.generate", "music.cover", "model3d.generate"],
@@ -131,6 +153,10 @@ def build_matrix() -> dict[str, Any]:
         "tool_descriptions_explain_poll_and_artifacts": _contains_all(
             joined_tool_descriptions,
             ["creative_media_get_job", "creative_media_job_artifacts", "artifact IDs"],
+        ),
+        "tool_descriptions_explain_pack_approval_and_qa": _contains_all(
+            joined_tool_descriptions,
+            ["CreativeMediaProductionPack", "ask_user", "file existence", "selector surface"],
         ),
     }
     return {

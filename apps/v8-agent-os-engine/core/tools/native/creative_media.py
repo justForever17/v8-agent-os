@@ -50,6 +50,11 @@ __all__ = [
     "creative_media_retry_job",
     "creative_media_cost_ledger",
     "creative_media_safety_events",
+    "creative_media_production_pack",
+    "creative_media_rank_models",
+    "creative_media_reference_media_brief",
+    "creative_media_sample_approval_packet",
+    "creative_media_qa_check",
 ]
 
 _AGENT_DETAIL_LIST_LIMIT = 6
@@ -456,6 +461,104 @@ def creative_media_resolutions(detail_level: str = "summary") -> str:
         return json.dumps(_agent_compact_dict(payload), ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error reading CreativeMedia resolutions: {str(e)}"
+
+
+@tool
+def creative_media_production_pack(request: dict[str, Any]) -> str:
+    """Build or update a clean CreativeMediaProductionPack.
+
+    Use this as the production contract for complex media work. The pack has
+    stable stages: brief, proposal, script, scene_plan, asset_manifest,
+    edit_decisions, render_report, final_review. Keep sample approval,
+    provider lock, artifact proof, and QA status here instead of scattering
+    them across raw job outputs.
+    """
+    try:
+        from runtimes.creative_media.production_pack import build_production_pack, production_pack_markdown
+
+        return production_pack_markdown(build_production_pack(dict(request or {})))
+    except Exception as e:
+        return f"Error building CreativeMediaProductionPack: {str(e)}"
+
+
+@tool
+def creative_media_rank_models(
+    modality: Optional[str] = None,
+    operation_kind: Optional[str] = None,
+    goal: Optional[str] = None,
+    limit: int = 8,
+) -> str:
+    """Return a clean Markdown ranking of Creative Media model candidates.
+
+    Use this before locking a provider/model. This is the agent-readable
+    selector surface; it intentionally avoids dumping the full Model Hub catalog
+    or provider JSON.
+    """
+    try:
+        from runtimes.creative_media.production_pack import rank_candidates_markdown
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        candidates = creative_media_runtime.list_model_candidates()
+        return rank_candidates_markdown(
+            candidates,
+            modality=modality,
+            operation_kind=operation_kind,
+            goal=goal,
+            limit=limit,
+        )
+    except Exception as e:
+        return f"Error ranking CreativeMedia models: {str(e)}"
+
+
+@tool
+def creative_media_reference_media_brief(request: dict[str, Any]) -> str:
+    """Create a reference media preflight brief.
+
+    Use before generation when the task has reference audio/image/video/files.
+    The brief tracks audio transcript, visual style, shot structure, and reusable
+    assets. Fill missing analysis by calling vision_media_analyzer or file read
+    tools before batch generation.
+    """
+    try:
+        from runtimes.creative_media.production_pack import build_reference_media_pack, reference_media_markdown
+
+        return reference_media_markdown(build_reference_media_pack(dict(request or {})))
+    except Exception as e:
+        return f"Error building CreativeMedia reference brief: {str(e)}"
+
+
+@tool
+def creative_media_sample_approval_packet(request: dict[str, Any]) -> str:
+    """Prepare sample media approval input for ask_user.
+
+    Use after producing sample images/video/audio/music/3D previews and before
+    batch production. The returned Markdown tells the worker which question,
+    media/artifacts, selection mode, and multi-step questions to pass into
+    ask_user; it is not a separate approval system.
+    """
+    try:
+        from runtimes.creative_media.production_pack import build_sample_approval_packet, sample_approval_markdown
+
+        return sample_approval_markdown(build_sample_approval_packet(dict(request or {})))
+    except Exception as e:
+        return f"Error building CreativeMedia sample approval packet: {str(e)}"
+
+
+@tool
+def creative_media_qa_check(request: dict[str, Any]) -> str:
+    """Run a local QA checklist over Creative Media artifacts.
+
+    Checks file existence, basic playability metadata when ffprobe is available,
+    duration/resolution/audio-stream hints, subtitle file presence, and required
+    artifact kinds. Returns Markdown for the agent; raw provider payloads stay
+    out of the visible surface.
+    """
+    try:
+        from runtimes.creative_media.production_pack import artifact_qa_markdown, run_artifact_qa
+
+        return artifact_qa_markdown(run_artifact_qa(dict(request or {})))
+    except Exception as e:
+        return f"Error running CreativeMedia QA: {str(e)}"
 
 
 @tool

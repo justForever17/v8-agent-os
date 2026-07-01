@@ -138,6 +138,35 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "creative_media_list_quality_jobs": {"status": None, "limit": 10},
     "creative_media_cost_ledger": {"limit": 10},
     "creative_media_safety_events": {"limit": 10},
+    "creative_media_production_pack": {
+        "request": {
+            "goal": "Dry-run creative media production pack.",
+            "brief": {"summary": "Create one sample image and one sample narration asset."},
+            "providerId": "dry-run-provider",
+            "modelId": "dry-run-model",
+            "sampleArtifactRefs": [{"artifactId": "artifact_sample", "kind": "image"}],
+        }
+    },
+    "creative_media_rank_models": {"modality": "image", "operation_kind": "image.generate", "goal": "Dry-run selector", "limit": 3},
+    "creative_media_reference_media_brief": {
+        "request": {
+            "goal": "Extract style from references before generation.",
+            "media": [{"artifactId": "artifact_ref", "kind": "image", "title": "style frame"}],
+        }
+    },
+    "creative_media_sample_approval_packet": {
+        "request": {
+            "question": "Confirm dry-run sample direction",
+            "media": [{"artifactId": "artifact_sample", "kind": "image", "title": "sample frame"}],
+            "questions": [{"id": "style", "question": "Pick a style", "type": "single", "options": [{"id": "a", "label": "A"}]}],
+        }
+    },
+    "creative_media_qa_check": {
+        "request": {
+            "artifacts": [{"title": "missing dry-run artifact", "kind": "video", "path": "__v8_calibration_missing_video.mp4"}],
+            "requiredKinds": ["video"],
+        }
+    },
     "creative_media_alpha_inspect": {"path": "__v8_calibration_missing_alpha.png"},
     "creative_media_psd_inspect": {"path": "__v8_calibration_missing.psd"},
     "creative_media_psd_export_preview": {"path": "__v8_calibration_missing.psd", "dry_run": True},

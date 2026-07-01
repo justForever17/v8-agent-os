@@ -1,7 +1,16 @@
 import unittest
 
 from core.agents import AgentConfig, default_subagent_configs, dump_agent_md, parse_agent_md
-from core.tools.native.creative_media import creative_media_create_job, creative_media_get_job, creative_media_job_artifacts
+from core.tools.native.creative_media import (
+    creative_media_create_job,
+    creative_media_get_job,
+    creative_media_job_artifacts,
+    creative_media_production_pack,
+    creative_media_qa_check,
+    creative_media_rank_models,
+    creative_media_reference_media_brief,
+    creative_media_sample_approval_packet,
+)
 from graph.supervisor_context import render_agent_tool_surface_summary
 
 
@@ -94,6 +103,11 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertIn("Seedance 2.0 exact models", agent.system_prompt)
             self.assertIn("native audiovisual video models", agent.system_prompt)
             self.assertIn("creative_media_create_job", agent.system_prompt)
+            self.assertIn("CreativeMediaProductionPack", agent.system_prompt)
+            self.assertIn("sample before batch", agent.system_prompt)
+            self.assertIn("creative_media_rank_models", agent.system_prompt)
+            self.assertIn("creative_media_sample_approval_packet", agent.system_prompt)
+            self.assertIn("creative_media_qa_check", agent.system_prompt)
             self.assertIn("music.generate", agent.system_prompt)
             self.assertIn("model3d.generate", agent.system_prompt)
             self.assertIn("artifact IDs", agent.system_prompt)
@@ -132,6 +146,11 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         create_desc = creative_media_create_job.description
         get_desc = creative_media_get_job.description
         artifact_desc = creative_media_job_artifacts.description
+        pack_desc = creative_media_production_pack.description
+        rank_desc = creative_media_rank_models.description
+        reference_desc = creative_media_reference_media_brief.description
+        approval_desc = creative_media_sample_approval_packet.description
+        qa_desc = creative_media_qa_check.description
 
         self.assertIn("music.generate", create_desc)
         self.assertIn("music.cover", create_desc)
@@ -140,6 +159,11 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         self.assertIn("creative_media_job_artifacts", get_desc)
         self.assertIn("artifact IDs", artifact_desc)
         self.assertIn("provider raw JSON", artifact_desc)
+        self.assertIn("CreativeMediaProductionPack", pack_desc)
+        self.assertIn("selector surface", rank_desc)
+        self.assertIn("reference audio/image/video/files", reference_desc)
+        self.assertIn("ask_user", approval_desc)
+        self.assertIn("file existence", qa_desc)
 
 
 if __name__ == "__main__":

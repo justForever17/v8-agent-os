@@ -140,6 +140,10 @@ def _strategy_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _decoded_url_text(url: str) -> str:
+    return html.unescape(unquote(_safe_text(url))).lower()
+
+
 def _extract_first_url(value: str) -> str:
     raw = _safe_text(value)
     if not raw:
@@ -276,9 +280,16 @@ def _guess_kind(path: Path) -> tuple[str, str]:
 
 def _guess_kind_from_url(url: str) -> str:
     normalized = url.lower()
+    decoded = _decoded_url_text(url)
+    if re.search(r"(?:mime|mime_type|content-type)=(?:audio(?:/|_)|audio%2f)", decoded):
+        return "audio"
+    if re.search(r"(?:mime|mime_type|content-type)=(?:video(?:/|_)|video%2f)", decoded):
+        return "video"
+    if re.search(r"(?:mime|mime_type|content-type)=(?:image(?:/|_)|image%2f)", decoded):
+        return "image"
     if any(ext in normalized for ext in _strategy_global_list("videoUrlHints")):
         return "video"
-    if any(hint.lower() in normalized for hint in _all_platform_strategy_hints("directMediaHints")):
+    if any(hint.lower() in decoded for hint in _all_platform_strategy_hints("directMediaHints")):
         return "video"
     if any(ext in normalized for ext in _strategy_global_list("imageUrlHints")):
         return "image"
@@ -301,8 +312,91 @@ def _looks_like_douyin_direct_media(url: str) -> bool:
 
 
 def _looks_like_platform_direct_media(platform: str, url: str) -> bool:
-    normalized = _safe_text(url).lower()
+    normalized = _decoded_url_text(url)
     return any(hint.lower() in normalized for hint in _platform_strategy_list(platform, "directMediaHints"))
+
+
+_YOUTUBE_ITAG_HEIGHTS: dict[int, int] = {
+    17: 144,
+    18: 360,
+    22: 720,
+    37: 1080,
+    38: 3072,
+    133: 240,
+    134: 360,
+    135: 480,
+    136: 720,
+    137: 1080,
+    138: 2160,
+    160: 144,
+    242: 240,
+    243: 360,
+    244: 480,
+    247: 720,
+    248: 1080,
+    264: 1440,
+    266: 2160,
+    278: 144,
+    298: 720,
+    299: 1080,
+    302: 720,
+    303: 1080,
+    308: 1440,
+    313: 2160,
+    315: 2160,
+    399: 1080,
+    400: 1440,
+    401: 2160,
+}
+
+
+def _first_int_query_param(url: str, keys: tuple[str, ...]) -> int:
+    for key, values in parse_qs(urlparse(url).query or "").items():
+        if key.lower() not in {item.lower() for item in keys}:
+            continue
+        for value in values:
+            match = re.search(r"\d+", _safe_text(value))
+            if match:
+                return _strategy_int(match.group(0))
+    return 0
+
+
+def _infer_media_quality(url: str, *, _depth: int = 0) -> dict[str, int]:
+    text = _decoded_url_text(url)
+    width = 0
+    height = 0
+    for match in re.finditer(r"(?<!\d)(\d{2,5})x(\d{2,5})(?!\d)", text):
+        candidate_width = _strategy_int(match.group(1))
+        candidate_height = _strategy_int(match.group(2))
+        if candidate_width * candidate_height > width * height:
+            width = candidate_width
+            height = candidate_height
+
+    query_width = _first_int_query_param(url, ("width", "w"))
+    query_height = _first_int_query_param(url, ("height", "h"))
+    if query_width and query_height and query_width * query_height > width * height:
+        width = query_width
+        height = query_height
+
+    bitrate = _first_int_query_param(url, ("br", "bt", "bitrate", "avgBitrate"))
+    itag = _first_int_query_param(url, ("itag",))
+    itag_height = _YOUTUBE_ITAG_HEIGHTS.get(itag, 0)
+    if itag_height > height:
+        height = itag_height
+
+    quality = {
+        "width": width,
+        "height": height,
+        "bitrate": bitrate,
+        "itag": itag,
+        "score": height * 100000 + width * 10 + bitrate,
+    }
+    if _depth < 2:
+        for nested_url in _nested_url_values(url):
+            nested_quality = _infer_media_quality(nested_url, _depth=_depth + 1)
+            if nested_quality["score"] > quality["score"]:
+                quality = nested_quality
+    return quality
 
 
 def _collect_media_files(download_dir: Path) -> list[Path]:
@@ -327,6 +421,7 @@ def _dedupe_media_candidates(candidates: list[dict[str, Any]]) -> list[dict[str,
         normalized = dict(candidate)
         normalized["url"] = url
         normalized["kind"] = _safe_text(candidate.get("kind")) or _guess_kind_from_url(url)
+        normalized["quality"] = _infer_media_quality(url)
         unique.append(normalized)
     return unique
 
@@ -340,7 +435,7 @@ def _choose_media_candidate(
     if not deduped:
         return None
 
-    def _score(item: dict[str, Any]) -> tuple[int, int]:
+    def _score(item: dict[str, Any]) -> tuple[int, int, int]:
         kind = _safe_text(item.get("kind"))
         source = _safe_text(item.get("source"))
         kind_score = {
@@ -382,7 +477,9 @@ def _choose_media_candidate(
                 kind_score += _strategy_int(platform_weight.get("lowValueImagePenalty"))
             if kind == "audio" and "music" in url:
                 kind_score += _strategy_int(platform_weight.get("audioMusicPenalty"))
-        return kind_score, -len(_safe_text(item.get("url")))
+        quality = item.get("quality") if isinstance(item.get("quality"), dict) else _infer_media_quality(item.get("url"))
+        quality_score = _strategy_int(quality.get("score") if isinstance(quality, dict) else 0)
+        return kind_score, quality_score, -len(_safe_text(item.get("url")))
 
     return sorted(deduped, key=_score, reverse=True)[0]
 
@@ -492,20 +589,40 @@ def _text_url_variants(value: str) -> list[str]:
     return variants
 
 
-def _extract_media_urls_from_text(value: str, *, source: str) -> list[dict[str, Any]]:
+def _nested_url_values(url: str) -> list[str]:
+    nested: list[str] = []
+    parsed = urlparse(_safe_text(url))
+    for _, value in parse_qsl(parsed.query or "", keep_blank_values=True):
+        decoded = html.unescape(unquote(_safe_text(value)))
+        if "http://" in decoded or "https://" in decoded:
+            nested.append(decoded)
+    return nested
+
+
+def _extract_media_urls_from_text(value: str, *, source: str, _depth: int = 0) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     seen: set[str] = set()
+
+    def _add_hit(candidate_url: str) -> None:
+        normalized = _normalize_embedded_media_url(candidate_url)
+        if not normalized or normalized in seen:
+            return
+        kind = _guess_kind_from_url(normalized)
+        if kind not in {"video", "image", "audio"}:
+            return
+        seen.add(normalized)
+        hits.append({"url": normalized, "source": source, "kind": kind})
+
     for variant in _text_url_variants(value):
         for pattern in (_MEDIA_URL_RE, _URL_IN_TEXT_RE):
             for match in pattern.findall(variant):
                 normalized = _normalize_embedded_media_url(match)
-                if not normalized or normalized in seen:
+                _add_hit(normalized)
+                if _depth >= 2:
                     continue
-                kind = _guess_kind_from_url(normalized)
-                if kind not in {"video", "image", "audio"}:
-                    continue
-                seen.add(normalized)
-                hits.append({"url": normalized, "source": source, "kind": kind})
+                for nested_url in _nested_url_values(normalized):
+                    for nested_hit in _extract_media_urls_from_text(nested_url, source=source, _depth=_depth + 1):
+                        _add_hit(nested_hit["url"])
     return hits
 
 
@@ -1178,6 +1295,32 @@ def _should_retry_without_cookies(error: Exception | str) -> bool:
     )
 
 
+def _should_retry_with_browser_cookies(error: Exception | str) -> bool:
+    text = _safe_text(error).lower()
+    return (
+        "sign in to confirm" in text
+        or "not a bot" in text
+        or "login required" in text
+        or "cookies" in text
+        or "use --cookies-from-browser" in text
+    )
+
+
+def _cookie_retry_source(platform_profile: dict[str, Any]) -> str:
+    retry_order = {_safe_text(item) for item in _as_text_list(platform_profile.get("retryOrder"))}
+    if "cookie_if_needed" not in retry_order:
+        return ""
+    return _safe_text(platform_profile.get("cookieRetryFromBrowser"))
+
+
+def _yt_dlp_format_selector(prefer: DownloadMediaPreference, *, ffmpeg_available: bool) -> str | None:
+    if prefer != "video":
+        return None
+    if ffmpeg_available:
+        return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    return "best[ext=mp4]/best"
+
+
 def _download_direct_media(
     url: str,
     *,
@@ -1431,6 +1574,9 @@ def download_media_for_vision(
         "merge_output_format": "mp4",
         "http_headers": http_headers or None,
     }
+    format_selector = _yt_dlp_format_selector(effective_prefer, ffmpeg_available=ffmpeg_available)
+    if format_selector:
+        ydl_opts["format"] = format_selector
     if cookie_option:
         ydl_opts["cookiesfrombrowser"] = cookie_option
 
@@ -1471,6 +1617,22 @@ def download_media_for_vision(
                         profile_source = "fallback_no_cookie"
                 except Exception as retry_exc:
                     ydl_error = retry_exc
+            if ydl_error is not None and not cookie_option and _should_retry_with_browser_cookies(ydl_error):
+                retry_cookie_source = _cookie_retry_source(platform_profile)
+                retry_cookie_option = _parse_cookies_from_browser(retry_cookie_source)
+                if retry_cookie_option:
+                    retry_opts = dict(ydl_opts)
+                    retry_opts["cookiesfrombrowser"] = retry_cookie_option
+                    warnings.append("平台要求登录或反机器人验证，已自动使用浏览器 cookies 重试。")
+                    try:
+                        with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                            info = ydl.extract_info(download_target_url, download=True)
+                            ydl_error = None
+                            cookie_option = retry_cookie_option
+                            effective_cookies_from_browser = retry_cookie_source
+                            profile_source = "fallback_cookie_if_needed"
+                    except Exception as retry_exc:
+                        ydl_error = retry_exc
             if ydl_error is not None:
                 return json.dumps(
                     {

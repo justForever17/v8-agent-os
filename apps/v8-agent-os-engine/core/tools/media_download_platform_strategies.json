@@ -46,13 +46,27 @@
   },
   "platforms": {
     "youtube": {
-      "hostContains": ["youtube", "youtu.be"],
+      "hostContains": ["youtube", "youtu.be", "googlevideo"],
       "profile": {
         "defaultPrefer": "video",
         "defaultReferer": "https://www.youtube.com/",
         "defaultCookiesFromBrowser": "",
+        "cookieRetryFromBrowser": "chrome",
         "cookieOptional": true,
         "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "directMediaHints": ["googlevideo.com/videoplayback", "mime=video", "mime=audio", "itag="],
+      "candidateWeight": {
+        "directMediaHint": 25,
+        "sourceExact": {
+          "youtube_network_capture": 15,
+          "youtube_html_scan": 8
+        },
+        "hintWeights": {
+          "googlevideo.com/videoplayback": 20,
+          "mime=video": 12
+        },
+        "audioMusicPenalty": -30
       },
       "canonical": {
         "queryAllowlist": ["v", "list", "index", "t", "start", "end"],
@@ -61,6 +75,7 @@
     },
     "x": {
       "hostEquals": ["x.com", "twitter.com"],
+      "hostContains": ["twimg.com"],
       "wrapperHosts": ["fxtwitter.com", "fixupx.com", "fixvx.com", "vxtwitter.com"],
       "profile": {
         "defaultPrefer": "video",
@@ -68,6 +83,22 @@
         "defaultCookiesFromBrowser": "",
         "cookieOptional": true,
         "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "directMediaHints": ["video.twimg.com", "/vid/avc1/", "amplify_video", ".mp4"],
+      "candidateWeight": {
+        "directMediaHint": 35,
+        "sourceExact": {
+          "x_network_capture": 18,
+          "x_share_api": 22,
+          "x_share_api_text": 18,
+          "x_html_scan": 8
+        },
+        "hintWeights": {
+          "video.twimg.com": 25,
+          "/vid/avc1/": 20,
+          "amplify_video": 12,
+          ".mp4": 10
+        }
       },
       "canonical": {
         "canonicalHost": "x.com",
@@ -84,6 +115,23 @@
         "defaultCookiesFromBrowser": "chrome",
         "cookieOptional": true,
         "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "directMediaHints": ["tiktok.com/video/tos/", "tiktokcdn", "v16-webapp-prime", "mime_type=video_mp4", "snappdown.com/api/proxy/media"],
+      "candidateWeight": {
+        "directMediaHint": 30,
+        "sourceExact": {
+          "tiktok_network_capture": 18,
+          "tiktok_share_api": 20,
+          "tiktok_share_api_text": 18,
+          "tiktok_html_scan": 8
+        },
+        "hintWeights": {
+          "v16-webapp-prime": 25,
+          "tiktok.com/video/tos/": 20,
+          "mime_type=video_mp4": 12,
+          "snappdown.com/api/proxy/media": 6
+        },
+        "lowValueImagePenalty": -25
       },
       "canonical": {
         "queryAllowlist": []

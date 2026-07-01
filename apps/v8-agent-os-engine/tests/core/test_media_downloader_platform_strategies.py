@@ -1,6 +1,10 @@
 from core.tools.media_downloader import (
     _canonicalize_platform_url,
     _choose_media_candidate,
+    _cookie_retry_source,
+    _extract_media_urls_from_text,
+    _guess_kind_from_url,
+    _infer_media_quality,
     _load_platform_strategies,
     _launch_chromium_browser,
     _looks_like_direct_media,
@@ -8,10 +12,25 @@ from core.tools.media_downloader import (
     _platform_from_url,
     _resolve_platform_profile,
     _resolve_platform_share_page,
+    _should_retry_with_browser_cookies,
+    _yt_dlp_format_selector,
     download_media_for_vision,
 )
 
 
+X_DIRECT_VIDEO_720P_URL = "https://video.twimg.com/amplify_video/2071802906408267777/vid/avc1/736x720/PsvYsY2PDz-jlCby.mp4?tag=28"
+X_DIRECT_VIDEO_360P_URL = "https://video.twimg.com/amplify_video/2071802906408267777/vid/avc1/368x360/skpTWGI2yGKulm4k.mp4?tag=28"
+X_DIRECT_VIDEO_270P_URL = "https://video.twimg.com/amplify_video/2071802906408267777/vid/avc1/276x270/ehCFr0y6FmwIbr4o.mp4?tag=28"
+TIKTOK_PROXY_LOW_BITRATE_URL = (
+    "https://snappdown.com/api/proxy/media?url=https%3A%2F%2Fv16-webapp-prime.us.tiktok.com%2Fvideo%2Ftos%2Falisg%2F"
+    "tos-alisg-pve-0037c001%2Flow%2F%3Fbt%3D529%26mime_type%3Dvideo_mp4&platform=tiktok"
+)
+TIKTOK_PROXY_HIGH_BITRATE_URL = (
+    "https://snappdown.com/api/proxy/media?url=https%3A%2F%2Fv16-webapp-prime.us.tiktok.com%2Fvideo%2Ftos%2Falisg%2F"
+    "tos-alisg-pve-0037c001%2Fhigh%2F%3Fbt%3D1223%26mime_type%3Dvideo_mp4&platform=tiktok"
+)
+YOUTUBE_VIDEO_ONLY_720P_URL = "https://rr4---sn-ab5l6ny7.googlevideo.com/videoplayback?itag=136&mime=video%2Fmp4"
+YOUTUBE_AUDIO_ONLY_URL = "https://rr4---sn-ab5l6ny7.googlevideo.com/videoplayback?itag=139&mime=audio%2Fmp4"
 XIAOHONGSHU_DIRECT_VIDEO_URL = (
     "https://sns-video-v3.xhscdn.com/stream/1/110/258/"
     "01ea38f8ef2f7bf0010370019eee8cd424_258.mp4?sign=d93ad1b56f530509375b71feebe04b0f&t=6a4908cc"
@@ -57,7 +76,10 @@ def test_platform_detection_uses_json_host_rules() -> None:
     assert _platform_from_url("https://youtu.be/dQw4w9WgXcQ?si=abc") == "youtube"
     assert _platform_from_url("https://x.com/example/status/1234567890?s=20") == "x"
     assert _platform_from_url("https://fxtwitter.com/example/status/1234567890/video/1") == "x"
+    assert _platform_from_url(X_DIRECT_VIDEO_720P_URL) == "x"
     assert _platform_from_url("https://vm.tiktok.com/ZMabcdef/") == "tiktok"
+    assert _platform_from_url("https://v16-webapp-prime.us.tiktok.com/video/tos/alisg/example/?mime_type=video_mp4") == "tiktok"
+    assert _platform_from_url(YOUTUBE_VIDEO_ONLY_720P_URL) == "youtube"
     assert _platform_from_url("https://www.instagram.com/reel/ABC123/?igsh=xyz") == "instagram"
     assert _platform_from_url("http://xhslink.com/o/8mxNz3OKlKo") == "xiaohongshu"
     assert _platform_from_url(XIAOHONGSHU_DIRECT_VIDEO_URL) == "xiaohongshu"
@@ -122,6 +144,52 @@ def test_cn_platform_direct_media_hints_recognize_observed_video_urls() -> None:
     assert _looks_like_platform_direct_media("xiaohongshu", XIAOHONGSHU_DIRECT_VIDEO_URL)
     assert _looks_like_platform_direct_media("bilibili", BILIBILI_DIRECT_VIDEO_URL)
     assert _looks_like_platform_direct_media("kuaishou", KUAISHOU_DIRECT_VIDEO_URL)
+
+
+def test_quality_score_prefers_highest_x_resolution() -> None:
+    selected = _choose_media_candidate(
+        [
+            {"url": X_DIRECT_VIDEO_270P_URL, "source": "x_network_capture", "kind": "video"},
+            {"url": X_DIRECT_VIDEO_720P_URL, "source": "x_network_capture", "kind": "video"},
+            {"url": X_DIRECT_VIDEO_360P_URL, "source": "x_network_capture", "kind": "video"},
+        ],
+        prefer="video",
+    )
+
+    assert _infer_media_quality(X_DIRECT_VIDEO_720P_URL)["height"] == 720
+    assert selected is not None
+    assert selected["url"] == X_DIRECT_VIDEO_720P_URL
+
+
+def test_nested_tiktok_proxy_candidates_prefer_higher_bitrate() -> None:
+    hits = _extract_media_urls_from_text(
+        f"{TIKTOK_PROXY_LOW_BITRATE_URL}\n{TIKTOK_PROXY_HIGH_BITRATE_URL}",
+        source="tiktok_html_scan",
+    )
+    selected = _choose_media_candidate(hits, prefer="video")
+
+    assert any("bt=529" in hit["url"] for hit in hits)
+    assert any("bt=1223" in hit["url"] for hit in hits)
+    assert selected is not None
+    assert "bt=1223" in selected["url"]
+
+
+def test_youtube_direct_streams_keep_video_and_audio_separate() -> None:
+    assert _guess_kind_from_url(YOUTUBE_VIDEO_ONLY_720P_URL) == "video"
+    assert _guess_kind_from_url(YOUTUBE_AUDIO_ONLY_URL) == "audio"
+    assert _infer_media_quality(YOUTUBE_VIDEO_ONLY_720P_URL)["height"] == 720
+    assert _yt_dlp_format_selector("video", ffmpeg_available=True) == (
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    )
+    assert _yt_dlp_format_selector("video", ffmpeg_available=False) == "best[ext=mp4]/best"
+
+
+def test_youtube_cookie_retry_is_explicitly_strategy_gated() -> None:
+    _, youtube_profile = _resolve_platform_profile("https://youtube.com/shorts/dnhV3HKzrqo")
+
+    assert _should_retry_with_browser_cookies("Sign in to confirm you’re not a bot. Use --cookies-from-browser")
+    assert _cookie_retry_source(youtube_profile) == "chrome"
+    assert _cookie_retry_source({"retryOrder": ["no_cookie", "cookie_if_needed"]}) == ""
 
 
 def test_cn_platform_candidate_weights_prefer_observed_direct_video_urls() -> None:

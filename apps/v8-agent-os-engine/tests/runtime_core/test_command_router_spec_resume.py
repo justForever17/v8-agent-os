@@ -611,8 +611,8 @@ def test_spec_approval_resume_failure_restores_waiting_approval(monkeypatch):
         lambda **_kwargs: {"ok": True, "nextStage": "design"},
     )
     monkeypatch.setattr(
-        "erc.command_router.run_service.transition_run",
-        lambda run_id, **kwargs: transitions.append({"run_id": run_id, **kwargs}),
+        "erc.command_router.run_service.transition_run_if_status",
+        lambda run_id, **kwargs: transitions.append({"run_id": run_id, **kwargs}) or {"updated": True, "run_record": run_record},
     )
     monkeypatch.setattr(
         "erc.command_router.workflow_ledger_service.sync_run_status",
@@ -633,3 +633,42 @@ def test_spec_approval_resume_failure_restores_waiting_approval(monkeypatch):
     assert transitions and transitions[0]["status"] == "waiting_approval"
     assert transitions[0]["metadata"]["approval_resume_scheduled"] is False
     assert workflow_updates and workflow_updates[0]["run_status"] == "waiting_approval"
+
+
+def test_spec_approval_resume_failure_restore_is_conditional(monkeypatch):
+    router = RuntimeCommandRouter()
+    approval = {
+        "id": "approval_spec",
+        "approval_kind": "spec_stage_approval",
+        "run_id": "run_spec",
+    }
+    run_record = {
+        "id": "run_spec",
+        "session_id": "session_spec",
+        "conversation_id": "session_spec",
+        "run_type": "chat",
+        "status": "running",
+        "metadata": {},
+    }
+    transitions = []
+    workflow_updates = []
+    emitted = []
+
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: run_record)
+    monkeypatch.setattr(
+        "erc.command_router.run_service.transition_run_if_status",
+        lambda run_id, **kwargs: transitions.append({"run_id": run_id, **kwargs})
+        or {"updated": False, "reason": "status_mismatch:completed", "currentStatus": "completed"},
+    )
+    monkeypatch.setattr(
+        "erc.command_router.workflow_ledger_service.sync_run_status",
+        lambda run_id, **kwargs: workflow_updates.append({"run_id": run_id, **kwargs}),
+    )
+    monkeypatch.setattr(router, "_emit_resume_event", lambda *args, **kwargs: emitted.append((args, kwargs)))
+
+    router._restore_waiting_approval_after_resume_failure(approval, reason="scheduler_failed")
+
+    assert transitions[0]["expected_statuses"] == {"running"}
+    assert transitions[0]["status"] == "waiting_approval"
+    assert workflow_updates == []
+    assert emitted == []

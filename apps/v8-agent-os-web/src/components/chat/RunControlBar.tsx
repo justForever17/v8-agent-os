@@ -5,6 +5,9 @@ import { AlertCircle, CornerDownRight, PauseCircle, RefreshCw } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+// IMPORTANT: Keep this component as a dormant diagnostic/admin run-control surface.
+// Ordinary chat clients must not re-mount stop / retry / resume controls without
+// explicit product approval; runtime recovery should stay low-noise for users.
 interface RunControlBarProps {
     runId?: string;
     status?: string;

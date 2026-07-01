@@ -163,8 +163,9 @@ class NetworkSupervisorService:
                 return
             if str(run_record.get("status") or "").strip() != "waiting_external_tool":
                 return
-            run_service.transition_run(
+            transition = run_service.transition_run_if_status(
                 run_id,
+                expected_statuses={"waiting_external_tool"},
                 status="abandoned",
                 metadata={
                     "external_tool_final_reason": "external_tool_abandoned",
@@ -175,6 +176,9 @@ class NetworkSupervisorService:
                     },
                 },
             )
+            if not bool(transition.get("updated")):
+                return
+            run_record = dict(transition.get("run_record") or run_record)
             workflow_ledger_service.sync_run_status(
                 run_id,
                 run_status="abandoned",

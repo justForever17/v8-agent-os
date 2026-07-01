@@ -13,6 +13,9 @@ import Animated, {
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 
+// IMPORTANT: Keep this component as a dormant diagnostic/admin run-control surface.
+// Ordinary phone chat must not re-mount stop / retry / resume controls without
+// explicit product approval; runtime recovery should stay low-noise for users.
 type SlotTone = {
     dot: string;
     surface: string;

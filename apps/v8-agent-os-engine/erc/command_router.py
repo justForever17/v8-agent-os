@@ -1052,11 +1052,15 @@ class RuntimeCommandRouter:
             "approval_id": approval_id,
             "approval_kind": self._approval_kind(approval),
         }
-        run_service.transition_run(
+        transition = run_service.transition_run_if_status(
             run_id,
+            expected_statuses={"running"},
             status="waiting_approval",
             metadata=metadata,
         )
+        if not bool(transition.get("updated")):
+            return
+        run_record = dict(transition.get("run_record") or run_record)
         workflow_ledger_service.sync_run_status(
             run_id,
             run_status="waiting_approval",

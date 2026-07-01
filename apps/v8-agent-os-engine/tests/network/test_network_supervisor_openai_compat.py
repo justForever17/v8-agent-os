@@ -228,6 +228,44 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(pending["openai:global:call_wire_1"]["lastReason"], "expired_waiting_for_client_tool_result")
         complete_abandoned.assert_called_once()
 
+    def test_external_tool_abandon_finalization_is_conditional(self):
+        class FakeRunService:
+            def __init__(self):
+                self.transitions: list[dict] = []
+
+            def get_run(self, run_id: str):
+                return {
+                    "id": run_id,
+                    "session_id": "session-1",
+                    "run_type": "chat",
+                    "status": "waiting_external_tool",
+                }
+
+            def transition_run_if_status(self, run_id: str, **kwargs):
+                self.transitions.append({"run_id": run_id, **kwargs})
+                return {
+                    "updated": False,
+                    "reason": "status_mismatch:completed",
+                    "currentStatus": "completed",
+                }
+
+        fake_run_service = FakeRunService()
+        item = {
+            "protocol": "openai",
+            "runId": "run_waiting",
+            "wireToolCallId": "call_wire_1",
+            "externalWireName": "Write",
+        }
+
+        with patch("erc.run_service.run_service", fake_run_service), patch(
+            "erc.workflow_ledger.workflow_ledger_service"
+        ) as workflow_ledger, patch("runtimes.network_supervisor.service.run_ledger_service") as run_ledger:
+            network_supervisor_service._complete_abandoned_external_tool_run(item)
+
+        self.assertEqual(fake_run_service.transitions[0]["expected_statuses"], {"waiting_external_tool"})
+        workflow_ledger.sync_run_status.assert_not_called()
+        run_ledger.record_event.assert_not_called()
+
     def test_pending_external_tools_summary_includes_counts_failures_and_recovery_hints(self):
         state = {
             "pendingExternalTools": {

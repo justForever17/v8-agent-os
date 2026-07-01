@@ -9,7 +9,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 from langchain_core.tools import InjectedToolCallId, tool
 
@@ -24,6 +24,7 @@ from erc.safety_guardian import safety_guardian
 
 DownloadMediaPreference = Literal["auto", "video", "images", "all"]
 _PLATFORM_PROFILE_FILENAME = "media_download_profiles.json"
+_PLATFORM_STRATEGY_FILENAME = "media_download_platform_strategies.json"
 _EXCLUDED_DOWNLOAD_SUFFIXES = {
     ".description",
     ".json",
@@ -38,100 +39,103 @@ _MEDIA_URL_RE = re.compile(
     r"https?://[^\s\"'<>]+?(?:\.mp4|\.mov|\.m4v|\.webm|\.m3u8|\.mpd|\.m4s|\.jpg|\.jpeg|\.png|\.webp)(?:[?#][^\s\"'<>]*)?",
     re.IGNORECASE,
 )
-_JIMENG_DIRECT_MEDIA_HINTS = ("mime_type=video_mp4", "/video/tos/", "dreamina", ".mp4")
-_DOUYIN_DIRECT_MEDIA_HINTS = (
-    "mime_type=video_mp4",
-    "/video/tos/",
-    "/tos-cn-ve-",
-    ".ixigua.com/",
-    ".douyinvod.com/",
-    "douyin.com/aweme/v1/play",
-    "aweme.snssdk.com/aweme/v1/play",
-)
-_DOUYIN_SHARE_API_HINTS = (
-    "aweme/v1/web/aweme/detail",
-    "aweme/v1/web/multi/aweme/detail",
-    "aweme/v1/play",
-)
-_DOUYIN_LOW_VALUE_MEDIA_HINTS = (
-    "avatar",
-    "cover",
-    "music",
-    "poster",
-    "douyinpic",
-    "imagex",
-)
-_DOUBAO_SHARE_API_HINT = "get_video_share_info"
-_SHORTLINK_HOSTS = {"xhslink.com", "b23.tv", "v.douyin.com"}
-_DEFAULT_PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
-    "x": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://x.com/",
-        "defaultCookiesFromBrowser": "",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-    "xiaohongshu": {
-        "defaultPrefer": "all",
-        "defaultReferer": "https://www.xiaohongshu.com/",
-        "defaultCookiesFromBrowser": "chrome",
-        "cookieOptional": False,
-        "retryOrder": ["cookie_first", "referer_required"],
-    },
-    "douyin": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://www.douyin.com/",
-        "defaultCookiesFromBrowser": "chrome",
-        "cookieOptional": False,
-        "retryOrder": ["cookie_first", "referer_required"],
-    },
-    "doubao": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://www.doubao.com/",
-        "defaultCookiesFromBrowser": "",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-    "tiktok": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://www.tiktok.com/",
-        "defaultCookiesFromBrowser": "chrome",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-    "bilibili": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://www.bilibili.com/",
-        "defaultCookiesFromBrowser": "",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-    "instagram": {
-        "defaultPrefer": "all",
-        "defaultReferer": "https://www.instagram.com/",
-        "defaultCookiesFromBrowser": "chrome",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-    "youtube": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://www.youtube.com/",
-        "defaultCookiesFromBrowser": "",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-    "jimeng": {
-        "defaultPrefer": "video",
-        "defaultReferer": "https://jimeng.jianying.com/",
-        "defaultCookiesFromBrowser": "",
-        "cookieOptional": True,
-        "retryOrder": ["no_cookie", "cookie_if_needed"],
-    },
-}
+_PLATFORM_STRATEGY_CACHE: dict[str, Any] | None = None
 
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [_safe_text(item) for item in value if _safe_text(item)]
+    if isinstance(value, tuple):
+        return [_safe_text(item) for item in value if _safe_text(item)]
+    if _safe_text(value):
+        return [_safe_text(value)]
+    return []
+
+
+def _load_platform_strategies() -> dict[str, Any]:
+    global _PLATFORM_STRATEGY_CACHE
+    if _PLATFORM_STRATEGY_CACHE is not None:
+        return _PLATFORM_STRATEGY_CACHE
+
+    strategy_path = Path(__file__).with_name(_PLATFORM_STRATEGY_FILENAME)
+    try:
+        with strategy_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        payload = {}
+    _PLATFORM_STRATEGY_CACHE = payload if isinstance(payload, dict) else {}
+    return _PLATFORM_STRATEGY_CACHE
+
+
+def _strategy_global() -> dict[str, Any]:
+    payload = _load_platform_strategies().get("global")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _strategy_platforms() -> dict[str, Any]:
+    payload = _load_platform_strategies().get("platforms")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _resolve_platform_alias(platform: str) -> str:
+    normalized = _safe_text(platform)
+    platforms = _strategy_platforms()
+    seen: set[str] = set()
+    while normalized and normalized not in seen:
+        seen.add(normalized)
+        payload = platforms.get(normalized)
+        if not isinstance(payload, dict):
+            break
+        alias = _safe_text(payload.get("aliasOf"))
+        if not alias:
+            break
+        normalized = alias
+    return normalized
+
+
+def _platform_strategy(platform: str) -> dict[str, Any]:
+    normalized = _resolve_platform_alias(platform)
+    payload = _strategy_platforms().get(normalized)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _strategy_global_list(key: str) -> list[str]:
+    return _as_text_list(_strategy_global().get(key))
+
+
+def _platform_strategy_list(platform: str, key: str) -> list[str]:
+    return _as_text_list(_platform_strategy(platform).get(key))
+
+
+def _all_platform_strategy_hints(key: str) -> list[str]:
+    values: list[str] = []
+    for platform in _strategy_platforms():
+        for hint in _platform_strategy_list(platform, key):
+            if hint not in values:
+                values.append(hint)
+    return values
+
+
+def _platform_profile_defaults() -> dict[str, dict[str, Any]]:
+    defaults: dict[str, dict[str, Any]] = {}
+    for platform, payload in _strategy_platforms().items():
+        if not isinstance(payload, dict) or payload.get("aliasOf"):
+            continue
+        profile = payload.get("profile")
+        if isinstance(profile, dict):
+            defaults[platform] = dict(profile)
+    return defaults
+
+
+def _strategy_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_first_url(value: str) -> str:
@@ -236,14 +240,15 @@ def _load_platform_profiles() -> dict[str, Any]:
     if not isinstance(configured, dict):
         configured = {}
 
+    defaults = _platform_profile_defaults()
     merged: dict[str, Any] = {}
-    keys = set(_DEFAULT_PLATFORM_PROFILES) | {str(key).strip() for key in configured.keys()}
+    keys = set(defaults) | {str(key).strip() for key in configured.keys()}
     for key in keys:
         normalized = str(key or "").strip()
         if not normalized:
             continue
         merged[normalized] = {
-            **(_DEFAULT_PLATFORM_PROFILES.get(normalized) or {}),
+            **(defaults.get(normalized) or {}),
             **(configured.get(normalized) or {}),
         }
     return merged
@@ -269,13 +274,13 @@ def _guess_kind(path: Path) -> tuple[str, str]:
 
 def _guess_kind_from_url(url: str) -> str:
     normalized = url.lower()
-    if any(ext in normalized for ext in (".mp4", ".mov", ".m4v", ".webm", ".m3u8", ".mpd", ".m4s", "mime_type=video_mp4")):
+    if any(ext in normalized for ext in _strategy_global_list("videoUrlHints")):
         return "video"
-    if any(hint in normalized for hint in _DOUYIN_DIRECT_MEDIA_HINTS):
+    if any(hint.lower() in normalized for hint in _all_platform_strategy_hints("directMediaHints")):
         return "video"
-    if any(ext in normalized for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", "poster_url", "cover")):
+    if any(ext in normalized for ext in _strategy_global_list("imageUrlHints")):
         return "image"
-    if any(ext in normalized for ext in (".mp3", ".wav", ".m4a", ".aac")):
+    if any(ext in normalized for ext in _strategy_global_list("audioUrlHints")):
         return "audio"
     return "file"
 
@@ -284,13 +289,13 @@ def _looks_like_direct_media(url: str) -> bool:
     normalized = url.lower()
     return _guess_kind_from_url(url) in {"video", "image", "audio"} or any(
         token in normalized
-        for token in ("mime_type=video_mp4", "mime_type=image", "mime=image", "content-type=video", "content-type=image")
+        for token in _strategy_global_list("directMediaHints")
     )
 
 
 def _looks_like_douyin_direct_media(url: str) -> bool:
     normalized = _safe_text(url).lower()
-    return any(hint in normalized for hint in _DOUYIN_DIRECT_MEDIA_HINTS)
+    return any(hint.lower() in normalized for hint in _platform_strategy_list("douyin", "directMediaHints"))
 
 
 def _collect_media_files(download_dir: Path) -> list[Path]:
@@ -343,24 +348,27 @@ def _choose_media_candidate(
             kind_score += 30 if kind == "image" else -20
         elif prefer == "all":
             kind_score += 10
-        if source == "doubao_share_api":
-            kind_score += 25
-        if source == "jimeng_network_capture":
-            kind_score += 20
+        source_weights = _strategy_global().get("candidateSourceWeights")
+        if isinstance(source_weights, dict):
+            kind_score += _strategy_int(source_weights.get(source))
         if source.startswith("douyin_") or _looks_like_douyin_direct_media(_safe_text(item.get("url"))):
             url = _safe_text(item.get("url")).lower()
+            douyin_weight = _platform_strategy("douyin").get("candidateWeight")
+            douyin_weight = douyin_weight if isinstance(douyin_weight, dict) else {}
             if _looks_like_douyin_direct_media(url):
-                kind_score += 40
-            if "mime_type=video_mp4" in url:
-                kind_score += 25
-            if "/video/tos/" in url or "/tos-cn-ve-" in url:
-                kind_score += 15
-            if source in {"douyin_share_api", "douyin_share_api_text"}:
-                kind_score += 20
-            if kind == "image" and any(hint in url for hint in _DOUYIN_LOW_VALUE_MEDIA_HINTS):
-                kind_score -= 35
+                kind_score += _strategy_int(douyin_weight.get("directMediaHint"))
+            hint_weights = douyin_weight.get("hintWeights")
+            if isinstance(hint_weights, dict):
+                for hint, weight in hint_weights.items():
+                    if _safe_text(hint).lower() in url:
+                        kind_score += _strategy_int(weight)
+            douyin_source_weights = douyin_weight.get("sourceExact")
+            if isinstance(douyin_source_weights, dict):
+                kind_score += _strategy_int(douyin_source_weights.get(source))
+            if kind == "image" and any(hint.lower() in url for hint in _platform_strategy_list("douyin", "lowValueMediaHints")):
+                kind_score += _strategy_int(douyin_weight.get("lowValueImagePenalty"))
             if kind == "audio" and "music" in url:
-                kind_score -= 20
+                kind_score += _strategy_int(douyin_weight.get("audioMusicPenalty"))
         return kind_score, -len(_safe_text(item.get("url")))
 
     return sorted(deduped, key=_score, reverse=True)[0]
@@ -467,14 +475,10 @@ def _douyin_aweme_id_from_url(url: str) -> str:
 
 
 def _douyin_mobile_headers() -> dict[str, str]:
-    return {
-        "User-Agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        ),
-        "Referer": "https://www.douyin.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
+    resolver = _platform_strategy("douyin").get("sharePageResolver")
+    if isinstance(resolver, dict) and isinstance(resolver.get("mobileHeaders"), dict):
+        return {str(key): str(value) for key, value in resolver["mobileHeaders"].items()}
+    return {}
 
 
 def _resolve_douyin_mobile_share_page(
@@ -495,7 +499,10 @@ def _resolve_douyin_mobile_share_page(
             "error": f"无法解析抖音移动分享页：{import_error}",
         }
 
-    mobile_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+    resolver = _platform_strategy("douyin").get("sharePageResolver")
+    resolver = resolver if isinstance(resolver, dict) else {}
+    template = _safe_text(resolver.get("mobileShareUrlTemplate")) or "https://www.iesdouyin.com/share/video/{awemeId}/"
+    mobile_url = template.replace("{awemeId}", aweme_id)
     try:
         response = requests.get(
             mobile_url,
@@ -560,11 +567,14 @@ def _resolve_platform_share_page(
     platform: str,
     prefer: DownloadMediaPreference,
 ) -> dict[str, Any] | None:
-    if platform not in {"jimeng", "doubao", "xiaohongshu", "douyin", "bilibili"}:
+    platform_strategy = _platform_strategy(platform)
+    resolver_strategy = platform_strategy.get("sharePageResolver")
+    resolver_strategy = resolver_strategy if isinstance(resolver_strategy, dict) else {}
+    if not resolver_strategy.get("enabled"):
         return None
 
     fallback_resolution: dict[str, Any] | None = None
-    if platform == "douyin":
+    if resolver_strategy.get("fallback") == "douyin_mobile_share_page":
         fallback_resolution = _resolve_douyin_mobile_share_page(url, prefer=prefer)
         if fallback_resolution and fallback_resolution.get("resolved"):
             return fallback_resolution
@@ -594,14 +604,18 @@ def _resolve_platform_share_page(
         normalized = _safe_text(candidate_url)
         if not normalized:
             return
-        if platform == "jimeng" and not any(hint in normalized.lower() for hint in _JIMENG_DIRECT_MEDIA_HINTS):
+        direct_hints = [hint.lower() for hint in _platform_strategy_list(platform, "directMediaHints")]
+        lowered_url = normalized.lower()
+        if direct_hints and not any(hint in lowered_url for hint in direct_hints):
             if _guess_kind_from_url(normalized) != "image":
+                return
+            if not platform_strategy.get("allowImageWithoutDirectHint"):
                 return
         if platform == "douyin":
             guessed_kind = kind or _guess_kind_from_url(normalized)
             if guessed_kind == "video" and not _looks_like_douyin_direct_media(normalized):
                 return
-        if platform == "bilibili" and ".m4s" in normalized.lower():
+        if any(hint.lower() in lowered_url for hint in _platform_strategy_list(platform, "excludedMediaHints")):
             return
         candidates.append(
             {
@@ -631,31 +645,20 @@ def _resolve_platform_share_page(
                     lowered = response_url.lower()
                     if response_url and _guess_kind_from_url(response_url) in {"video", "image"}:
                         _register_candidate(response_url, source=f"{platform}_network_capture")
-                    if platform == "doubao" and _DOUBAO_SHARE_API_HINT in lowered:
+                    share_api_hints = [hint.lower() for hint in _platform_strategy_list(platform, "shareApiHints")]
+                    if share_api_hints and any(hint in lowered for hint in share_api_hints):
+                        source_name = f"{platform}_share_api"
                         try:
                             payload = response.json()
                         except Exception:
                             payload = None
                         if payload is not None:
-                            for hit in _extract_media_urls_from_json_like(payload, source="doubao_share_api"):
+                            for hit in _extract_media_urls_from_json_like(payload, source=source_name):
                                 _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
                         else:
                             with contextlib.suppress(Exception):
                                 body_text = response.text()
-                                for hit in _extract_media_urls_from_json_like(body_text, source="doubao_share_api_text"):
-                                    _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
-                    if platform == "douyin" and any(hint in lowered for hint in _DOUYIN_SHARE_API_HINTS):
-                        try:
-                            payload = response.json()
-                        except Exception:
-                            payload = None
-                        if payload is not None:
-                            for hit in _extract_media_urls_from_json_like(payload, source="douyin_share_api"):
-                                _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
-                        else:
-                            with contextlib.suppress(Exception):
-                                body_text = response.text()
-                                for hit in _extract_media_urls_from_json_like(body_text, source="douyin_share_api_text"):
+                                for hit in _extract_media_urls_from_json_like(body_text, source=f"{source_name}_text"):
                                     _register_candidate(hit["url"], source=hit["source"], kind=hit["kind"])
 
                 page.on("request", _on_request)
@@ -728,7 +731,7 @@ def _load_requests():
 
 def _resolve_short_link_target(url: str) -> tuple[str, dict[str, Any]]:
     host = (urlparse(url).hostname or "").lower()
-    if host not in _SHORTLINK_HOSTS:
+    if host not in {item.lower() for item in _strategy_global_list("shortlinkHosts")}:
         return url, {"resolved": False, "host": host, "strategy": "not_shortlink"}
 
     requests, import_error = _load_requests()
@@ -740,12 +743,8 @@ def _resolve_short_link_target(url: str) -> tuple[str, dict[str, Any]]:
             "error": f"无法解析短链：{import_error}",
         }
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-        )
-    }
+    configured_headers = _strategy_global().get("shortlinkHeaders")
+    headers = dict(configured_headers) if isinstance(configured_headers, dict) else {}
     errors: list[str] = []
     for method in ("head", "get"):
         try:
@@ -782,6 +781,57 @@ def _resolve_short_link_target(url: str) -> tuple[str, dict[str, Any]]:
     }
 
 
+def _canonicalize_platform_url(url: str) -> tuple[str, dict[str, Any]]:
+    original = _safe_text(url)
+    if not original or _looks_like_direct_media(original):
+        return original, {"changed": False, "strategy": "skip_direct_media_or_empty"}
+
+    parsed = urlparse(original)
+    platform = _platform_from_url(original)
+    strategy = _platform_strategy(platform)
+    canonical = strategy.get("canonical")
+    if not isinstance(canonical, dict):
+        return original, {"changed": False, "platform": platform, "strategy": "no_canonical_strategy"}
+
+    scheme = parsed.scheme or "https"
+    host = (parsed.hostname or "").lower()
+    netloc = parsed.netloc
+    canonical_host = _safe_text(canonical.get("canonicalHost"))
+    host_equals = {item.lower() for item in _as_text_list(strategy.get("hostEquals"))}
+    wrapper_hosts = {item.lower() for item in _as_text_list(strategy.get("wrapperHosts"))}
+    if canonical_host and (host in host_equals or host in wrapper_hosts):
+        netloc = canonical_host
+
+    path = parsed.path or "/"
+    if canonical.get("dropStatusMediaSuffix"):
+        status_match = re.match(r"^(.*/(?:status|statuses)/\d+|/i/web/status/\d+)", path)
+        if status_match:
+            path = status_match.group(1)
+
+    query = ""
+    if canonical.get("stripAllQuery"):
+        query = ""
+    else:
+        query_allowlist = {item for item in _as_text_list(canonical.get("queryAllowlist"))}
+        tracking_keys = {item.lower() for item in _strategy_global_list("trackingQueryKeys")}
+        pairs: list[tuple[str, str]] = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            lowered = key.lower()
+            if query_allowlist:
+                if key in query_allowlist:
+                    pairs.append((key, value))
+            elif lowered not in tracking_keys:
+                pairs.append((key, value))
+        query = urlencode(pairs, doseq=True)
+
+    canonical_url = urlunparse((scheme, netloc, path, "", query, ""))
+    return canonical_url, {
+        "changed": canonical_url != original,
+        "platform": platform,
+        "strategy": "platform_canonical",
+    }
+
+
 def _load_yt_dlp():
     try:
         import yt_dlp  # type: ignore
@@ -812,13 +862,9 @@ def _download_direct_media(
         return False, f"未安装 requests，无法直接下载真实媒体地址：{import_error}"
 
     try:
-        request_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-            ),
-            **(headers or {}),
-        }
+        configured_headers = _strategy_global().get("directDownloadHeaders")
+        request_headers = dict(configured_headers) if isinstance(configured_headers, dict) else {}
+        request_headers.update(headers or {})
         response = requests.get(url, headers=request_headers, stream=True, timeout=45)
         response.raise_for_status()
         content_type = _safe_text(response.headers.get("Content-Type"))
@@ -859,24 +905,15 @@ def _select_primary_file(files: list[dict[str, Any]], prefer: DownloadMediaPrefe
 
 def _platform_from_url(url: str) -> str:
     host = (urlparse(url).hostname or "").lower()
-    if "xiaohongshu" in host or "xhslink" in host:
-        return "xiaohongshu"
-    if "doubao.com" in host:
-        return "doubao"
-    if "douyin" in host:
-        return "douyin"
-    if "tiktok" in host:
-        return "tiktok"
-    if "instagram" in host:
-        return "instagram"
-    if "jimeng.jianying.com" in host or "dreamina" in host:
-        return "jimeng"
-    if "youtube" in host or "youtu.be" in host:
-        return "youtube"
-    if "bilibili" in host or "b23.tv" in host:
-        return "bilibili"
-    if host in {"x.com", "twitter.com"}:
-        return "x"
+    for platform, payload in _strategy_platforms().items():
+        if not isinstance(payload, dict):
+            continue
+        if host in {item.lower() for item in _as_text_list(payload.get("hostEquals"))}:
+            return _resolve_platform_alias(platform)
+        if host in {item.lower() for item in _as_text_list(payload.get("wrapperHosts"))}:
+            return _resolve_platform_alias(platform)
+        if any(hint.lower() in host for hint in _as_text_list(payload.get("hostContains"))):
+            return _resolve_platform_alias(platform)
     return host or "unknown"
 
 
@@ -931,6 +968,22 @@ def download_media_for_vision(
                 ensure_ascii=False,
                 indent=2,
             )
+
+    canonical_url, canonical_resolution = _canonicalize_platform_url(resolved_url)
+    if canonical_url != resolved_url:
+        allowed, error_message = _guard_url(canonical_url, tool_call_id=tool_call_id)
+        if not allowed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "blocked": True,
+                    "error": error_message or "Safety Guardian 已阻止清洗后的媒体页面下载。",
+                    "message": "Safety Guardian 已阻止清洗后的媒体页面下载。",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        resolved_url = canonical_url
 
     platform, platform_profile = _resolve_platform_profile(resolved_url)
     effective_prefer = prefer
@@ -1106,6 +1159,8 @@ def download_media_for_vision(
                 "workspaceId": str(runtime_context.get("workspace_id") or "").strip() or None,
                 "sourceUrl": normalized_url,
                 "resolvedUrl": resolved_url,
+                "shortlinkResolution": shortlink_resolution,
+                "canonicalResolution": canonical_resolution,
                 "downloadTargetUrl": download_target_url,
                 "platform": platform,
                 "prefer": effective_prefer,

@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "sourceRefs": [
+    {
+      "project": "yt-dlp",
+      "platform": "x",
+      "url": "https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/twitter.py",
+      "strategyNotes": ["x.com/twitter.com status URLs", "i/web/status and status video/photo suffixes"]
+    },
+    {
+      "project": "yt-dlp",
+      "platform": "tiktok",
+      "url": "https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/tiktok.py",
+      "strategyNotes": ["www.tiktok.com/@user/video/id", "vm.tiktok.com, vt.tiktok.com and /t/ short links", "mobile app style user-agent fallback"]
+    },
+    {
+      "project": "yt-dlp",
+      "platform": "instagram",
+      "url": "https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/instagram.py",
+      "strategyNotes": ["p, tv, reel and reels shortcode URLs", "optional username path prefix"]
+    },
+    {
+      "project": "yt-dlp",
+      "platform": "youtube",
+      "url": "https://github.com/yt-dlp/yt-dlp",
+      "strategyNotes": ["watch, youtu.be, shorts and live entry points are delegated to yt-dlp after V8 canonical cleanup"]
+    }
+  ],
+  "global": {
+    "shortlinkHosts": ["xhslink.com", "b23.tv", "v.douyin.com", "t.co", "vm.tiktok.com", "vt.tiktok.com"],
+    "trackingQueryKeys": ["app", "feature", "fbclid", "gclid", "igsh", "igshid", "pp", "ref", "si", "s", "source", "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term"],
+    "directMediaHints": ["mime_type=video_mp4", "mime_type=image", "mime=image", "content-type=video", "content-type=image"],
+    "videoUrlHints": [".mp4", ".mov", ".m4v", ".webm", ".m3u8", ".mpd", ".m4s", "mime_type=video_mp4"],
+    "imageUrlHints": [".jpg", ".jpeg", ".png", ".webp", ".gif", "poster_url", "cover"],
+    "audioUrlHints": [".mp3", ".wav", ".m4a", ".aac"],
+    "candidateSourceWeights": {
+      "doubao_share_api": 25,
+      "jimeng_network_capture": 20
+    },
+    "directDownloadHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    },
+    "shortlinkHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    }
+  },
+  "platforms": {
+    "youtube": {
+      "hostContains": ["youtube", "youtu.be"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://www.youtube.com/",
+        "defaultCookiesFromBrowser": "",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "canonical": {
+        "queryAllowlist": ["v", "list", "index", "t", "start", "end"],
+        "shortsToWatch": false
+      }
+    },
+    "x": {
+      "hostEquals": ["x.com", "twitter.com"],
+      "wrapperHosts": ["fxtwitter.com", "fixupx.com", "fixvx.com", "vxtwitter.com"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://x.com/",
+        "defaultCookiesFromBrowser": "",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "canonical": {
+        "canonicalHost": "x.com",
+        "stripAllQuery": true,
+        "statusPathMarkers": ["/status/", "/statuses/", "/i/web/status/"],
+        "dropStatusMediaSuffix": true
+      }
+    },
+    "tiktok": {
+      "hostContains": ["tiktok"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://www.tiktok.com/",
+        "defaultCookiesFromBrowser": "chrome",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "canonical": {
+        "queryAllowlist": []
+      }
+    },
+    "instagram": {
+      "hostContains": ["instagram"],
+      "profile": {
+        "defaultPrefer": "all",
+        "defaultReferer": "https://www.instagram.com/",
+        "defaultCookiesFromBrowser": "chrome",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "canonical": {
+        "queryAllowlist": []
+      }
+    },
+    "douyin": {
+      "hostContains": ["douyin"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://www.douyin.com/",
+        "defaultCookiesFromBrowser": "chrome",
+        "cookieOptional": false,
+        "retryOrder": ["cookie_first", "referer_required"]
+      },
+      "directMediaHints": ["mime_type=video_mp4", "/video/tos/", "/tos-cn-ve-", ".ixigua.com/", ".douyinvod.com/", "douyin.com/aweme/v1/play", "aweme.snssdk.com/aweme/v1/play"],
+      "shareApiHints": ["aweme/v1/web/aweme/detail", "aweme/v1/web/multi/aweme/detail", "aweme/v1/play"],
+      "lowValueMediaHints": ["avatar", "cover", "music", "poster", "douyinpic", "imagex"],
+      "sharePageResolver": {
+        "enabled": true,
+        "browserCapture": true,
+        "fallback": "douyin_mobile_share_page",
+        "mobileShareUrlTemplate": "https://www.iesdouyin.com/share/video/{awemeId}/",
+        "mobileHeaders": {
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+          "Referer": "https://www.douyin.com/",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+      },
+      "candidateWeight": {
+        "directMediaHint": 40,
+        "sourceExact": {
+          "douyin_share_api": 20,
+          "douyin_share_api_text": 20,
+          "douyin_mobile_share_page": 20
+        },
+        "hintWeights": {
+          "mime_type=video_mp4": 25,
+          "/video/tos/": 15,
+          "/tos-cn-ve-": 15
+        },
+        "lowValueImagePenalty": -35,
+        "audioMusicPenalty": -20
+      },
+      "canonical": {
+        "stripAllQuery": true
+      }
+    },
+    "doubao": {
+      "hostContains": ["doubao.com"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://www.doubao.com/",
+        "defaultCookiesFromBrowser": "",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "shareApiHints": ["get_video_share_info"],
+      "sharePageResolver": {
+        "enabled": true,
+        "browserCapture": true
+      }
+    },
+    "jimeng": {
+      "hostContains": ["jimeng.jianying.com", "dreamina"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://jimeng.jianying.com/",
+        "defaultCookiesFromBrowser": "",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "directMediaHints": ["mime_type=video_mp4", "/video/tos/", "dreamina", ".mp4"],
+      "allowImageWithoutDirectHint": true,
+      "sharePageResolver": {
+        "enabled": true,
+        "browserCapture": true
+      }
+    },
+    "xiaohongshu": {
+      "hostContains": ["xiaohongshu", "xhslink"],
+      "profile": {
+        "defaultPrefer": "all",
+        "defaultReferer": "https://www.xiaohongshu.com/",
+        "defaultCookiesFromBrowser": "chrome",
+        "cookieOptional": false,
+        "retryOrder": ["cookie_first", "referer_required"]
+      },
+      "sharePageResolver": {
+        "enabled": true,
+        "browserCapture": true
+      }
+    },
+    "bilibili": {
+      "hostContains": ["bilibili", "b23.tv"],
+      "profile": {
+        "defaultPrefer": "video",
+        "defaultReferer": "https://www.bilibili.com/",
+        "defaultCookiesFromBrowser": "",
+        "cookieOptional": true,
+        "retryOrder": ["no_cookie", "cookie_if_needed"]
+      },
+      "excludedMediaHints": [".m4s"],
+      "sharePageResolver": {
+        "enabled": true,
+        "browserCapture": true
+      }
+    },
+    "xhslink": {
+      "aliasOf": "xiaohongshu"
+    }
+  }
+}

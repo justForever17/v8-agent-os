@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -247,7 +247,6 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
     };
 
     const handleCancel = () => {
-        resetForm();
         onCancel?.();
     };
 
@@ -270,14 +269,14 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
 
     return (
         <TooltipProvider delayDuration={180}>
-            <div className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-[70] flex justify-center px-3 sm:bottom-24">
+            <div className="w-full animate-in fade-in slide-in-from-bottom-1 duration-150">
                 <section
-                    className="pointer-events-auto w-[min(94vw,900px)] overflow-hidden rounded-2xl border border-border/70 bg-background/98 shadow-[0_16px_48px_rgba(15,23,42,0.16)] animate-in fade-in slide-in-from-bottom-2 duration-200"
+                    className="w-full overflow-hidden rounded-2xl border border-border/45 bg-background/96 shadow-sm backdrop-blur"
                     role="dialog"
                     aria-modal="false"
                     aria-label={title}
                 >
-                    <div className="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 sm:px-4">
+                    <div className="flex items-center gap-3 border-b border-border/45 px-3 py-2 sm:px-4">
                         <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                                 <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
@@ -297,8 +296,8 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 type="button"
                                 onClick={() => goToPage(pageIndex - 1)}
                                 disabled={pageIndex <= 0}
-                                className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
-                                aria-label={t(lt("上一题", "Previous"))}
+                                className="rounded-lg p-1 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
+                                aria-label={t(lt("返回", "Back"))}
                             >
                                 <ChevronLeft className="h-4 w-4" />
                             </button>
@@ -307,8 +306,8 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 type="button"
                                 onClick={() => goToPage(pageIndex + 1)}
                                 disabled={pageIndex >= questions.length - 1}
-                                className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
-                                aria-label={t(lt("下一题", "Next"))}
+                                className="rounded-lg p-1 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
+                                aria-label="NEXT"
                             >
                                 <ChevronRight className="h-4 w-4" />
                             </button>
@@ -323,7 +322,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                         </div>
                     </div>
 
-                    <div className="max-h-[min(52vh,430px)] overflow-y-auto px-3 py-2.5 sm:px-4">
+                    <div className="max-h-[min(42vh,360px)] overflow-y-auto px-3 py-2.5 sm:px-4">
                         {mediaItems.length ? (
                             <div className="mb-2.5 flex gap-2 overflow-x-auto pb-1">
                                 {mediaItems.map((item, index) => {
@@ -338,7 +337,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                                 <button
                                                     type="button"
                                                     onClick={() => toggleMedia(item, index)}
-                                                    className={`group relative h-16 w-28 shrink-0 overflow-hidden rounded-xl border text-left transition ${selected ? "border-primary ring-2 ring-primary/20" : "border-border/70 hover:border-primary/50"}`}
+                                                    className={`group relative h-14 w-24 shrink-0 overflow-hidden rounded-xl text-left transition ${selected ? "ring-2 ring-primary/30" : "ring-1 ring-border/40 hover:ring-primary/35"}`}
                                                 >
                                                     {kind === "image" && url ? (
                                                         // eslint-disable-next-line @next/next/no-img-element
@@ -368,7 +367,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                         ) : null}
 
                         {currentQuestion ? (
-                            <div className="rounded-xl bg-muted/25 p-2.5">
+                            <div className="p-1">
                                 <div className="mb-2 flex items-center justify-between gap-2">
                                     <Tooltip>
                                         <TooltipTrigger asChild>
@@ -383,7 +382,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                         ) : null}
                                     </Tooltip>
                                     {currentQuestionMulti ? (
-                                        <span className="shrink-0 rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                                            <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] text-muted-foreground">
                                             {t(lt("多选", "Multi"))}
                                         </span>
                                     ) : null}
@@ -402,7 +401,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                                         <button
                                                             type="button"
                                                             onClick={() => toggleOption(currentQuestion, pageIndex, option, index)}
-                                                            className={`flex h-8 min-w-0 items-center justify-between gap-1 rounded-lg border px-2 text-left text-xs transition ${selected ? "border-primary bg-primary/10 text-primary" : "border-border/70 bg-background hover:border-primary/40"}`}
+                                                            className={`flex h-8 min-w-0 items-center justify-between gap-1 rounded-lg px-2 text-left text-xs transition ${selected ? "bg-primary/8 text-primary" : "hover:bg-muted/60"}`}
                                                         >
                                                             <span className="min-w-0 truncate">{label}</span>
                                                             {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
@@ -423,14 +422,14 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                     value={customAnswers[currentQuestionKey] || ""}
                                     onChange={(event) => setCustomAnswers((current) => ({ ...current, [currentQuestionKey]: event.target.value }))}
                                     placeholder={currentQuestionOptions.length ? t(lt("其他 / 补充说明", "Other / note")) : t(lt("输入你的回答", "Type your answer"))}
-                                    className="mt-2 h-8 w-full rounded-lg border border-border/70 bg-background px-2 text-xs outline-none transition placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/10"
+                                    className="mt-2 h-8 w-full rounded-lg border border-border/50 bg-background px-2 text-xs outline-none transition placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/10"
                                     autoFocus={!currentQuestionOptions.length}
                                 />
                             </div>
                         ) : null}
                     </div>
 
-                    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2 sm:px-4">
+                    <div className="flex items-center justify-between gap-2 border-t border-border/45 px-3 py-2 sm:px-4">
                         <button
                             type="button"
                             onClick={handleCancel}
@@ -444,19 +443,17 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 type="button"
                                 onClick={() => goToPage(pageIndex - 1)}
                                 disabled={pageIndex <= 0 || isSubmitting}
-                                className="inline-flex items-center gap-1 rounded-lg border border-border/70 px-2 py-1.5 text-xs text-foreground transition hover:bg-muted disabled:opacity-40"
+                                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
                             >
-                                <ArrowLeft className="h-3.5 w-3.5" />
-                                {t(lt("返回", "Back"))}
+                                ← {t(lt("返回", "Back"))}
                             </button>
                             <button
                                 type="button"
                                 onClick={handleNext}
                                 disabled={isSubmitting || (!isLastPage && !currentAnswered) || (isLastPage && !canSubmit)}
-                                className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/8 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                                {isLastPage ? (isSubmitting ? t(lt("发送中", "Sending")) : t(lt("发送", "Send"))) : t(lt("下一题", "Next"))}
-                                <ArrowRight className="h-3.5 w-3.5" />
+                                {isLastPage ? (isSubmitting ? t(lt("发送中", "Sending")) : t(lt("继续", "Continue"))) : t(lt("→ 下一个", "→ NEXT"))}
                             </button>
                         </div>
                     </div>

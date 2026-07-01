@@ -77,6 +77,45 @@ function writePlainSnapshot(term: Terminal, text: string) {
     term.write(text.replace(/\r?\n/g, '\r\n'));
 }
 
+function isNativeXtermInputTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) {
+        return false;
+    }
+    if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable) {
+        return true;
+    }
+    return false;
+}
+
+function keyEventToTerminalInput(event: React.KeyboardEvent<HTMLDivElement>) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+        return 'paste';
+    }
+    if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+        return '\x03';
+    }
+    if (event.ctrlKey && event.key.toLowerCase() === 'd') {
+        return '\x04';
+    }
+    if (event.key === 'Enter') return '\r';
+    if (event.key === 'Escape') return '\x1b';
+    if (event.key === 'Backspace') return '\x7f';
+    if (event.key === 'Tab') return '\t';
+    if (event.key === 'ArrowUp') return '\x1b[A';
+    if (event.key === 'ArrowDown') return '\x1b[B';
+    if (event.key === 'ArrowRight') return '\x1b[C';
+    if (event.key === 'ArrowLeft') return '\x1b[D';
+    if (event.key === 'Home') return '\x1b[H';
+    if (event.key === 'End') return '\x1b[F';
+    if (event.key === 'Delete') return '\x1b[3~';
+    if (event.key === 'PageUp') return '\x1b[5~';
+    if (event.key === 'PageDown') return '\x1b[6~';
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
+        return event.key;
+    }
+    return '';
+}
+
 interface ManualTerminalXtermProps {
     session: ManualTerminalSessionView;
     error?: string;
@@ -87,9 +126,11 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
+    const sessionUsesLocalEcho = session.usesTty === false || String((session as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
     const resizeTimerRef = useRef<number | null>(null);
     const wroteInitialSnapshotRef = useRef(false);
     const pendingInputRef = useRef('');
+    const localEchoRef = useRef(false);
     const [connected, setConnected] = useState(false);
     const [running, setRunning] = useState(session.isRunning !== false);
     const [socketError, setSocketError] = useState('');
@@ -109,6 +150,18 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
         const text = String(data || '');
         if (!text) {
             return;
+        }
+        if (localEchoRef.current) {
+            const term = terminalRef.current;
+            if (term) {
+                if (text === '\r' || text === '\n') {
+                    term.write('\r\n');
+                } else if (text === '\u007f' || text === '\b') {
+                    term.write('\b \b');
+                } else if (!text.startsWith('\x1b')) {
+                    term.write(text);
+                }
+            }
         }
         if (!sendFrame({ type: 'input', data: text })) {
             pendingInputRef.current += text;
@@ -175,6 +228,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
         host.innerHTML = '';
         wroteInitialSnapshotRef.current = false;
         pendingInputRef.current = '';
+        localEchoRef.current = sessionUsesLocalEcho;
 
         const fitAddon = new FitAddon();
         const term = new Terminal({
@@ -268,6 +322,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             if (type === 'snapshot') {
                 const nextSession = (payload.session || {}) as ManualTerminalSessionView;
                 setRunning(nextSession.isRunning !== false);
+                localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
                 const delta = String(nextSession.outputDelta || '');
                 if (delta) {
                     term.write(delta);
@@ -284,6 +339,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             if (type === 'status') {
                 const nextSession = (payload.session || {}) as ManualTerminalSessionView;
                 setRunning(nextSession.isRunning !== false);
+                localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
                 return;
             }
             if (type === 'error') {
@@ -312,12 +368,35 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [flushPendingInput, pasteClipboard, scheduleResize, sendFrame, sendTerminalInput, session.isRunning, sessionId]);
+    }, [flushPendingInput, pasteClipboard, scheduleResize, sendFrame, sendTerminalInput, session.isRunning, sessionId, sessionUsesLocalEcho]);
 
     return (
         <div
             className="flex min-h-0 flex-1 flex-col bg-[#05070b]"
-            onPointerDownCapture={() => terminalRef.current?.focus()}
+            tabIndex={0}
+            onMouseDown={(event) => {
+                event.currentTarget.focus();
+                terminalRef.current?.focus();
+            }}
+            onPointerDownCapture={(event) => {
+                event.currentTarget.focus();
+                terminalRef.current?.focus();
+            }}
+            onKeyDownCapture={(event) => {
+                if (isNativeXtermInputTarget(event.target)) {
+                    return;
+                }
+                const data = keyEventToTerminalInput(event);
+                if (!data) {
+                    return;
+                }
+                event.preventDefault();
+                if (data === 'paste') {
+                    void pasteClipboard();
+                    return;
+                }
+                sendTerminalInput(data);
+            }}
             onContextMenu={(event) => {
                 event.preventDefault();
                 void pasteClipboard();

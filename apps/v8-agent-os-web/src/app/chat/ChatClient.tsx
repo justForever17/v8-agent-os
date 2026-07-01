@@ -508,6 +508,7 @@ export default function ChatClient() {
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
     const [askUserApprovalId, setAskUserApprovalId] = useState("");
     const [askUserRequest, setAskUserRequest] = useState<Record<string, unknown> | null>(null);
+    const [askUserCollapsed, setAskUserCollapsed] = useState(false);
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
@@ -994,6 +995,7 @@ export default function ChatClient() {
         setAskUserQuestion("");
         setAskUserToolCallId("");
         setAskUserRequest(null);
+        setAskUserCollapsed(false);
         if (options?.closeModal !== false) {
             setAskUserModalOpen(false);
         }
@@ -1066,6 +1068,7 @@ export default function ChatClient() {
                 ? options.openModal
                 : true;
         if (shouldOpenModal) {
+            setAskUserCollapsed(false);
             setAskUserModalOpen(true);
         }
     }, [clearApprovalState]);
@@ -2006,6 +2009,7 @@ export default function ChatClient() {
             ? `calc(0.5rem + env(safe-area-inset-bottom) + ${mobileKeyboardInset}px)`
             : "calc(0.5rem + env(safe-area-inset-bottom))",
     };
+    const hasAskUserSurface = Boolean(askUserModalOpen && (askUserApprovalId || askUserToolCallId || askUserQuestion));
 
     return (
         <div className="relative flex h-full min-h-0 w-full overflow-hidden overscroll-none bg-transparent">
@@ -2015,33 +2019,22 @@ export default function ChatClient() {
                 <div className={cn("mx-auto flex h-full min-h-0 w-full flex-1 flex-col px-2 pt-0.5 sm:px-4 sm:pt-1 lg:px-6", contentShellClassName)}>
                 <div className="shrink-0 flex flex-col gap-1">
                     <div className="scrollbar-none flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden pb-0.5 sm:gap-1">
-                        <button
-                            type="button"
-                            className={`inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px] ${
-                                (activeConversationId ? isContextExpanded : workspaceChooserVisible)
-                                    ? "border-primary/35 bg-primary/8 text-primary"
-                                    : "border-border/60"
-                            }`}
-                            onClick={() => {
-                                if (activeConversationId) {
-                                    setIsContextExpanded((current) => !current);
-                                    return;
-                                }
-                                setWorkspaceChooserVisible((current) => !current);
-                                if (!workspaceChooserVisible) {
-                                    clearNewConversationIntent();
-                                }
-                            }}
-                            aria-expanded={activeConversationId ? isContextExpanded : workspaceChooserVisible}
-                            aria-label={activeConversationId ? t(lt("工作区信息", "Workspace info")) : t(lt("新对话工作区选择", "New conversation workspace chooser"))}
-                            title={
-                                activeConversationId
-                                    ? (isContextExpanded ? t(lt("收起工作区信息", "Collapse workspace info")) : t(lt("展开工作区信息", "Expand workspace info")))
-                                    : (workspaceChooserVisible ? t(lt("收起工作区选择", "Collapse workspace chooser")) : t(lt("开始新对话", "Start a new conversation")))
-                            }
-                        >
-                            <FolderTree className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
-                        </button>
+                        {activeConversationId && (
+                            <button
+                                type="button"
+                                className={`inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px] ${
+                                    isContextExpanded
+                                        ? "border-primary/35 bg-primary/8 text-primary"
+                                        : "border-border/60"
+                                }`}
+                                onClick={() => setIsContextExpanded((current) => !current)}
+                                aria-expanded={isContextExpanded}
+                                aria-label={t(lt("工作区信息", "Workspace info"))}
+                                title={isContextExpanded ? t(lt("收起工作区信息", "Collapse workspace info")) : t(lt("展开工作区信息", "Expand workspace info"))}
+                            >
+                                <FolderTree className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
+                            </button>
+                        )}
                         {hasActiveWorkbenchSession && (
                             <div className="ml-auto flex shrink-0 justify-end gap-1">
                                 {/* 终端开关 */}
@@ -2275,7 +2268,30 @@ export default function ChatClient() {
                 >
                     <div className="flex flex-col gap-2">
                         <div className="relative shrink-0">
-                            <div className="pointer-events-none absolute inset-x-4 -top-7 hidden h-7 bg-gradient-to-t from-background via-background/82 to-transparent blur-sm sm:block" />
+                            {activeConversationId && hasAskUserSurface ? (
+                                <div className={cn("mb-2", askUserCollapsed && "hidden")}>
+                                    <AskUserModal
+                                        key={askUserApprovalId || askUserToolCallId || 'default-modal'}
+                                        isOpen={askUserModalOpen && !askUserCollapsed}
+                                        question={askUserQuestion}
+                                        request={askUserRequest}
+                                        toolCallId={askUserToolCallId}
+                                        onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
+                                        onCancel={() => setAskUserCollapsed(true)}
+                                    />
+                                </div>
+                            ) : null}
+                            {activeConversationId && hasAskUserSurface && askUserCollapsed ? (
+                                <div className="mb-2 flex justify-end">
+                                    <button
+                                        type="button"
+                                        className="rounded-full border border-border/55 bg-background/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition hover:border-primary/35 hover:text-foreground"
+                                        onClick={() => setAskUserCollapsed(false)}
+                                    >
+                                        {t(lt("继续选择", "Resume choice"))}
+                                    </button>
+                                </div>
+                            ) : null}
                             {activeConversationId ? (
                                 <InputArea
                                     key={activeConversationId || "new-session"}
@@ -2358,18 +2374,6 @@ export default function ChatClient() {
                 </div>
             </aside>
         )}
-
-        <AskUserModal
-            key={askUserApprovalId || askUserToolCallId || 'default-modal'}
-            isOpen={askUserModalOpen}
-            question={askUserQuestion}
-            request={askUserRequest}
-            toolCallId={askUserToolCallId}
-            onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
-            onCancel={() => {
-                setAskUserModalOpen(false);
-            }}
-        />
 
         <GovernanceApprovalModal
             isOpen={governanceApprovalOpen}

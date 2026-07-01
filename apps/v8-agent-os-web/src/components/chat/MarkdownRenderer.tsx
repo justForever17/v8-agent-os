@@ -3,9 +3,11 @@ import { cn } from "@/lib/utils";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { motion } from 'framer-motion';
+import { Box, Download, ExternalLink, FileText } from 'lucide-react';
 import { coerceAdminResourceRef, resolveAdminResourceUrl } from "@v8/session-realtime";
 import { MediaPlayer, ImagePreview } from './MediaRenderers';
 import { CodeBlock as SharedCodeBlock } from './CodeBlock';
+import { PPTCard } from './PPTCard';
 import { useDebouncedValue } from '@/hooks/use-debounce';
 
 // 宽松的媒体文件扩展名检测 (允许 URL 后带有参数, 如 ?token=...)
@@ -13,6 +15,12 @@ const MEDIA_EXTENSIONS = {
     video: /\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i,
     audio: /\.(mp3|wav|ogg|m4a|flac|aac)(\?.*)?$/i,
     image: /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|tiff)(\?.*)?$/i,
+};
+
+const DOCUMENT_EXTENSIONS = {
+    pdf: /\.(pdf)(\?.*)?$/i,
+    ppt: /\.(pptx?|ppsx?)(\?.*)?$/i,
+    model3d: /\.(glb|gltf|obj|fbx|stl|usd|usdz|zip)(\?.*)?$/i,
 };
 
 // 常见云存储域名的特殊处理 (即使没有后缀也尝试识别)
@@ -153,6 +161,78 @@ function normalizeSurfaceHref(href: string) {
         || raw.replace(/^\/api\/client\b/i, "/api");
 }
 
+function decodeFilenameFromUrl(url: string, fallback: string) {
+    try {
+        const parsed = new URL(url, typeof window !== "undefined" ? window.location.origin : "http://localhost");
+        const last = parsed.pathname.split("/").filter(Boolean).pop();
+        return last ? decodeURIComponent(last) : fallback;
+    } catch {
+        const last = String(url || "").split("?")[0].split(/[\\/]/).filter(Boolean).pop();
+        return last ? decodeURIComponent(last) : fallback;
+    }
+}
+
+function classifyDocumentUrl(url: string): "pdf" | "ppt" | "model3d" | "" {
+    if (DOCUMENT_EXTENSIONS.ppt.test(url)) return "ppt";
+    if (DOCUMENT_EXTENSIONS.pdf.test(url)) return "pdf";
+    if (DOCUMENT_EXTENSIONS.model3d.test(url)) return "model3d";
+    return "";
+}
+
+function DocumentLinkCard({
+    href,
+    label,
+    type,
+}: {
+    href: string;
+    label: string;
+    type: "pdf" | "model3d";
+}) {
+    const filename = decodeFilenameFromUrl(href, label || (type === "pdf" ? "document.pdf" : "model.glb"));
+    const icon = type === "model3d" ? <Box className="h-5 w-5" /> : <FileText className="h-5 w-5" />;
+    return (
+        <div className="my-2 flex w-full max-w-sm items-center gap-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
+            <div className={cn(
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border",
+                type === "model3d"
+                    ? "border-sky-200 bg-sky-100/60 text-sky-700"
+                    : "border-red-200 bg-red-100/60 text-red-700",
+            )}>
+                {icon}
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-foreground" title={filename}>
+                    {filename}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                    {type === "model3d" ? "3D file" : "PDF document"}
+                </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+                <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    title="打开"
+                >
+                    <ExternalLink className="h-4 w-4" />
+                </a>
+                <a
+                    href={href}
+                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    title="下载"
+                >
+                    <Download className="h-4 w-4" />
+                </a>
+            </div>
+        </div>
+    );
+}
+
 /**
  * 嵌入式视频组件
  */
@@ -261,6 +341,20 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
             }
             if (isAudio) {
                 return <MediaPlayer src={resolvedHref} type="audio" title={String(children)} />;
+            }
+
+            const documentType = classifyDocumentUrl(resolvedHref);
+            if (documentType === "ppt") {
+                return <PPTCard url={resolvedHref} filename={decodeFilenameFromUrl(resolvedHref, String(children) || "Presentation.pptx")} />;
+            }
+            if (documentType === "pdf" || documentType === "model3d") {
+                return (
+                    <DocumentLinkCard
+                        href={resolvedHref}
+                        label={String(children)}
+                        type={documentType}
+                    />
+                );
             }
 
             return (

@@ -68,12 +68,22 @@ export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAp
                     uri: mcpApp.resourceUri,
                 });
                 const response = await fetch(`/api/mcp-apps/resources/read?${query.toString()}`, { cache: "no-store" });
-                const payload = await response.json();
+                const rawText = await response.text();
+                let payload: Record<string, unknown> = {};
+                try {
+                    payload = rawText ? JSON.parse(rawText) as Record<string, unknown> : {};
+                } catch {
+                    throw new Error(response.ok ? "MCP App 资源返回了非 JSON 内容。" : `MCP App 资源读取失败 (${response.status})。`);
+                }
                 if (!response.ok) {
                     throw new Error(String(payload?.detail || payload?.error || response.statusText));
                 }
                 if (!cancelled) {
-                    setHtml(buildHostHtml(String(payload.html || "")));
+                    const nextHtml = String(payload.html || "");
+                    if (!nextHtml.trim()) {
+                        throw new Error("MCP App 没有返回可展示内容。");
+                    }
+                    setHtml(buildHostHtml(nextHtml));
                 }
             } catch (err) {
                 if (!cancelled) {

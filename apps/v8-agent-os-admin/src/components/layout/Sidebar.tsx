@@ -1,16 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Image from "next/image";
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { signOut } from "next-auth/react";
 
 import { ADMIN_NAV_GROUPS } from "@/lib/admin-navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
+
+const WEB_CHAT_URL = "http://127.0.0.1:9527/chat";
 
 function isGroupActive(pathname: string, hrefs: string[]) {
     return hrefs.some((href) => pathname === href || (href !== "/admin" && pathname.startsWith(href)));
@@ -28,14 +29,12 @@ export function Sidebar() {
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
     const t = useT();
 
-    // 1. 初始化并从 localStorage 恢复折叠状态
-    const [isCollapsed, setIsCollapsed] = useState(false);
-    useEffect(() => {
-        const stored = localStorage.getItem("v8-admin-sidebar-collapsed");
-        if (stored === "true") {
-            setIsCollapsed(true);
+    const [isCollapsed, setIsCollapsed] = useState(() => {
+        if (typeof window === "undefined") {
+            return false;
         }
-    }, []);
+        return localStorage.getItem("v8-admin-sidebar-collapsed") === "true";
+    });
 
     const toggleCollapse = () => {
         setIsCollapsed((prev) => {
@@ -53,6 +52,18 @@ export function Sidebar() {
             )}
         >
 
+            <div className={cn("shrink-0 border-b border-slate-200", isCollapsed ? "p-2" : "px-4 py-3")}>
+                <a
+                    href={WEB_CHAT_URL}
+                    className={cn(
+                        "flex items-center rounded-2xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900",
+                        isCollapsed ? "h-11 w-11 justify-center" : "h-10 w-10 justify-center",
+                    )}
+                    title="返回聊天页"
+                >
+                    <ArrowLeft className="h-4 w-4" />
+                </a>
+            </div>
 
             {/* 导航菜单区域 */}
             <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">
@@ -142,37 +153,36 @@ export function Sidebar() {
             </div>
 
             {/* 底部控制面板 */}
-            <div className="border-t border-slate-200 p-4 space-y-3 shrink-0">
-                {/* 退出登录按钮 */}
-                <Button
-                    variant="outline"
-                    className={cn(
-                        "border-slate-200 bg-white text-slate-600 hover:text-rose-600 transition-all duration-300",
-                        isCollapsed ? "h-11 w-11 p-0 rounded-2xl mx-auto flex items-center justify-center" : "w-full justify-start rounded-2xl"
-                    )}
-                    onClick={() => signOut()}
-                    title={isCollapsed ? t("components.layout.Sidebar.k2ed944b1") : undefined}
-                >
-                    <LogOut className={cn("h-4 w-4", isCollapsed ? "" : "mr-2")} />
-                    {!isCollapsed && t("components.layout.Sidebar.k2ed944b1")}
-                </Button>
-
-                {/* 展开/收起控制条 */}
-                <div className={cn("flex items-center", isCollapsed ? "justify-center" : "justify-between px-2 pt-1")}>
+            <div className={cn("border-t border-slate-200 shrink-0", isCollapsed ? "p-2" : "p-4")}>
+                {isCollapsed ? (
                     <button
                         type="button"
                         onClick={toggleCollapse}
-                        className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-200/50 hover:text-slate-600 transition-colors"
-                        title={isCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+                        className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl text-slate-400 transition-colors hover:bg-white hover:text-slate-600"
+                        title="展开侧边栏"
                     >
-                        {isCollapsed ? <PanelLeftOpen className="h-4.5 w-4.5" /> : <PanelLeftClose className="h-4.5 w-4.5" />}
+                        <PanelLeftOpen className="h-4.5 w-4.5" />
                     </button>
-                    {!isCollapsed && (
-                        <span className="text-[10px] text-slate-400 uppercase font-medium tracking-wider notranslate" translate="no">
-                            V8 Agent OS
-                        </span>
-                    )}
-                </div>
+                ) : (
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            className="h-11 flex-1 justify-start rounded-2xl border-slate-200 bg-white text-slate-600 transition-all duration-300 hover:text-rose-600"
+                            onClick={() => signOut()}
+                        >
+                            <LogOut className="mr-2 h-4 w-4" />
+                            {t("components.layout.Sidebar.k2ed944b1")}
+                        </Button>
+                        <button
+                            type="button"
+                            onClick={toggleCollapse}
+                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-slate-400 transition-colors hover:bg-white hover:text-slate-600"
+                            title="折叠侧边栏"
+                        >
+                            <PanelLeftClose className="h-4.5 w-4.5" />
+                        </button>
+                    </div>
+                )}
             </div>
         </aside>
     );

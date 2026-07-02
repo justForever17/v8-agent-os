@@ -11,11 +11,10 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LogOut, Settings } from "lucide-react";
-import { signOut, useSession } from "next-auth/react";
+import { Settings } from "lucide-react";
+import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
-import { LoginDialog } from "@/components/auth/LoginDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
@@ -29,43 +28,25 @@ export function UserProfile() {
     const displayImage = profile?.image || session?.user?.image || "";
     const displayLogin = profile?.login || session?.user?.login || session?.user?.email || "";
 
-    const handleSignOut = async () => {
-        const fallbackUrl =
-            typeof window !== "undefined"
-                ? `${window.location.origin}/chat`
-                : "/chat";
-
-        const result = await signOut({
-            redirect: false,
-            callbackUrl: fallbackUrl,
-        });
-
-        if (typeof window === "undefined") {
-            return;
-        }
-
-        let nextUrl = fallbackUrl;
-        const candidate = typeof result?.url === "string" ? result.url : "";
-        if (candidate) {
-            try {
-                const parsed = new URL(candidate, fallbackUrl);
-                if (parsed.origin === window.location.origin) {
-                    nextUrl = parsed.toString();
-                }
-            } catch {
-                nextUrl = fallbackUrl;
-            }
-        }
-
-        window.location.assign(nextUrl);
-    };
-
     if (status === "loading") {
         return <div className="h-9 w-9 animate-pulse bg-muted rounded-full" />;
     }
 
     if (!session?.user) {
-        return <LoginDialog />;
+        return (
+            <Button
+                variant="ghost"
+                className="h-9 w-9 rounded-full overflow-hidden border border-transparent bg-white/50 p-0 dark:bg-slate-950/50"
+                title={t(lt("本机连接中", "Connecting locally"))}
+            >
+                <Avatar className="h-8 w-8">
+                    <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
+                    <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-sm font-medium text-white">
+                        {displayName.charAt(0).toUpperCase() || "U"}
+                    </AvatarFallback>
+                </Avatar>
+            </Button>
+        );
     }
 
     return (
@@ -108,12 +89,7 @@ export function UserProfile() {
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => setShowSettings(true)}>
                         <Settings className="mr-2 h-4 w-4" />
-                        <span>{t(lt("设置", "Settings"))}</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={handleSignOut}>
-                        <LogOut className="mr-2 h-4 w-4" />
-                        <span>{t(lt("退出登录", "Sign out"))}</span>
+                        <span>{t(lt("个性化设置", "Personalization"))}</span>
                     </DropdownMenuItem>
                 </DropdownMenuContent>
             </DropdownMenu>

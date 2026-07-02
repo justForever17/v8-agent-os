@@ -12,6 +12,7 @@ import {
     ChevronRight,
     Loader2,
     AlertCircle,
+    Settings,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/lib/conversation-groups";
+
+const LOCAL_ADMIN_CONFIG_URL = "http://127.0.0.1:9528/admin";
 
 export function Sidebar() {
     const { conversations, deleteConversation, clearConversations } = useConversationContext();
@@ -228,7 +231,19 @@ export function Sidebar() {
                 </div>
             </ScrollArea>
 
-            <div className="mt-auto border-t border-border/40 bg-background/30 backdrop-blur-sm" />
+            <div className={cn("mt-auto border-t border-border/40 bg-background/70 backdrop-blur-sm", collapsed ? "p-2" : "p-3")}>
+                <a
+                    href={LOCAL_ADMIN_CONFIG_URL}
+                    className={cn(
+                        "flex items-center rounded-2xl text-sm text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground",
+                        collapsed ? "h-10 w-10 justify-center" : "h-10 gap-2 px-3",
+                    )}
+                    title={t(lt("打开设置", "Open settings"))}
+                >
+                    <Settings className="h-4 w-4 shrink-0" />
+                    {!collapsed && <span>{t(lt("设置", "Settings"))}</span>}
+                </a>
+            </div>
         </div>
     );
 

@@ -220,7 +220,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                         <div className="space-y-2">
                             <Label>{t(lt("管理台连接档案", "Admin connection profiles"))}</Label>
                             <p className="text-sm leading-6 text-muted-foreground">
-                                {t(lt("这里会在当前设备上保存管理台档案，退出登录不会清掉它们。", "Admin console profiles stay on this device after sign-out."))}
+                                {t(lt("这里会在当前设备上保存本机或远程管理台档案。", "Admin console profiles are saved on this device."))}
                             </p>
                         </div>
                         <AdminConnectionManager variant="panel" />

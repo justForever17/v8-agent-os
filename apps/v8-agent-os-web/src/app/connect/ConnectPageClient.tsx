@@ -29,8 +29,8 @@ export function ConnectPageClient() {
                         </h1>
                         <p className="text-sm leading-6 text-slate-600 dark:text-slate-400">
                             {t(lt(
-                                "选择你的管理台。Web 登录、聊天和运行状态都会走这里。",
-                                "Choose your console. Sign-in, chat, and runtime state all flow through it."
+                                "选择你的管理台。Web 连接、聊天和运行状态都会走这里。",
+                                "Choose your console. Connection, chat, and runtime state all flow through it."
                             ))}
                         </p>
                     </div>

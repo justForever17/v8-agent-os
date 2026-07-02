@@ -35,9 +35,8 @@ import { Message } from "@/store/chat-types";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
-import { useSession } from "next-auth/react";
-import { LoginDialog } from "@/components/auth/LoginDialog";
-import { Bot, FolderTree, TerminalSquare, PanelRight, X } from "lucide-react";
+import { signIn, useSession } from "next-auth/react";
+import { AlertCircle, FolderTree, PlugZap, TerminalSquare, PanelRight, X } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { Button } from "@/components/ui/button";
 import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
@@ -81,6 +80,8 @@ const RuntimeTimelinePanel = dynamic(
     () => import("@/components/chat/RuntimeTimelinePanel").then((mod) => mod.RuntimeTimelinePanel),
     { ssr: false }
 );
+
+const DEFAULT_LOCAL_ADMIN_BASE_URL = "http://127.0.0.1:9528";
 
 interface ProjectDescriptor {
     id: string;
@@ -484,6 +485,8 @@ export default function ChatClient() {
     const urlId = searchParams.get("id");
     const newConversationIntent = searchParams.get("new") === "1";
     const router = useRouter();
+    const [localConnectError, setLocalConnectError] = useState<string | null>(null);
+    const localConnectAttemptedRef = useRef(false);
 
     // Use a true React state to track the active conversation ID.
     // This is crucial because window.history.replaceState does not trigger Next.js router updates,
@@ -1544,6 +1547,49 @@ export default function ChatClient() {
     }, [loadProjects, status]);
 
     useEffect(() => {
+        if (status !== "unauthenticated" || localConnectAttemptedRef.current) {
+            return;
+        }
+        localConnectAttemptedRef.current = true;
+        setLocalConnectError(null);
+
+        let cancelled = false;
+        void (async () => {
+            try {
+                const connectionResponse = await fetch("/api/connection", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ adminBaseUrl: DEFAULT_LOCAL_ADMIN_BASE_URL, persist: true }),
+                });
+                if (!connectionResponse.ok) {
+                    const payload = await connectionResponse.json().catch(() => null);
+                    throw new Error(payload?.error || payload?.message || t(lt("本机管理台不可用", "Local Admin is unavailable")));
+                }
+
+                const result = await signIn("credentials", {
+                    localSession: "1",
+                    adminBaseUrl: DEFAULT_LOCAL_ADMIN_BASE_URL,
+                    redirect: false,
+                });
+                if (result?.error) {
+                    throw new Error(result.error);
+                }
+                if (!cancelled) {
+                    router.refresh();
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setLocalConnectError(error instanceof Error ? error.message : t(lt("本机连接失败", "Local connection failed")));
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [router, status, t]);
+
+    useEffect(() => {
         if (status !== "authenticated") {
             setSupervisorReasoningEffortControl(null);
             return;
@@ -2021,17 +2067,23 @@ export default function ChatClient() {
 
     if (status === "unauthenticated") {
         return (
-            <div className="flex flex-col items-center justify-center h-full space-y-6">
-                <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
-                    <Bot className="w-8 h-8 text-primary" />
+            <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                    {localConnectError ? <AlertCircle className="h-7 w-7" /> : <PlugZap className="h-7 w-7" />}
                 </div>
-                <div className="text-center space-y-2">
-                    <h1 className="text-2xl font-bold">{t(lt("欢迎使用 V8 Agent OS", "Welcome to V8 Agent OS"))}</h1>
-                    <p className="text-muted-foreground">{t(lt("请登录以开始对话", "Sign in to start chatting"))}</p>
+                <div className="mt-5 max-w-sm space-y-2">
+                    <h1 className="text-xl font-semibold">
+                        {localConnectError ? t(lt("本机 V8 OS 未连接", "Local V8 OS is not connected")) : t(lt("正在连接本机 V8 OS", "Connecting to local V8 OS"))}
+                    </h1>
+                    <p className="text-sm leading-6 text-muted-foreground">
+                        {localConnectError || t(lt("Web 会自动连接本机 Admin 与 Engine。", "Web connects to local Admin and Engine automatically."))}
+                    </p>
                 </div>
-                <div className="scale-125">
-                    <LoginDialog />
-                </div>
+                {localConnectError && (
+                    <Button className="mt-5 rounded-2xl" onClick={() => router.replace("/connect?next=/chat")}>
+                        {t(lt("打开连接设置", "Open connection settings"))}
+                    </Button>
+                )}
             </div>
         );
     }
@@ -2256,7 +2308,7 @@ export default function ChatClient() {
                         <div className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto p-8 animate-in fade-in zoom-in-95 duration-300">
                             <div className="max-w-xl rounded-[28px] border border-amber-300/50 bg-amber-50/80 p-6 text-center shadow-sm backdrop-blur dark:border-amber-500/30 dark:bg-amber-500/10">
                                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
-                                    <Bot className="h-6 w-6" />
+                                    <AlertCircle className="h-6 w-6" />
                                 </div>
                                 <h2 className="mt-4 text-base font-semibold text-foreground">
                                     {t(lt("旧会话未接入 Canonical Transcript", "Legacy conversation is not on Canonical Transcript"))}

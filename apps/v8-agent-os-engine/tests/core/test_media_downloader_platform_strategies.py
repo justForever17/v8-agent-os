@@ -1,7 +1,11 @@
+import json
+
 from core.tools.media_downloader import (
+    _build_subtitle_fallback_result,
     _canonicalize_platform_url,
     _choose_media_candidate,
     _cookie_retry_source,
+    _download_subtitles_fallback,
     _extract_media_urls_from_text,
     _guess_kind_from_url,
     _infer_media_quality,
@@ -350,6 +354,115 @@ def test_kuaishou_graphql_api_resolves_observed_mp4_without_browser(monkeypatch)
     assert result["downloadUrl"] == KUAISHOU_DIRECT_VIDEO_URL
 
 
+def test_subtitle_fallback_prefers_manual_subtitles(tmp_path) -> None:
+    subtitle_path = tmp_path / "sample.en.srt"
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def extract_info(self, url, download):
+            assert url == "https://youtube.com/watch?v=sample"
+            assert download is True
+            assert self.opts["skip_download"] is True
+            assert self.opts["writesubtitles"] is True
+            assert self.opts["writeautomaticsub"] is False
+            subtitle_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+    class FakeYtDlp:
+        YoutubeDL = FakeYoutubeDL
+
+    files, metadata = _download_subtitles_fallback(
+        FakeYtDlp,
+        url="https://youtube.com/watch?v=sample",
+        download_dir=tmp_path,
+        base_opts={"quiet": True, "format": "best", "merge_output_format": "mp4"},
+        cookie_option=None,
+    )
+
+    assert files == [subtitle_path]
+    assert metadata["ok"] is True
+    assert metadata["strategy"] == "manual_subtitles"
+
+
+def test_subtitle_fallback_uses_auto_subtitles_after_manual_failure(tmp_path) -> None:
+    subtitle_path = tmp_path / "sample.en.vtt"
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def extract_info(self, url, download):
+            if self.opts["writesubtitles"]:
+                raise RuntimeError("no manual subtitles")
+            assert self.opts["writeautomaticsub"] is True
+            subtitle_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n", encoding="utf-8")
+
+    class FakeYtDlp:
+        YoutubeDL = FakeYoutubeDL
+
+    files, metadata = _download_subtitles_fallback(
+        FakeYtDlp,
+        url="https://youtube.com/watch?v=sample",
+        download_dir=tmp_path,
+        base_opts={"quiet": True},
+        cookie_option=None,
+    )
+
+    assert files == [subtitle_path]
+    assert metadata["ok"] is True
+    assert metadata["strategy"] == "automatic_subtitles"
+    assert metadata["errors"] and "no manual subtitles" in metadata["errors"][0]
+
+
+def test_subtitle_fallback_result_is_marked_as_degraded(monkeypatch, tmp_path) -> None:
+    subtitle_path = tmp_path / "sample.en.srt"
+    subtitle_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "core.tools.media_downloader.artifact_store.record_local_file",
+        lambda **kwargs: {"artifactId": "artifact-subtitle"},
+    )
+
+    output = _build_subtitle_fallback_result(
+        subtitle_files=[subtitle_path],
+        workspace_root=tmp_path,
+        runtime_context={"session_id": "s1", "run_id": "r1"},
+        normalized_url="https://youtube.com/watch?v=sample",
+        resolved_url="https://youtube.com/watch?v=sample",
+        shortlink_resolution={},
+        canonical_resolution={},
+        download_target_url="https://youtube.com/watch?v=sample",
+        platform="youtube",
+        effective_prefer="video",
+        effective_referer="https://www.youtube.com/",
+        cookie_option=None,
+        profile_source="platform_profile",
+        fallback_metadata={"ok": True, "strategy": "manual_subtitles"},
+        reason="video_download_failed",
+    )
+    payload = json.loads(output)
+
+    assert payload["ok"] is True
+    assert payload["degraded"] is True
+    assert payload["fallback"] == "subtitles"
+    assert payload["kind"] == "subtitle"
+    assert payload["artifactId"] == "artifact-subtitle"
+    assert "退化为字幕下载" in payload["message"]
+
+
 def test_download_media_tool_description_is_agent_actionable() -> None:
     schema = download_media_for_vision.args_schema.model_json_schema()
     description = schema.get("description") or ""
@@ -358,6 +471,7 @@ def test_download_media_tool_description_is_agent_actionable() -> None:
     assert "pasted social share text" in description
     assert "vision_media_analyzer" in description
     assert "does not perform visual/audio understanding" in description
+    assert 'fallback="subtitles"' in description
 
     assert "Media page/share text" in properties["url"]["description"]
     assert "Select the target media type" in properties["prefer"]["description"]

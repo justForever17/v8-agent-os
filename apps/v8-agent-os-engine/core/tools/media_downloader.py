@@ -36,6 +36,23 @@ _EXCLUDED_DOWNLOAD_SUFFIXES = {
     ".vtt",
     ".ytdl",
 }
+_SUBTITLE_DOWNLOAD_SUFFIXES = {
+    ".ass",
+    ".srt",
+    ".ssa",
+    ".ttml",
+    ".vtt",
+}
+_SUBTITLE_LANGUAGE_PRIORITY = [
+    "zh-Hans",
+    "zh-Hant",
+    "zh-CN",
+    "zh-TW",
+    "zh",
+    "en",
+    "en-US",
+    "en-GB",
+]
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>\\\]\}\)]+", re.IGNORECASE)
 _MEDIA_URL_RE = re.compile(
     r"https?://[^\s\"'<>]+?(?:\.mp4|\.mov|\.m4v|\.webm|\.m3u8|\.mpd|\.m4s|\.jpg|\.jpeg|\.png|\.webp)(?:[?#][^\s\"'<>]*)?",
@@ -407,6 +424,16 @@ def _collect_media_files(download_dir: Path) -> list[Path]:
         if candidate.suffix.lower() in _EXCLUDED_DOWNLOAD_SUFFIXES:
             continue
         files.append(candidate)
+    return files
+
+
+def _collect_subtitle_files(download_dir: Path) -> list[Path]:
+    files: list[Path] = []
+    for candidate in sorted(download_dir.rglob("*")):
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() in _SUBTITLE_DOWNLOAD_SUFFIXES:
+            files.append(candidate)
     return files
 
 
@@ -1321,6 +1348,186 @@ def _yt_dlp_format_selector(prefer: DownloadMediaPreference, *, ffmpeg_available
     return "best[ext=mp4]/best"
 
 
+def _trim_error(value: Exception | str, *, limit: int = 500) -> str:
+    text = _safe_text(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _subtitle_fallback_source_url(*, normalized_url: str, resolved_url: str, download_target_url: str) -> str:
+    if resolved_url and not _looks_like_direct_media(resolved_url):
+        return resolved_url
+    if normalized_url and not _looks_like_direct_media(normalized_url):
+        return normalized_url
+    return download_target_url
+
+
+def _subtitle_fallback_ydl_opts(
+    base_opts: dict[str, Any],
+    *,
+    download_dir: Path,
+    auto: bool,
+    cookie_option: tuple | None,
+) -> dict[str, Any]:
+    opts = {
+        key: value
+        for key, value in base_opts.items()
+        if key not in {"format", "merge_output_format", "playlist_items"}
+    }
+    opts.update(
+        {
+            "outtmpl": str(download_dir / "%(title).120B [%(id)s].%(ext)s"),
+            "skip_download": True,
+            "writesubtitles": not auto,
+            "writeautomaticsub": auto,
+            "subtitleslangs": _SUBTITLE_LANGUAGE_PRIORITY,
+            "subtitlesformat": "srt/vtt/best",
+            "ignore_no_formats_error": True,
+        }
+    )
+    if cookie_option:
+        opts["cookiesfrombrowser"] = cookie_option
+    else:
+        opts.pop("cookiesfrombrowser", None)
+    return opts
+
+
+def _download_subtitles_fallback(
+    yt_dlp_module,
+    *,
+    url: str,
+    download_dir: Path,
+    base_opts: dict[str, Any],
+    cookie_option: tuple | None,
+) -> tuple[list[Path], dict[str, Any]]:
+    errors: list[str] = []
+    before = {path.resolve() for path in _collect_subtitle_files(download_dir)}
+    attempts = [
+        ("manual_subtitles", False),
+        ("automatic_subtitles", True),
+    ]
+    for strategy, auto in attempts:
+        opts = _subtitle_fallback_ydl_opts(
+            base_opts,
+            download_dir=download_dir,
+            auto=auto,
+            cookie_option=cookie_option,
+        )
+        try:
+            with yt_dlp_module.YoutubeDL(opts) as ydl:
+                ydl.extract_info(url, download=True)
+        except Exception as exc:
+            errors.append(f"{strategy}: {_trim_error(exc, limit=260)}")
+            continue
+        subtitle_files = [
+            path
+            for path in _collect_subtitle_files(download_dir)
+            if path.resolve() not in before
+        ]
+        if subtitle_files:
+            return subtitle_files, {
+                "ok": True,
+                "strategy": strategy,
+                "url": url,
+                "errors": errors,
+            }
+    return [], {
+        "ok": False,
+        "strategy": "subtitles_unavailable",
+        "url": url,
+        "errors": errors,
+    }
+
+
+def _subtitle_mime_type(path: Path) -> str:
+    if path.suffix.lower() == ".vtt":
+        return "text/vtt"
+    if path.suffix.lower() == ".srt":
+        return "application/x-subrip"
+    return "text/plain"
+
+
+def _build_subtitle_fallback_result(
+    *,
+    subtitle_files: list[Path],
+    workspace_root: Path,
+    runtime_context: dict[str, Any],
+    normalized_url: str,
+    resolved_url: str,
+    shortlink_resolution: dict[str, Any],
+    canonical_resolution: dict[str, Any],
+    download_target_url: str,
+    platform: str,
+    effective_prefer: DownloadMediaPreference,
+    effective_referer: str,
+    cookie_option: tuple | None,
+    profile_source: str,
+    fallback_metadata: dict[str, Any],
+    reason: str,
+) -> str:
+    primary = subtitle_files[0]
+    try:
+        workspace_relative_path = primary.relative_to(workspace_root).as_posix()
+    except ValueError:
+        workspace_relative_path = primary.name
+    canonical_path = str(primary)
+    artifact = artifact_store.record_local_file(
+        file_path=primary,
+        session_id=runtime_context.get("session_id"),
+        run_id=runtime_context.get("run_id"),
+        workspace_path=canonical_path,
+        metadata={
+            "source": "download_media_for_vision",
+            "storageClass": "workspace",
+            "surfaceVisible": True,
+            "pathPlane": "workspace_download",
+            "canonicalPath": canonical_path,
+            "workspaceRoot": str(workspace_root),
+            "workspaceRelativePath": workspace_relative_path,
+            "projectId": str(runtime_context.get("project_id") or "").strip() or None,
+            "workspaceId": str(runtime_context.get("workspace_id") or "").strip() or None,
+            "sourceUrl": normalized_url,
+            "resolvedUrl": resolved_url,
+            "shortlinkResolution": shortlink_resolution,
+            "canonicalResolution": canonical_resolution,
+            "downloadTargetUrl": download_target_url,
+            "platform": platform,
+            "prefer": effective_prefer,
+            "referer": effective_referer,
+            "cookiesFromBrowser": bool(cookie_option),
+            "profileSource": profile_source,
+            "degraded": True,
+            "fallback": "subtitles",
+            "fallbackReason": reason,
+            "subtitleFallback": fallback_metadata,
+        },
+        source_component="download_media_for_vision",
+        node="download_media_for_vision",
+    )
+    message = (
+        "视频下载失败，已退化为字幕下载；当前文件只能用于阅读/总结字幕内容，不能代表完整画面信息。"
+    )
+    return json.dumps(
+        {
+            "ok": True,
+            "degraded": True,
+            "fallback": "subtitles",
+            "artifactId": artifact.get("artifactId"),
+            "kind": "subtitle",
+            "mimeType": _subtitle_mime_type(primary),
+            "fileName": primary.name,
+            "workspacePath": canonical_path,
+            "workspaceRelativePath": workspace_relative_path,
+            "fallbackReason": reason,
+            "subtitleFallback": fallback_metadata,
+            "message": message,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def _download_direct_media(
     url: str,
     *,
@@ -1432,6 +1639,9 @@ def download_media_for_vision(
     `vision_media_analyzer` explicitly with the returned `workspacePath` or `workspaceRelativePath`.
     This tool only downloads and registers media; it does not perform visual/audio understanding by
     itself.
+
+    When a video cannot be downloaded but subtitles are available, the tool may degrade to a subtitle
+    artifact and clearly mark the result as `degraded` with `fallback="subtitles"`.
 
     Prefer `prefer="video"` for video shares, `prefer="images"` for image posts, `prefer="all"` for
     mixed albums, and `prefer="auto"` when unsure. Leave `cookies_from_browser` and `referer` empty
@@ -1580,6 +1790,50 @@ def download_media_for_vision(
     if cookie_option:
         ydl_opts["cookiesfrombrowser"] = cookie_option
 
+    def _try_subtitle_fallback(reason: str, media_error: Exception | str = "") -> tuple[str | None, dict[str, Any]]:
+        if effective_prefer != "video":
+            return None, {
+                "ok": False,
+                "strategy": "skipped",
+                "reason": "not_video_preference",
+            }
+        subtitle_url = _subtitle_fallback_source_url(
+            normalized_url=normalized_url,
+            resolved_url=resolved_url,
+            download_target_url=download_target_url,
+        )
+        subtitle_files, fallback_metadata = _download_subtitles_fallback(
+            yt_dlp,
+            url=subtitle_url,
+            download_dir=download_dir,
+            base_opts=ydl_opts,
+            cookie_option=cookie_option,
+        )
+        fallback_metadata = {
+            **fallback_metadata,
+            "reason": reason,
+            "mediaDownloadError": _trim_error(media_error) if media_error else "",
+        }
+        if not subtitle_files:
+            return None, fallback_metadata
+        return _build_subtitle_fallback_result(
+            subtitle_files=subtitle_files,
+            workspace_root=workspace_root,
+            runtime_context=runtime_context,
+            normalized_url=normalized_url,
+            resolved_url=resolved_url,
+            shortlink_resolution=shortlink_resolution,
+            canonical_resolution=canonical_resolution,
+            download_target_url=download_target_url,
+            platform=platform,
+            effective_prefer=effective_prefer,
+            effective_referer=effective_referer,
+            cookie_option=cookie_option,
+            profile_source=profile_source,
+            fallback_metadata=fallback_metadata,
+            reason=reason,
+        ), fallback_metadata
+
     info: dict[str, Any] | None = None
     direct_kind = _guess_kind_from_url(download_target_url)
     used_direct_download = False
@@ -1634,10 +1888,17 @@ def download_media_for_vision(
                     except Exception as retry_exc:
                         ydl_error = retry_exc
             if ydl_error is not None:
+                subtitle_result, subtitle_fallback = _try_subtitle_fallback(
+                    "video_download_failed",
+                    media_error=ydl_error,
+                )
+                if subtitle_result:
+                    return subtitle_result
                 return json.dumps(
                     {
                         "ok": False,
                         "error": f"yt-dlp 下载失败：{ydl_error}",
+                        "subtitleFallback": subtitle_fallback,
                         "message": "媒体下载失败，未生成可展示产物。",
                     },
                     ensure_ascii=False,
@@ -1646,10 +1907,14 @@ def download_media_for_vision(
 
     media_files = _collect_media_files(download_dir)
     if not media_files:
+        subtitle_result, subtitle_fallback = _try_subtitle_fallback("no_media_files")
+        if subtitle_result:
+            return subtitle_result
         return json.dumps(
             {
                 "ok": False,
                 "error": "yt-dlp 已执行，但未发现可供视觉分析的本地媒体文件。",
+                "subtitleFallback": subtitle_fallback,
                 "message": "媒体下载未产出有效本地文件。",
             },
             ensure_ascii=False,

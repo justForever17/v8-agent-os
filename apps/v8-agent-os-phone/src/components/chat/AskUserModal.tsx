@@ -1,7 +1,9 @@
 import { memo, useMemo, useState } from "react";
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
+import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 
@@ -129,6 +131,109 @@ function mediaKind(item: AskUserMedia) {
 
 function mediaUrl(item: AskUserMedia) {
     return asText(item.previewUrl) || asText(item.thumbnailUrl) || asText(item.url) || asText(item.contentUrl) || asText(item.href);
+}
+
+function mediaPlaybackUrl(item: AskUserMedia) {
+    const direct = asText(item.contentUrl) || asText(item.url) || asText(item.href) || asText(item.previewUrl);
+    if (direct) return direct;
+    const artifactId = asText(item.artifactId) || asText(item.id);
+    return artifactId ? `/api/client/artifacts/${encodeURIComponent(artifactId)}/content` : "";
+}
+
+function AskUserMediaCard({
+    item,
+    index,
+    selected,
+    onToggle,
+}: {
+    item: AskUserMedia;
+    index: number;
+    selected: boolean;
+    onToggle: () => void;
+}) {
+    const { colors } = useUiPrefs();
+    const kind = mediaKind(item);
+    const previewUrl = mediaUrl(item);
+    const playbackUrl = mediaPlaybackUrl(item);
+    const label = mediaLabel(item, index);
+    const [playing, setPlaying] = useState(false);
+    const { resolvedSrc } = usePreparedPhoneMediaSource({ src: playbackUrl, title: label });
+    const canPlay = Boolean(resolvedSrc && (kind === "audio" || kind === "video"));
+
+    return (
+        <Pressable
+            style={[
+                styles.mediaThumb,
+                { borderColor: selected ? colors.primary : colors.border, backgroundColor: colors.surface },
+            ]}
+            onPress={onToggle}
+        >
+            {playing && canPlay ? (
+                <WebView
+                    source={{ html: buildAskUserMediaHtml(resolvedSrc, kind) }}
+                    style={styles.mediaInlinePlayer}
+                    allowsInlineMediaPlayback
+                    mediaPlaybackRequiresUserAction={false}
+                    allowFileAccess
+                    allowFileAccessFromFileURLs
+                    allowUniversalAccessFromFileURLs
+                    scrollEnabled={false}
+                />
+            ) : kind === "image" && previewUrl ? (
+                <Image source={{ uri: previewUrl }} style={styles.mediaImage} resizeMode="cover" />
+            ) : (
+                <View style={styles.mediaFallback}>
+                    <MaterialCommunityIcons
+                        name={kind === "video" ? "movie-open-outline" : "music-note-outline"}
+                        size={20}
+                        color={colors.textMuted}
+                    />
+                </View>
+            )}
+            <View style={styles.mediaLabel}>
+                <Text numberOfLines={1} style={styles.mediaLabelText}>{label}</Text>
+            </View>
+            {canPlay ? (
+                <Pressable
+                    onPress={(event) => {
+                        event.stopPropagation();
+                        setPlaying((current) => !current);
+                    }}
+                    style={styles.mediaPlayButton}
+                    hitSlop={8}
+                >
+                    <MaterialCommunityIcons name={playing ? "pause" : "play"} size={13} color="#FFFFFF" />
+                </Pressable>
+            ) : null}
+            {selected ? (
+                <View style={[styles.checkBadge, { backgroundColor: colors.primary }]}>
+                    <MaterialCommunityIcons name="check" size={11} color="#FFFFFF" />
+                </View>
+            ) : null}
+        </Pressable>
+    );
+}
+
+function buildAskUserMediaHtml(src: string, kind: string) {
+    const tag = kind === "audio" ? "audio" : "video";
+    return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <style>
+      html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0f172a; }
+      ${tag} { width:100%; height:100%; object-fit:cover; }
+      audio { padding: 8px; box-sizing: border-box; }
+    </style>
+  </head>
+  <body>
+    <${tag} id="player" controls autoplay playsinline preload="metadata"></${tag}>
+    <script>
+      document.getElementById("player").src = ${JSON.stringify(src)};
+    </script>
+  </body>
+</html>`;
 }
 
 export const AskUserModal = memo(function AskUserModal({
@@ -277,38 +382,14 @@ export const AskUserModal = memo(function AskUserModal({
                                 {mediaItems.map((item, index) => {
                                     const key = mediaKey(item, index);
                                     const selected = selectedMedia.includes(key);
-                                    const kind = mediaKind(item);
-                                    const url = mediaUrl(item);
-                                    const label = mediaLabel(item, index);
                                     return (
-                                        <Pressable
+                                        <AskUserMediaCard
                                             key={key}
-                                            style={[
-                                                styles.mediaThumb,
-                                                { borderColor: selected ? colors.primary : colors.border, backgroundColor: colors.surface },
-                                            ]}
-                                            onPress={() => toggleMedia(item, index)}
-                                        >
-                                            {kind === "image" && url ? (
-                                                <Image source={{ uri: url }} style={styles.mediaImage} resizeMode="cover" />
-                                            ) : (
-                                                <View style={styles.mediaFallback}>
-                                                    <MaterialCommunityIcons
-                                                        name={kind === "video" ? "movie-open-outline" : "music-note-outline"}
-                                                        size={20}
-                                                        color={colors.textMuted}
-                                                    />
-                                                </View>
-                                            )}
-                                            <View style={styles.mediaLabel}>
-                                                <Text numberOfLines={1} style={styles.mediaLabelText}>{label}</Text>
-                                            </View>
-                                            {selected ? (
-                                                <View style={[styles.checkBadge, { backgroundColor: colors.primary }]}>
-                                                    <MaterialCommunityIcons name="check" size={11} color="#FFFFFF" />
-                                                </View>
-                                            ) : null}
-                                        </Pressable>
+                                            item={item}
+                                            index={index}
+                                            selected={selected}
+                                            onToggle={() => toggleMedia(item, index)}
+                                        />
                                     );
                                 })}
                             </ScrollView>
@@ -483,10 +564,26 @@ const styles = StyleSheet.create({
         width: "100%",
         height: "100%",
     },
+    mediaInlinePlayer: {
+        width: "100%",
+        height: "100%",
+        backgroundColor: "#0F172A",
+    },
     mediaFallback: {
         flex: 1,
         alignItems: "center",
         justifyContent: "center",
+    },
+    mediaPlayButton: {
+        position: "absolute",
+        top: 5,
+        left: 5,
+        width: 24,
+        height: 24,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(15,23,42,0.68)",
     },
     mediaLabel: {
         position: "absolute",

@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -126,6 +126,13 @@ function mediaUrl(item: AskUserMedia) {
     return asText(item.previewUrl) || asText(item.thumbnailUrl) || asText(item.url) || asText(item.contentUrl) || asText(item.href);
 }
 
+function mediaPlaybackUrl(item: AskUserMedia) {
+    const direct = asText(item.contentUrl) || asText(item.url) || asText(item.href) || asText(item.previewUrl);
+    if (direct) return direct;
+    const artifactId = asText(item.artifactId) || asText(item.id);
+    return artifactId ? `/api/client/artifacts/${encodeURIComponent(artifactId)}/content` : "";
+}
+
 function mediaLabel(item: AskUserMedia, index: number) {
     return asText(item.title) || asText(item.name) || asText(item.artifactId) || `media-${index + 1}`;
 }
@@ -144,6 +151,124 @@ function questionTitle(questionItem: AskUserQuestion, index: number) {
 
 function questionDetail(questionItem: AskUserQuestion) {
     return asText(questionItem.detail) || asText(questionItem.description);
+}
+
+function AskUserMediaCard({
+    item,
+    index,
+    selected,
+    onToggle,
+}: {
+    item: AskUserMedia;
+    index: number;
+    selected: boolean;
+    onToggle: () => void;
+}) {
+    const t = useT();
+    const kind = mediaKind(item);
+    const previewUrl = mediaUrl(item);
+    const playbackUrl = mediaPlaybackUrl(item);
+    const label = mediaLabel(item, index);
+    const mediaRef = useRef<HTMLAudioElement | HTMLVideoElement | null>(null);
+    const [playing, setPlaying] = useState(false);
+
+    const canPlay = Boolean(playbackUrl && (kind === "audio" || kind === "video"));
+
+    const togglePlayback = async (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const media = mediaRef.current;
+        if (!media) return;
+        if (playing) {
+            media.pause();
+            setPlaying(false);
+            return;
+        }
+        try {
+            await media.play();
+            setPlaying(true);
+        } catch {
+            setPlaying(false);
+        }
+    };
+
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={onToggle}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onToggle();
+                        }
+                    }}
+                    className={`group relative h-14 w-24 shrink-0 cursor-pointer overflow-hidden rounded-xl text-left transition ${selected ? "ring-2 ring-primary/30" : "ring-1 ring-border/40 hover:ring-primary/35"}`}
+                    aria-label={label}
+                    aria-pressed={selected}
+                >
+                    {kind === "image" && previewUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={previewUrl} alt={label} className="h-full w-full object-cover" />
+                    ) : kind === "video" && playbackUrl ? (
+                        <video
+                            ref={(node) => {
+                                mediaRef.current = node;
+                            }}
+                            src={playbackUrl}
+                            className="h-full w-full bg-black object-cover"
+                            preload="metadata"
+                            playsInline
+                            onEnded={() => setPlaying(false)}
+                            onPause={() => setPlaying(false)}
+                            onPlay={() => setPlaying(true)}
+                        />
+                    ) : kind === "audio" && playbackUrl ? (
+                        <div className="flex h-full w-full items-center justify-center bg-muted text-[11px] font-semibold uppercase text-muted-foreground">
+                            <audio
+                                ref={(node) => {
+                                    mediaRef.current = node;
+                                }}
+                                src={playbackUrl}
+                                preload="metadata"
+                                onEnded={() => setPlaying(false)}
+                                onPause={() => setPlaying(false)}
+                                onPlay={() => setPlaying(true)}
+                            />
+                            audio
+                        </div>
+                    ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-muted text-[11px] font-semibold uppercase text-muted-foreground">
+                            {kind}
+                        </div>
+                    )}
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-5 text-[10px] font-medium text-white">
+                        <span className="block truncate">{label}</span>
+                    </div>
+                    {canPlay ? (
+                        <button
+                            type="button"
+                            onClick={togglePlayback}
+                            className="absolute left-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white shadow-sm backdrop-blur transition hover:bg-black/70"
+                            aria-label={playing ? t(lt("暂停", "Pause")) : t(lt("播放", "Play"))}
+                        >
+                            {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 translate-x-px" />}
+                        </button>
+                    ) : null}
+                    {selected ? (
+                        <span className="absolute right-1.5 top-1.5 rounded-full bg-primary p-0.5 text-primary-foreground">
+                            <Check className="h-3 w-3" />
+                        </span>
+                    ) : null}
+                </div>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs text-xs leading-5">
+                {label}
+            </TooltipContent>
+        </Tooltip>
+    );
 }
 
 export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, onCancel }: AskUserModalProps) {
@@ -327,40 +452,14 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                             <div className="mb-2.5 flex gap-2 overflow-x-auto pb-1">
                                 {mediaItems.map((item, index) => {
                                     const key = mediaKey(item, index);
-                                    const selected = selectedMedia.includes(key);
-                                    const url = mediaUrl(item);
-                                    const kind = mediaKind(item);
-                                    const label = mediaLabel(item, index);
                                     return (
-                                        <Tooltip key={key}>
-                                            <TooltipTrigger asChild>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => toggleMedia(item, index)}
-                                                    className={`group relative h-14 w-24 shrink-0 overflow-hidden rounded-xl text-left transition ${selected ? "ring-2 ring-primary/30" : "ring-1 ring-border/40 hover:ring-primary/35"}`}
-                                                >
-                                                    {kind === "image" && url ? (
-                                                        // eslint-disable-next-line @next/next/no-img-element
-                                                        <img src={url} alt={label} className="h-full w-full object-cover" />
-                                                    ) : (
-                                                        <div className="flex h-full w-full items-center justify-center bg-muted text-[11px] font-semibold uppercase text-muted-foreground">
-                                                            {kind}
-                                                        </div>
-                                                    )}
-                                                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-5 text-[10px] font-medium text-white">
-                                                        <span className="block truncate">{label}</span>
-                                                    </div>
-                                                    {selected ? (
-                                                        <span className="absolute right-1.5 top-1.5 rounded-full bg-primary p-0.5 text-primary-foreground">
-                                                            <Check className="h-3 w-3" />
-                                                        </span>
-                                                    ) : null}
-                                                </button>
-                                            </TooltipTrigger>
-                                            <TooltipContent side="top" className="max-w-xs text-xs leading-5">
-                                                {label}
-                                            </TooltipContent>
-                                        </Tooltip>
+                                        <AskUserMediaCard
+                                            key={key}
+                                            item={item}
+                                            index={index}
+                                            selected={selectedMedia.includes(key)}
+                                            onToggle={() => toggleMedia(item, index)}
+                                        />
                                     );
                                 })}
                             </div>

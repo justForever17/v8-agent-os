@@ -2802,11 +2802,17 @@ def run_system_command(
     cwd: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Run a system command through a unified command surface.
+    """Run a command or start an observable terminal session.
 
-    Use this for real shell work: running tests, scripts, installers, dev servers, environment checks, or commands the task explicitly asks to execute.
-    Do not use it just to read or write a known text/JSON/Markdown/source file. Use `read_native_file` and `write_native_file` for file content.
-    If the same command purpose fails twice, stop changing shell wrappers; switch to the right tool or return the blocker/degraded reason.
+    Use this for shell work the task actually needs: checking the environment, running tests, launching scripts,
+    installing dependencies, starting dev servers, or executing a user-requested command. For a quick command,
+    keep mode=auto and let V8OS decide whether it can finish synchronously. For installers, dev servers, TUI
+    prompts, or password/confirmation flows, mode=auto will start a visible terminal session that can be observed
+    or controlled later.
+
+    Do not use this just to read or write a known text/JSON/Markdown/source file. Use `read_native_file` and
+    `write_native_file` for file content. If the same command purpose fails twice, stop changing shell wrappers;
+    switch to the right tool or return the blocker/degraded reason.
 
     mode=auto:
     - 短命令/非交互命令直接同步执行并返回结果
@@ -3159,7 +3165,11 @@ def command_session_broker(
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Unified command-session broker for long-running or interactive CLI work: start, observe, input, or terminate a session with compact JSON by default.
+    """Control an observable terminal session after one is needed.
+
+    Use this for long-running or interactive terminal work: dev servers, dependency installers, TUI menus,
+    password prompts, AI CLIs, or commands already returned with a sessionId/commandId. For ordinary one-shot
+    checks, use `run_system_command(mode=auto)` instead; it will start a terminal session only when necessary.
 
     Modes:
     - start: launch a long-running or interactive command session
@@ -3169,7 +3179,7 @@ def command_session_broker(
     - terminate: stop the session
 
     Usage guidance:
-    - Prefer run_system_command(mode=auto) as the agent-facing shell entry; it starts this broker internally when needed.
+    - Prefer run_system_command(mode=auto) as the first shell entry; it starts this broker internally when needed.
     - Use this broker directly only after you already have a sessionId/commandId, or when you need explicit observe/input/terminate control.
     - Use observe until the session completes, reports the next required input, or returns stdout/stderr/final output.
     - Treat stdout/stderr/exit code as the command truth. Broker status fields only describe waiting, timeout, backgrounding, or recovery.
@@ -3671,10 +3681,10 @@ def _extract_preferred_terminal_snapshot(status: dict) -> str:
 
 @tool
 def read_background_output(command_id: str) -> str:
-    """Read the latest output from a background command.
-    
-    Arguments:
-        command_id (str): The ID returned by `run_system_command(mode="session")`.
+    """Observe the latest output from an existing terminal session.
+
+    This is the compatibility shortcut for command_session_broker(mode="observe"). Use it only after a command
+    has returned a commandId/sessionId. For new commands, start with run_system_command(mode=auto).
     """
     broker = _compat_native_attr("command_session_broker", command_session_broker)
     return broker.func(mode="observe", command_id=command_id)
@@ -3835,12 +3845,10 @@ def read_background_output(command_id: str) -> str:
 
 @tool
 def send_background_input(command_id: str, input_text: str) -> str:
-    """Send input (like 'y' or option choices) to an interactive background command.
-    You can include a real newline or a common escaped sequence like '\\n' to simulate Enter.
-    
-    Arguments:
-        command_id (str): The ID of the command.
-        input_text (str): The text to send to stdin.
+    """Send text or choices to an interactive terminal session.
+
+    This is the compatibility shortcut for command_session_broker(mode="input"). Use it only when observation
+    shows the session is waiting for input. Include a real newline or '\\n' to simulate Enter.
     """
     broker = _compat_native_attr("command_session_broker", command_session_broker)
     return broker.func(mode="input", command_id=command_id, input_text=input_text)
@@ -3909,10 +3917,11 @@ def send_background_input(command_id: str, input_text: str) -> str:
 
 @tool
 def terminate_background_command(command_id: str) -> str:
-    """Terminate a background command if it is stuck or no longer needed.
-    
-    Arguments:
-        command_id (str): The ID of the command.
+    """Stop an existing terminal session.
+
+    Use this when the user asks to stop, the command is stuck, the dev server is no longer needed, or a safer
+    route has replaced the current terminal work. For normal completed commands, prefer observing the final
+    output instead of terminating.
     """
     broker = _compat_native_attr("command_session_broker", command_session_broker)
     return broker.func(mode="terminate", command_id=command_id)

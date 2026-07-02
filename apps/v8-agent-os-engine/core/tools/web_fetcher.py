@@ -3208,11 +3208,12 @@ def web_read(
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Read a webpage with Scrapling and return cleaned Markdown-style page text.
+    """Read one known webpage and return cleaned page text.
 
-    Use this for a known URL. For research questions that need several sources or confidence scoring, request
-    research.core and use research_broker. If the user needs DOM/UI/code reference instead of reading content,
-    use web_extract(extract="raw_html" or "ui_snapshot").
+    Use this when you already have a URL and need the page content. Do not use it as deep research: if the task
+    needs several sources, freshness checks, source confidence, or an answer pack, request 深度调研 and use
+    `research_broker`. If the user needs DOM/UI/code reference instead of article text, use
+    web_extract(extract="raw_html" or "ui_snapshot").
 
     mode:
     - auto: 先走静态抓取，再按需尝试 dynamic / stealth
@@ -3274,7 +3275,11 @@ def web_extract(
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Extract structured webpage content with Scrapling.
+    """Extract structured data from one known webpage.
+
+    Use this when the page itself is the target and you need a specific shape: article text, links, metadata,
+    media resources, raw HTML, or a UI snapshot. For facts that must be verified across multiple sources, use
+    `research_broker` instead of repeatedly extracting unrelated pages.
 
     extract:
     - article: 提取正文、标题与摘要信息
@@ -3411,7 +3416,10 @@ def web_search(
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Internal/raw search primitive behind Source Router. Product agents should normally use web_broker or research_broker.
+    """Internal/raw search primitive behind Source Router.
+
+    Product agents should normally use `web_broker` for one quick public-web lookup, or `research_broker` for
+    深度调研 with evidence, ranking, and reusable answer packs.
 
     For multi-source research, current facts, source confidence, or parallel query decomposition, request
     research.core and use research_broker instead of doing ad-hoc one-shot searches.
@@ -3911,7 +3919,11 @@ def web_fetch(
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Unified web entrypoint for read / extract / search.
+    """Convenience web entrypoint for one read, one extract, or one search.
+
+    Use this for quick public-web work. It is not the deep research path: when the answer depends on comparing
+    multiple sources, current model/provider/API facts, conflicting claims, or source quality, use
+    `research_broker`.
 
     intent:
     - auto: URL 走 read，非 URL 走 search
@@ -3987,9 +3999,12 @@ def web_broker(
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Unified web broker for public-web work: search finds results, fetch auto-routes URL vs query, read returns cleaned Markdown text, and extract returns article/links/metadata/media/raw_html/ui_snapshot output; add debug=true only for transport diagnostics.
+    """Public-web quick tool for one URL or one query.
 
-    For multi-source facts, fresh provider/API details, source ranking, or complex research, request research.core and use research_broker. web_broker remains the single-page / single-query utility.
+    Use `web_broker` to quickly read a page, search a small question, or extract page structure. It is the
+    fast path for "look this up" or "read this URL", not the evidence-building path. For multi-source facts,
+    fresh provider/API details, source ranking, conflicting claims, or reusable research results, request
+    深度调研 and use `research_broker`.
 
     mode:
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search

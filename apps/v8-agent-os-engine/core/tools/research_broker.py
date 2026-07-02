@@ -2985,11 +2985,14 @@ def research_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """Plan and run read-only web research as isolated shards with persistent evidence.
+    """Run 深度调研 and return source-backed evidence or an answer pack.
 
-    Use this instead of ad-hoc web_search for multi-source facts, current provider/API details, source confidence,
-    or research that benefits from parallel query decomposition. Search experience packs first for repeat topics;
-    run new research only when prior packs are missing, stale, low confidence, or conflict with the current need.
+    Use this when quick web reading is not enough: current provider/API facts, freshness-sensitive questions,
+    multi-source comparison, source confidence, conflicting claims, reusable experience packs, or research that
+    benefits from parallel query decomposition. For a single known URL or one small lookup, use `web_broker`.
+
+    Search experience packs first for repeat topics; run new research only when prior packs are missing, stale,
+    low confidence, or conflict with the current need.
 
     useAgentBrowserProfile defaults to false. Set it to true only for an explicit login-backed research need;
     the target source domains must match systemBase.webFetch.agentBrowserProfileAllowlist.

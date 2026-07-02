@@ -18,6 +18,7 @@
 | `export_memory_capability_assessment.py` | 导出 V8OS memory capability 评估报告。 | 写本地报告。 |
 | `export_native_tools_output_dry_run.py` | 导出 native tools dry-run output，检查工具输出脏数据；高风险工具用 `tests/fixtures/tool_output_surface/high_risk_replays.json` 做脱敏回放；可用 `--require-production-client-surface` 强制走 `packages/session-realtime` 的真实客户端 Surface。 | 默认写 `docs/tools/`；不执行真实副作用。 |
 | `export_prompt_cache_dry_run_matrix.py` | 导出 Prompt Cache provider patch / segment hash / cache decision 空运行矩阵。 | 写本地报告。 |
+| `export_reasoning_effort_request_dry_run.py` | 导出 Supervisor 临时推理强度控制的 provider 请求格式空运行矩阵，覆盖 OpenAI/OpenRouter、Anthropic、Gemini。 | 写本地报告；不调用模型、不联网、不消耗额度。 |
 | `export_runtime_deep_observation_matrix.py` | 导出 supervisor / subagent / registry / extensions / memory governance 深度观察矩阵。 | 写本地报告。 |
 | `export_skill_tool_output_surface_dry_run.py` | 导出 `fetch_skill_instructions` 原始输出与 agent 可见输出，检查 SKILL.md 完整优先、相对路径续读、入口元数据降噪。 | 写本地报告；不调用模型、不写 DB、不改持久工作区。 |
 | `export_spec_runtime_distribution_dry_run.py` | 导出已审批 Spec → runtime/subagent 任务分发空运行矩阵，验证 Kiro-style requirements/design/tasks 可追踪到 agent 可见片段、frameworkDigest、detailRef 和 compact tool surface。 | 可写 `docs/chatruntime/runtime_deep_observation_reports/`；不调用模型、不写 DB、不改持久工作区。 |

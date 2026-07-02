@@ -1326,6 +1326,57 @@ def test_reasoning_effort_control_is_limited_to_openai_reasoning_families():
     assert embedding_control == {}
 
 
+def test_reasoning_effort_control_supports_official_anthropic_and_gemini_styles():
+    anthropic_budget_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "anthropic",
+            "model_id": "claude-sonnet-4-5",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "reasoningSurface": {"requestStyle": "anthropic_thinking"},
+            },
+        }
+    )
+    anthropic_effort_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "anthropic",
+            "model_id": "claude-opus-4-8",
+            "model_record": {
+                "capabilities": ["chat", "reasoning"],
+                "reasoningSurface": {"requestStyle": "none"},
+            },
+        }
+    )
+    gemini_level_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "model_id": "gemini-3.1-pro-preview",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+    gemini_budget_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "model_id": "gemini-2.5-pro",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+    custom_gemini_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "my-gemini-key",
+            "api_standard": "gemini",
+            "model_id": "gemini-3-flash-preview",
+            "capabilities": ["chat", "reasoning"],
+        }
+    )
+
+    assert anthropic_budget_control["requestStyle"] == "anthropic_thinking_budget"
+    assert anthropic_effort_control["requestStyle"] == "anthropic_effort"
+    assert gemini_level_control["requestStyle"] == "gemini_thinking_level"
+    assert gemini_budget_control["requestStyle"] == "gemini_thinking_budget"
+    assert custom_gemini_control["requestStyle"] == "gemini_thinking_level"
+
+
 def test_reasoning_effort_request_patch_uses_normalized_levels():
     control = resolve_reasoning_effort_control_for_metadata(
         {
@@ -1341,6 +1392,32 @@ def test_reasoning_effort_request_patch_uses_normalized_levels():
     assert reasoning_effort_request_patch(control, "auto") == {}
     assert reasoning_effort_request_patch(control, "medium") == {"reasoning": {"effort": "medium"}}
     assert reasoning_effort_request_patch(control, "max") == {"reasoning": {"effort": "high"}}
+
+
+def test_reasoning_effort_request_patch_maps_vendor_specific_official_controls():
+    anthropic_budget_control = {
+        "supportsReasoningEffort": True,
+        "requestStyle": "anthropic_thinking_budget",
+    }
+    anthropic_effort_control = {
+        "supportsReasoningEffort": True,
+        "requestStyle": "anthropic_effort",
+    }
+    gemini_level_control = {
+        "supportsReasoningEffort": True,
+        "requestStyle": "gemini_thinking_level",
+    }
+    gemini_budget_control = {
+        "supportsReasoningEffort": True,
+        "requestStyle": "gemini_thinking_budget",
+    }
+
+    assert reasoning_effort_request_patch(anthropic_budget_control, "low") == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096}
+    }
+    assert reasoning_effort_request_patch(anthropic_effort_control, "medium") == {"effort": "medium"}
+    assert reasoning_effort_request_patch(gemini_level_control, "high") == {"thinking_level": "high"}
+    assert reasoning_effort_request_patch(gemini_budget_control, "medium") == {"thinking_budget": 4096}
 
 
 def test_openai_kwargs_apply_supervisor_reasoning_effort_after_no_think():
@@ -1379,3 +1456,90 @@ def test_openai_kwargs_apply_supervisor_reasoning_effort_after_no_think():
     )
 
     assert kwargs["reasoning"] == {"effort": "high"}
+
+
+def test_anthropic_kwargs_apply_reasoning_effort_controls_with_budget_headroom():
+    budget_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "anthropic",
+            "model_id": "claude-sonnet-4-5",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "reasoningSurface": {"requestStyle": "anthropic_thinking"},
+            },
+        }
+    )
+    effort_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "anthropic",
+            "model_id": "claude-opus-4-8",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+
+    budget_kwargs = llm_factory._build_anthropic_kwargs(
+        "claude-sonnet-4-5",
+        {
+            "api_key": "sk-test",
+            "provider_id": "anthropic",
+            "model_id": "claude-sonnet-4-5",
+            "reasoning_effort_control": budget_control,
+            "request_reasoning_effort": "low",
+        },
+        max_tokens=512,
+    )
+    effort_kwargs = llm_factory._build_anthropic_kwargs(
+        "claude-opus-4-8",
+        {
+            "api_key": "sk-test",
+            "provider_id": "anthropic",
+            "model_id": "claude-opus-4-8",
+            "reasoning_effort_control": effort_control,
+            "request_reasoning_effort": "high",
+        },
+    )
+
+    assert budget_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+    assert budget_kwargs["max_tokens_to_sample"] == 5120
+    assert effort_kwargs["effort"] == "high"
+
+
+def test_gemini_kwargs_apply_reasoning_effort_controls_without_instantiating_optional_client():
+    level_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "model_id": "gemini-3.1-pro-preview",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+    budget_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "model_id": "gemini-2.5-pro",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+
+    level_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-3.1-pro-preview",
+        {
+            "api_key": "gemini-test",
+            "provider_id": "gemini-api",
+            "model_id": "gemini-3.1-pro-preview",
+            "reasoning_effort_control": level_control,
+            "request_reasoning_effort": "medium",
+        },
+    )
+    budget_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-2.5-pro",
+        {
+            "api_key": "gemini-test",
+            "provider_id": "gemini-api",
+            "model_id": "gemini-2.5-pro",
+            "reasoning_effort_control": budget_control,
+            "request_reasoning_effort": "high",
+        },
+    )
+
+    assert level_kwargs["thinking_level"] == "medium"
+    assert budget_kwargs["thinking_budget"] == 8192

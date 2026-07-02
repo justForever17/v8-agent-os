@@ -1006,6 +1006,29 @@ class LLMFactory:
             if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "model_kwargs", "stop", "timeout"}:
                 final_kwargs[key] = value
 
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
+            reasoning_effort_request_patch(
+                meta.get("reasoning_effort_control"),
+                meta.get("request_reasoning_effort"),
+            ),
+        )
+        thinking = final_kwargs.get("thinking")
+        if isinstance(thinking, dict):
+            budget_tokens = thinking.get("budget_tokens")
+            try:
+                budget_value = int(budget_tokens or 0)
+            except (TypeError, ValueError):
+                budget_value = 0
+            if budget_value > 0:
+                current_max = final_kwargs.get("max_tokens_to_sample") or final_kwargs.get("max_tokens")
+                try:
+                    current_max_value = int(current_max or 0)
+                except (TypeError, ValueError):
+                    current_max_value = 0
+                if current_max_value <= budget_value:
+                    final_kwargs["max_tokens_to_sample"] = budget_value + 1024
+
         return final_kwargs
 
     @classmethod
@@ -1031,6 +1054,13 @@ class LLMFactory:
         for key, value in kwargs.items():
             if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "timeout"}:
                 final_kwargs[key] = value
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
+            reasoning_effort_request_patch(
+                meta.get("reasoning_effort_control"),
+                meta.get("request_reasoning_effort"),
+            ),
+        )
         return final_kwargs
 
     @staticmethod

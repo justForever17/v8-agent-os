@@ -1,0 +1,100 @@
+export type ProductVocabularyEntry = {
+    canonicalId: string;
+    zh: string;
+    en: string;
+    descriptionZh: string;
+    descriptionEn: string;
+};
+
+export const PRODUCT_VOCABULARY = {
+    chat: {
+        canonicalId: "chat",
+        zh: "主理人中枢",
+        en: "Supervisor Hub",
+        descriptionZh: "主理人与子代理协作的聊天编排入口。",
+        descriptionEn: "Chat orchestration for the Supervisor and subagents.",
+    },
+    memory: {
+        canonicalId: "memory",
+        zh: "记忆系统",
+        en: "Memory System",
+        descriptionZh: "长期记忆、知识与项目上下文。",
+        descriptionEn: "Long-term memory, knowledge, and project context.",
+    },
+    automation: {
+        canonicalId: "automation",
+        zh: "定时与触发",
+        en: "Automation",
+        descriptionZh: "定时任务、Hook 与自动触发。",
+        descriptionEn: "Schedules, hooks, and automatic triggers.",
+    },
+    engineering: {
+        canonicalId: "engineering",
+        zh: "编程模式",
+        en: "Engineering Mode",
+        descriptionZh: "工程上下文、文件改动、验证与 proof。",
+        descriptionEn: "Engineering context, code changes, verification, and proof.",
+    },
+    extensions: {
+        canonicalId: "extensions",
+        zh: "扩展生态",
+        en: "Extensions",
+        descriptionZh: "Skills、MCP 与扩展工具生态。",
+        descriptionEn: "Skills, MCP, and extension tooling.",
+    },
+    research: {
+        canonicalId: "research",
+        zh: "深度调研",
+        en: "Deep Research",
+        descriptionZh: "多源调研、证据包与答案卷宗。",
+        descriptionEn: "Multi-source research, evidence packs, and answer dossiers.",
+    },
+    pluginHost: {
+        canonicalId: "plugin_host",
+        zh: "插件桥接",
+        en: "Plugin Bridge",
+        descriptionZh: "OpenClaw、外部工具与渠道桥接。",
+        descriptionEn: "OpenClaw, external tools, and channel bridges.",
+    },
+    computerUse: {
+        canonicalId: "computer_use",
+        zh: "桌面操作",
+        en: "Desktop Control",
+        descriptionZh: "桌面观察、点击、输入与应用操作。",
+        descriptionEn: "Desktop observation, clicking, typing, and app control.",
+    },
+    rpa: {
+        canonicalId: "rpa",
+        zh: "自动流程",
+        en: "RPA Studio",
+        descriptionZh: "流程发现、执行与回放。",
+        descriptionEn: "Workflow discovery, execution, and replay.",
+    },
+    network: {
+        canonicalId: "network_supervisor",
+        zh: "网络连接",
+        en: "Network Links",
+        descriptionZh: "局域网、远程连接与设备发现。",
+        descriptionEn: "LAN, remote links, and device discovery.",
+    },
+    creativeMedia: {
+        canonicalId: "creative_media",
+        zh: "多媒体创作",
+        en: "Creative Media",
+        descriptionZh: "图片、视频、语音、音乐和 3D 素材生成。",
+        descriptionEn: "Image, video, voice, music, and 3D asset generation.",
+    },
+    runtimeGovernance: {
+        canonicalId: "runtime_governance",
+        zh: "运行治理",
+        en: "Execution Governance",
+        descriptionZh: "能力开关、权限与运行状态治理。",
+        descriptionEn: "Capability switches, permissions, and execution governance.",
+    },
+} as const;
+
+export type ProductVocabularyKey = keyof typeof PRODUCT_VOCABULARY;
+
+export function getProductVocabularyEntry(key: ProductVocabularyKey): ProductVocabularyEntry {
+    return PRODUCT_VOCABULARY[key];
+}

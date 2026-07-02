@@ -409,7 +409,12 @@ def creative_media_catalog(
     limit: int = 20,
     cursor: Optional[str] = None,
 ) -> str:
-    """Return the CreativeMediaRuntime provider catalog and adapter capabilities."""
+    """Return 多媒体创作 provider/model catalog and adapter capabilities.
+
+    Use when choosing which image/video/audio/music/3D provider can satisfy a
+    media task. Keep this as the internal capability lookup; use 多媒体创作 in
+    user-facing wording and do not dump the full provider catalog into chat.
+    """
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
         from runtimes.creative_media.tool_surface import catalog_presenter
@@ -430,7 +435,7 @@ def creative_media_catalog(
 
 @tool
 def creative_media_resolutions(detail_level: str = "summary") -> str:
-    """Return CreativeMediaRuntime resolution presets for image and video generation."""
+    """Return 多媒体创作 resolution presets for image and video generation."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
@@ -465,7 +470,7 @@ def creative_media_resolutions(detail_level: str = "summary") -> str:
 
 @tool
 def creative_media_production_pack(request: dict[str, Any]) -> str:
-    """Build or update a clean CreativeMediaProductionPack.
+    """Build or update a clean 多媒体创作 delivery pack.
 
     Use this as the production contract and final handoff checklist for complex media work. The pack has
     stable stages: brief, proposal, script, scene_plan, asset_manifest,
@@ -489,7 +494,7 @@ def creative_media_rank_models(
     goal: Optional[str] = None,
     limit: int = 8,
 ) -> str:
-    """Return a clean Markdown ranking of Creative Media model candidates.
+    """Return a clean Markdown ranking of 多媒体创作 model candidates.
 
     Use this before locking a provider/model. This is the agent-readable
     selector surface; it intentionally avoids dumping the full Model Hub catalog
@@ -513,7 +518,7 @@ def creative_media_rank_models(
 
 @tool
 def creative_media_reference_media_brief(request: dict[str, Any]) -> str:
-    """Create a reference media preflight brief.
+    """Create a 多媒体创作 reference media preflight brief.
 
     Use before generation when the task has reference audio/image/video/files.
     The brief tracks audio transcript, visual style, shot structure, and reusable
@@ -531,7 +536,7 @@ def creative_media_reference_media_brief(request: dict[str, Any]) -> str:
 
 @tool
 def creative_media_sample_approval_packet(request: dict[str, Any]) -> str:
-    """Prepare sample media approval input for ask_user.
+    """Prepare 多媒体创作 sample media approval input for ask_user.
 
     Use after producing sample images/video/audio/music/3D previews and before
     batch production. The returned Markdown tells the worker which question,
@@ -549,7 +554,7 @@ def creative_media_sample_approval_packet(request: dict[str, Any]) -> str:
 
 @tool
 def creative_media_qa_check(request: dict[str, Any]) -> str:
-    """Run a local QA checklist over Creative Media artifacts.
+    """Run a local QA checklist over 多媒体创作 artifacts.
 
     Checks file existence, basic playability metadata when ffprobe is available,
     duration/resolution/audio-stream hints, subtitle file presence, and required
@@ -567,7 +572,7 @@ def creative_media_qa_check(request: dict[str, Any]) -> str:
 
 @tool
 async def creative_media_create_job(request: dict[str, Any]) -> str:
-    """Create a real Creative Media generation job.
+    """Create a real 多媒体创作 generation job.
 
     Use `request.modality` plus `request.operationKind`:
     images/videos use image/video operation kinds; `music.generate`/`music.cover`
@@ -591,7 +596,7 @@ async def creative_media_create_job(request: dict[str, Any]) -> str:
 
 @tool
 async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
-    """Get or refresh a Creative Media job.
+    """Get or refresh a 多媒体创作 job.
 
     Use after `creative_media_create_job`. Keep `refresh=True` to poll supported
     async providers. When status is `succeeded`, read artifacts with
@@ -651,7 +656,7 @@ def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[st
 
 @tool
 def creative_media_job_artifacts(job_id: str) -> str:
-    """List deliverable artifact refs for a Creative Media job.
+    """List deliverable artifact refs for a 多媒体创作 job.
 
     Use this after a job succeeds. Return artifact IDs, kind, file type, and
     download/detail refs to the Supervisor. Do not use provider URLs or

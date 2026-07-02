@@ -622,13 +622,13 @@ def delegation_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
+    """Dispatch, observe, resume, or interrupt real subagent/external-worker tasks.
 
-    Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card.
-    Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit tasks/worker_briefs. Each task must name the goal, useful context, expected output, acceptance criteria, constraints/boundaries, and detailRefs/source refs. Do not dispatch vague ID-only tasks.
-    Runtime-bound Research and Creative Media subagents receive their registered runtime tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
-    Subagents may request child work only through their brokered runtime path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
-    Use `mode='observe'` or `mode='resume'` to collect results, degraded handoffs, or recovery hints before you synthesize a final answer.
+    Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
+    Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit tasks/worker_briefs. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks.
+    Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
+    Subagents may request child work only through their brokered path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
+    Use `mode='observe'` or `mode='resume'` to collect results, degraded handoffs, or recovery hints before you synthesize a final answer. Supervisor still verifies and merges the result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:

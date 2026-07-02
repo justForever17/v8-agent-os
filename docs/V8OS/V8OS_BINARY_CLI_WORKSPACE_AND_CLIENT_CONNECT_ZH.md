@@ -45,6 +45,34 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 
 可行性判断：这个目标真实可行，但不能理解为“把现有 dev server 包一层壳”。真正的产品化缺口在五件事：统一 launcher 托管生命周期、单 Owner + device pairing、地址免记忆和 Tailscale/LAN 可达性、桌面 GUI/CyberCore 生命周期整合、TUI 与 CLI 的职责拆分。只要这些里程碑逐步完成，当前 Engine/Admin/Phone/Web/CyberCore 代码可以演进到目标形态，不需要推倒重做。
 
+### 1.2 产品词汇与 canonical id 边界
+
+产品化时必须把“用户能理解的产品词”和“代码/诊断需要的 canonical id”分开：
+
+- **用户可见面**：Admin 主导航、桌面 GUI、Phone/Web/CyberCore、Supervisor 对用户说话时，默认使用产品词。
+- **Agent 可见面**：工具说明可以保留准确 tool name，但必须解释“何时用、怎么用、对用户怎么说”，避免让 Supervisor 把内部工具名当用户话术。
+- **代码/诊断面**：日志、Doctor、rawRef/detailRef、测试报告、配置文件、事件 payload 继续保留 canonical id，便于定位和恢复。
+
+推荐映射如下：
+
+| 产品词 | canonical id / tool | 用户理解 | 诊断显示 |
+| --- | --- | --- | --- |
+| 主理人中枢 | `chat` | 主理人与子代理协作的聊天编排入口 | 可显示 `chat`、session/run id |
+| 编程模式 | `engineering` | 工程上下文、文件改动、验证与 proof | 可显示 `engineering`、episode id |
+| 深度调研 | `research` | 多源调研、证据包与答案卷宗 | 可显示 `research`、evidence/rawRef |
+| 多媒体创作 | `creative_media` | 图片、视频、语音、音乐和 3D 素材生成 | 可显示 provider/model/job id |
+| 桌面操作 | `computer_use` | 桌面观察、点击、输入与应用操作 | 可显示 route、driver trace ref |
+| 自动流程 | `rpa` | 流程发现、执行与回放 | 可显示 flow/run id |
+| 记忆系统 | `memory` | 长期记忆、知识与项目上下文 | 可显示 memory ref、scope |
+| 定时与触发 | `automation` | 定时任务、Hook 与自动触发 | 可显示 cron/hook id |
+| 插件桥接 | `plugin_host` | OpenClaw、MCP 与外部工具桥接 | 可显示 plugin/channel id |
+| 网络连接 | `network_supervisor` | 局域网、远程连接与设备发现 | 可显示 endpoint/route id |
+| 运行治理 | `runtime_governance` | 能力开关、权限与运行状态治理 | 可显示 policy/grant id |
+| 子代理协作 | `delegation_broker` | 把独立任务交给子代理或 worker | 可显示 dispatch group/worker id |
+| 规格文档 / Spec 模式 | `spec_broker`、`.v8/specs/<feature>/` | 审批式需求、设计、任务交付合约 | 可显示 `specId`、stage、section id |
+
+Admin 主导航和页面标题默认不应出现 `RUNTIME` 这类工程词。需要排障时，通过 hover、详情、Doctor、日志或诊断区展示 canonical id。Supervisor 也应对用户说“我会交给编程模式/深度调研/子代理协作处理”，而不是说“我将调用 runtime_broker/delegation_broker”。
+
 ## 2. 代码事实
 
 ### 2.1 当前启动脚本只能启动服务，不是安装包

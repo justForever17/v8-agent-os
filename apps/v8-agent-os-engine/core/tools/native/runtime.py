@@ -1786,13 +1786,15 @@ def runtime_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Supervisor route broker for active execution runtimes.
+    """Route work into a V8OS specialist mode and wait for typed handoff.
 
-    Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when strengthened execution is useful: deep evidence, multi-file engineering, media provider work, real desktop/RPA work, or concrete subagent dispatch.
+    Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration.
+    Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
+    Fill `need` with the actual task, workspace/scope, expected output, acceptance/proof needs, and useful detailRefs. If you only have a vague route hint, ask or build a complete taskBrief first.
     Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions/PluginHost/Network Supervisor are support/discovery surfaces.
     Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
-    Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for runtime execution.
-    A route result queues an episode and returns a waitable typed handoff path; do not claim the runtime completed until the handoff/proof returns.
+    Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for execution.
+    A route result queues an episode and returns a waitable typed handoff path; do not claim the specialist mode completed until the handoff/proof returns.
     """
     normalized_mode = str(mode or "list").strip().lower()
     route_context = dict((state or {}).get("current_route_context") or {})

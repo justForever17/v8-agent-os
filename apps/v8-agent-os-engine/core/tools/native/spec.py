@@ -625,6 +625,10 @@ def spec_broker(
 ) -> str | Command:
     """Write/read/edit Spec Mode documents under `.v8/specs/<feature>`; user/client approval gates advance stages.
 
+    User-facing wording: call this the `规格文档` or `Spec 模式` workflow.
+    Keep `spec_broker` as an internal tool name for tool calls, diagnostics,
+    logs, and exact references; do not present it as a product feature name.
+
     It writes and reads Spec contract documents only: `requirements.md` or
     `bugfix.md`, then `design.md`, then `tasks.md`. It never writes final
     deliverables such as source files, SKILL.md, images, or README.md.
@@ -658,7 +662,9 @@ def spec_broker(
     requirement/design ids or sections, expected output paths/handoffs, and acceptance/proof checks. A
     natural-language task list without refs is only a draft and will not open
     the approval gate.
-    After tasks are approved, route execution with `runtime_broker`; do not
+    After tasks are approved, internally route execution with `runtime_broker`
+    into the required specialist mode; when speaking to users say 编程模式,
+    多媒体创作, 桌面操作, 自动流程, or 子代理协作 as appropriate. Do not
     implement through Spec tools or Supervisor direct file writes.
     """
     normalized_mode = str(mode or "start").strip().lower()

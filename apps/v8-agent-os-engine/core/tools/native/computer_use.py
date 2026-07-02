@@ -2231,9 +2231,11 @@ def computer_use_observe(
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
 ) -> str:
-    """Observe the current desktop/window and return a structured UI tree plus optional screenshot artifact.
+    """Observe the current 桌面操作 target and return compact UI evidence.
 
-    Prefer this tool before click/type actions so the agent can inspect available controls.
+    Use before click/type actions so the agent can inspect visible controls,
+    window focus, and screenshot context. Keep raw driver traces out of the
+    user-facing answer; say 桌面操作 to users, not this tool name.
     """
     try:
         result = _get_computer_use_runtime().observe(
@@ -3189,7 +3191,13 @@ def computer_use_execute_task(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """Execute a route-approved desktop task through the unified task-level broker and return a compact verification summary."""
+    """Execute a route-approved 桌面操作 task and return a compact proof.
+
+    Use when the user goal requires GUI actions in a real app or browser.
+    Provide `goal`, `app`/`target`, `successCriteria`, and variables if needed.
+    Prefer observe/route resolution first for uncertain screens. Do not use it
+    for ordinary file edits or code work. Say 桌面操作 to users, not this tool name.
+    """
     app_query = str(app or "").strip() or None
     target_hint = str(target or "").strip() or None
     route_goal = str(goal or "").strip()
@@ -3604,7 +3612,11 @@ def computer_use_observe_scene(
     observe_sound: bool = False,
     environment_probe_mode: Optional[str] = None,
 ) -> str:
-    """Observe the current desktop scene in a compact, Supervisor-friendly format."""
+    """Observe a 桌面操作 scene in a compact, Supervisor-friendly format.
+
+    Use before action planning or recovery to understand the current window,
+    controls, screenshot, and target hints without exposing raw driver traces.
+    """
     app_query = str(app or "").strip() or None
     resolved_app = _computer_use_resolve_app(app_query)
     launch_override = _computer_use_launch_target_override(

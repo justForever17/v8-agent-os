@@ -18,6 +18,8 @@ import {
     Workflow,
     Wrench,
 } from "lucide-react";
+import { PRODUCT_VOCABULARY, type ProductVocabularyKey } from "./product-vocabulary";
+
 export type AdminNavBadge = {
     label: string;
     tone: "beta" | "dev";
@@ -28,12 +30,15 @@ export type AdminNavItem = {
     href: string;
     icon: LucideIcon;
     description: string;
+    productVocabularyId?: ProductVocabularyKey;
+    canonicalId?: string;
     badge?: AdminNavBadge;
 };
 
 export type AdminNavGroup = {
     id: string;
     title: string;
+    canonicalId?: string;
     items: AdminNavItem[];
 };
 
@@ -65,48 +70,63 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
     {
         id: "runtimes",
         title: "lib.admin.navigation.k4d4cc3a3",
+        canonicalId: "runtime_group",
         items: [
             {
                 title: "lib.admin.navigation.ka46f7182",
                 href: "/admin/chat-runtime",
                 icon: MessageSquare,
                 description: "lib.admin.navigation.k38ee6957",
+                productVocabularyId: "chat",
+                canonicalId: PRODUCT_VOCABULARY.chat.canonicalId,
             },
             {
                 title: "lib.admin.navigation.k12e7fe1d",
                 href: "/admin/memory",
                 icon: Brain,
                 description: "lib.admin.navigation.kc6277f77",
+                productVocabularyId: "memory",
+                canonicalId: PRODUCT_VOCABULARY.memory.canonicalId,
             },
             {
                 title: "lib.admin.navigation.k924ec203",
                 href: "/admin/automation",
                 icon: Workflow,
                 description: "lib.admin.navigation.k3eb7c0bc",
+                productVocabularyId: "automation",
+                canonicalId: PRODUCT_VOCABULARY.automation.canonicalId,
             },
             {
                 title: "lib.admin.navigation.engineeringLaneTitle",
                 href: "/admin/engineering-lane",
                 icon: Code2,
                 description: "lib.admin.navigation.engineeringLaneDescription",
+                productVocabularyId: "engineering",
+                canonicalId: PRODUCT_VOCABULARY.engineering.canonicalId,
             },
             {
                 title: "lib.admin.navigation.k4a6c7a20",
                 href: "/admin/extensions",
                 icon: Blocks,
                 description: "lib.admin.navigation.kc841e62a",
+                productVocabularyId: "extensions",
+                canonicalId: PRODUCT_VOCABULARY.extensions.canonicalId,
             },
             {
                 title: "lib.admin.navigation.researchRuntimeTitle",
                 href: "/admin/research-runtime",
                 icon: Search,
                 description: "lib.admin.navigation.researchRuntimeDescription",
+                productVocabularyId: "research",
+                canonicalId: PRODUCT_VOCABULARY.research.canonicalId,
             },
             {
                 title: "lib.admin.navigation.k64a90628",
                 href: "/admin/plugin-host",
                 icon: Blocks,
                 description: "lib.admin.navigation.k3f9710f0",
+                productVocabularyId: "pluginHost",
+                canonicalId: PRODUCT_VOCABULARY.pluginHost.canonicalId,
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
@@ -114,6 +134,8 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/desktop-automation",
                 icon: Wrench,
                 description: "lib.admin.navigation.k76403821",
+                productVocabularyId: "computerUse",
+                canonicalId: PRODUCT_VOCABULARY.computerUse.canonicalId,
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
@@ -121,6 +143,8 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/rpa",
                 icon: Bot,
                 description: "lib.admin.navigation.kede68047",
+                productVocabularyId: "rpa",
+                canonicalId: PRODUCT_VOCABULARY.rpa.canonicalId,
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
@@ -128,6 +152,8 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/network-supervisor-runtime",
                 icon: Globe2,
                 description: "lib.admin.navigation.k63312a13",
+                productVocabularyId: "network",
+                canonicalId: PRODUCT_VOCABULARY.network.canonicalId,
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
             {
@@ -135,6 +161,8 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/creative-media",
                 icon: Sparkles,
                 description: "lib.admin.navigation.creativeMediaDescription",
+                productVocabularyId: "creativeMedia",
+                canonicalId: PRODUCT_VOCABULARY.creativeMedia.canonicalId,
                 badge: { label: "lib.admin.navigation.kdb4add74", tone: "beta" },
             },
         ],
@@ -148,6 +176,8 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 href: "/admin/runtime-governance",
                 icon: Activity,
                 description: "lib.admin.navigation.runtimeGovernanceDescription",
+                productVocabularyId: "runtimeGovernance",
+                canonicalId: PRODUCT_VOCABULARY.runtimeGovernance.canonicalId,
             },
             {
                 title: "lib.admin.navigation.k4f3e92b5",

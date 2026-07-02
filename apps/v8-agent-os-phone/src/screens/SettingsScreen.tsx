@@ -200,7 +200,7 @@ export default function SettingsScreen() {
                                     {avatarBusy ? (
                                         <ActivityIndicator color="#FFFFFF" size="small" />
                                     ) : (
-                                        <MaterialCommunityIcons name="camera-plus-outline" size={16} color="#FFFFFF" />
+                                        <MaterialCommunityIcons name="qrcode-scan" size={16} color="#FFFFFF" />
                                     )}
                                 </View>
                             </Pressable>
@@ -252,7 +252,7 @@ export default function SettingsScreen() {
                                 <Text style={styles.primaryButtonText}>{t("src.screens.settingsscreen.open_connection_page")}</Text>
                             </Pressable>
                             <Pressable style={styles.secondaryButton} onPress={() => void signOut()}>
-                                <MaterialCommunityIcons name="logout" size={16} color={colors.text} />
+                                <MaterialCommunityIcons name="power" size={16} color={colors.text} />
                                 <Text style={styles.secondaryButtonText}>{t("src.screens.settingsscreen.sign_out")}</Text>
                             </Pressable>
                         </View>

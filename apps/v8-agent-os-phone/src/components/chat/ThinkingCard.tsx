@@ -164,7 +164,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                             ]}
                         >
                             <MaterialCommunityIcons
-                                name="chip"
+                                name="head-lightbulb-outline"
                                 size={12}
                                 color={isStreaming ? colors.primary : colors.textMuted}
                             />

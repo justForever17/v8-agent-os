@@ -47,7 +47,7 @@ export const DownloadFileCard = memo(function DownloadFileCard({
         <Card style={styles.card}>
             <CardContent style={styles.cardContent}>
                 <View style={[styles.iconBox, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
-                    <MaterialCommunityIcons name="file-download-outline" size={22} color={colors.primary} />
+                    <MaterialCommunityIcons name="download-outline" size={22} color={colors.primary} />
                 </View>
                 <View style={styles.meta}>
                     <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>

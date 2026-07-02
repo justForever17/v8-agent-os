@@ -126,7 +126,7 @@ export const McpAppWebView = memo(function McpAppWebView({ mcpApp }: { mcpApp: M
         <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
             <Pressable style={styles.header} onPress={() => setCollapsed((value) => !value)}>
                 <View style={styles.titleRow}>
-                    <MaterialCommunityIcons name="application-brackets-outline" size={15} color={colors.primary} />
+                    <MaterialCommunityIcons name="webhook" size={15} color={colors.primary} />
                     <Text style={[styles.title, { color: colors.text }]}>
                         {t("src.components.chat.mcp_app.title")}
                     </Text>

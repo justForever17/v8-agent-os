@@ -161,7 +161,7 @@ export function ProfileMenuOverlay({
             <View style={styles.modalContainer} pointerEvents="box-none">
                 <GlassCard style={styles.card}>
                     <View style={styles.header}>
-                        <MaterialCommunityIcons name="account-circle-outline" size={20} color={colors.primaryDeep} />
+                        <MaterialCommunityIcons name="account" size={20} color={colors.primaryDeep} />
                         <Text style={styles.title}>个人中心</Text>
                         <Pressable style={styles.closeButton} onPress={onClose}>
                             <MaterialCommunityIcons name="close" size={20} color={colors.textMuted} />
@@ -208,7 +208,7 @@ export function ProfileMenuOverlay({
                                         {avatarBusy ? (
                                             <ActivityIndicator color="#FFFFFF" size="small" />
                                         ) : (
-                                            <MaterialCommunityIcons name="camera-plus-outline" size={12} color="#FFFFFF" />
+                                            <MaterialCommunityIcons name="qrcode-scan" size={12} color="#FFFFFF" />
                                         )}
                                     </View>
                                 </Pressable>
@@ -244,7 +244,7 @@ export function ProfileMenuOverlay({
 
                         {/* 退出登录按钮 */}
                         <Pressable style={styles.logoutButton} onPress={() => void handleSignOut()}>
-                            <MaterialCommunityIcons name="logout" size={16} color={colors.danger} />
+                            <MaterialCommunityIcons name="power" size={16} color={colors.danger} />
                             <Text style={styles.logoutButtonText}>{t("src.screens.settingsscreen.sign_out")}</Text>
                         </Pressable>
                     </ScrollView>

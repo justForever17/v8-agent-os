@@ -358,7 +358,7 @@ export const Composer = memo(function Composer({
                                         },
                                     ]}
                                 >
-                                    <MaterialCommunityIcons name="slash-forward" size={11} color={colors.primary} />
+                                    <MaterialCommunityIcons name="text-short" size={11} color={colors.primary} />
                                     <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
                                         {selectedCommand.name}
                                     </Text>
@@ -521,7 +521,7 @@ export const Composer = memo(function Composer({
                                     onPress={cycleReasoningEffort}
                                 >
                                     <MaterialCommunityIcons
-                                        name="brain"
+                                        name="head-lightbulb-outline"
                                         size={14}
                                         color={reasoningEffort === "auto" ? colors.textMuted : colors.warning}
                                     />

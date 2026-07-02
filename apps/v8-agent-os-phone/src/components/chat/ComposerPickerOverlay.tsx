@@ -62,7 +62,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     const data: Array<CommandPresetSummary | ComposerMentionItem> = isCommand ? commands : mentions;
     const renderCommandItem = ({ item }: { item: CommandPresetSummary }) => (
         <Pressable onPress={() => onSelectCommand(item)} style={styles.row}>
-            <MaterialCommunityIcons name="slash-forward" size={16} color={colors.accent} />
+            <MaterialCommunityIcons name="text-short" size={16} color={colors.accent} />
             <View style={styles.body}>
                 <Text style={[styles.title, { color: colors.text }]}>{item.name}</Text>
                 {item.summary ? (

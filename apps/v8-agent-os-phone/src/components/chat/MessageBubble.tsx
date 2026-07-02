@@ -1143,7 +1143,7 @@ export const MessageBubble = memo(function MessageBubble({
                                     <View style={styles.userMetaRow}>
                                         {commandPresetName ? (
                                             <View style={styles.userChip}>
-                                                <MaterialCommunityIcons name="slash-forward" size={12} color="#FFFFFF" />
+                                                <MaterialCommunityIcons name="text-short" size={12} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>{commandPresetName.replace(/^\/+/, "")}</Text>
                                             </View>
                                         ) : null}

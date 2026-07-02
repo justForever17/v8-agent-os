@@ -219,7 +219,7 @@ export default function ConnectScreen() {
                     <GlassCard style={styles.heroCard}>
                         <View style={styles.connectionHeroHeader}>
                             <View style={styles.connectionIcon}>
-                                <MaterialCommunityIcons name="access-point-network" size={22} color={colors.primaryDeep} />
+                                <MaterialCommunityIcons name="server-network" size={22} color={colors.primaryDeep} />
                             </View>
                             <View style={styles.connectionHeroBody}>
                                 <Text style={styles.heroTitle}>{t("src.screens.connectscreen.current_connection")}</Text>
@@ -293,7 +293,7 @@ export default function ConnectScreen() {
                         <View style={styles.sectionTitleRow}>
                             <Text style={styles.sectionTitle}>{t("src.screens.connectscreen.saved_targets")}</Text>
                             <Pressable style={styles.refreshProfilesButton} onPress={() => void refreshProfiles()}>
-                                <MaterialCommunityIcons name="refresh" size={15} color={colors.textSoft} />
+                                <MaterialCommunityIcons name="autorenew" size={15} color={colors.textSoft} />
                             </Pressable>
                         </View>
                         {profiles.length === 0 ? (

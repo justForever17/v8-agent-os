@@ -146,7 +146,7 @@ export const TodosHUD = memo(function TodosHUD({
                                 >
                                     <View style={styles.todoIcon}>
                                         {isDone ? (
-                                            <MaterialCommunityIcons name="check-circle" size={16} color="#16A34A" />
+                                            <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={16} color="#16A34A" />
                                         ) : isProgress ? (
                                             <MaterialCommunityIcons name="progress-clock" size={16} color={colors.primary} />
                                         ) : isSkipped ? (

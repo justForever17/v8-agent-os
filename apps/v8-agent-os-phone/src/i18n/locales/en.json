@@ -260,7 +260,7 @@
   "src.components.chat.todoshud.task_progress": "Task Progress",
   "src.components.chat.toolcard.complete": "Complete",
   "src.components.chat.toolcard.input": "Input",
-  "src.components.chat.toolcard.output": "Agent-visible output",
+  "src.components.chat.toolcard.output": "output",
   "src.components.chat.toolcard.running": "Running",
   "src.components.chat.voicecard.playing": "Playing...",
   "src.components.chat.voicecard.playing_voice": "Playing voice",

@@ -260,7 +260,7 @@
   "src.components.chat.todoshud.task_progress": "任务进度",
   "src.components.chat.toolcard.complete": "已完成",
   "src.components.chat.toolcard.input": "输入",
-  "src.components.chat.toolcard.output": "Agent 可见输出",
+  "src.components.chat.toolcard.output": "输出",
   "src.components.chat.toolcard.running": "执行中",
   "src.components.chat.voicecard.playing": "播放中…",
   "src.components.chat.voicecard.playing_voice": "正在播放语音",

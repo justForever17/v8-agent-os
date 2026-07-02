@@ -120,6 +120,10 @@ def _get_network_supervisor_service():
     return _import_module("runtimes.network_supervisor.service").network_supervisor_service
 
 
+def _get_network_neighbor_service():
+    return _import_module("runtimes.network_supervisor.neighbor").network_neighbor_service
+
+
 def _get_runtime_episode_runner():
     return _import_module("core.runtime_episode_runner").runtime_episode_runner
 
@@ -362,6 +366,7 @@ async def lifespan(app: FastAPI):
     if service_flags["network_supervisor"]:
         _ensure_network_supervisor_runtime_registered()
         await _get_network_supervisor_service().start()
+        await _get_network_neighbor_service().start()
     await _get_runtime_episode_runner().start()
     
     yield
@@ -371,6 +376,7 @@ async def lifespan(app: FastAPI):
     if service_flags["cron"]:
         _get_cron_manager().shutdown()
     if service_flags["network_supervisor"]:
+        await _get_network_neighbor_service().stop()
         await _get_network_supervisor_service().stop()
     if service_flags["extensions"]:
         await _get_extensions_runtime_service().stop()

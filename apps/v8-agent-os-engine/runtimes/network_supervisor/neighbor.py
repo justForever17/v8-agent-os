@@ -85,6 +85,74 @@ def _message_text(value: str | None) -> tuple[str, str, bool]:
 
 
 class NetworkNeighborService:
+    def __init__(self) -> None:
+        self._wake_queue_task: asyncio.Task | None = None
+        self._wake_queue_enabled = False
+        self._wake_queue_worker_id = f"network_neighbor_{uuid.uuid4().hex[:10]}"
+
+    async def start(self) -> None:
+        self._wake_queue_enabled = True
+        if self._wake_queue_task is None or self._wake_queue_task.done():
+            self._wake_queue_task = asyncio.create_task(self._wake_queue_loop())
+
+    async def stop(self) -> None:
+        self._wake_queue_enabled = False
+        task = self._wake_queue_task
+        self._wake_queue_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def _kick_wake_queue_processing(self) -> None:
+        if self._wake_queue_task is not None and not self._wake_queue_task.done():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._wake_queue_task = asyncio.create_task(self._wake_queue_loop(run_once=True))
+
+    async def _wake_queue_loop(self, *, run_once: bool = False) -> None:
+        while self._wake_queue_enabled or run_once:
+            try:
+                processed = await self.process_wake_queue_once(worker_id=self._wake_queue_worker_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                processed = False
+            if run_once:
+                return
+            await asyncio.sleep(0.2 if processed else 2.0)
+
+    async def process_wake_queue_once(self, *, worker_id: str | None = None) -> bool:
+        item = db.claim_next_network_neighbor_wake_item(
+            worker_id=worker_id or self._wake_queue_worker_id,
+            lease_seconds=180,
+        )
+        if not item:
+            return False
+        queue_id = str(item.get("queueId") or item.get("id") or "").strip()
+        payload = dict(item.get("payload") or {})
+        try:
+            link = db.get_network_neighbor_link(str(item.get("linkId") or "")) or dict(payload.get("link") or {})
+            inbound_message = dict(payload.get("inboundMessage") or {})
+            workspace_binding = dict(payload.get("workspaceBinding") or {})
+            if not link or not inbound_message:
+                raise RuntimeError("Wake queue item is missing link or inbound message payload")
+            await self._execute_neighbor_supervisor_message(
+                link=link,
+                inbound_message=inbound_message,
+                workspace_binding=workspace_binding,
+                run_id=str(item.get("runId") or item.get("run_id") or ""),
+            )
+            db.complete_network_neighbor_wake_item(queue_id)
+        except Exception as exc:
+            db.fail_network_neighbor_wake_item(queue_id, error=str(exc), retry_delay_seconds=30)
+        return True
+
     def _state(self) -> dict[str, Any]:
         return network_supervisor_service.read_state()
 
@@ -210,6 +278,7 @@ class NetworkNeighborService:
         runtime_status = network_supervisor_service.status_payload()
         links = db.list_network_neighbor_links()
         candidates = self.list_candidates()
+        wake_items = db.list_network_neighbor_wake_queue(states=["queued", "retry", "leased", "failed"], limit=50)
         return {
             "ok": True,
             "enabled": bool(runtime_status.get("enabled")),
@@ -224,6 +293,13 @@ class NetworkNeighborService:
                 "connectedCount": len(links),
                 "lastAnnounceAt": runtime_status.get("discovery", {}).get("lastAnnounceAt"),
             },
+            "wakeQueue": {
+                "queued": len([item for item in wake_items if item.get("state") == "queued"]),
+                "retry": len([item for item in wake_items if item.get("state") == "retry"]),
+                "leased": len([item for item in wake_items if item.get("state") == "leased"]),
+                "failed": len([item for item in wake_items if item.get("state") == "failed"]),
+                "workerRunning": bool(self._wake_queue_task is not None and not self._wake_queue_task.done()),
+            },
             "links": links,
         }
 
@@ -237,7 +313,9 @@ class NetworkNeighborService:
         if reload_service:
             if enabled:
                 await network_supervisor_service.reload()
+                await self.start()
             else:
+                await self.stop()
                 await network_supervisor_service.stop()
         return self.status_payload()
 
@@ -601,16 +679,22 @@ class NetworkNeighborService:
             },
         )
         run_id = None
+        queue_item = None
         if bool(payload.get("wakeSupervisor")):
             run_id = f"run_{uuid.uuid4().hex}"
-            asyncio.create_task(
-                self._execute_neighbor_supervisor_message(
-                    link=link,
-                    inbound_message=stored,
-                    workspace_binding=workspace_binding,
-                    run_id=run_id,
-                )
+            queue_item = db.add_network_neighbor_wake_queue_item(
+                queue_id=f"nwake_{uuid.uuid4().hex}",
+                link_id=str(link.get("linkId") or ""),
+                message_id=str(stored.get("messageId") or stored.get("id") or ""),
+                run_id=run_id,
+                payload={
+                    "link": link,
+                    "inboundMessage": stored,
+                    "workspaceBinding": workspace_binding,
+                    "sourcePeerId": envelope.from_peer_id,
+                },
             )
+            self._kick_wake_queue_processing()
         return network_supervisor_service.build_envelope(
             message_type="neighbor.message.ack",
             to_peer_id=envelope.from_peer_id,
@@ -620,6 +704,7 @@ class NetworkNeighborService:
                 "status": "received",
                 "runScheduled": bool(run_id),
                 "runId": run_id,
+                "queueId": queue_item.get("queueId") if isinstance(queue_item, dict) else None,
             },
             trace=envelope.trace,
             expires_in_seconds=60,

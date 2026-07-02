@@ -31,6 +31,13 @@ class FakeNetworkSupervisorService:
             "peerBaseUrl": "",
         }
         self.secrets = {"localPeerToken": "local-token"}
+        self.reload_count = 0
+        self.stop_count = 0
+        self.config = SimpleNamespace(
+            enabled=False,
+            discovery=SimpleNamespace(lan_enabled=False),
+            node=SimpleNamespace(display_name="Main Device"),
+        )
         self.peers_payload = {
             "trustedItems": [],
             "discoveredItems": [
@@ -74,6 +81,18 @@ class FakeNetworkSupervisorService:
             "node": {"peerId": self.identity["peerId"], "displayName": self.identity["displayName"]},
             "discovery": {"lanEnabled": True, "lastAnnounceAt": "2026-07-02T00:00:00Z"},
         }
+
+    def get_config_model(self):
+        return self.config
+
+    def save_config_model(self, config) -> None:
+        self.config = config
+
+    async def reload(self) -> None:
+        self.reload_count += 1
+
+    async def stop(self) -> None:
+        self.stop_count += 1
 
     def upsert_peer(self, payload: NetworkPeerMutationPayload) -> dict:
         self.upserts.append(payload)
@@ -141,6 +160,29 @@ def test_discovered_candidate_does_not_auto_become_trusted_link(neighbor_service
 
     assert candidates["items"][0]["peerId"] == "peer_remote"
     assert temp_db.list_network_neighbor_links() == []
+
+
+def test_switch_starts_and_stops_wake_queue(monkeypatch, neighbor_service):
+    svc, fake_network, _temp_db, _tmp_path = neighbor_service
+    started: list[bool] = []
+    stopped: list[bool] = []
+
+    async def fake_start():
+        started.append(True)
+
+    async def fake_stop():
+        stopped.append(True)
+
+    monkeypatch.setattr(svc, "start", fake_start)
+    monkeypatch.setattr(svc, "stop", fake_stop)
+
+    asyncio.run(svc.set_switch(enabled=True))
+    asyncio.run(svc.set_switch(enabled=False))
+
+    assert started == [True]
+    assert stopped == [True]
+    assert fake_network.reload_count == 1
+    assert fake_network.stop_count == 1
 
 
 def test_pairing_code_is_one_time_and_limited(neighbor_service):
@@ -250,13 +292,8 @@ def test_wake_supervisor_message_schedules_run(monkeypatch, neighbor_service):
     async def fake_execute(**kwargs):
         scheduled.append(kwargs)
 
-    def fake_create_task(coro):
-        coro.close()
-        scheduled.append({"task_created": True})
-        return SimpleNamespace(done=lambda: True)
-
+    monkeypatch.setattr(svc, "_kick_wake_queue_processing", lambda: None)
     monkeypatch.setattr(svc, "_execute_neighbor_supervisor_message", fake_execute)
-    monkeypatch.setattr(neighbor_module.asyncio, "create_task", fake_create_task)
     envelope = NetworkEnvelope.model_validate(
         {
             "version": "1",
@@ -283,5 +320,60 @@ def test_wake_supervisor_message_schedules_run(monkeypatch, neighbor_service):
 
     assert ack.message_type == "neighbor.message.ack"
     assert ack.payload["runScheduled"] is True
+    assert ack.payload["queueId"]
+    queued = temp_db.list_network_neighbor_wake_queue(states=["queued"])
+    assert len(queued) == 1
+    assert queued[0]["messageId"] == temp_db.list_network_neighbor_messages(link_id=link["linkId"])[0]["messageId"]
+
+    processed = asyncio.run(svc.process_wake_queue_once(worker_id="test-worker"))
+
+    assert processed is True
     assert scheduled
+    completed = temp_db.list_network_neighbor_wake_queue(states=["completed"])
+    assert len(completed) == 1
     assert temp_db.list_network_neighbor_messages(link_id=link["linkId"])[0]["direction"] == "inbound"
+
+
+def test_wake_queue_failure_retries_without_losing_item(monkeypatch, neighbor_service):
+    svc, _fake_network, temp_db, _tmp_path = neighbor_service
+    link = temp_db.upsert_network_neighbor_link(
+        link_id="nlink_retry",
+        peer_id="peer_remote",
+        local_nickname="Main",
+        remote_nickname="Remote",
+        local_role="companion",
+        remote_role="primary",
+        workspace_binding={},
+    )
+    message = temp_db.add_network_neighbor_message(
+        message_id="nmsg_retry",
+        link_id=link["linkId"],
+        direction="inbound",
+        from_peer_id="peer_remote",
+        from_nickname="Remote",
+        role="primary",
+        body="wake me",
+        preview="wake me",
+        status="received",
+        workspace_binding={},
+    )
+    temp_db.add_network_neighbor_wake_queue_item(
+        queue_id="nwake_retry",
+        link_id=link["linkId"],
+        message_id=message["messageId"],
+        run_id="run_retry",
+        payload={"link": link, "inboundMessage": message, "workspaceBinding": {}},
+        max_attempts=2,
+    )
+
+    async def fail_execute(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(svc, "_execute_neighbor_supervisor_message", fail_execute)
+
+    processed = asyncio.run(svc.process_wake_queue_once(worker_id="test-worker"))
+
+    assert processed is True
+    retry = temp_db.list_network_neighbor_wake_queue(states=["retry"])
+    assert len(retry) == 1
+    assert retry[0]["lastError"] == "boom"

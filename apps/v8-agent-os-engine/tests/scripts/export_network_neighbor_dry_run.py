@@ -224,6 +224,8 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
             body="请主设备主理人处理这条邻居消息",
             wake_supervisor=True,
         )
+        main.activate()
+        await main.neighbor.process_wake_queue_once(worker_id="dry-run-main")
         await asyncio.sleep(0)
 
         report = {
@@ -234,6 +236,7 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
                 "links": main.link_summary(),
                 "timeline": main.timeline(),
                 "trustUpserts": main.network.upserts,
+                "wakeQueue": main.db.list_network_neighbor_wake_queue(limit=20),
                 "scheduledRuns": main.scheduled_runs,
                 "sent": main.sent,
             },
@@ -242,6 +245,7 @@ async def run_dry_run(output_path: Path) -> dict[str, Any]:
                 "links": companion.link_summary(),
                 "timeline": companion.timeline(),
                 "trustUpserts": companion.network.upserts,
+                "wakeQueue": companion.db.list_network_neighbor_wake_queue(limit=20),
                 "scheduledRuns": companion.scheduled_runs,
                 "sent": companion.sent,
             },

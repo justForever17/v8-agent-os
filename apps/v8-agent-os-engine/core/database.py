@@ -146,7 +146,7 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS runtime_snapshots (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
-                    run_id TEXT,
+                    run_id TEXT NOT NULL,
                     latest_seq INTEGER NOT NULL,
                     snapshot_type TEXT NOT NULL,
                     snapshot_json TEXT NOT NULL,
@@ -338,7 +338,7 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS session_lane_queue_entries (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
+                    run_id TEXT,
                     action TEXT NOT NULL,
                     policy TEXT NOT NULL,
                     active_run_id TEXT,
@@ -432,6 +432,29 @@ class DatabaseManager:
                     received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (link_id) REFERENCES network_neighbor_links (id) ON DELETE CASCADE,
                     FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_neighbor_wake_queue (
+                    id TEXT PRIMARY KEY,
+                    link_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'queued',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    available_at TIMESTAMP,
+                    claimed_by TEXT,
+                    lease_expires_at TIMESTAMP,
+                    last_error TEXT,
+                    payload_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    failed_at TIMESTAMP,
+                    FOREIGN KEY (link_id) REFERENCES network_neighbor_links (id) ON DELETE CASCADE,
+                    FOREIGN KEY (message_id) REFERENCES network_neighbor_messages (id) ON DELETE CASCADE
                 )
             ''')
 
@@ -994,6 +1017,9 @@ class DatabaseManager:
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_network_neighbor_messages_link_seq ON network_neighbor_messages (link_id, seq)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_messages_link_received ON network_neighbor_messages (link_id, received_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_messages_run_id ON network_neighbor_messages (run_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_state ON network_neighbor_wake_queue (state, available_at ASC, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_link ON network_neighbor_wake_queue (link_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_run ON network_neighbor_wake_queue (run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_approvals_session_id ON pending_approvals (session_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_session_id ON ask_user_interactions (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_run_id ON ask_user_interactions (run_id, created_at DESC)')
@@ -4004,6 +4030,214 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return [self._hydrate_network_neighbor_message_row(dict(row)) for row in cursor.fetchall()]
+
+    def _hydrate_network_neighbor_wake_queue_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["queueId"] = data.get("id")
+        data["linkId"] = data.get("link_id")
+        data["messageId"] = data.get("message_id")
+        data["runId"] = data.get("run_id")
+        data["attemptCount"] = int(data.get("attempt_count") or 0)
+        data["maxAttempts"] = int(data.get("max_attempts") or 0)
+        data["availableAt"] = data.get("available_at")
+        data["claimedBy"] = data.get("claimed_by")
+        data["leaseExpiresAt"] = data.get("lease_expires_at")
+        data["lastError"] = data.get("last_error")
+        data["payload"] = json.loads(data["payload_json"]) if data.get("payload_json") else {}
+        data["createdAt"] = data.get("created_at")
+        data["updatedAt"] = data.get("updated_at")
+        data["completedAt"] = data.get("completed_at")
+        data["failedAt"] = data.get("failed_at")
+        return data
+
+    def add_network_neighbor_wake_queue_item(
+        self,
+        *,
+        queue_id: str,
+        link_id: str,
+        message_id: str,
+        run_id: str,
+        payload: Optional[dict[str, Any]] = None,
+        max_attempts: int = 3,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_neighbor_wake_queue
+                    (id, link_id, message_id, run_id, state, attempt_count, max_attempts, available_at, payload_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        queue_id,
+                        link_id,
+                        message_id,
+                        run_id,
+                        max(1, min(int(max_attempts or 3), 10)),
+                        now_iso,
+                        json.dumps(to_jsonable(payload or {}), ensure_ascii=False),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_wake_queue_item(queue_id) or {}
+
+    def get_network_neighbor_wake_queue_item(self, queue_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(queue_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_wake_queue WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_wake_queue_row(dict(row)) if row else None
+
+    def claim_next_network_neighbor_wake_item(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 180,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+        lease_expires_at = latest_utc_iso(datetime.now(timezone.utc) + timedelta(seconds=max(30, int(lease_seconds or 180))))
+
+        def _write():
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT *
+                    FROM network_neighbor_wake_queue
+                    WHERE attempt_count < max_attempts
+                      AND (
+                        (state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?))
+                        OR (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+                      )
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    ''',
+                    (now_iso, now_iso),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                queue_id = row["id"]
+                cursor.execute(
+                    '''
+                    UPDATE network_neighbor_wake_queue
+                    SET state = 'leased',
+                        attempt_count = attempt_count + 1,
+                        claimed_by = ?,
+                        lease_expires_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                      AND attempt_count < max_attempts
+                      AND (
+                        (state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?))
+                        OR (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+                      )
+                    ''',
+                    (worker_id, lease_expires_at, now_iso, queue_id, now_iso, now_iso),
+                )
+                if cursor.rowcount != 1:
+                    conn.commit()
+                    return None
+                cursor.execute('SELECT * FROM network_neighbor_wake_queue WHERE id = ?', (queue_id,))
+                claimed = cursor.fetchone()
+                conn.commit()
+                return self._hydrate_network_neighbor_wake_queue_row(dict(claimed)) if claimed else None
+
+        return self._run_write_with_retry(_write)
+
+    def complete_network_neighbor_wake_item(self, queue_id: str) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE network_neighbor_wake_queue
+                    SET state = 'completed',
+                        completed_at = ?,
+                        available_at = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ? AND state = 'leased'
+                    ''',
+                    (now_iso, now_iso, queue_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_wake_queue_item(queue_id)
+
+    def fail_network_neighbor_wake_item(
+        self,
+        queue_id: str,
+        *,
+        error: str,
+        retry_delay_seconds: int = 30,
+    ) -> Optional[Dict[str, Any]]:
+        existing = self.get_network_neighbor_wake_queue_item(queue_id)
+        if not existing:
+            return None
+        now_iso = utc_now_iso()
+        exhausted = int(existing.get("attemptCount") or 0) >= int(existing.get("maxAttempts") or 1)
+        next_state = "failed" if exhausted else "retry"
+        available_at = latest_utc_iso(datetime.now(timezone.utc) + timedelta(seconds=max(1, int(retry_delay_seconds or 30))))
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE network_neighbor_wake_queue
+                    SET state = ?,
+                        available_at = ?,
+                        lease_expires_at = NULL,
+                        last_error = ?,
+                        failed_at = CASE WHEN ? = 'failed' THEN ? ELSE failed_at END,
+                        updated_at = ?
+                    WHERE id = ? AND state = 'leased'
+                    ''',
+                    (
+                        next_state,
+                        None if exhausted else available_at,
+                        str(error or "")[:1000],
+                        next_state,
+                        now_iso,
+                        now_iso,
+                        queue_id,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_wake_queue_item(queue_id)
+
+    def list_network_neighbor_wake_queue(
+        self,
+        *,
+        states: Optional[list[str]] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        normalized_states = [str(item).strip() for item in (states or []) if str(item).strip()]
+        params: list[Any] = []
+        query = 'SELECT * FROM network_neighbor_wake_queue WHERE 1=1'
+        if normalized_states:
+            placeholders = ",".join("?" for _ in normalized_states)
+            query += f' AND state IN ({placeholders})'
+            params.extend(normalized_states)
+        query += ' ORDER BY created_at DESC LIMIT ?'
+        params.append(max(1, min(int(limit or 50), 200)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_network_neighbor_wake_queue_row(dict(row)) for row in cursor.fetchall()]
 
     def claim_next_pending_chat_user_message(self, *, session_id: str, consumed_run_id: str) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
